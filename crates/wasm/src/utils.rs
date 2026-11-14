@@ -1,38 +1,78 @@
 use lumen_engine::{
     composition::Composition,
-    diagnostic::Diagnostic,
+    diagnostic::{Diagnostic, Severity},
     error::{LumenError, MediaError, MediaFailure},
     json::ParseError,
     media::CpuMediaFrame,
 };
+use serde::Serialize;
 use std::sync::Arc;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 
-/// The JS `Error` for a failed render, whose `code` is the error's diagnostic code. A video frame
-/// that isn't loaded yet has the code `media_frame_out_of_range` instead, on which callers load the
-/// frame and render again.
-pub fn render_failure(error: &LumenError) -> JsValue {
-    let js_error = js_sys::Error::new(&error.to_string());
-    let set = |key: &str, value: &JsValue| {
-        let _ = js_sys::Reflect::set(&js_error, &JsValue::from_str(key), value);
-    };
-    if matches!(error, LumenError::Media(MediaError::FrameOutOfRange { .. })) {
-        set("code", &JsValue::from_str("media_frame_out_of_range"));
-    } else if let Some(failure) = error.media_failure() {
-        set("code", &JsValue::from_str(failure.code()));
-        if let Ok(media) = js_sys::JSON::parse(&media_failure_json(failure)) {
-            set("media", &media);
-        }
-    } else {
-        set("code", &JsValue::from_str(error.code()));
-    }
-    js_error.into()
+/// What a failure carries to JavaScript besides its message, set as properties of the `Error`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ErrorFields<'a> {
+    /// The engine's diagnostic code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    media: Option<&'a MediaFailure>,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    diagnostics: &'a [Diagnostic],
+    /// A video frame that isn't loaded yet: the caller loads it and renders again.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    frame_not_loaded: bool,
 }
 
-/// The structured fields of `failure` as JSON: its `code`, `source`, `wanted` and `found` kinds,
-/// `at`, `details`, and for `media.too_large` the `limit` and `actual` value.
-pub fn media_failure_json(failure: &MediaFailure) -> String {
-    serde_json::to_string(failure).unwrap_or_else(|_| "{}".to_string())
+impl<'a> ErrorFields<'a> {
+    fn of_error(error: &'a LumenError) -> Self {
+        let media = error.media_failure();
+        Self {
+            code: Some(media.map_or_else(|| error.code(), MediaFailure::code)),
+            media,
+            diagnostics: &[],
+            frame_not_loaded: matches!(
+                error,
+                LumenError::Media(MediaError::FrameOutOfRange { .. })
+            ),
+        }
+    }
+
+    /// Carries the code of the first error, which is the first thing wrong with the composition.
+    fn of_parse_error(error: &'a ParseError) -> Self {
+        Self {
+            code: error
+                .diagnostics()
+                .iter()
+                .find(|diagnostic| diagnostic.severity == Severity::Error)
+                .map(|diagnostic| diagnostic.code),
+            media: None,
+            diagnostics: error.diagnostics(),
+            frame_not_loaded: false,
+        }
+    }
+}
+
+/// The JS `Error` for `error`, carrying its code and, when it has them, its media failure.
+pub fn js_error(error: &LumenError) -> JsValue {
+    error_with_fields(&error.to_string(), &ErrorFields::of_error(error))
+}
+
+/// The JS `Error` for a composition that doesn't parse, carrying its diagnostics.
+pub fn js_parse_error(error: &ParseError) -> JsValue {
+    error_with_fields(&error.to_string(), &ErrorFields::of_parse_error(error))
+}
+
+fn error_with_fields(message: &str, fields: &ErrorFields) -> JsValue {
+    let error = js_sys::Error::new(message);
+    let fields = serde_json::to_string(fields)
+        .ok()
+        .and_then(|json| js_sys::JSON::parse(&json).ok());
+    if let Some(fields) = fields {
+        js_sys::Object::assign(&error, &fields.unchecked_into());
+    }
+    error.into()
 }
 
 pub fn validate_rgba_len(width: u32, height: u32, len: usize) -> bool {
@@ -69,17 +109,6 @@ pub fn diagnostics_value(diagnostics: &[Diagnostic]) -> JsValue {
         .unwrap_or_else(|| js_sys::Array::new().into())
 }
 
-/// The JS `Error` for a composition that doesn't parse, with its `diagnostics`.
-pub fn parse_failure(error: &ParseError) -> JsValue {
-    let js_error = js_sys::Error::new(&error.to_string());
-    let _ = js_sys::Reflect::set(
-        &js_error,
-        &JsValue::from_str("diagnostics"),
-        &diagnostics_value(error.diagnostics()),
-    );
-    js_error.into()
-}
-
 pub fn composition_json_to_composition(composition_json: &str) -> Result<Composition, ParseError> {
     lumen_engine::json::parse(composition_json)
 }
@@ -87,7 +116,7 @@ pub fn composition_json_to_composition(composition_json: &str) -> Result<Composi
 #[cfg(test)]
 mod tests {
     use lumen_engine::{
-        error::MediaFailure,
+        error::{MediaFailure, RenderError},
         media::{AssetKind, MediaLocation, NodeParamAt},
         node::NodeId,
     };
@@ -107,19 +136,41 @@ mod tests {
                 })
             });
 
-        let fields: serde_json::Value =
-            serde_json::from_str(&media_failure_json(&failure)).unwrap();
+        let error = LumenError::from(failure);
+        let fields = serde_json::to_value(ErrorFields::of_error(&error)).unwrap();
         assert_eq!(
             fields,
             json!({
                 "code": "media.too_large",
-                "source": "hero.glb",
-                "wanted": ["model"],
-                "at": { "type": "node", "template": "card", "node": 4, "param": "source" },
-                "details": "too big",
-                "limit": 100,
-                "actual": 120,
+                "media": {
+                    "code": "media.too_large",
+                    "source": "hero.glb",
+                    "wanted": ["model"],
+                    "at": { "type": "node", "template": "card", "node": 4, "param": "source" },
+                    "details": "too big",
+                    "limit": 100,
+                    "actual": 120,
+                },
             })
         );
+    }
+
+    #[test]
+    fn a_frame_that_is_not_loaded_is_marked_and_keeps_its_code() {
+        let not_loaded = LumenError::Media(MediaError::FrameOutOfRange {
+            media_source: "clip".to_string(),
+            frame: 3,
+            frame_count: 2,
+        });
+        let fields = serde_json::to_value(ErrorFields::of_error(&not_loaded)).unwrap();
+        assert_eq!(fields["code"], not_loaded.code());
+        assert_eq!(fields["frameNotLoaded"], true);
+
+        let ordinary = LumenError::Render(RenderError::FrameOutOfRange {
+            frame: 9,
+            duration_frames: 3,
+        });
+        let fields = serde_json::to_value(ErrorFields::of_error(&ordinary)).unwrap();
+        assert_eq!(fields, json!({ "code": ordinary.code() }));
     }
 }

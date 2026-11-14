@@ -180,7 +180,7 @@ session.setInputs({ composition, range: { in: 30, out: 90 }, loop: true, rate: 1
 session.rate; // 1.5: the options in effect are readable as loop, rate, volume, muted and range
 ```
 
-`setInputs()` replaces every input, so pass the ones that should stay, and it does nothing for inputs that are unchanged, so it is safe to call on every render. A composition is read once per object: pass a new object to change it, not the same one edited in place. Some details:
+`setInputs()` replaces every input, so pass the ones that should stay, and it does nothing for inputs that are unchanged, so it is safe to call whenever one may have changed. It reads the composition again each time, so a composition edited in place is picked up, at the cost of serializing it: a UI that renders often should call it only when an input changed. Some details:
 
 - A value that can't be used (a `rate` outside `0.25` to `4`, a `volume` outside `0` to `1`, a `range` that isn't whole frames with `0 <= in < out`, or any of them not finite) is reported through `onError` with the code `"invalid_option"` and the state's `error`. The whole call is rejected: none of its inputs (composition, media, fonts, callbacks or other options) are applied, and the earlier ones stay in effect, also while the worker is still starting. Options that are invalid when the session is created are reported the same way and start from their defaults, with the other inputs used as given.
 - A `range` with `out` past the end of the composition is cut to the end, with a console warning. An `in` past the end is ignored with a warning, which plays the whole composition. The range is checked again when a different composition loads.

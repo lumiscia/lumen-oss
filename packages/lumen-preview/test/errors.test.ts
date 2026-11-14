@@ -46,15 +46,18 @@ describe("preview errors", () => {
     vi.unstubAllGlobals();
   });
 
-  it("loads and renders again only for the frame-miss code", async () => {
+  it("loads and renders again only for a frame that is not loaded", async () => {
     const miss = Object.assign(new Error("media frame 0 is out of range"), {
-      code: "media_frame_out_of_range",
+      code: "media.frame_out_of_range",
+      frameNotLoaded: true,
     });
     const retried = controllerFailingWith(miss);
     await retried.render();
     expect(retried.renders).toHaveLength(2);
 
-    const sameWords = new Error('image "media frame out of range.png" is not registered');
+    const sameWords = Object.assign(new Error("media frame 0 is out of range"), {
+      code: "media.frame_out_of_range",
+    });
     const failed = controllerFailingWith(sameWords);
     await expect(failed.render()).rejects.toBe(sameWords);
     expect(failed.renders).toHaveLength(1);

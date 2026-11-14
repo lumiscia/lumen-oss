@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AUDIO_STALL_TIMEOUT_MS, LumenAudioEngine } from "../src/audio-engine.js";
-import { LUMEN_AUDIO_SAMPLE_RATE, type AudioEngineTimeline } from "../src/audio-protocol.js";
+import type { AudioPlan } from "@lumiscia/lumen-types";
+
+import { LUMEN_AUDIO_SAMPLE_RATE } from "../src/audio-protocol.js";
 import { errorMediaFailure } from "../src/media/errors.js";
 
 type Posted = {
@@ -144,10 +146,10 @@ function createEngine(): LumenAudioEngine {
   return new LumenAudioEngine({ workerModuleUrl: "worker.js", workletModuleUrl: "worklet.js" });
 }
 
+const LENGTH = { durationFrames: 240, fps: 24 };
+
 function timelineJson(...sourceIds: string[]): string {
-  const timeline: AudioEngineTimeline = {
-    durationFrames: 240,
-    fps: 24,
+  const plan: AudioPlan = {
     segments: sourceIds.map((_, voice) => ({
       frames: 48_000,
       from: 0,
@@ -166,7 +168,7 @@ function timelineJson(...sourceIds: string[]): string {
       sourceStart: 0,
     })),
   };
-  return JSON.stringify(timeline);
+  return JSON.stringify(plan);
 }
 
 function postedOfType(posted: readonly Posted[] | undefined, type: string): Posted[] {
@@ -196,7 +198,7 @@ describe("LumenAudioEngine", () => {
     const engine = createEngine();
 
     for (const json of [null, timelineJson()]) {
-      engine.loadAudioTimeline(json);
+      engine.loadAudioTimeline(json, LENGTH);
       engine.play(0);
     }
 
@@ -209,7 +211,7 @@ describe("LumenAudioEngine", () => {
     let finishLoading = () => {};
     fakes.addModule = () => new Promise((resolve) => (finishLoading = resolve));
     const engine = createEngine();
-    engine.loadAudioTimeline(timelineJson("a"));
+    engine.loadAudioTimeline(timelineJson("a"), LENGTH);
 
     engine.play(500);
     engine.pause();
@@ -226,7 +228,7 @@ describe("LumenAudioEngine", () => {
     let finishLoading = () => {};
     fakes.addModule = () => new Promise((resolve) => (finishLoading = resolve));
     const engine = createEngine();
-    engine.loadAudioTimeline(timelineJson("a"));
+    engine.loadAudioTimeline(timelineJson("a"), LENGTH);
 
     engine.play(0);
     engine.dispose();
@@ -249,7 +251,7 @@ describe("LumenAudioEngine", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     fakes.addModule = () => Promise.reject(new Error("blocked"));
     const engine = createEngine();
-    engine.loadAudioTimeline(timelineJson("a"));
+    engine.loadAudioTimeline(timelineJson("a"), LENGTH);
 
     engine.play(0);
     await vi.waitFor(() => expect(error).toHaveBeenCalledOnce());
@@ -264,7 +266,7 @@ describe("LumenAudioEngine", () => {
   it("replaces a source's samples with each load, and drops them when it is removed", async () => {
     vi.stubGlobal("fetch", async () => new Response(new Uint8Array([3])));
     const engine = createEngine();
-    engine.loadAudioTimeline(timelineJson("a"));
+    engine.loadAudioTimeline(timelineJson("a"), LENGTH);
 
     await engine.loadSource("a", new Uint8Array([1]));
     await engine.loadSource("a", new Uint8Array([2]));
@@ -281,7 +283,7 @@ describe("LumenAudioEngine", () => {
 
   it("mixes again from the playhead when a source changes during playback", async () => {
     const engine = createEngine();
-    engine.loadAudioTimeline(timelineJson("a"));
+    engine.loadAudioTimeline(timelineJson("a"), LENGTH);
     engine.play(500);
     await settled(fakes);
     const requests = postedOfType(fakes.workers[0]?.posted, "request-chunk").length;
@@ -298,7 +300,7 @@ describe("LumenAudioEngine", () => {
   it("fails a source it can't fetch or decode as media, and loads it when tried again", async () => {
     vi.stubGlobal("fetch", async () => new Response(null, { status: 503 }));
     const engine = createEngine();
-    engine.loadAudioTimeline(timelineJson("offline", "corrupt", "music"));
+    engine.loadAudioTimeline(timelineJson("offline", "corrupt", "music"), LENGTH);
     const offline = { kind: "url", url: "https://a.test/offline.wav" } as const;
     const failure = (load: Promise<void>) =>
       load.then(
@@ -325,7 +327,7 @@ describe("LumenAudioEngine", () => {
 
   it("stops mixing the old audio when a replacement fails to load", async () => {
     const engine = createEngine();
-    engine.loadAudioTimeline(timelineJson("a"));
+    engine.loadAudioTimeline(timelineJson("a"), LENGTH);
     await engine.loadSource("a", new Uint8Array([1]));
 
     await expect(engine.loadSource("a", new Uint8Array([0]))).rejects.toThrow('audio source "a"');
@@ -344,7 +346,7 @@ describe("LumenAudioEngine", () => {
 
     it("publishes only the latest source, whichever decode finishes first", async () => {
       const engine = createEngine();
-      engine.loadAudioTimeline(timelineJson("a"));
+      engine.loadAudioTimeline(timelineJson("a"), LENGTH);
       engine.play(0);
       await settled(fakes);
       const releaseOld = gate(1);
@@ -374,7 +376,7 @@ describe("LumenAudioEngine", () => {
         return new Promise(() => {});
       });
       const engine = createEngine();
-      engine.loadAudioTimeline(timelineJson("a"));
+      engine.loadAudioTimeline(timelineJson("a"), LENGTH);
 
       void engine.loadSource("a", "https://a.test/hung.wav");
       await vi.waitFor(() => expect(signal).toBeDefined());
@@ -395,7 +397,7 @@ describe("LumenAudioEngine", () => {
       });
       const own = new AbortController();
       const engine = createEngine();
-      engine.loadAudioTimeline(timelineJson("a"));
+      engine.loadAudioTimeline(timelineJson("a"), LENGTH);
 
       void engine.loadSource("a", new Request("https://a.test/hung.wav", { signal: own.signal }));
       await vi.waitFor(() => expect(signal).toBeDefined());
@@ -406,7 +408,7 @@ describe("LumenAudioEngine", () => {
 
     it("ignores the failure of a superseded source", async () => {
       const engine = createEngine();
-      engine.loadAudioTimeline(timelineJson("a"));
+      engine.loadAudioTimeline(timelineJson("a"), LENGTH);
       const releaseBad = gate(0);
 
       const obsolete = engine.loadSource("a", new Uint8Array([0]));
@@ -429,7 +431,7 @@ describe("LumenAudioEngine", () => {
           }),
       );
       const engine = createEngine();
-      engine.loadAudioTimeline(timelineJson("stalled"));
+      engine.loadAudioTimeline(timelineJson("stalled"), LENGTH);
       const stalled = engine.loadSource("stalled", "https://a.test/stalled.wav");
       await new Promise((resolve) => setTimeout(resolve));
 
@@ -440,7 +442,7 @@ describe("LumenAudioEngine", () => {
 
     it("publishes nothing for a source removed before its decode finished", async () => {
       const engine = createEngine();
-      engine.loadAudioTimeline(timelineJson("a"));
+      engine.loadAudioTimeline(timelineJson("a"), LENGTH);
       const release = gate(1);
 
       const obsolete = engine.loadSource("a", new Uint8Array([1]));
@@ -456,7 +458,7 @@ describe("LumenAudioEngine", () => {
   it("keeps playing through an identical timeline, and stops and parks at 0 for a new one", async () => {
     const engine = createEngine();
     const json = timelineJson("a");
-    expect(engine.loadAudioTimeline(json)).toBe(true);
+    expect(engine.loadAudioTimeline(json, LENGTH)).toBe(true);
     engine.play(500);
     await settled(fakes);
     const worker = fakes.workers[0];
@@ -464,12 +466,12 @@ describe("LumenAudioEngine", () => {
     expect(postedOfType(worker?.posted, "set-timeline")).toHaveLength(1);
     expect(postedOfType(node?.posted, "pause")).toHaveLength(0);
 
-    expect(engine.loadAudioTimeline(json)).toBe(false);
+    expect(engine.loadAudioTimeline(json, LENGTH)).toBe(false);
     expect(engine.isPlaying()).toBe(true);
     expect(postedOfType(node?.posted, "pause")).toHaveLength(0);
     expect(postedOfType(worker?.posted, "set-timeline")).toHaveLength(1);
 
-    expect(engine.loadAudioTimeline(timelineJson("a", "b"))).toBe(true);
+    expect(engine.loadAudioTimeline(timelineJson("a", "b"), LENGTH)).toBe(true);
     expect(engine.isPlaying()).toBe(false);
     expect(engine.currentTimeMs()).toBe(0);
     expect(postedOfType(worker?.posted, "set-timeline")).toHaveLength(2);
@@ -477,7 +479,7 @@ describe("LumenAudioEngine", () => {
 
   it("follows the worklet's position, holding through a stall", async () => {
     const engine = createEngine();
-    engine.loadAudioTimeline(timelineJson("a"));
+    engine.loadAudioTimeline(timelineJson("a"), LENGTH);
     engine.play(500);
     const context = fakes.contexts[0];
     if (!context) throw new Error("no context");
@@ -516,7 +518,7 @@ describe("LumenAudioEngine", () => {
       workerModuleUrl: "worker.js",
       workletModuleUrl: "worklet.js",
     });
-    engine.loadAudioTimeline(timelineJson("a"));
+    engine.loadAudioTimeline(timelineJson("a"), LENGTH);
     engine.play(0);
     await settled(fakes);
     const context = fakes.contexts[0];
@@ -556,7 +558,7 @@ describe("LumenAudioEngine", () => {
         workerModuleUrl: "worker.js",
         workletModuleUrl: "worklet.js",
       });
-      engine.loadAudioTimeline(timelineJson("a"));
+      engine.loadAudioTimeline(timelineJson("a"), LENGTH);
       engine.play(0);
       await settled(fakes);
       const generation = postedOfType(fakes.nodes[0]?.posted, "play")[0]?.generation;
@@ -688,7 +690,7 @@ describe("LumenAudioEngine", () => {
       workerModuleUrl: "worker.js",
       workletModuleUrl: "worklet.js",
     });
-    engine.loadAudioTimeline(timelineJson("a"));
+    engine.loadAudioTimeline(timelineJson("a"), LENGTH);
     await engine.loadSource("a", new Uint8Array([1]));
     engine.play(0);
     await settled(fakes);
@@ -705,7 +707,7 @@ describe("LumenAudioEngine", () => {
 
   it("drops worker chunks and worklet reports from before a pause", async () => {
     const engine = createEngine();
-    engine.loadAudioTimeline(timelineJson("a"));
+    engine.loadAudioTimeline(timelineJson("a"), LENGTH);
     engine.play(0);
     await settled(fakes);
     const generation = postedOfType(fakes.nodes[0]?.posted, "play")[0]?.generation;
@@ -734,7 +736,7 @@ describe("LumenAudioEngine", () => {
 
   it("requests each chunk once as the playhead moves", async () => {
     const engine = createEngine();
-    engine.loadAudioTimeline(timelineJson("a"));
+    engine.loadAudioTimeline(timelineJson("a"), LENGTH);
     engine.play(0);
     await settled(fakes);
     const generation = postedOfType(fakes.nodes[0]?.posted, "play")[0]?.generation;
@@ -759,7 +761,7 @@ describe("LumenAudioEngine", () => {
   describe("rate, range and volume", () => {
     async function playing(fromMs = 0) {
       const engine = createEngine();
-      engine.loadAudioTimeline(timelineJson("a"));
+      engine.loadAudioTimeline(timelineJson("a"), LENGTH);
       return { engine, ...(await start(engine, fromMs)) };
     }
 
@@ -784,7 +786,7 @@ describe("LumenAudioEngine", () => {
 
     it("starts at the rate it was given, and asks the mixer for the extra audio it needs", async () => {
       const engine = createEngine();
-      engine.loadAudioTimeline(timelineJson("a"));
+      engine.loadAudioTimeline(timelineJson("a"), LENGTH);
       engine.setRate(4);
       const { node } = await start(engine, 0);
 
@@ -819,7 +821,7 @@ describe("LumenAudioEngine", () => {
 
     it("sends a rate change made before the first report, and follows the reports that answer it", async () => {
       const engine = createEngine();
-      engine.loadAudioTimeline(timelineJson("a"));
+      engine.loadAudioTimeline(timelineJson("a"), LENGTH);
       engine.play(0);
       await settled(fakes);
       const node = fakes.nodes[0];
@@ -862,7 +864,7 @@ describe("LumenAudioEngine", () => {
 
     it("wraps a looping range at its end and stays inside one that doesn't loop", async () => {
       const engine = createEngine();
-      engine.loadAudioTimeline(timelineJson("a"));
+      engine.loadAudioTimeline(timelineJson("a"), LENGTH);
       engine.setRange({ endMs: 4_000, loop: true, startMs: 2_000 });
       const { context, node, report } = await start(engine, 1_000);
       expect(engine.currentTimeMs()).toBe(3_000);
@@ -886,7 +888,7 @@ describe("LumenAudioEngine", () => {
 
     it("leaves playback alone when the range is the same", async () => {
       const engine = createEngine();
-      engine.loadAudioTimeline(timelineJson("a"));
+      engine.loadAudioTimeline(timelineJson("a"), LENGTH);
       engine.setRange({ endMs: 4_000, loop: true, startMs: 2_000 });
       const { node } = await start(engine, 2_500);
 
@@ -897,7 +899,7 @@ describe("LumenAudioEngine", () => {
     it("sets the level without clicks, and mutes without losing the volume", async () => {
       const engine = createEngine();
       engine.setVolume(0.5, false);
-      engine.loadAudioTimeline(timelineJson("a"));
+      engine.loadAudioTimeline(timelineJson("a"), LENGTH);
       const { context } = await start(engine, 0);
       const gain = fakes.gains[0];
       if (!gain) throw new Error("no gain node");
@@ -920,7 +922,7 @@ describe("LumenAudioEngine", () => {
     it("starts muted when asked to, before any audio exists", async () => {
       const engine = createEngine();
       engine.setVolume(0.8, true);
-      engine.loadAudioTimeline(timelineJson("a"));
+      engine.loadAudioTimeline(timelineJson("a"), LENGTH);
       await start(engine, 0);
       expect(fakes.gains[0]?.gain.value).toBe(0);
     });

@@ -1,3 +1,5 @@
+import type { AudioPlan } from "@lumiscia/lumen-types";
+
 import { toMediaError, type LumenMediaError } from "./media/errors.js";
 import { sourceInputToBlob } from "./media/source.js";
 import type { MediaSourceInput } from "./media/types.js";
@@ -7,6 +9,7 @@ import {
   LUMEN_AUDIO_CHANNELS,
   LUMEN_AUDIO_SAMPLE_RATE,
   type AudioEngineTimeline,
+  type AudioTimelineLength,
   type AudioPlaybackRange,
   type AudioWorkerEventMessage,
   type AudioWorkerMessage,
@@ -91,7 +94,7 @@ export class LumenAudioEngine {
   #audioAbandoned = false;
   #stallTimer: ReturnType<typeof setTimeout> | null = null;
   #timeline: AudioEngineTimeline | null = null;
-  #timelineJson: string | null = null;
+  #timelineKey: string | null = null;
   #volume = 1;
   #worker: Worker | null = null;
   readonly #options: LumenAudioEngineOptions;
@@ -101,19 +104,25 @@ export class LumenAudioEngine {
   }
 
   /**
-   * Replaces the timeline with the one the engine parsed from a newly loaded composition. An
-   * identical timeline leaves playback running. A different one stops it and parks at 0, so the
-   * caller plays or seeks to where the video is. Returns whether the timeline changed.
+   * Replaces the timeline with the plan the engine made for a newly loaded composition, which
+   * plays over `length`. An identical timeline leaves playback running. A different one stops it
+   * and parks at 0, so the caller plays or seeks to where the video is. Returns whether the
+   * timeline changed.
    */
-  loadAudioTimeline(timelineJson: string | null): boolean {
-    if (timelineJson === this.#timelineJson) {
+  loadAudioTimeline(planJson: null): boolean;
+  loadAudioTimeline(planJson: string | null, length: AudioTimelineLength): boolean;
+  loadAudioTimeline(planJson: string | null, length?: AudioTimelineLength): boolean {
+    const key = planJson === null ? null : JSON.stringify([planJson, length]);
+    if (key === this.#timelineKey) {
       return false;
     }
     this.#halt();
     this.#pausedMs = 0;
-    this.#timelineJson = timelineJson;
+    this.#timelineKey = key;
     this.#timeline =
-      timelineJson === null ? null : (JSON.parse(timelineJson) as AudioEngineTimeline);
+      planJson === null || length === undefined
+        ? null
+        : { ...(JSON.parse(planJson) as AudioPlan), ...length };
     this.#worker?.postMessage({ type: "set-timeline", timeline: this.#timeline });
     return true;
   }

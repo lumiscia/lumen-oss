@@ -10,9 +10,9 @@ import {
   sameMediaInput,
   type MediaSourceDefaults,
 } from "./source.js";
+import type { FrameRequirements } from "@lumiscia/lumen-types";
 import type {
   FileMediaKind,
-  FrameRequirementsPayload,
   LumenMediaBridgeOptions,
   MediaSourceInput,
   NativeVideoFrameTarget,
@@ -218,7 +218,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     await this.syncDecodedFrames(streamId, [frame]);
   }
 
-  async loadFrameRequirements(requirements: FrameRequirementsPayload | string): Promise<void> {
+  async loadFrameRequirements(requirements: FrameRequirements | string): Promise<void> {
     const parsed = parseFrameRequirements(requirements);
 
     await Promise.all(parsed.images.map((imageId) => this.loadImageSource(imageId)));
@@ -275,10 +275,10 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
 }
 
 export function parseFrameRequirements(
-  requirements: FrameRequirementsPayload | string,
-): FrameRequirementsPayload {
+  requirements: FrameRequirements | string,
+): FrameRequirements {
   return typeof requirements === "string"
-    ? (JSON.parse(requirements) as FrameRequirementsPayload)
+    ? (JSON.parse(requirements) as FrameRequirements)
     : requirements;
 }
 

@@ -69,12 +69,28 @@ function PreviewPlayer({
     return () => session.dispose();
   }, [preview, runtime, wasm, worker, defaults]);
 
-  // The session ignores inputs that haven't changed, so every render can pass them all on.
+  // Reading a composition serializes it, so the session is told only when an input changed.
+  const passedRef = useRef<typeof inputs | null>(null);
   useEffect(() => {
+    const passed = passedRef.current;
+    if (passed !== null && sameInputs(passed, inputs)) {
+      return;
+    }
+    passedRef.current = inputs;
     sessionRef.current?.setInputs(inputs);
   });
 
   return <div ref={hostRef} className={className} style={style} />;
+}
+
+function sameInputs(left: object, right: object): boolean {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const key of keys) {
+    if (!Object.is(left[key as keyof typeof left], right[key as keyof typeof right])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** The URL passed, else `file` in `runtimeUrl`, else the package's own copy. */

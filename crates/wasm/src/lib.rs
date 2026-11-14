@@ -1,7 +1,6 @@
 mod media;
 mod preview;
 mod renderer;
-mod types;
 mod utils;
 
 use std::sync::Once;
@@ -39,7 +38,7 @@ pub fn media_dependencies(
     composition_json: &str,
 ) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {
     let composition = utils::composition_json_to_composition(composition_json)
-        .map_err(|error| utils::parse_failure(&error))?;
+        .map_err(|error| utils::js_parse_error(&error))?;
     serde_json::to_string(&composition.media_dependencies())
         .ok()
         .and_then(|json| js_sys::JSON::parse(&json).ok())

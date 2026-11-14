@@ -1,16 +1,6 @@
 import type { MediaSourceKind } from "@lumiscia/lumen-types";
 import type { BlobSourceOptions, InputFormat, UrlSourceOptions } from "mediabunny";
 
-export interface FrameRequirementsPayload {
-  images: string[];
-  videos: FrameRequirementsVideoPayload[];
-}
-
-export interface FrameRequirementsVideoPayload {
-  streamId: string;
-  frames: number[];
-}
-
 export type MediaSourceInput =
   | string
   | URL

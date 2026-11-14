@@ -2,41 +2,19 @@
 // worker and the worklet are served as standalone scripts, so they import only types from here and
 // declare their own copies of the constants, typed against these.
 
+import type { AudioPlan } from "@lumiscia/lumen-types";
+
 export const LUMEN_AUDIO_SAMPLE_RATE = 48_000;
 export const LUMEN_AUDIO_CHANNELS = 2;
 
-/** An audio clip as one instance of its composition plays it, with times in samples. */
-export interface AudioEngineVoice {
-  duration: number;
-  fadeIn: number;
-  fadeOut: number;
-  sourceId: string;
-  sourceStart: number;
-}
-
-/**
- * Timeline samples `start + i` for `i` below `frames`, where a voice plays its clip at
- * `position + step * i` samples from the clip's start, sounding only between `from` and `to`, at a
- * gain moving linearly from `gain[0]` to `gain[1]`.
- */
-export interface AudioEngineSegment {
-  frames: number;
-  from: number;
-  gain: [number, number];
-  position: number;
-  start: number;
-  step: number;
-  to: number;
-  voice: number;
+/** How long the timeline an audio plan plays over is. */
+export interface AudioTimelineLength {
+  durationFrames: number;
+  fps: number;
 }
 
 /** What the engine planned for a composition's audio over its timeline, which the mixer loops. */
-export interface AudioEngineTimeline {
-  durationFrames: number;
-  fps: number;
-  segments: AudioEngineSegment[];
-  voices: AudioEngineVoice[];
-}
+export type AudioEngineTimeline = AudioPlan & AudioTimelineLength;
 
 /** The part of the timeline that plays, `endMs` exclusive. It repeats when `loop` is set. */
 export interface AudioPlaybackRange {
