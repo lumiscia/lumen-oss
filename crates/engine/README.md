@@ -226,7 +226,7 @@ as they place the frames, through nested clips. Speed resamples linearly, so pit
 `switch` plays only its selected layer's audio. A template's solo tracks silence only its own
 tracks.
 
-A track's or clip's `volume` is a gain or an `=expression` of the time of the composition it is
+A track's or clip's `gain` is a number or an `=expression` of the time of the composition it is
 in, such as `"=if(time >= 2 && time < 6, 0.25, 1)"` to duck music under a voice-over, or
 `"=prop('level')"` in a template. Expressions can't read nodes, glyphs or text. Values below 0 are
 silence. Clip `fade_in_ms` and `fade_out_ms` fade from and to silence at the clip's start and end
@@ -246,10 +246,10 @@ that overlap it, so clips elsewhere on the timeline cost nothing. While planning
 interval may be inside at most 1024 clips and time remaps at once (each restart of a loop in the
 interval counts, and a loop may restart at most 32 times in it) and may sound at most 1024 clips;
 past either, planning fails with `audio.limit`. One call of `audio::plan` returns at most 500,000
-segments (the server plans 30 s at a time, so about 178 clips with animated volumes sounding
+segments (the server plans 30 s at a time, so about 178 clips with animated gains sounding
 throughout); past that it fails with `audio.limit`. The preview's plan of the whole timeline covers at
 most about 3 hours (1,048,576 intervals) and holds at most 200,000 segments, which an animated
-volume adds one of every 512 samples to; past either, loading the preview fails with
+gain adds one of every 512 samples to; past either, loading the preview fails with
 `audio.limit`.
 
 ## 3D depth and normals
@@ -450,7 +450,7 @@ the engine's own reads and in FFmpeg's, while opening and while decoding) is a `
 | `clip.invalid`                       | error    | check         | A clip names a composition that doesn't exist, sets props it doesn't declare or of the wrong kind, plays a composition and a `source` together, or has a negative `duration` other than -1.                                                                                    |
 | `expression.invalid_prop_read`       | error    | check         | `prop()` is used outside a template, names an undeclared prop, or doesn't name it with a string literal.                                                                                                                                                                       |
 | `settings.invalid`                   | error    | check         | A timeline, canvas or prop default can't render, such as an `fps` of 0.                                                                                                                                                                                                        |
-| `audio.invalid`                      | error    | check         | Audio tracks or clips are duplicated, unknown, too many in one composition, or have invalid timing or volume, or a volume expression reads a node, a glyph, text or an undeclared prop.                                                                                        |
+| `audio.invalid`                      | error    | check         | Audio tracks or clips are duplicated, unknown, too many in one composition, or have invalid timing or gain, or a gain expression reads a node, a glyph, text or an undeclared prop.                                                                                            |
 | `composition.cycle`                  | error    | check         | Templates instantiate themselves.                                                                                                                                                                                                                                              |
 | `font.fallback`                      | warning  | check, render | A `text` or `text_3d` node's font family resolved to no font, so it renders in a fallback.                                                                                                                                                                                     |
 | `font.no_outlines`                   | warning  | render        | A `text_3d` node's glyphs have no outlines to extrude, such as colour emoji, so they are left out.                                                                                                                                                                             |

@@ -105,7 +105,7 @@ describe("defineComposition", () => {
           source_id: "whoosh.wav",
           start_ms: 0,
           track_id: "main",
-          volume: "=prop('level')",
+          gain: "=prop('level')",
         },
       ],
       tracks: [{ id: "main" }],

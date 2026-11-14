@@ -186,10 +186,10 @@ describe("Composition audio", () => {
           source_start_ms: 1_250,
           start_ms: 500,
           track_id: "music",
-          volume: 0.8,
+          gain: 0.8,
         },
       ],
-      tracks: [{ id: "music", name: "Music", solo: true, volume: 0.5 }],
+      tracks: [{ id: "music", name: "Music", solo: true, gain: 0.5 }],
     });
   });
 
@@ -224,13 +224,10 @@ describe("Composition audio", () => {
           source_id: "voice.wav",
           start_ms: 2_000,
           track_id: "main",
-          volume: "=tween(0, 1, 60, 15)",
+          gain: "=tween(0, 1, 60, 15)",
         },
       ],
-      tracks: [
-        { id: "music", volume: "=if(((time >= 2) && (time < 6)), 0.25, 1)" },
-        { id: "main" },
-      ],
+      tracks: [{ id: "music", gain: "=if(((time >= 2) && (time < 6)), 0.25, 1)" }, { id: "main" }],
     });
   });
 
