@@ -1,6 +1,12 @@
 //! `text_3d`: extruded text drawn by a `render_3d`.
 
-use lumen_engine::{composition::Composition, gpu::RenderTarget};
+use lumen_engine::{
+    composition::Composition,
+    diagnostic::Diagnostic,
+    error::MediaError,
+    gpu::RenderTarget,
+    media::{AssetKind, MediaStore, ResolvedMedia},
+};
 use serde_json::{Value, json};
 
 use crate::support::{Case, Expect, Frame, GREEN, TestMedia, check, gpu, render, scene};
@@ -169,4 +175,38 @@ fn a_family_no_font_answers_to_falls_back_with_a_warning() {
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert_eq!(warnings[0].code, "font.fallback");
     assert_eq!(warnings[0].node, Some(lumen_engine::node::NodeId::new(1)));
+}
+
+/// Fails every source as unreadable.
+#[derive(Debug)]
+struct Unreadable;
+
+impl MediaStore for Unreadable {
+    fn resolve(&self, source: &str, _: AssetKind) -> Result<ResolvedMedia, MediaError> {
+        Err(MediaError::decode(source, "permission denied"))
+    }
+}
+
+#[test]
+fn a_font_that_fails_to_load_names_the_font_family_param() {
+    let mut params = json!({ "content": "a", "font_family": "Brand" });
+    params["color"] = json!(GREEN);
+    let document = scene(
+        SIZE,
+        json!([
+            { "id": 1, "type": "text_3d", "params": params },
+            { "id": 2, "type": "render_3d", "in": { "scene": 1 } },
+        ]),
+    )
+    .0;
+    let composition: Composition = lumen_engine::json::parse_value(&document).expect("parses");
+    let error = gpu()
+        .renderer()
+        .render(&composition, 0.0, &Unreadable, RenderTarget::Owned)
+        .unwrap_err();
+    let diagnostic = Diagnostic::from_error(&error, &document);
+    assert_eq!(
+        diagnostic.path, "/nodes/0/params/font_family",
+        "{diagnostic:?}"
+    );
 }

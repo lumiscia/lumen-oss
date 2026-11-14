@@ -620,3 +620,49 @@ fn an_oversized_texture_is_blamed_on_the_node_that_acquires_it() {
         "{error}"
     );
 }
+
+#[test]
+fn a_node_that_fails_inside_a_template_is_located_in_the_template() {
+    let document = json!({
+        "timeline": { "fps": 30, "duration_frames": 1 },
+        "render_settings": { "width": 8, "height": 8 },
+        "compositions": {
+            "card": {
+                "nodes": [
+                    { "id": 1, "type": "background", "params": { "paint": [200, 30, 30, 255] } },
+                    { "id": 2, "type": "motion_blur", "params": { "samples": "=0 * frame" } },
+                    { "id": 3, "type": "media_output" }
+                ],
+                "connections": [
+                    { "from_node": 1, "to_node": 2, "to_port": "source" },
+                    { "from_node": 2, "to_node": 3, "to_port": "source" }
+                ]
+            }
+        },
+        "nodes": [
+            { "id": 2, "type": "clip", "params": { "composition": "card" } },
+            { "id": 3, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 2, "to_node": 3, "to_port": "source" }]
+    });
+    let composition: Composition = lumen_engine::json::parse_value(&document).expect("parses");
+    let error = gpu()
+        .renderer()
+        .render(
+            &composition,
+            0.0,
+            &TestMedia::default(),
+            RenderTarget::Owned,
+        )
+        .unwrap_err();
+    let diagnostic = lumen_engine::diagnostic::Diagnostic::from_error(&error, &document);
+    assert_eq!(
+        diagnostic.path, "/compositions/card/nodes/1",
+        "{diagnostic:?}"
+    );
+    assert!(
+        diagnostic.message.contains("card"),
+        "{}",
+        diagnostic.message
+    );
+}

@@ -156,9 +156,12 @@ impl LumenError {
         }
     }
 
-    /// The error found in template `name`, rather than the root.
+    /// The error found in template `name`, rather than the root, unless it already names the
+    /// template it is in.
     pub(crate) fn in_template(mut self, name: &str) -> Self {
-        if let Some(at) = self.at_mut() {
+        if let Some(at) = self.at_mut()
+            && at.template.is_none()
+        {
             at.template = Some(name.to_string());
         }
         self
