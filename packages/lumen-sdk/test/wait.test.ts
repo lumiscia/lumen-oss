@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { Lumen } from "../src/client.js";
 import { LumenError } from "../src/errors.js";
-import { watchRender } from "../src/socket.js";
+import { watchRender, type SocketUpdate } from "../src/socket.js";
 import type { RenderProgress } from "../src/types.js";
 
 function progressBody(
@@ -447,14 +447,19 @@ describe("Workers socket upgrade", () => {
   const url = new URL("https://api.test/v1/renders/r1/socket");
 
   function pendingUpgrade() {
-    let release!: (response: unknown) => void;
+    let release!: (response: Response) => void;
     let signal: AbortSignal | null | undefined;
     const stub = ((_url: unknown, init: RequestInit) => {
       signal = init.signal;
-      return new Promise((resolve) => (release = resolve));
+      return new Promise<Response>((resolve) => (release = resolve));
     }) as typeof fetch;
     const socket = { accept: vi.fn(), addEventListener: vi.fn(), close: vi.fn() };
-    return { release: () => release({ webSocket: socket }), signal: () => signal, socket, stub };
+    return {
+      release: () => release({ webSocket: socket } as unknown as Response),
+      signal: () => signal,
+      socket,
+      stub,
+    };
   }
 
   beforeEach(() => {
@@ -549,7 +554,7 @@ describe("render socket", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const { port } = server.address() as AddressInfo;
 
-    const seen: RenderProgress[] = [];
+    const seen: SocketUpdate[] = [];
     await watchRender({
       apiKey: "test-key",
       fetch,

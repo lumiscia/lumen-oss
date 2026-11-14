@@ -41,7 +41,7 @@
   },
   "scripts": {
     "build": "svelte-package",
-    "check": "tsc -p tsconfig.json --noEmit && svelte-check --tsconfig ./tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit && svelte-check --tsconfig ./tsconfig.test.json",
     "clean": "rm -rf dist *.tsbuildinfo",
     "test": "vitest run"
   },
