@@ -37,7 +37,7 @@
 
     composition
         .addAudioTrack({ id: "clip-audio", name: "Clip audio" })
-        .addAudio({ source: "clip", start: 0, duration: 4, trackId: "clip-audio" });
+        .addAudio({ source: "clip", startSeconds: 0, durationSeconds: 4, trackId: "clip-audio" });
 
     const preview = createLumenPreview();
     const media = { clip: clipUrl };

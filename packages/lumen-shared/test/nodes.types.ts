@@ -105,4 +105,7 @@ defineComposition({ name: "card", build: () => scene });
 // @ts-expect-error `NodeParamPortNameClash` is `never`
 const clash: NodeParamPortNameClash = "source";
 
+// @ts-expect-error a timeline takes `duration_frames` or `durationSeconds`, not both
+new Composition({ timeline: { duration_frames: 90, durationSeconds: 3 } });
+
 void [sceneValue, raster, rasterScene, clash];

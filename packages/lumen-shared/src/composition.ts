@@ -322,7 +322,17 @@ export class Composition {
    * track, so declare a track with `addAudioTrack` first to mute it or set its gain.
    */
   addAudio(options: AudioClipOptions): this {
-    const { source, start, duration, offset, gain, fadeIn, fadeOut, id, name } = options;
+    const {
+      source,
+      startSeconds,
+      durationSeconds,
+      offsetSeconds,
+      gain,
+      fadeInSeconds,
+      fadeOutSeconds,
+      id,
+      name,
+    } = options;
     const trackId = options.trackId ?? defaultAudioTrackId;
     const audio = this.#audio ?? { clips: [], tracks: [] };
     const taken = new Set(audio.clips.map((clip) => clip.id));
@@ -335,14 +345,14 @@ export class Composition {
       clips: [
         ...audio.clips,
         {
-          duration_ms: milliseconds(duration),
-          ...(fadeIn === undefined ? {} : { fade_in_ms: milliseconds(fadeIn) }),
-          ...(fadeOut === undefined ? {} : { fade_out_ms: milliseconds(fadeOut) }),
+          duration_ms: milliseconds(durationSeconds),
+          ...(fadeInSeconds === undefined ? {} : { fade_in_ms: milliseconds(fadeInSeconds) }),
+          ...(fadeOutSeconds === undefined ? {} : { fade_out_ms: milliseconds(fadeOutSeconds) }),
           id: id ?? `${trackId}-clip-${number}`,
           ...(name === undefined ? {} : { name }),
           source_id: source,
-          ...(offset === undefined ? {} : { source_start_ms: milliseconds(offset) }),
-          start_ms: milliseconds(start),
+          ...(offsetSeconds === undefined ? {} : { source_start_ms: milliseconds(offsetSeconds) }),
+          start_ms: milliseconds(startSeconds),
           track_id: trackId,
           ...(gain === undefined ? {} : { gain: audioGain(gain) }),
         },
@@ -445,15 +455,22 @@ function renderSettings(
 
 function timeline(input: TimelineInput = {}): LumenComposition["timeline"] {
   const {
-    duration_frames: durationFrames = defaultTimeline.duration_frames,
+    duration_frames: durationFrames,
     durationSeconds,
     fps = defaultTimeline.fps,
     ...rest
   } = input;
+  if (durationFrames !== undefined && durationSeconds !== undefined) {
+    throw new TypeError(
+      "Pass either `duration_frames` or `durationSeconds` in `timeline`, not both.",
+    );
+  }
   return {
     ...rest,
     duration_frames:
-      durationSeconds === undefined ? durationFrames : Math.ceil(durationSeconds * fps),
+      durationSeconds === undefined
+        ? (durationFrames ?? defaultTimeline.duration_frames)
+        : Math.ceil(durationSeconds * fps),
     fps,
   };
 }

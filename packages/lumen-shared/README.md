@@ -40,7 +40,7 @@ Both produce the same JSON, and they mix: a node `addNode` returned can be a val
 
 ## Audio
 
-`addAudio` places a clip with times in seconds. `fadeIn` and `fadeOut` fade it from and to silence on an equal-power curve, and `gain` takes a number or an `Expr<number>` evaluated in the composition's time, so a track can duck under a voice-over:
+`addAudio` places a clip, and its `startSeconds`, `durationSeconds`, `offsetSeconds`, `fadeInSeconds` and `fadeOutSeconds` are in seconds. The fades take it from and to silence on an equal-power curve, and `gain` takes a number or an `Expr<number>` evaluated in the composition's time, so a track can duck under a voice-over:
 
 ```ts
 import { Composition, time, when } from "@lumiscia/lumen-shared";
@@ -50,13 +50,13 @@ composition
   .addAudioTrack({ id: "music", gain: when(time.gte(2).and(time.lt(6)), 0.25, 1) })
   .addAudio({
     source: "music.mp3",
-    start: 0,
-    duration: 10,
+    startSeconds: 0,
+    durationSeconds: 10,
     trackId: "music",
-    fadeIn: 1,
-    fadeOut: 1,
+    fadeInSeconds: 1,
+    fadeOutSeconds: 1,
   })
-  .addAudio({ source: "voice.wav", start: 2, duration: 4, trackId: "voice" });
+  .addAudio({ source: "voice.wav", startSeconds: 2, durationSeconds: 4, trackId: "voice" });
 ```
 
 A template can have its own sound. It plays wherever a `clip` plays the template, following the clip's start, trim, speed and end like its frames; speed changes pitch:
@@ -69,7 +69,12 @@ const whoosh = defineComposition({
   duration: 30,
   props: { level: prop.number(1) },
   build: (composition, { level }) => {
-    composition.addAudio({ source: "whoosh.wav", start: 0, duration: 0.5, gain: level });
+    composition.addAudio({
+      source: "whoosh.wav",
+      startSeconds: 0,
+      durationSeconds: 0.5,
+      gain: level,
+    });
     return composition.addNode({ type: "background", params: { paint: [0, 0, 0, 0] } });
   },
 });
