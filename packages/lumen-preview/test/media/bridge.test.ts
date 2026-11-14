@@ -540,6 +540,30 @@ describe("LumenMediaBridge", () => {
       });
     });
 
+    it("aborts a read when either the caller's signal or the lifecycle's does", async () => {
+      const signals: AbortSignal[] = [];
+      vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => {
+        signals.push(init?.signal as AbortSignal);
+        return new Promise<Response>(() => {});
+      });
+      const caller = new AbortController();
+      const bridge = new LumenMediaBridge(fakeTarget().target);
+      void bridge
+        .registerImageSource("logo", {
+          kind: "url",
+          url: "https://a.test/logo.png",
+          // The type omits `signal`, but plain JavaScript callers can still pass one.
+          options: { requestInit: { signal: caller.signal } as RequestInit },
+        })
+        .catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve));
+      expect(signals[0]?.aborted).toBe(false);
+
+      caller.abort();
+
+      expect(signals[0]?.aborted).toBe(true);
+    });
+
     it("cancels the reads of an image, model or environment map removed while loading", async () => {
       const signals: AbortSignal[] = [];
       vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => {

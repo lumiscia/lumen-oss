@@ -57,7 +57,7 @@ function postChunk({ chunkFrames, generation, startSample }) {
  */
 export function mixTimelineChunk(nextTimeline, nextSources, startSample, frames, range = null) {
   const output = new Float32Array(frames * CHANNELS);
-  const durationMs = (nextTimeline.durationFrames / Math.max(nextTimeline.fps, 1)) * 1_000;
+  const durationMs = (nextTimeline.durationFrames / nextTimeline.fps) * 1_000;
   const startMs = range ? range.startMs : 0;
   const endMs = range ? range.endMs : durationMs;
   const loop = range ? range.loop : true;
