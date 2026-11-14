@@ -6,26 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createLumenPreview } from "@lumiscia/lumen-preview";
 
+import { FakeWorker } from "../../lumen-preview/test/support/fake-worker.js";
 import { Player } from "../src/index.js";
-
-class FakeWorker {
-  static instances: FakeWorker[] = [];
-  onmessage: ((event: { data: unknown }) => void) | null = null;
-  terminated = false;
-  constructor() {
-    FakeWorker.instances.push(this);
-  }
-  postMessage() {}
-  terminate() {
-    this.terminated = true;
-  }
-}
 
 // The real session, with only the browser's Worker, canvas transfer and WebGPU faked.
 describe("Player with a real session", () => {
   beforeEach(() => {
     FakeWorker.instances = [];
-    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("Worker", FakeWorker);
     vi.stubGlobal("OffscreenCanvas", class {});
     vi.stubGlobal("navigator", { gpu: {} });
@@ -33,7 +21,6 @@ describe("Player with a real session", () => {
   });
 
   afterEach(() => {
-    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
     vi.unstubAllGlobals();
   });
 

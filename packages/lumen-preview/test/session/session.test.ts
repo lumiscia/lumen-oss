@@ -5,7 +5,8 @@ import type { LumenComposition } from "@lumiscia/lumen-types";
 import { clockPositionMs, type PreviewClock } from "../../src/clock.js";
 import { LumenPreviewContext } from "../../src/preview.js";
 import { LumenPreviewSession } from "../../src/session/session.js";
-import type { LumenPreviewWorkerCommand, LumenPreviewWorkerEvent } from "../../src/worker-host.js";
+import type { LumenPreviewWorkerEvent } from "../../src/worker-host.js";
+import { FakeWorker } from "../support/fake-worker.js";
 
 type FakeRange = { endMs: number; loop: boolean; startMs: number };
 
@@ -84,34 +85,6 @@ vi.mock("../../src/audio-engine.js", () => ({
     }
   },
 }));
-
-class FakeWorker {
-  static instances: FakeWorker[] = [];
-  onerror: ((event: { message: string }) => void) | null = null;
-  onmessage: ((event: { data: LumenPreviewWorkerEvent }) => void) | null = null;
-  onmessageerror: (() => void) | null = null;
-  posted: LumenPreviewWorkerCommand[] = [];
-  terminated = false;
-
-  constructor(readonly url: string) {
-    FakeWorker.instances.push(this);
-  }
-  postMessage(message: LumenPreviewWorkerCommand) {
-    this.posted.push(message);
-  }
-  terminate() {
-    this.terminated = true;
-  }
-  emit(data: LumenPreviewWorkerEvent) {
-    this.onmessage?.({ data });
-  }
-  ofType<TType extends LumenPreviewWorkerCommand["type"]>(type: TType) {
-    return this.posted.filter(
-      (message): message is Extract<LumenPreviewWorkerCommand, { type: TType }> =>
-        message.type === type,
-    );
-  }
-}
 
 class FakeCanvas {
   removed = false;

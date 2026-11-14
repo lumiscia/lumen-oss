@@ -40,11 +40,11 @@ import { Player } from "../src/index.js";
 describe("Player", () => {
   beforeEach(() => {
     sessions.length = 0;
-    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   });
 
   afterEach(() => {
-    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    vi.unstubAllGlobals();
   });
 
   it("mounts into its host and replaces the session with a new preview", async () => {
