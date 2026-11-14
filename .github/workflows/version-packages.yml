@@ -15,14 +15,14 @@ permissions:
 jobs:
   version:
     name: Version Packages
+    # The release branch and its pull request always target main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v5
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.0
 
       - uses: actions/setup-node@v5
         with:
@@ -56,20 +56,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         if: steps.schema.outputs.changed == 'true'
-
-      - name: Install system dependencies
-        if: steps.schema.outputs.changed == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libavcodec-dev \
-            libavdevice-dev \
-            libavfilter-dev \
-            libavformat-dev \
-            libavutil-dev \
-            libswresample-dev \
-            libswscale-dev \
-            pkg-config
 
       - name: Set the schema version
         if: steps.schema.outputs.changed == 'true'

@@ -1,0 +1,43 @@
+name: Setup
+description: The native packages and CLI tools the Rust and WASM jobs share. Run it after actions/checkout.
+
+inputs:
+  native:
+    description: Install the FFmpeg development packages and pkg-config the Rust workspace links against.
+    default: "false"
+  test-tools:
+    description: With native, also install the ffmpeg executable and the Vulkan loader, Mesa drivers and tools the tests render with.
+    default: "false"
+  wasm-bindgen:
+    description: Install the wasm-bindgen CLI. Its version matches crates/wasm/Cargo.toml.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install system dependencies
+      if: inputs.native == 'true'
+      shell: bash
+      env:
+        TEST_TOOLS: ${{ inputs.test-tools }}
+      run: |
+        packages=(
+          libavcodec-dev
+          libavdevice-dev
+          libavfilter-dev
+          libavformat-dev
+          libavutil-dev
+          libswresample-dev
+          libswscale-dev
+          pkg-config
+        )
+        if [ "$TEST_TOOLS" = "true" ]; then
+          packages+=(ffmpeg libvulkan1 mesa-vulkan-drivers vulkan-tools)
+        fi
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends "${packages[@]}"
+
+    - uses: taiki-e/install-action@v2
+      if: inputs.wasm-bindgen == 'true'
+      with:
+        tool: wasm-bindgen@0.2.129
