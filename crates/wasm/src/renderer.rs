@@ -4,7 +4,7 @@ use lumen_engine::{
 };
 use wasm_bindgen::prelude::*;
 
-use crate::{debug_error, utils::render_failure};
+use crate::utils::render_failure;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[derive(Debug)]
@@ -97,7 +97,7 @@ impl Drop for SurfaceCompositionRenderer {
 }
 
 fn render_error(frame: u32, error: lumen_engine::error::LumenError) -> JsValue {
-    debug_error(&format!("[lumen-wasm] render frame={frame} error: {error}"));
+    tracing::error!(target: "lumen_wasm", frame, %error, "render failed");
     render_failure(&error)
 }
 

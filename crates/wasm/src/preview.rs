@@ -72,7 +72,7 @@ impl PreviewState {
         self.width = composition.render_settings().width as usize;
         self.height = composition.render_settings().height as usize;
         self.duration_frames = composition.timeline().duration_frames;
-        self.fps = f64::from(composition.timeline().fps.max(1.0));
+        self.fps = f64::from(composition.timeline().fps);
         self.composition = Some(composition);
         self.invalidate_renderer();
         self.current_frame = 0;
@@ -814,6 +814,15 @@ mod tests {
                 .set_video_frame(stream_id.to_string(), frame, image)
                 .expect("set frame");
         }
+    }
+
+    #[test]
+    fn fps_below_one_is_kept() {
+        let controller = controller(8);
+        controller
+            .load_composition(&COMPOSITION_JSON.replace("\"fps\": 30", "\"fps\": 0.5"))
+            .expect("load composition");
+        assert_eq!(controller.fps().expect("fps"), 0.5);
     }
 
     #[test]

@@ -140,11 +140,12 @@ export async function fetchBlob(
   requestInit?: RequestInit,
   signal?: AbortSignal,
 ): Promise<Blob> {
-  // A signal passed to `fetch` replaces the one on a `Request`.
-  const combined = signal && isRequest(source) ? AbortSignal.any([source.signal, signal]) : signal;
+  // A signal passed to `fetch` replaces the one on a `Request` and the one in `requestInit`.
+  const signals = [signal, requestInit?.signal, isRequest(source) ? source.signal : undefined];
+  const aborts = signals.filter((entry): entry is AbortSignal => entry != null);
   const response = await fetch(
     source,
-    combined ? { ...requestInit, signal: combined } : requestInit,
+    aborts.length > 0 ? { ...requestInit, signal: AbortSignal.any(aborts) } : requestInit,
   );
   if (!response.ok) {
     throw new LumenMediaError(

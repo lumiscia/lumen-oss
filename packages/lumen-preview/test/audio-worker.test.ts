@@ -129,6 +129,38 @@ describe("mixTimelineChunk looping", () => {
   });
 });
 
+describe("mixTimelineChunk below one frame per second", () => {
+  it("loops a 0.5 fps timeline after durationFrames / fps seconds", () => {
+    // 5 frames at 0.5 fps last 10 seconds: 480_000 samples.
+    const timeline = {
+      durationFrames: 5,
+      fps: 0.5,
+      voices: [{ duration: 480_000, fadeIn: 0, fadeOut: 0, sourceId: "a", sourceStart: 0 }],
+      segments: [
+        {
+          frames: 480_000,
+          from: 0,
+          gain: [1, 1] as [number, number],
+          position: 0,
+          start: 0,
+          step: 1,
+          to: 480_000,
+          voice: 0,
+        },
+      ],
+    };
+    const ramp = new Float32Array(480_000 * 2).map((_, index) => Math.floor(index / 2) / 480_000);
+    const sources = new Map([["a", ramp]]);
+    const first = mixTimelineChunk(timeline, sources, 100_000, 64);
+    const loopLater = mixTimelineChunk(timeline, sources, 580_000, 64);
+    const halfLoopLater = mixTimelineChunk(timeline, sources, 340_000, 64);
+
+    expect(first.some((sample: number) => sample !== 0)).toBe(true);
+    expect(Array.from(loopLater)).toEqual(Array.from(first));
+    expect(Array.from(halfLoopLater)).not.toEqual(Array.from(first));
+  });
+});
+
 describe("mixTimelineChunk over a range", () => {
   // One second of a ramp on a one second timeline, so each sample says where it came from.
   const timeline: AudioEngineTimeline = {

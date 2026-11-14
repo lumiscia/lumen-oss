@@ -679,7 +679,7 @@ export class LumenAudioEngine {
     const timeline = this.#timeline;
     return timeline
       ? {
-          endMs: (timeline.durationFrames / Math.max(timeline.fps, 1)) * MS_PER_SECOND,
+          endMs: (timeline.durationFrames / timeline.fps) * MS_PER_SECOND,
           loop: true,
           startMs: 0,
         }
