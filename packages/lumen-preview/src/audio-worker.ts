@@ -1,12 +1,29 @@
-const CHANNELS = 2;
-const SAMPLE_RATE = 48_000;
+import type {
+  AudioEngineTimeline,
+  AudioPlaybackRange,
+  AudioWorkerEventMessage,
+  AudioWorkerMessage,
+  LUMEN_AUDIO_CHANNELS,
+  LUMEN_AUDIO_SAMPLE_RATE,
+} from "./audio-protocol.js";
+
+// Declared here rather than imported: this file is served as a standalone script.
+const CHANNELS: typeof LUMEN_AUDIO_CHANNELS = 2;
+const SAMPLE_RATE: typeof LUMEN_AUDIO_SAMPLE_RATE = 48_000;
 const CLIP_EDGE_FADE_SAMPLES = 384;
 
-let timeline = null;
-let range = null;
-const sources = new Map();
+type AudioWorkerScope = {
+  onmessage: ((event: MessageEvent<AudioWorkerMessage>) => void) | null;
+  postMessage(message: AudioWorkerEventMessage, transfer: Transferable[]): void;
+};
 
-globalThis.onmessage = (event) => {
+const scope = globalThis as unknown as AudioWorkerScope;
+
+let timeline: AudioEngineTimeline | null = null;
+let range: AudioPlaybackRange | null = null;
+const sources = new Map<string, Float32Array>();
+
+scope.onmessage = (event) => {
   const message = event.data;
   switch (message.type) {
     case "remove-source":
@@ -27,12 +44,16 @@ globalThis.onmessage = (event) => {
   }
 };
 
-function postChunk({ chunkFrames, generation, startSample }) {
+function postChunk({
+  chunkFrames,
+  generation,
+  startSample,
+}: Extract<AudioWorkerMessage, { type: "request-chunk" }>): void {
   if (!timeline) {
     return;
   }
   const samples = mixTimelineChunk(timeline, sources, startSample, chunkFrames, range);
-  globalThis.postMessage(
+  scope.postMessage(
     {
       type: "chunk",
       generation,
@@ -52,10 +73,14 @@ function postChunk({ chunkFrames, generation, startSample }) {
  * and one that doesn't is silent from its end. Without `range` the whole timeline loops.
  * `crates/engine/src/audio/mix.rs` plays plans the same way and writes the fixtures
  * `audio-worker.test.ts` checks this against.
- *
- * @param {{ startMs: number, endMs: number, loop: boolean } | null} [range] `endMs` is exclusive.
  */
-export function mixTimelineChunk(nextTimeline, nextSources, startSample, frames, range = null) {
+export function mixTimelineChunk(
+  nextTimeline: AudioEngineTimeline,
+  nextSources: ReadonlyMap<string, Float32Array>,
+  startSample: number,
+  frames: number,
+  range: AudioPlaybackRange | null = null,
+): Float32Array {
   const output = new Float32Array(frames * CHANNELS);
   const durationMs = (nextTimeline.durationFrames / nextTimeline.fps) * 1_000;
   const startMs = range ? range.startMs : 0;
@@ -72,8 +97,8 @@ export function mixTimelineChunk(nextTimeline, nextSources, startSample, frames,
   let outputFrame = 0;
   while (outputFrame < frames) {
     const sample = startSample + outputFrame;
-    let timelineStart;
-    let segmentFrames;
+    let timelineStart: number;
+    let segmentFrames: number;
     if (loop) {
       const [loopStart, loopEnd] = loopBounds(sample, rangeStart, rangeSamples);
       timelineStart = firstSample + sample - loopStart;
@@ -99,7 +124,7 @@ export function mixTimelineChunk(nextTimeline, nextSources, startSample, frames,
   }
 
   for (let index = 0; index < output.length; index += 1) {
-    const sample = output[index];
+    const sample = output[index] ?? 0;
     output[index] = Number.isNaN(sample) ? 0 : Math.min(1, Math.max(-1, sample));
   }
   return output;
@@ -111,11 +136,18 @@ export function mixTimelineChunk(nextTimeline, nextSources, startSample, frames,
  * linearly across the segment, with the clip's edge ramps and equal-power fades, reading the
  * source between whole samples linearly.
  */
-function mixPlanRange(plan, nextSources, output, outputStartFrame, startSample, endSample) {
+function mixPlanRange(
+  plan: AudioEngineTimeline,
+  nextSources: ReadonlyMap<string, Float32Array>,
+  output: Float32Array,
+  outputStartFrame: number,
+  startSample: number,
+  endSample: number,
+): void {
   for (const segment of plan.segments) {
     const voice = plan.voices[segment.voice];
     const source = voice && nextSources.get(voice.sourceId);
-    if (!source) {
+    if (!voice || !source) {
       continue;
     }
     const first = Math.max(0, startSample - segment.start);
@@ -143,19 +175,25 @@ function mixPlanRange(plan, nextSources, output, outputStartFrame, startSample, 
             ? at
             : at * (1 - fraction) +
               sourceSample(source, sourceFrames, whole + 1, channel) * fraction;
-        output[outputFrame * CHANNELS + channel] += value * gain;
+        const index = outputFrame * CHANNELS + channel;
+        output[index] = (output[index] ?? 0) + value * gain;
       }
     }
   }
 }
 
-function sourceSample(source, sourceFrames, frame, channel) {
-  return frame >= 0 && frame < sourceFrames ? source[frame * CHANNELS + channel] : 0;
+function sourceSample(
+  source: Float32Array,
+  sourceFrames: number,
+  frame: number,
+  channel: number,
+): number {
+  return frame >= 0 && frame < sourceFrames ? (source[frame * CHANNELS + channel] ?? 0) : 0;
 }
 
 // Loop k covers playback samples [floor(start + k * length), floor(start + (k + 1) * length)), so a
 // fractional loop length stays in phase with the millisecond clock across repetitions.
-function loopBounds(sample, start, length) {
+function loopBounds(sample: number, start: number, length: number): [number, number] {
   if (!Number.isFinite(length)) {
     return [0, Number.POSITIVE_INFINITY];
   }
@@ -166,7 +204,7 @@ function loopBounds(sample, start, length) {
   return [Math.floor(start + loop * length), Math.floor(start + (loop + 1) * length)];
 }
 
-function edgeFade(offset, length) {
+function edgeFade(offset: number, length: number): number {
   const fadeSamples = Math.min(CLIP_EDGE_FADE_SAMPLES, Math.floor(length / 2));
   if (fadeSamples <= 0) {
     return 1;
@@ -178,7 +216,7 @@ function edgeFade(offset, length) {
   return remaining < fadeSamples ? remaining / fadeSamples : 1;
 }
 
-function fade(distance, length) {
+function fade(distance: number, length: number): number {
   return length > 0 && distance < length
     ? Math.sin((Math.max(0, distance) / length) * (Math.PI / 2))
     : 1;

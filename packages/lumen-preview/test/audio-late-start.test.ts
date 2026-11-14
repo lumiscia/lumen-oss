@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LumenAudioEngine } from "../src/audio-engine.js";
+import type { WorkletMessage } from "../src/audio-protocol.js";
 
 const SAMPLES_PER_MS = 48;
 const QUANTUM = 128;
@@ -64,7 +65,7 @@ async function createAudio() {
     class {
       port = {
         onmessage: null as ((event: { data: unknown }) => void) | null,
-        postMessage: (message: Sent) => {
+        postMessage: (message: WorkletMessage) => {
           if (message.type === "play") {
             state.plays.push(message);
           }

@@ -3,54 +3,22 @@ import { sourceInputToBlob } from "./media/source.js";
 import type { MediaSourceInput } from "./media/types.js";
 import { assetHint } from "./asset-hint.js";
 import { createModuleWorker } from "./module-worker.js";
+import {
+  LUMEN_AUDIO_CHANNELS,
+  LUMEN_AUDIO_SAMPLE_RATE,
+  type AudioEngineTimeline,
+  type AudioPlaybackRange,
+  type AudioWorkerEventMessage,
+  type AudioWorkerMessage,
+  type WorkletEventMessage,
+  type WorkletMessage,
+} from "./audio-protocol.js";
 import { mod } from "./playback-range.js";
 
 const AUDIO_FALLBACK =
   "If it isn't served there, serve `dist/audio-worker.js` from `@lumiscia/lumen-preview` beside `dist/audio-engine.js`, or pass `audio.workerModuleUrl` to `mountPreview`.";
 
-export const LUMEN_AUDIO_SAMPLE_RATE = 48_000;
-export const LUMEN_AUDIO_CHANNELS = 2;
 const MS_PER_SECOND = 1_000;
-
-/** An audio clip as one instance of its composition plays it, with times in samples. */
-export interface AudioEngineVoice {
-  duration: number;
-  fadeIn: number;
-  fadeOut: number;
-  sourceId: string;
-  sourceStart: number;
-}
-
-/**
- * Timeline samples `start + i` for `i` below `frames`, where a voice plays its clip at
- * `position + step * i` samples from the clip's start, sounding only between `from` and `to`, at a
- * gain moving linearly from `gain[0]` to `gain[1]`.
- */
-export interface AudioEngineSegment {
-  frames: number;
-  from: number;
-  gain: [number, number];
-  position: number;
-  start: number;
-  step: number;
-  to: number;
-  voice: number;
-}
-
-/** What the engine planned for a composition's audio over its timeline, which the mixer loops. */
-export interface AudioEngineTimeline {
-  durationFrames: number;
-  fps: number;
-  segments: AudioEngineSegment[];
-  voices: AudioEngineVoice[];
-}
-
-/** The part of the timeline that plays, `endMs` exclusive. It repeats when `loop` is set. */
-export interface AudioPlaybackRange {
-  endMs: number;
-  loop: boolean;
-  startMs: number;
-}
 
 export interface LumenAudioEngineOptions {
   latencyHint?: AudioContextLatencyCategory | number;
@@ -99,76 +67,6 @@ type AudioSourceEntry = {
   mixed: boolean;
   source: MediaSourceInput;
 };
-
-type WorkletMessage =
-  | {
-      generation: number;
-      frames: number;
-      channelCount: number;
-      samples: Float32Array;
-      sampleRate: number;
-      startSample: number;
-      type: "chunk";
-    }
-  | {
-      generation: number;
-      holdFrames: number;
-      rate: number;
-      rateRevision: number;
-      startSample: number;
-      type: "play";
-    }
-  | {
-      type: "pause";
-    }
-  | {
-      rate: number;
-      rateRevision: number;
-      type: "rate";
-    };
-
-type WorkletEventMessage =
-  | {
-      message?: string;
-      type: "error";
-    }
-  | {
-      contextTime: number;
-      currentSample: number;
-      generation: number;
-      rate: number;
-      /** The rate change the worklet had heard when it reported. */
-      rateRevision: number;
-      stalled: boolean;
-      type: "position";
-    };
-
-type AudioWorkerMessage =
-  | {
-      id: string;
-      type: "remove-source";
-    }
-  | {
-      id: string;
-      samples: Float32Array;
-      type: "set-source";
-    }
-  | {
-      range: AudioPlaybackRange | null;
-      type: "set-range";
-    }
-  | {
-      timeline: AudioEngineTimeline | null;
-      type: "set-timeline";
-    }
-  | {
-      chunkFrames: number;
-      generation: number;
-      startSample: number;
-      type: "request-chunk";
-    };
-
-type AudioWorkerEventMessage = Extract<WorkletMessage, { type: "chunk" }>;
 
 const LUMEN_AUDIO_CHUNK_FRAMES = 12_000;
 const LUMEN_AUDIO_LOOKAHEAD_FRAMES = LUMEN_AUDIO_SAMPLE_RATE * 2;

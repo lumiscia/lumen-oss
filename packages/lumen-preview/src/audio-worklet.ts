@@ -1,27 +1,57 @@
-const DEFAULT_CHANNEL_COUNT = 2;
-const DEFAULT_SAMPLE_RATE = 48_000;
+import type {
+  AudioChunkMessage,
+  LUMEN_AUDIO_CHANNELS,
+  LUMEN_AUDIO_SAMPLE_RATE,
+  WorkletEventMessage,
+  WorkletMessage,
+} from "./audio-protocol.js";
+
+// Declared here rather than imported: this file is loaded as a standalone worklet module.
+const DEFAULT_CHANNEL_COUNT: typeof LUMEN_AUDIO_CHANNELS = 2;
+const DEFAULT_SAMPLE_RATE: typeof LUMEN_AUDIO_SAMPLE_RATE = 48_000;
 const RECOVERY_RAMP_FRAMES = 240;
 
-export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor {
+type StoredChunk = {
+  frames: number;
+  samples: Float32Array;
+  startSample: number;
+};
+
+// What the audio worklet scope provides, which the DOM types leave out.
+type AudioWorkletScope = {
+  AudioWorkletProcessor: new () => {
+    readonly port: {
+      onmessage: ((event: MessageEvent<WorkletMessage>) => void) | null;
+      postMessage(message: WorkletEventMessage): void;
+    };
+  };
+  currentTime: number;
+  registerProcessor(name: string, processor: new () => unknown): void;
+};
+
+const scope = globalThis as unknown as AudioWorkletScope;
+
+export class LumenAudioWorkletProcessor extends scope.AudioWorkletProcessor {
+  channelCount: number = DEFAULT_CHANNEL_COUNT;
+  currentSample = 0;
+  generation = 0;
+  chunks = new Map<number, StoredChunk>();
+  heardAudio = false;
+  holdFrames = 0;
+  playing = false;
+  rate = 1;
+  rateRevision = 0;
+  recoveryFrames = 0;
+  stalled = true;
+  sampleRate: number = DEFAULT_SAMPLE_RATE;
+  reportCountdown = 0;
+
   constructor() {
     super();
-    this.channelCount = DEFAULT_CHANNEL_COUNT;
-    this.currentSample = 0;
-    this.generation = 0;
-    this.chunks = new Map();
-    this.heardAudio = false;
-    this.holdFrames = 0;
-    this.playing = false;
-    this.rate = 1;
-    this.rateRevision = 0;
-    this.recoveryFrames = 0;
-    this.stalled = true;
-    this.sampleRate = DEFAULT_SAMPLE_RATE;
-    this.reportCountdown = 0;
     this.port.onmessage = (event) => this.handleMessage(event.data);
   }
 
-  handleMessage(message) {
+  handleMessage(message: WorkletMessage): void {
     try {
       switch (message.type) {
         case "chunk":
@@ -29,12 +59,12 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
           break;
         case "play":
           this.generation = message.generation;
-          this.currentSample = Number(message.startSample);
+          this.currentSample = message.startSample;
           this.chunks.clear();
           this.heardAudio = false;
-          this.holdFrames = Number(message.holdFrames);
-          this.rate = Number(message.rate) || 1;
-          this.rateRevision = Number(message.rateRevision) || 0;
+          this.holdFrames = message.holdFrames;
+          this.rate = message.rate || 1;
+          this.rateRevision = message.rateRevision || 0;
           this.recoveryFrames = 0;
           this.playing = true;
           this.stalled = this.holdFrames > 0;
@@ -44,8 +74,8 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
           this.playing = false;
           break;
         case "rate":
-          this.rate = Number(message.rate) || 1;
-          this.rateRevision = Number(message.rateRevision) || 0;
+          this.rate = message.rate || 1;
+          this.rateRevision = message.rateRevision || 0;
           break;
       }
     } catch (error) {
@@ -53,20 +83,20 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
     }
   }
 
-  storeChunk(message) {
+  storeChunk(message: AudioChunkMessage): void {
     if (message.generation !== this.generation) {
       return;
     }
     this.channelCount = message.channelCount || DEFAULT_CHANNEL_COUNT;
     this.sampleRate = message.sampleRate || DEFAULT_SAMPLE_RATE;
-    this.chunks.set(Number(message.startSample), {
+    this.chunks.set(message.startSample, {
       frames: message.frames,
       samples: message.samples,
-      startSample: Number(message.startSample),
+      startSample: message.startSample,
     });
   }
 
-  process(_inputs, outputs) {
+  process(_inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     const output = outputs[0];
     const left = output?.[0];
     if (!left) {
@@ -104,7 +134,10 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
           const following = next
             ? next.samples[(sample + 1 - next.startSample) * this.channelCount + sourceChannel] || 0
             : current;
-          output[channel][written] = (current + (following - current) * fraction) * gain;
+          const target = output[channel];
+          if (target) {
+            target[written] = (current + (following - current) * fraction) * gain;
+          }
         }
         this.heardAudio = true;
         this.recoveryFrames = Math.max(0, this.recoveryFrames - 1);
@@ -132,7 +165,7 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
     return true;
   }
 
-  findChunk(sample) {
+  findChunk(sample: number): StoredChunk | null {
     for (const chunk of this.chunks.values()) {
       if (sample >= chunk.startSample && sample < chunk.startSample + chunk.frames) {
         return chunk;
@@ -141,7 +174,7 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
     return null;
   }
 
-  pruneChunks() {
+  pruneChunks(): void {
     const keepAfter = this.currentSample - this.sampleRate;
     for (const [startSample, chunk] of this.chunks) {
       if (chunk.startSample + chunk.frames < keepAfter) {
@@ -150,10 +183,10 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
     }
   }
 
-  reportPosition(framesRendered) {
+  reportPosition(framesRendered: number): void {
     this.reportCountdown = Math.max(128, Math.floor(this.sampleRate / 20));
     this.port.postMessage({
-      contextTime: globalThis.currentTime + framesRendered / this.sampleRate,
+      contextTime: scope.currentTime + framesRendered / this.sampleRate,
       currentSample: this.currentSample,
       generation: this.generation,
       rate: this.rate,
@@ -164,4 +197,4 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
   }
 }
 
-globalThis.registerProcessor("lumen-audio-worklet", LumenAudioWorkletProcessor);
+scope.registerProcessor("lumen-audio-worklet", LumenAudioWorkletProcessor);

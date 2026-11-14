@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { AudioEngineTimeline } from "../src/audio-engine.js";
+import type { AudioEngineTimeline } from "../src/audio-protocol.js";
 import { mixTimelineChunk } from "../src/audio-worker.js";
 
 type MixFixture = {
