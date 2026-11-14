@@ -6,6 +6,7 @@ import {
   generatedMetaTypesPath,
   generatedRuntimeTypesPath,
   engineReadmePath,
+  generatedNodeSpecsPath,
   generatedSchemaTypesPath,
   nodeReferencePath,
   runtimeSchemaPath,
@@ -14,6 +15,7 @@ import type { JsonSchema } from "./render-defs.js";
 import { renderCodeTable, replaceCodeTable } from "./render-code-table.js";
 import { expressionTables, renderExpressions } from "./render-expressions.js";
 import { renderNodeReference } from "./render-reference.js";
+import { renderNodeSpecs } from "./render-node-specs.js";
 import { codeEntries, renderRuntimeTypes } from "./render-runtime.js";
 import { renderTypes } from "./render.js";
 import { writeGeneratedFile } from "./write.js";
@@ -31,6 +33,7 @@ const engineReadme = replaceCodeTable(
 await Promise.all([
   writeGeneratedFile(generatedSchemaTypesPath, root),
   writeGeneratedFile(generatedMetaTypesPath, meta),
+  writeGeneratedFile(generatedNodeSpecsPath, renderNodeSpecs(schema)),
   writeGeneratedFile(generatedRuntimeTypesPath, renderRuntimeTypes(runtimeSchema)),
   writeGeneratedFile(generatedExpressionsPath, renderExpressions(expressionTables(schema))),
   writeGeneratedFile(nodeReferencePath, renderNodeReference(schema)),
