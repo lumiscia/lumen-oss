@@ -25,6 +25,7 @@ pub(crate) mod test_device;
 mod types;
 mod yuv;
 
+pub(crate) use caches::evictions;
 pub use caches::{CacheBudgets, CacheStats};
 pub use color::WORKING_COLOR_FORMAT;
 pub use renderer::{
