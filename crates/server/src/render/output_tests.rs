@@ -50,10 +50,10 @@ fn ramp(audio: bool) -> Composition {
 /// Three seconds of the voice from time 0.
 fn voice() -> serde_json::Value {
     json!({
-        "tracks": [{ "id": "t", "name": "t", "muted": false, "solo": false, "volume": 1.0 }],
+        "tracks": [{ "id": "t", "name": "t", "muted": false, "solo": false, "gain": 1.0 }],
         "clips": [{
             "id": "c", "source_id": "voice.wav", "track_id": "t", "name": "voice.wav",
-            "start_ms": 0, "duration_ms": 3000, "source_start_ms": 0, "volume": 1.0
+            "start_ms": 0, "duration_ms": 3000, "source_start_ms": 0, "gain": 1.0
         }]
     })
 }

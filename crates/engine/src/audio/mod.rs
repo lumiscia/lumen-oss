@@ -128,8 +128,8 @@ impl AudioTimeline {
             if !tracks.insert(track.id.as_str()) {
                 problems.push(format!("duplicate track id `{}`", track.id));
             }
-            if let Some(problem) = track.volume.problem(props) {
-                problems.push(format!("track `{}` volume {problem}", track.id));
+            if let Some(problem) = track.gain.problem(props) {
+                problems.push(format!("track `{}` gain {problem}", track.id));
             }
         }
         let declared = match self.tracks.as_slice() {
@@ -151,8 +151,8 @@ impl AudioTimeline {
                     clip.id, clip.track_id
                 ));
             }
-            if let Some(problem) = clip.volume.problem(props) {
-                problems.push(format!("clip `{}` volume {problem}", clip.id));
+            if let Some(problem) = clip.gain.problem(props) {
+                problems.push(format!("clip `{}` gain {problem}", clip.id));
             }
             if clip.duration_ms == 0 {
                 problems.push(format!(
@@ -171,7 +171,7 @@ pub struct AudioTrack {
     pub muted: bool,
     pub solo: bool,
     /// Scales every clip on the track.
-    pub volume: AudioGain,
+    pub gain: AudioGain,
 }
 
 #[derive(Debug, Clone, PartialEq, lumen_macros::MediaSources)]
@@ -183,7 +183,7 @@ pub struct AudioClip {
     pub start_ms: u64,
     pub duration_ms: u64,
     pub source_start_ms: u64,
-    pub volume: AudioGain,
+    pub gain: AudioGain,
     /// How long the clip takes to rise from silence at its start, and to fall to silence at its
     /// end, on an equal-power curve. Each is at most the clip's duration, and where the two
     /// overlap their gains multiply.
@@ -191,7 +191,7 @@ pub struct AudioClip {
     pub fade_out_ms: u64,
 }
 
-/// A volume: a fixed gain, or an expression evaluated at the frame of the composition the
+/// A gain: a fixed number, or an expression evaluated at the frame of the composition the
 /// timeline is in. An expression's value below 0, or NaN, is silence.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioGain {
@@ -267,7 +267,7 @@ impl AudioGain {
         let source = &expression.source;
         match problem {
             Some(read) => Some(format!(
-                "`={source}` {read}; an audio volume reads only `frame`, `time`, `fps`, `width`, `height` and props"
+                "`={source}` {read}; an audio gain reads only `frame`, `time`, `fps`, `width`, `height` and props"
             )),
             None => crate::composition::prop_problem(expression, props),
         }

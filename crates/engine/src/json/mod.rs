@@ -213,27 +213,35 @@ struct ConnectionJson {
     to_port: String,
 }
 
-/// Keys other than the clips' retired timing keys are ignored, here and on tracks and clips.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AudioJson {
     tracks: Vec<Object<AudioTrackJson>>,
     clips: Vec<Object<AudioClipJson>>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AudioTrackJson {
     id: String,
+    /// A label for editors; playback doesn't read it.
+    #[serde(rename = "name", default)]
+    _name: Option<String>,
     #[serde(default)]
     muted: bool,
     #[serde(default)]
     solo: bool,
     #[serde(default)]
-    volume: GainJson,
+    gain: GainJson,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AudioClipJson {
     id: String,
+    /// A label for editors; playback doesn't read it.
+    #[serde(rename = "name", default)]
+    _name: Option<String>,
     source_id: String,
     track_id: String,
     start_ms: u64,
@@ -241,7 +249,7 @@ struct AudioClipJson {
     #[serde(default)]
     source_start_ms: u64,
     #[serde(default)]
-    volume: GainJson,
+    gain: GainJson,
     #[serde(default)]
     fade_in_ms: u64,
     #[serde(default)]
@@ -266,7 +274,7 @@ struct AudioClipJson {
     _source_start_seconds: (),
 }
 
-/// A volume as the document holds it: a number of at least 0, or an `=expression` parsed once
+/// A gain as the document holds it: a number of at least 0, or an `=expression` parsed once
 /// the composition's functions are known.
 enum GainJson {
     Value(f32),
@@ -318,7 +326,7 @@ impl GainJson {
     }
 }
 
-/// `/audio/clips/0/volume` as `audio.clips[0].volume`, as document errors name values.
+/// `/audio/clips/0/gain` as `audio.clips[0].gain`, as document errors name values.
 fn dotted(pointer: &str) -> String {
     let mut path = String::new();
     for segment in pointer.split('/').skip(1) {
@@ -350,7 +358,7 @@ fn audio_timeline(audio: &AudioJson, errors: &mut Vec<LumenError>) -> AudioTimel
             id: track.id.clone(),
             muted: track.muted,
             solo: track.solo,
-            volume: gain(&track.volume, format!("/audio/tracks/{index}/volume")),
+            gain: gain(&track.gain, format!("/audio/tracks/{index}/gain")),
         })
         .collect();
     let clips = audio
@@ -364,7 +372,7 @@ fn audio_timeline(audio: &AudioJson, errors: &mut Vec<LumenError>) -> AudioTimel
             start_ms: clip.start_ms,
             duration_ms: clip.duration_ms,
             source_start_ms: clip.source_start_ms,
-            volume: gain(&clip.volume, format!("/audio/clips/{index}/volume")),
+            gain: gain(&clip.gain, format!("/audio/clips/{index}/gain")),
             fade_in_ms: clip.fade_in_ms,
             fade_out_ms: clip.fade_out_ms,
         })
@@ -883,7 +891,7 @@ mod tests {
             "render_settings": { "width": 1920, "height": 1080 },
             "audio": {
                 "tracks": [
-                    { "id": "track-1", "name": "Voice", "muted": false, "solo": true, "volume": 0.5 }
+                    { "id": "track-1", "name": "Voice", "muted": false, "solo": true, "gain": 0.5 }
                 ],
                 "clips": [
                     {
@@ -894,7 +902,7 @@ mod tests {
                         "start_ms": 100,
                         "duration_ms": 900,
                         "source_start_ms": 50,
-                        "volume": 0.75
+                        "gain": 0.75
                     }
                 ]
             },
@@ -984,10 +992,10 @@ mod tests {
         .unwrap();
         let mut builder = composition.into_builder();
         let audio = builder.audio.as_mut().unwrap();
-        audio.tracks[0].volume = f32::NAN.into();
+        audio.tracks[0].gain = f32::NAN.into();
         let errors = builder.build().unwrap_err();
         assert!(
-            errors[0].to_string().contains("track `main` volume"),
+            errors[0].to_string().contains("track `main` gain"),
             "{}",
             errors[0]
         );
@@ -1096,6 +1104,12 @@ mod tests {
             })
         };
         assert!(parse_value(&composition(serde_json::json!("output"))).is_ok());
+        let mut omitted = composition(Value::Null);
+        omitted["connections"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("from_port");
+        assert!(parse_value(&omitted).is_ok());
         let error = parse_value(&composition(serde_json::json!("mask"))).unwrap_err();
         assert!(
             format!("{error:#}")
@@ -1189,20 +1203,20 @@ mod tests {
     }
 
     #[test]
-    fn audio_volume_must_be_a_finite_non_negative_number() {
-        let parse_audio = |track_volume: Value, clip_volume: Value| {
+    fn audio_gain_must_be_a_finite_non_negative_number() {
+        let parse_audio = |track_gain: Value, clip_gain: Value| {
             parse_value(&serde_json::json!({
                 "timeline": { "fps": 30, "duration_frames": 90 },
                 "render_settings": { "width": 16, "height": 16 },
                 "audio": {
-                    "tracks": [{ "id": "track-1", "volume": track_volume }],
+                    "tracks": [{ "id": "track-1", "gain": track_gain }],
                     "clips": [{
                         "id": "clip-1",
                         "source_id": "voice",
                         "track_id": "track-1",
                         "start_ms": 0,
                         "duration_ms": 100,
-                        "volume": clip_volume
+                        "gain": clip_gain
                     }]
                 },
                 "nodes": [
@@ -1217,29 +1231,29 @@ mod tests {
 
         let comp = parse_audio(serde_json::json!(-0.0), serde_json::json!(2.5)).unwrap();
         let audio = comp.audio().unwrap();
-        assert_eq!(audio.tracks[0].volume, 0.0.into());
-        assert_eq!(audio.clips[0].volume, 2.5.into());
+        assert_eq!(audio.tracks[0].gain, 0.0.into());
+        assert_eq!(audio.clips[0].gain, 2.5.into());
 
         for (invalid, track, clip) in [
             (
                 serde_json::json!(-0.5),
-                "audio.tracks[0].volume: must be at least 0",
-                "audio.clips[0].volume: must be at least 0",
+                "audio.tracks[0].gain: must be at least 0",
+                "audio.clips[0].gain: must be at least 0",
             ),
             (
                 serde_json::json!(-1e-50),
-                "audio.tracks[0].volume: must be at least 0",
-                "audio.clips[0].volume: must be at least 0",
+                "audio.tracks[0].gain: must be at least 0",
+                "audio.clips[0].gain: must be at least 0",
             ),
             (
                 serde_json::json!(1e300),
-                "track `track-1` volume",
-                "clip `clip-1` volume",
+                "track `track-1` gain",
+                "clip `clip-1` gain",
             ),
             (
                 serde_json::json!("loud"),
-                "audio.tracks[0].volume",
-                "audio.clips[0].volume",
+                "audio.tracks[0].gain",
+                "audio.clips[0].gain",
             ),
         ] {
             let track_error = parse_audio(invalid.clone(), serde_json::json!(1)).unwrap_err();
@@ -1298,12 +1312,46 @@ mod tests {
         }
 
         let audio = serde_json::json!({
-            "editor": true,
-            "tracks": [{ "id": "main", "name": "Voice", "color": "#fff" }],
-            "clips": [clip(serde_json::json!({ "name": "take 2", "color": "#fff" }))]
+            "tracks": [{ "id": "main", "name": "Voice" }],
+            "clips": [clip(serde_json::json!({ "name": "take 2" }))]
         });
         let composition = audio_composition(audio).unwrap();
         assert_eq!(composition.audio().unwrap().clips[0].source_start_ms, 0);
+    }
+
+    #[test]
+    fn audio_keys_the_format_does_not_name_fail() {
+        let error = |audio: Value| format!("{:#}", audio_composition(audio).unwrap_err());
+        let clip = |extra: Value| {
+            let mut clip = serde_json::json!({
+                "id": "a", "source_id": "voice", "track_id": "main", "start_ms": 0, "duration_ms": 100
+            });
+            clip.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            clip
+        };
+        let message = error(serde_json::json!({
+            "tracks": [{ "id": "main" }],
+            "clips": [clip(serde_json::json!({ "volume": 1 }))]
+        }));
+        assert!(
+            message.contains("audio.clips[0].volume: unknown field `volume`"),
+            "{message}"
+        );
+        let message = error(serde_json::json!({
+            "tracks": [{ "id": "main", "volume": 1 }],
+            "clips": []
+        }));
+        assert!(
+            message.contains("audio.tracks[0].volume: unknown field `volume`"),
+            "{message}"
+        );
+        let message = error(serde_json::json!({ "tracks": [], "clips": [], "mixer": {} }));
+        assert!(
+            message.contains("audio.mixer: unknown field `mixer`"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -2534,7 +2582,7 @@ mod tests {
                     ],
                     "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }],
                     "audio": {
-                        "tracks": [{ "id": "t", "name": "T", "muted": false, "solo": false, "volume": 1 }],
+                        "tracks": [{ "id": "t", "name": "T", "muted": false, "solo": false, "gain": 1 }],
                         "clips": [
                             { "id": "c", "source_id": "asset:gone", "track_id": "t", "start_ms": 0, "duration_ms": 10 }
                         ]
@@ -2558,7 +2606,7 @@ mod tests {
             ],
             "connections": [{ "from_node": 5, "to_node": 6, "to_port": "source" }],
             "audio": {
-                "tracks": [{ "id": "t", "name": "T", "muted": false, "solo": false, "volume": 1 }],
+                "tracks": [{ "id": "t", "name": "T", "muted": false, "solo": false, "gain": 1 }],
                 "clips": [
                     { "id": "a", "source_id": "asset:voice", "track_id": "t", "start_ms": 0, "duration_ms": 10 },
                     { "id": "b", "source_id": "asset:brand", "track_id": "t", "start_ms": 0, "duration_ms": 10 }

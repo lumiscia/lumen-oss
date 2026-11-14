@@ -344,7 +344,7 @@ export class Composition {
           ...(offset === undefined ? {} : { source_start_ms: milliseconds(offset) }),
           start_ms: milliseconds(start),
           track_id: trackId,
-          ...(gain === undefined ? {} : { volume: volume(gain) }),
+          ...(gain === undefined ? {} : { gain: audioGain(gain) }),
         },
       ],
       tracks: audio.tracks.some((track) => track.id === trackId)
@@ -371,7 +371,7 @@ export class Composition {
           ...(muted === undefined ? {} : { muted }),
           ...(name === undefined ? {} : { name }),
           ...(solo === undefined ? {} : { solo }),
-          ...(gain === undefined ? {} : { volume: volume(gain) }),
+          ...(gain === undefined ? {} : { gain: audioGain(gain) }),
         },
       ],
     };
@@ -458,7 +458,7 @@ function timeline(input: TimelineInput = {}): LumenComposition["timeline"] {
   };
 }
 
-function volume(gain: number | Expr<number>): number | ExpressionString {
+function audioGain(gain: number | Expr<number>): number | ExpressionString {
   return gain instanceof Expr ? gain.toString() : gain;
 }
 

@@ -636,7 +636,13 @@ fn document_keys_schema_matches_engine_parsing() {
             false,
         ),
         ("whole clip", audio(json!({})), true),
-        ("unknown clip key", audio(json!({ "color": "#fff" })), true),
+        ("unknown clip key", audio(json!({ "color": "#fff" })), false),
+        (
+            "volume is not a clip key",
+            audio(json!({ "volume": 1 })),
+            false,
+        ),
+        ("clip gain", audio(json!({ "gain": 0.5 })), true),
         ("clip name", audio(json!({ "name": "take" })), true),
         ("no start_ms", audio(json!({ "start_ms": null })), false),
         (

@@ -46,7 +46,7 @@ pub const MAX_ACTIVE_VOICES: usize = 1024;
 pub const MAX_LOOP_RESTARTS: u64 = 32;
 
 /// Most segments one call of [`plan`] may return, 36 MB of segments. The server plans 30 s at a
-/// time, so this allows about 178 clips with animated volumes sounding throughout.
+/// time, so this allows about 178 clips with animated gains sounding throughout.
 pub const MAX_PLAN_SEGMENTS: usize = 500_000;
 
 /// Most segments the browser preview's plan of the whole timeline may hold.
@@ -128,7 +128,7 @@ pub(super) fn plan_within(
         planner.interval(interval * CONTROL_FRAMES)?;
         if planner.plan.segments.len() > max_segments {
             return Err(limit(format!(
-                "planning samples {start} to {} makes more than {max_segments} segments by sample {}. Animated volumes split the sound into a segment every {CONTROL_FRAMES} samples, so animate fewer clips or mix a shorter range",
+                "planning samples {start} to {} makes more than {max_segments} segments by sample {}. Animated gains split the sound into a segment every {CONTROL_FRAMES} samples, so animate fewer clips or mix a shorter range",
                 start.saturating_add(frames),
                 interval * CONTROL_FRAMES,
             )));
@@ -182,7 +182,7 @@ pub(super) fn preview_plan_within(
         planner.interval(interval * CONTROL_FRAMES)?;
         if planner.plan.segments.len() > max_segments {
             return Err(limit(format!(
-                "the preview plan of the whole timeline has more than {max_segments} segments by {:.0} s. Animated volumes split the sound into a segment every {CONTROL_FRAMES} samples, so animate fewer clips or shorten the composition",
+                "the preview plan of the whole timeline has more than {max_segments} segments by {:.0} s. Animated gains split the sound into a segment every {CONTROL_FRAMES} samples, so animate fewer clips or shorten the composition",
                 ((interval + 1) * CONTROL_FRAMES) as f64 / SAMPLE_RATE,
             )));
         }
@@ -903,8 +903,8 @@ impl<'a> Planner<'a> {
                 })?;
             if track.muted
                 || (lookup.has_solo && !track.solo)
-                || track.volume.is_silent()
-                || clip.volume.is_silent()
+                || track.gain.is_silent()
+                || clip.gain.is_silent()
             {
                 continue;
             }
@@ -1003,7 +1003,7 @@ impl<'a> Planner<'a> {
         let ctx = scope.expr_context(FrameTime::from(frame), self.media);
         let located = |what: String| {
             move |error: LumenError| {
-                let error = LumenError::evaluate(format!("audio {what} volume: {error}"));
+                let error = LumenError::evaluate(format!("audio {what} gain: {error}"));
                 match scope.template_name() {
                     Some(template) => {
                         LumenError::evaluate(format!("composition `{template}`: {error}"))
@@ -1013,11 +1013,11 @@ impl<'a> Planner<'a> {
             }
         };
         let track_gain = track
-            .volume
+            .gain
             .eval(&ctx)
             .map_err(located(format!("track `{}`", track.id)))?;
         let clip_gain = clip
-            .volume
+            .gain
             .eval(&ctx)
             .map_err(located(format!("clip `{}`", clip.id)))?;
         Ok(track_gain * clip_gain)

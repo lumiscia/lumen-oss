@@ -254,11 +254,11 @@ fn mixes_stereo_with_mute_solo_and_gain() {
         30,
         Some(json!({
             "tracks": [
-                { "id": "solo", "solo": true, "volume": 0.5 },
+                { "id": "solo", "solo": true, "gain": 0.5 },
                 { "id": "muted", "muted": true }
             ],
             "clips": [
-                { "id": "a", "source_id": "tone", "track_id": "solo", "start_ms": 0, "duration_ms": 1000, "volume": 0.5 },
+                { "id": "a", "source_id": "tone", "track_id": "solo", "start_ms": 0, "duration_ms": 1000, "gain": 0.5 },
                 { "id": "b", "source_id": "tone", "track_id": "muted", "start_ms": 0, "duration_ms": 1000 }
             ]
         })),
@@ -284,7 +284,7 @@ fn an_animated_gain_follows_its_expression_without_steps() {
             "tone",
             0,
             3_000,
-            json!({ "volume": "=time / 2" }),
+            json!({ "gain": "=time / 2" }),
         )])),
         json!({}),
         vec![],
@@ -317,7 +317,7 @@ fn a_gain_can_duck_one_track_under_another() {
         120,
         Some(json!({
             "tracks": [
-                { "id": "music", "volume": "=if(time >= 1 && time < 3, 0.25, 1)" },
+                { "id": "music", "gain": "=if(time >= 1 && time < 3, 0.25, 1)" },
                 { "id": "voice" }
             ],
             "clips": [
@@ -641,7 +641,7 @@ fn looped_and_nested_clips_compose() {
 #[test]
 fn each_instance_has_its_own_props_and_time() {
     let provider = TestProvider::with(&[("tone", constant(1.0, 2.0))]);
-    let mut sound = burst_template(30.0, "tone", json!({ "volume": "=prop('level')" }));
+    let mut sound = burst_template(30.0, "tone", json!({ "gain": "=prop('level')" }));
     sound["props"] = json!({ "level": { "type": "number", "default": 1 } });
     let document = document(
         30.0,
@@ -696,8 +696,8 @@ fn a_time_remap_moves_audio_and_silences_it_running_backwards() {
 
 #[test]
 fn gains_that_read_what_audio_has_no_value_for_are_rejected() {
-    let document = |volume: &str, in_template: bool| {
-        let clip = audio_clip("c", "tone", 0, 100, json!({ "volume": volume }));
+    let document = |gain: &str, in_template: bool| {
+        let clip = audio_clip("c", "tone", 0, 100, json!({ "gain": gain }));
         if in_template {
             let mut sound = template(30.0, 30, Some(audio(vec![clip])), vec![]);
             sound["props"] = json!({ "level": { "type": "number" } });
@@ -706,17 +706,17 @@ fn gains_that_read_what_audio_has_no_value_for_are_rejected() {
             document(30.0, 30, Some(audio(vec![clip])), json!({}), vec![])
         }
     };
-    let rejected = |volume: &str, in_template: bool| {
-        let error = crate::json::parse_value(&document(volume, in_template)).unwrap_err();
+    let rejected = |gain: &str, in_template: bool| {
+        let error = crate::json::parse_value(&document(gain, in_template)).unwrap_err();
         let diagnostic = &error.diagnostics()[0];
         assert_eq!(
             diagnostic.code, "audio.invalid",
-            "{volume}: {}",
+            "{gain}: {}",
             diagnostic.message
         );
         (diagnostic.message.clone(), diagnostic.path.clone())
     };
-    for (volume, read) in [
+    for (gain, read) in [
         ("=node(1, 'opacity')", "reads node 1"),
         ("=glyph / 2", "reads `glyph`"),
         ("=text_width('hi') / 100", "measures text with `text_width`"),
@@ -725,9 +725,9 @@ fn gains_that_read_what_audio_has_no_value_for_are_rejected() {
             "only available inside a composition template",
         ),
     ] {
-        let (message, path) = rejected(volume, false);
+        let (message, path) = rejected(gain, false);
         assert!(message.contains(read), "{message}");
-        assert!(message.contains("clip `c` volume"), "{message}");
+        assert!(message.contains("clip `c` gain"), "{message}");
         assert_eq!(path, "/audio");
     }
     let (message, path) = rejected("=prop('missing')", true);
@@ -862,7 +862,7 @@ fn props_set_by_expression_move_the_gain_between_control_points() {
             "tone",
             0,
             1_500,
-            json!({ "volume": "=prop('level')" }),
+            json!({ "gain": "=prop('level')" }),
         )])),
         vec![],
     );
@@ -1007,7 +1007,7 @@ fn the_preview_plan_has_a_size_limit() {
             fps,
             frames,
             Some(json!({
-                "tracks": [{ "id": "main", "volume": "=0.5 + sin(time) / 2" }],
+                "tracks": [{ "id": "main", "gain": "=0.5 + sin(time) / 2" }],
                 "clips": [audio_clip("c", "tone", 0, 1_000, json!({}))]
             })),
             json!({}),
@@ -1240,7 +1240,7 @@ fn a_plan_has_a_size_limit() {
         30.0,
         30,
         Some(json!({
-            "tracks": [{ "id": "main", "volume": "=0.5 + sin(time) / 2" }],
+            "tracks": [{ "id": "main", "gain": "=0.5 + sin(time) / 2" }],
             "clips": clips
         })),
         json!({}),
@@ -1364,7 +1364,7 @@ fn mix_fixtures() -> Vec<MixFixture> {
             90,
             None,
             json!({
-                "burst": burst_template(30.0, "tone", json!({ "volume": "=0.5 + prop('lift')", "fade_in_ms": 20 })),
+                "burst": burst_template(30.0, "tone", json!({ "gain": "=0.5 + prop('lift')", "fade_in_ms": 20 })),
             })
             .as_object()
             .map(|templates| {
@@ -1397,13 +1397,13 @@ fn mix_fixtures() -> Vec<MixFixture> {
         mix_fixture(
             "track and clip gain multiply",
             root(
-                json!([{ "id": "main", "volume": 0.5 }]),
+                json!([{ "id": "main", "gain": 0.5 }]),
                 vec![audio_clip(
                     "clip",
                     "tone",
                     100,
                     1_000,
-                    json!({ "volume": 0.25 }),
+                    json!({ "gain": 0.25 }),
                 )],
             ),
             tone(),
@@ -1480,7 +1480,7 @@ fn mix_fixtures() -> Vec<MixFixture> {
         ),
         mix_fixture(
             "a silent track adds nothing",
-            root(json!([{ "id": "main", "volume": 0 }]), vec![long_clip()]),
+            root(json!([{ "id": "main", "gain": 0 }]), vec![long_clip()]),
             tone(),
             6_000,
             16,
@@ -1519,7 +1519,7 @@ fn mix_fixtures() -> Vec<MixFixture> {
         mix_fixture(
             "an animated gain moves linearly between control points",
             root(
-                json!([{ "id": "main", "volume": "=0.5 + sin(time * 20) / 2" }]),
+                json!([{ "id": "main", "gain": "=0.5 + sin(time * 20) / 2" }]),
                 vec![clip("clip", 0, 2_000)],
             ),
             tone(),

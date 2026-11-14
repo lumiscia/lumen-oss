@@ -837,7 +837,7 @@ mod tests {
         let mut composition: serde_json::Value =
             serde_json::from_str(COMPOSITION_JSON).expect("composition json");
         composition["audio"] = serde_json::json!({
-            "tracks": [{ "id": "music", "volume": 0.5 }],
+            "tracks": [{ "id": "music", "gain": 0.5 }],
             "clips": [{
                 "id": "intro",
                 "source_id": "song",
