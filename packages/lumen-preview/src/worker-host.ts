@@ -334,11 +334,9 @@ export function createLumenPreviewWorkerHost({
           case "video":
             return target.registerVideoSource(source, input, video);
           case "model":
-            return target.registerModelSource(source, input);
           case "environment":
-            return target.registerEnvironmentSource(source, input);
           case "lut":
-            return target.registerLutSource(source, input);
+            return target.registerFile(kind, source, input);
           case "font": {
             const bytes = await readFont(source, input, signal);
             if (!signal.aborted) {
@@ -357,11 +355,9 @@ export function createLumenPreviewWorkerHost({
           case "video":
             return target.removeVideoSource(source);
           case "model":
-            return target.removeModelSource(source);
           case "environment":
-            return target.removeEnvironmentSource(source);
           case "lut":
-            return target.removeLutSource(source);
+            return target.removeFile(kind, source);
           case "font":
             return target.removeFontFamily(source);
           case "audio":

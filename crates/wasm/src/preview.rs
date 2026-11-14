@@ -3,21 +3,30 @@ use std::cell::{Ref, RefCell, RefMut};
 use lumen_engine::{
     composition::Composition,
     media::{
-        ChromaSubsampling, ColorPrimaries, Rotation, TransferFunction, VideoMetadata, YuvChroma,
-        YuvColor, YuvFormat, YuvFrame, YuvLayout, YuvMatrix, YuvPlane, collect_frame_requirements,
+        AssetKind, ChromaSubsampling, ColorPrimaries, Rotation, TransferFunction, VideoMetadata,
+        YuvChroma, YuvColor, YuvFormat, YuvFrame, YuvLayout, YuvMatrix, YuvPlane,
+        collect_frame_requirements,
     },
 };
 use wasm_bindgen::prelude::*;
 
 use crate::{
     install_panic_hook,
-    media::WasmMediaStore,
+    media::{WasmMediaStore, file_kind},
     renderer::SurfaceCompositionRenderer,
     types::{AudioTimelinePayload, FrameRequirementsPayload},
     utils::{
         composition_json_to_composition, parse_failure, raw_frame_from_rgba, validate_rgba_len,
     },
 };
+
+fn parse_file_kind(name: &str) -> Result<AssetKind, JsValue> {
+    file_kind(name).ok_or_else(|| {
+        JsValue::from_str(&format!(
+            "unknown file kind `{name}`, expected `model`, `environment` or `lut`"
+        ))
+    })
+}
 
 /// The GPU device is created once per controller and kept across composition and media changes.
 enum GpuSlot {
@@ -235,25 +244,13 @@ impl LumenPreviewController {
         self.reset_renderer()
     }
 
-    /// Forgets the model `source` names. The next render frees the GPU copy of every model and
-    /// loads again those it still draws.
-    #[wasm_bindgen(js_name = "removeModelSource")]
-    pub fn remove_model_source(&self, source: &str) -> Result<(), JsValue> {
-        self.change_media(|media| media.remove_model(source))?;
-        self.reset_renderer()
-    }
-
-    /// Forgets the `.cube` LUT `source` names.
-    #[wasm_bindgen(js_name = "removeLutSource")]
-    pub fn remove_lut_source(&self, source: &str) -> Result<(), JsValue> {
-        self.change_media(|media| media.remove_lut(source))?;
-        self.reset_renderer()
-    }
-
-    /// Forgets the environment map `source` names. The next render frees its GPU copy.
-    #[wasm_bindgen(js_name = "removeEnvironmentSource")]
-    pub fn remove_environment_source(&self, source: &str) -> Result<(), JsValue> {
-        self.change_media(|media| media.remove_environment(source))?;
+    /// Forgets the model, environment map or LUT file `source` names under `kind`, which is
+    /// `"model"`, `"environment"` or `"lut"`. The next render frees the GPU copy of every model and
+    /// environment map and loads again those it still uses.
+    #[wasm_bindgen(js_name = "removeFile")]
+    pub fn remove_file(&self, kind: &str, source: &str) -> Result<(), JsValue> {
+        let kind = parse_file_kind(kind)?;
+        self.change_media(|media| media.remove_file(kind, source))?;
         self.reset_renderer()
     }
 
@@ -274,19 +271,10 @@ impl LumenPreviewController {
         self.media.has_image(image_id)
     }
 
-    #[wasm_bindgen(js_name = "hasModel")]
-    pub fn has_model(&self, source: &str) -> bool {
-        self.media.has_model(source)
-    }
-
-    #[wasm_bindgen(js_name = "hasLut")]
-    pub fn has_lut(&self, source: &str) -> bool {
-        self.media.has_lut(source)
-    }
-
-    #[wasm_bindgen(js_name = "hasEnvironment")]
-    pub fn has_environment(&self, source: &str) -> bool {
-        self.media.has_environment(source)
+    /// Whether a file of `kind` (`"model"`, `"environment"` or `"lut"`) is stored under `source`.
+    #[wasm_bindgen(js_name = "hasFile")]
+    pub fn has_file(&self, kind: &str, source: &str) -> bool {
+        file_kind(kind).is_some_and(|kind| self.media.has_file(kind, source))
     }
 
     #[wasm_bindgen(js_name = "hasVideoFrame")]
@@ -320,37 +308,26 @@ impl LumenPreviewController {
         self.reset_renderer()
     }
 
-    /// Stores a binary glTF (`.glb`) file under the `source` a `model_3d` names. Throws, with the
-    /// `media` failure a render would give, on a file that isn't a model it can read.
-    #[wasm_bindgen(js_name = "setModel")]
-    pub fn set_model(&self, source: &str, data: Vec<u8>) -> Result<(), JsValue> {
-        #[cfg(feature = "3d")]
-        lumen_engine::node::scene::check_model(source, &data)
-            .map_err(|error| crate::utils::render_failure(&error.into()))?;
-        self.change_media(|media| media.set_model(source.to_string(), data))?;
-        self.reset_renderer()
-    }
-
-    /// Stores a Radiance `.hdr` or OpenEXR `.exr` file under the `source` an `environment` names.
-    /// Throws, with the `media` failure a render would give, on a file that isn't a map it can
-    /// read.
-    #[wasm_bindgen(js_name = "setEnvironment")]
-    pub fn set_environment(&self, source: &str, data: Vec<u8>) -> Result<(), JsValue> {
-        #[cfg(feature = "3d")]
-        lumen_engine::node::scene::check_environment(source, &data)
-            .map_err(|error| crate::utils::render_failure(&error.into()))?;
-        self.change_media(|media| media.set_environment(source.to_string(), data))?;
-        self.reset_renderer()
-    }
-
-    /// Stores a `.cube` 3D colour lookup table under the `lut_source` a `color_grade` names.
-    /// Throws, with the `media` failure a render would give, on a file that isn't a table it can
-    /// read.
-    #[wasm_bindgen(js_name = "setLut")]
-    pub fn set_lut(&self, source: &str, data: Vec<u8>) -> Result<(), JsValue> {
-        lumen_engine::node::processing::color_grade::check_lut(source, &data)
-            .map_err(|error| crate::utils::render_failure(&error.into()))?;
-        self.change_media(|media| media.set_lut(source.to_string(), data))?;
+    /// Stores a model (`.glb`), environment map (`.hdr` or `.exr`) or `.cube` LUT file under the
+    /// `source` a node names, by `kind`: `"model"`, `"environment"` or `"lut"`. Throws, with the
+    /// `media` failure a render would give, on a file that isn't one the engine can read.
+    #[wasm_bindgen(js_name = "setFile")]
+    pub fn set_file(&self, kind: &str, source: &str, data: Vec<u8>) -> Result<(), JsValue> {
+        let kind = parse_file_kind(kind)?;
+        match kind {
+            #[cfg(feature = "3d")]
+            AssetKind::Model => lumen_engine::node::scene::check_model(source, &data)
+                .map_err(|error| crate::utils::render_failure(&error.into()))?,
+            #[cfg(feature = "3d")]
+            AssetKind::Environment => {
+                lumen_engine::node::scene::check_environment(source, &data)
+                    .map_err(|error| crate::utils::render_failure(&error.into()))?
+            }
+            AssetKind::Lut => lumen_engine::node::processing::color_grade::check_lut(source, &data)
+                .map_err(|error| crate::utils::render_failure(&error.into()))?,
+            _ => {}
+        }
+        self.change_media(|media| media.set_file(kind, source.to_string(), data))?;
         self.reset_renderer()
     }
 

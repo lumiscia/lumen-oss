@@ -228,10 +228,8 @@ pub(crate) struct WasmMediaStore {
 #[derive(Debug, Default)]
 struct WasmMediaStoreInner {
     fonts: RwLock<HashMap<String, StoredFont>>,
-    environments: RwLock<HashMap<String, StoredFile>>,
+    files: RwLock<HashMap<(AssetKind, String), StoredFile>>,
     images: RwLock<HashMap<String, StoredImage>>,
-    luts: RwLock<HashMap<String, StoredFile>>,
-    models: RwLock<HashMap<String, StoredFile>>,
     videos: RwLock<VideoStore>,
     text: TextSession,
 }
@@ -244,17 +242,7 @@ impl WasmMediaStore {
             .map_err(|_| "media store lock poisoned")?
             .clear();
         self.inner
-            .models
-            .write()
-            .map_err(|_| "media store lock poisoned")?
-            .clear();
-        self.inner
-            .environments
-            .write()
-            .map_err(|_| "media store lock poisoned")?
-            .clear();
-        self.inner
-            .luts
+            .files
             .write()
             .map_err(|_| "media store lock poisoned")?
             .clear();
@@ -284,30 +272,12 @@ impl WasmMediaStore {
         Ok(())
     }
 
-    pub fn remove_model(&self, source: &str) -> Result<(), &'static str> {
+    pub fn remove_file(&self, kind: AssetKind, source: &str) -> Result<(), &'static str> {
         self.inner
-            .models
+            .files
             .write()
             .map_err(|_| "media store lock poisoned")?
-            .remove(source);
-        Ok(())
-    }
-
-    pub fn remove_environment(&self, source: &str) -> Result<(), &'static str> {
-        self.inner
-            .environments
-            .write()
-            .map_err(|_| "media store lock poisoned")?
-            .remove(source);
-        Ok(())
-    }
-
-    pub fn remove_lut(&self, source: &str) -> Result<(), &'static str> {
-        self.inner
-            .luts
-            .write()
-            .map_err(|_| "media store lock poisoned")?
-            .remove(source);
+            .remove(&(kind, source.to_string()));
         Ok(())
     }
 
@@ -341,28 +311,12 @@ impl WasmMediaStore {
             .is_some_and(|images| images.contains_key(image_id))
     }
 
-    pub fn has_model(&self, source: &str) -> bool {
+    pub fn has_file(&self, kind: AssetKind, source: &str) -> bool {
         self.inner
-            .models
+            .files
             .read()
             .ok()
-            .is_some_and(|models| models.contains_key(source))
-    }
-
-    pub fn has_environment(&self, source: &str) -> bool {
-        self.inner
-            .environments
-            .read()
-            .ok()
-            .is_some_and(|environments| environments.contains_key(source))
-    }
-
-    pub fn has_lut(&self, source: &str) -> bool {
-        self.inner
-            .luts
-            .read()
-            .ok()
-            .is_some_and(|luts| luts.contains_key(source))
+            .is_some_and(|files| files.contains_key(&(kind, source.to_string())))
     }
 
     pub fn has_video_frame(&self, stream_id: &str, frame: u32) -> bool {
@@ -428,48 +382,20 @@ impl WasmMediaStore {
         Ok(())
     }
 
-    /// Stores the bytes of the model file `source` names, which the engine reads when it draws it.
-    pub fn set_model(&self, source: String, data: Vec<u8>) -> Result<(), &'static str> {
+    /// Stores the bytes of the model, environment map or `.cube` file `source` names, which the
+    /// engine reads when it draws it.
+    pub fn set_file(
+        &self,
+        kind: AssetKind,
+        source: String,
+        data: Vec<u8>,
+    ) -> Result<(), &'static str> {
         self.inner
-            .models
+            .files
             .write()
             .map_err(|_| "media store lock poisoned")?
             .insert(
-                source,
-                StoredFile {
-                    data: Arc::new(data),
-                    identity: MediaIdentity::unique(),
-                },
-            );
-        Ok(())
-    }
-
-    /// Stores the bytes of the `.hdr` or `.exr` file `source` names, which the engine reads when a
-    /// scene first lights with it.
-    pub fn set_environment(&self, source: String, data: Vec<u8>) -> Result<(), &'static str> {
-        self.inner
-            .environments
-            .write()
-            .map_err(|_| "media store lock poisoned")?
-            .insert(
-                source,
-                StoredFile {
-                    data: Arc::new(data),
-                    identity: MediaIdentity::unique(),
-                },
-            );
-        Ok(())
-    }
-
-    /// Stores the bytes of the `.cube` file `source` names, which the engine reads when a
-    /// `color_grade` first grades with it.
-    pub fn set_lut(&self, source: String, data: Vec<u8>) -> Result<(), &'static str> {
-        self.inner
-            .luts
-            .write()
-            .map_err(|_| "media store lock poisoned")?
-            .insert(
-                source,
+                (kind, source),
                 StoredFile {
                     data: Arc::new(data),
                     identity: MediaIdentity::unique(),
@@ -607,61 +533,34 @@ impl WasmMediaStore {
         ))
     }
 
-    fn model(&self, source: &str) -> Result<ResolvedMedia, MediaError> {
-        let models = self
+    /// A model, environment map or `.cube` file, whose bytes `wrap` hands to the engine.
+    fn file(
+        &self,
+        source: &str,
+        kind: AssetKind,
+        wrap: fn(Box<WasmFileResolver>) -> MediaResolver,
+    ) -> Result<ResolvedMedia, MediaError> {
+        let files = self
             .inner
-            .models
+            .files
             .read()
             .map_err(|_| MediaError::source_not_found(source, "media store lock poisoned"))?;
-        let model = models.get(source).ok_or_else(|| {
-            MediaError::source_not_found(source, "the preview has no model by this name in `media`")
-        })?;
-        Ok(ResolvedMedia::new(
-            model.identity.clone(),
-            MediaResolver::Model(Box::new(WasmFileResolver {
-                data: Arc::clone(&model.data),
-            })),
-        ))
-    }
-
-    fn environment(&self, source: &str) -> Result<ResolvedMedia, MediaError> {
-        let environments = self
-            .inner
-            .environments
-            .read()
-            .map_err(|_| MediaError::source_not_found(source, "media store lock poisoned"))?;
-        let environment = environments.get(source).ok_or_else(|| {
+        let file = files.get(&(kind, source.to_string())).ok_or_else(|| {
+            let what = match kind {
+                AssetKind::Environment => "environment map",
+                AssetKind::Lut => ".cube LUT",
+                _ => "model",
+            };
             MediaFailure::not_found(
                 source,
-                "the preview has no environment map by this name in `media`",
+                format!("the preview has no {what} by this name in `media`"),
             )
-            .wanting(&[AssetKind::Environment])
+            .wanting(&[kind])
         })?;
         Ok(ResolvedMedia::new(
-            environment.identity.clone(),
-            MediaResolver::Environment(Box::new(WasmFileResolver {
-                data: Arc::clone(&environment.data),
-            })),
-        ))
-    }
-
-    fn lut(&self, source: &str) -> Result<ResolvedMedia, MediaError> {
-        let luts = self
-            .inner
-            .luts
-            .read()
-            .map_err(|_| MediaError::source_not_found(source, "media store lock poisoned"))?;
-        let lut = luts.get(source).ok_or_else(|| {
-            MediaFailure::not_found(
-                source,
-                "the preview has no .cube LUT by this name in `media`",
-            )
-            .wanting(&[AssetKind::Lut])
-        })?;
-        Ok(ResolvedMedia::new(
-            lut.identity.clone(),
-            MediaResolver::Lut(Box::new(WasmFileResolver {
-                data: Arc::clone(&lut.data),
+            file.identity.clone(),
+            wrap(Box::new(WasmFileResolver {
+                data: Arc::clone(&file.data),
             })),
         ))
     }
@@ -683,6 +582,16 @@ impl WasmMediaStore {
     }
 }
 
+/// The kind named `name` if it is one of the file kinds, which the engine reads as bytes.
+pub(crate) fn file_kind(name: &str) -> Option<AssetKind> {
+    AssetKind::from_name(name).filter(|kind| {
+        matches!(
+            kind,
+            AssetKind::Model | AssetKind::Environment | AssetKind::Lut
+        )
+    })
+}
+
 /// The identity of a source of `kind` that has nothing set yet.
 fn unset(kind: &str, source: &str) -> MediaIdentity {
     MediaIdentity::of_key(&format!("wasm-unset-{kind}:{source}"))
@@ -693,10 +602,12 @@ impl MediaStore for WasmMediaStore {
         match kind {
             AssetKind::Image => self.image(source),
             AssetKind::Video => self.video(source),
-            AssetKind::Model => self.model(source),
+            AssetKind::Model => self.file(source, kind, |file| MediaResolver::Model(file)),
             AssetKind::Font => self.font(source),
-            AssetKind::Environment => self.environment(source),
-            AssetKind::Lut => self.lut(source),
+            AssetKind::Environment => {
+                self.file(source, kind, |file| MediaResolver::Environment(file))
+            }
+            AssetKind::Lut => self.file(source, kind, |file| MediaResolver::Lut(file)),
             AssetKind::Audio => Err(MediaError::source_not_found(
                 source,
                 "the browser preview plays audio itself",
@@ -1098,18 +1009,22 @@ mod tests {
         };
         assert!(store.resolve("fox", AssetKind::Model).is_err());
 
-        store.set_model("fox".to_string(), vec![1, 2]).unwrap();
+        store
+            .set_file(AssetKind::Model, "fox".to_string(), vec![1, 2])
+            .unwrap();
         let (first, data) = resolve(&store);
         assert_eq!(data, [1, 2]);
         assert_eq!(resolve(&store).0, first);
 
-        store.set_model("fox".to_string(), vec![3]).unwrap();
+        store
+            .set_file(AssetKind::Model, "fox".to_string(), vec![3])
+            .unwrap();
         let (second, data) = resolve(&store);
         assert_eq!(data, [3]);
         assert_ne!(second, first);
 
-        store.remove_model("fox").unwrap();
-        assert!(!store.has_model("fox"));
+        store.remove_file(AssetKind::Model, "fox").unwrap();
+        assert!(!store.has_file(AssetKind::Model, "fox"));
         assert!(store.resolve("fox", AssetKind::Model).is_err());
     }
 
@@ -1118,13 +1033,15 @@ mod tests {
         let store = WasmMediaStore::default();
         assert!(store.resolve("warm.cube", AssetKind::Lut).is_err());
 
-        store.set_lut("warm.cube".to_string(), vec![7, 8]).unwrap();
+        store
+            .set_file(AssetKind::Lut, "warm.cube".to_string(), vec![7, 8])
+            .unwrap();
         let lut = resolver::<dyn LutResolver>(&store, "warm.cube");
         assert_eq!(lut.data().unwrap(), [7, 8]);
-        assert!(store.has_lut("warm.cube"));
+        assert!(store.has_file(AssetKind::Lut, "warm.cube"));
 
-        store.remove_lut("warm.cube").unwrap();
-        assert!(!store.has_lut("warm.cube"));
+        store.remove_file(AssetKind::Lut, "warm.cube").unwrap();
+        assert!(!store.has_file(AssetKind::Lut, "warm.cube"));
         assert!(store.resolve("warm.cube", AssetKind::Lut).is_err());
     }
 
@@ -1139,21 +1056,32 @@ mod tests {
         assert_eq!(missing.code(), "media.not_found");
 
         store
-            .set_environment("sky.hdr".to_string(), vec![7, 8])
+            .set_file(AssetKind::Environment, "sky.hdr".to_string(), vec![7, 8])
             .unwrap();
         let first = identity(&store, "sky.hdr", AssetKind::Environment);
         let environment = resolver::<dyn EnvironmentResolver>(&store, "sky.hdr");
         assert_eq!(environment.data().unwrap(), [7, 8]);
-        assert!(store.has_environment("sky.hdr"));
+        assert!(store.has_file(AssetKind::Environment, "sky.hdr"));
 
         store
-            .set_environment("sky.hdr".to_string(), vec![9])
+            .set_file(AssetKind::Environment, "sky.hdr".to_string(), vec![9])
             .unwrap();
         assert_ne!(identity(&store, "sky.hdr", AssetKind::Environment), first);
 
-        store.remove_environment("sky.hdr").unwrap();
-        assert!(!store.has_environment("sky.hdr"));
+        store
+            .remove_file(AssetKind::Environment, "sky.hdr")
+            .unwrap();
+        assert!(!store.has_file(AssetKind::Environment, "sky.hdr"));
         assert!(store.resolve("sky.hdr", AssetKind::Environment).is_err());
+    }
+
+    #[test]
+    fn only_model_environment_and_lut_are_file_kinds() {
+        assert_eq!(file_kind("model"), Some(AssetKind::Model));
+        assert_eq!(file_kind("environment"), Some(AssetKind::Environment));
+        assert_eq!(file_kind("lut"), Some(AssetKind::Lut));
+        assert_eq!(file_kind("image"), None);
+        assert_eq!(file_kind("glb"), None);
     }
 
     const FRAME_BYTES: usize = 4;

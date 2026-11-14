@@ -31,6 +31,7 @@ export type {
   BlobMediaSourceInput,
   BufferMediaSourceInput,
   DecodedImageFrame,
+  FileMediaKind,
   FrameRequirementsPayload,
   FrameRequirementsVideoPayload,
   ImageSourceRegistration,
