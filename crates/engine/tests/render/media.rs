@@ -7,14 +7,12 @@ use lumen_engine::node::NodeId;
 use lumen_gpu::wgpu;
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, Scene, TestMedia, check, gpu, read_rgba8, render, scene};
+use crate::support::{
+    BLUE, CLEAR, Case, Expect, GREEN, RED, Scene, TestMedia, check, gpu, read_rgba8, render, scene,
+};
 
 const CANVAS: (u32, u32) = (32, 16);
-const RED: [u8; 4] = [255, 0, 0, 255];
-const GREEN: [u8; 4] = [0, 255, 0, 255];
-const BLUE: [u8; 4] = [0, 0, 255, 255];
 const YELLOW: [u8; 4] = [255, 255, 0, 255];
-const CLEAR: [u8; 4] = [0; 4];
 
 /// The last pixel of the canvas, which only a canvas-sized image covers.
 const CORNER: (u32, u32) = (CANVAS.0 - 1, CANVAS.1 - 1);

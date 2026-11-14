@@ -6,9 +6,7 @@ use lumen_engine::diagnostic::Severity;
 use lumen_engine::node::NodeId;
 use serde_json::{Value, json};
 
-use crate::support::{TestMedia, gpu, render, scene};
-
-const RED: [u8; 4] = [255, 0, 0, 255];
+use crate::support::{RED, TestMedia, gpu, render, scene};
 
 /// A gradient smooth enough that sampling it at any scale gives the colour at the sample.
 fn gradient(width: u32, height: u32) -> Vec<u8> {

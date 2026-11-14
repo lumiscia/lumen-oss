@@ -4,10 +4,9 @@
 use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, TestMedia, check, gpu, render, scene};
+use crate::support::{CLEAR, Case, Expect, TestMedia, check, gpu, render, scene};
 
 const SIZE: (u32, u32) = (96, 96);
-const CLEAR: [u8; 4] = [0, 0, 0, 0];
 
 fn shape(id: u32, params: Value) -> Value {
     json!({ "id": id, "type": "shape_3d", "params": params })

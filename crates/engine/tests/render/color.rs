@@ -7,7 +7,7 @@ use lumen_engine::{
 };
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
+use crate::support::{CLEAR, Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
 
 /// An sRGB-encoded value in `0..=1` in linear light.
 pub fn decode(encoded: f64) -> f64 {
@@ -250,7 +250,6 @@ fn custom(check: impl Fn(&Frame) + 'static) -> Expect {
 
 #[test]
 fn transparent_and_coloured_edges_have_no_dark_fringe() {
-    const CLEAR: [u8; 4] = [0, 0, 0, 0];
     // Straight red at alpha 0, uploaded as an image file is: its colour must not show through.
     let hidden_red = TestMedia::default().straight_image("clear", 4, 4, [255, 0, 0, 0].repeat(16));
     let effect = |kind: &str, params: Value| {

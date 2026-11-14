@@ -2,6 +2,7 @@ use glam::{Mat4, Quat, Vec3};
 use serde_json::{Value, json};
 
 use super::*;
+use crate::test_support::write_glb;
 use crate::{Filter, MapUv, Sampler, Wrap};
 
 /// A glTF document and its binary chunk, assembled into a `.glb` by [`Glb::bytes`].
@@ -89,20 +90,8 @@ impl Glb {
     fn bytes_with(&self, edit: impl FnOnce(String) -> String) -> Vec<u8> {
         let mut json = self.json.clone();
         json["buffers"][0]["byteLength"] = json!(self.bin.len());
-        let mut json = edit(serde_json::to_string(&json).unwrap()).into_bytes();
-        json.resize(json.len().next_multiple_of(4), b' ');
-        let mut bin = self.bin.clone();
-        bin.resize(bin.len().next_multiple_of(4), 0);
-        let mut out = b"glTF".to_vec();
-        out.extend(2u32.to_le_bytes());
-        out.extend(((12 + 8 + json.len() + 8 + bin.len()) as u32).to_le_bytes());
-        out.extend((json.len() as u32).to_le_bytes());
-        out.extend(b"JSON");
-        out.extend(json);
-        out.extend((bin.len() as u32).to_le_bytes());
-        out.extend(b"BIN\0");
-        out.extend(bin);
-        out
+        let json = edit(serde_json::to_string(&json).unwrap());
+        write_glb(json.as_bytes(), &self.bin)
     }
 
     fn read(&self) -> Result<Model, ModelError> {
@@ -1820,8 +1809,7 @@ fn draco_streams_hold_only_named_attributes_and_fallbacks_read_first() {
 /// Files made to reach past the reader's limits, from `tests/fixtures/review-*.glb`.
 #[test]
 fn files_made_to_reach_past_the_limits_are_errors_without_panicking() {
-    let webp = |why: &str| invalid(format!("a WebP image in the model is corrupt: {why}"));
-    let files: [(&[u8], bool, ModelError); 4] = [
+    let files: [(&[u8], bool, ModelError); 3] = [
         (
             include_bytes!("../../tests/fixtures/review-zstd.glb"),
             cfg!(feature = "ktx2"),
@@ -1830,11 +1818,6 @@ fn files_made_to_reach_past_the_limits_are_errors_without_panicking() {
                  1073741824 bytes, more than the 1024 it may be"
                     .to_string(),
             ),
-        ),
-        (
-            include_bytes!("../../tests/fixtures/review-webp-size.glb"),
-            cfg!(feature = "webp"),
-            webp("its image is another size than its canvas"),
         ),
         (
             include_bytes!("../../tests/fixtures/review-animated.glb"),

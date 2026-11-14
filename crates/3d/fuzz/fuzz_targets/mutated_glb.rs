@@ -9,6 +9,7 @@ mod check;
 use std::sync::LazyLock;
 
 use libfuzzer_sys::arbitrary::{self, Arbitrary};
+use lumen_3d::test_support::write_glb;
 use serde_json::Value;
 
 const SEEDS: [&[u8]; 8] = [
@@ -131,23 +132,5 @@ libfuzzer_sys::fuzz_target!(|input: Input| {
             _ => {}
         }
     }
-    check::check(&glb(&json, &bin));
+    check::check(&write_glb(&serde_json::to_vec(&json).unwrap(), &bin));
 });
-
-/// `json` and `bin` as a `.glb`.
-fn glb(json: &Value, bin: &[u8]) -> Vec<u8> {
-    let mut json = serde_json::to_vec(json).unwrap();
-    json.resize(json.len().next_multiple_of(4), b' ');
-    let mut bin = bin.to_vec();
-    bin.resize(bin.len().next_multiple_of(4), 0);
-    let mut out = b"glTF".to_vec();
-    out.extend(2u32.to_le_bytes());
-    out.extend(((12 + 8 + json.len() + 8 + bin.len()) as u32).to_le_bytes());
-    out.extend((json.len() as u32).to_le_bytes());
-    out.extend(b"JSON");
-    out.extend(json);
-    out.extend((bin.len() as u32).to_le_bytes());
-    out.extend(b"BIN\0");
-    out.extend(bin);
-    out
-}

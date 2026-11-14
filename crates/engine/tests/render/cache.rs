@@ -8,7 +8,7 @@ use lumen_engine::{
 use lumen_gpu::wgpu;
 use serde_json::{Value, json};
 
-use crate::support::{Scene, TestMedia, gpu, read_rgba8, render, scene};
+use crate::support::{BLUE, RED, Scene, TestMedia, gpu, read_rgba8, render, scene};
 
 const CANVAS: (u32, u32) = (32, 16);
 
@@ -486,8 +486,6 @@ fn image(source: &str, id: &str, color: [u8; 4]) -> TestMedia {
 
 #[test]
 fn a_static_image_is_kept_until_its_image_is_replaced() {
-    const RED: [u8; 4] = [255, 0, 0, 255];
-    const BLUE: [u8; 4] = [0, 0, 255, 255];
     let gpu = gpu();
     let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
     let (red, blue) = (image("logo", "logo#1", RED), image("logo", "logo#2", BLUE));
@@ -520,8 +518,6 @@ fn a_static_image_is_kept_until_its_image_is_replaced() {
 
 #[test]
 fn a_static_image_is_redrawn_when_replaced_by_one_of_another_size() {
-    const RED: [u8; 4] = [255, 0, 0, 255];
-    const BLUE: [u8; 4] = [0, 0, 255, 255];
     let gpu = gpu();
     let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
     let composition = image_under_animated("logo", true);

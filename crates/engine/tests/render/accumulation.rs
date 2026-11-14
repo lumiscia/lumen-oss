@@ -8,10 +8,8 @@ use serde_json::{Value, json};
 
 use crate::color::{linear_average, srgb8};
 use crate::support::{
-    Case, Expect, Frame, Scene, TestMedia, check, gpu, render, render_working_space, scene,
+    Case, Expect, Frame, ORANGE, Scene, TestMedia, check, gpu, render, render_working_space, scene,
 };
-
-const ORANGE: [u8; 4] = [255, 128, 0, 255];
 
 /// A shape whose width and position both animate, with an analytic shutter of `motion_blur`.
 fn growing(motion_blur: f64) -> Value {

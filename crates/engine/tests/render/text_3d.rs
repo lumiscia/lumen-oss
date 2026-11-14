@@ -3,10 +3,9 @@
 use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, Frame, TestMedia, check, gpu, render, scene};
+use crate::support::{Case, Expect, Frame, GREEN, TestMedia, check, gpu, render, scene};
 
 const SIZE: (u32, u32) = (64, 64);
-const GREEN: [u8; 4] = [0, 255, 0, 255];
 
 /// A `text_3d` with `params`, unlit green so that it shows its colour wherever it is drawn, under
 /// the default camera.

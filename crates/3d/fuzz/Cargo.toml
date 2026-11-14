@@ -13,6 +13,7 @@ lumen-3d = { package = "lumen-engine-3d", path = "..", features = [
   "draco",
   "ktx2",
   "meshopt",
+  "test-support",
   "webp",
 ] }
 serde_json = "1.0.149"
