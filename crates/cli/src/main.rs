@@ -1053,6 +1053,55 @@ mod tests {
         Cli::command().debug_assert();
     }
 
+    /// The long flags `packages/lumen-cli/src/flags.ts` lists for `subcommand`.
+    fn listed_flags(subcommand: &str) -> Vec<String> {
+        const LIST: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../packages/lumen-cli/src/flags.ts"
+        ));
+        let start = format!("{subcommand}: [");
+        let list = LIST
+            .split_once(&start)
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .unwrap_or_else(|| panic!("flags.ts has no `{start}` list"))
+            .0;
+        list.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn the_npm_wrapper_lists_every_long_flag_of_each_subcommand() {
+        let cli = Cli::command();
+        for name in ["render", "check", "preview"] {
+            let subcommand = cli.find_subcommand(name).expect("a subcommand");
+            let mut actual: Vec<String> = subcommand
+                .get_arguments()
+                .filter_map(|arg| arg.get_long())
+                .filter(|long| !matches!(*long, "help" | "version"))
+                .map(String::from)
+                .collect();
+            actual.sort();
+            let listed = listed_flags(name);
+            let missing: Vec<_> = actual
+                .iter()
+                .filter(|flag| !listed.contains(flag))
+                .collect();
+            let extra: Vec<_> = listed
+                .iter()
+                .filter(|flag| !actual.contains(flag))
+                .collect();
+            assert!(
+                missing.is_empty() && extra.is_empty() && listed == actual,
+                "`lumen {name}` and packages/lumen-cli/src/flags.ts disagree: missing from the \
+                 file {missing:?}, extra in the file {extra:?} (the list must be sorted); update \
+                 packages/lumen-cli/src/flags.ts"
+            );
+        }
+    }
+
     #[test]
     fn text_glyph_limit_defaults_and_stays_within_the_ceiling() {
         let limit = |flags: &[&str]| {

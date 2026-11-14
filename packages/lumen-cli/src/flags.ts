@@ -1,0 +1,33 @@
+/** Every long flag of each `lumen` subcommand. A test in crates/cli compares it with the CLI. */
+export const flags = {
+  render: [
+    "alpha",
+    "bit-depth",
+    "bitrate",
+    "codec",
+    "crf",
+    "encoder",
+    "font-dir",
+    "frame",
+    "frames",
+    "jpeg-quality",
+    "max-text-glyphs",
+    "media-root",
+    "output",
+    "preset",
+    "qp",
+    "quality",
+    "quality-config",
+  ],
+  check: ["font-dir", "format", "media-root"],
+  preview: [
+    "columns",
+    "count",
+    "font-dir",
+    "frames",
+    "max-text-glyphs",
+    "media-root",
+    "output",
+    "width",
+  ],
+} as const;
