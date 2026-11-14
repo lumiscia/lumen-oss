@@ -64,7 +64,7 @@ pub(crate) fn send_frame_and_write_packets(
                 sys::av_interleaved_write_frame(output.ptr, packet.as_mut_ptr()),
                 "av_interleaved_write_frame",
             )
-            .map_err(|error| error.with_path(output.path().to_string()))?;
+            .map_err(|error| output.output_error(error))?;
         }
     }
 }

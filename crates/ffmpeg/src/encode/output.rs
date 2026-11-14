@@ -1,7 +1,7 @@
 use std::ptr;
 
 use crate::ffi::{self, sys};
-use crate::{FfmpegError, Result};
+use crate::{FfmpegError, FfmpegErrorKind, Result};
 
 pub(crate) struct OutputContext {
     path: String,
@@ -47,6 +47,13 @@ impl OutputContext {
         &self.path
     }
 
+    /// Marks `error` as a failure on this output.
+    pub(crate) fn output_error(&self, error: FfmpegError) -> FfmpegError {
+        error
+            .with_path(self.path.clone())
+            .with_kind(FfmpegErrorKind::Output)
+    }
+
     pub(crate) fn write_header(&mut self) -> Result<()> {
         self.open_io()?;
         unsafe {
@@ -54,14 +61,14 @@ impl OutputContext {
                 sys::avformat_write_header(self.ptr, ptr::null_mut()),
                 "avformat_write_header",
             )
-            .map_err(|error| error.with_path(self.path.clone()))
+            .map_err(|error| self.output_error(error))
         }
     }
 
     pub(crate) fn write_trailer(&mut self) -> Result<()> {
         unsafe {
             ffi::check(sys::av_write_trailer(self.ptr), "av_write_trailer")
-                .map_err(|error| error.with_path(self.path.clone()))
+                .map_err(|error| self.output_error(error))
         }
     }
 
@@ -74,19 +81,20 @@ impl OutputContext {
         self.opened_io = false;
         unsafe {
             ffi::check(sys::avio_closep(&mut (*self.ptr).pb), "avio_closep")
-                .map_err(|error| error.with_path(self.path.clone()))
+                .map_err(|error| self.output_error(error))
         }
     }
 
     fn open_io(&mut self) -> Result<()> {
         unsafe {
             if ((*(*self.ptr).oformat).flags & sys::AVFMT_NOFILE) == 0 {
-                let c_path = ffi::cstring("avio_open", &self.path)?;
+                let c_path = ffi::cstring("avio_open", &self.path)
+                    .map_err(|error| self.output_error(error))?;
                 ffi::check(
                     sys::avio_open(&mut (*self.ptr).pb, c_path.as_ptr(), sys::AVIO_FLAG_WRITE),
                     "avio_open",
                 )
-                .map_err(|error| error.with_path(self.path.clone()))?;
+                .map_err(|error| self.output_error(error))?;
                 self.opened_io = true;
             }
         }

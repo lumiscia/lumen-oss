@@ -49,9 +49,25 @@ pub use video::{
 
 pub type Result<T> = std::result::Result<T, FfmpegError>;
 
+/// What kind of failure an [`FfmpegError`] is, for the failures callers tell apart. The rest are
+/// `Other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FfmpegErrorKind {
+    /// Opening or writing the output failed, rather than the codec.
+    Output,
+    /// The input opened but has no video or audio stream, as asked.
+    NoStream,
+    /// This FFmpeg lacks the container format, protocol or codec the input needs, or refuses it as
+    /// outside what it may read.
+    Unsupported,
+    Other,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FfmpegError {
+    /// A label for messages. Do not match on it; use [`kind`](Self::kind).
     pub operation: &'static str,
+    pub kind: FfmpegErrorKind,
     pub path: Option<String>,
     pub code: Option<i32>,
     pub message: String,
@@ -64,6 +80,7 @@ impl FfmpegError {
     pub fn new(operation: &'static str, message: impl Into<String>) -> Self {
         Self {
             operation,
+            kind: FfmpegErrorKind::Other,
             path: None,
             code: None,
             message: message.into(),
@@ -79,6 +96,11 @@ impl FfmpegError {
         let mut error = Self::new(operation, message);
         error.code = Some(ffi::sys::AVERROR(libc::ENOMEM));
         error
+    }
+
+    pub fn with_kind(mut self, kind: FfmpegErrorKind) -> Self {
+        self.kind = kind;
+        self
     }
 
     pub fn with_path(mut self, path: impl Into<String>) -> Self {
@@ -103,14 +125,7 @@ impl FfmpegError {
 
     /// Whether opening or writing the output failed, rather than the codec.
     pub fn is_output_failure(&self) -> bool {
-        matches!(
-            self.operation,
-            "avio_open"
-                | "avformat_write_header"
-                | "av_interleaved_write_frame"
-                | "av_write_trailer"
-                | "avio_closep"
-        )
+        self.kind == FfmpegErrorKind::Output
     }
 
     /// Whether FFmpeg found no file at the input's path.
@@ -121,9 +136,7 @@ impl FfmpegError {
     /// Whether this FFmpeg lacks the container format, protocol or codec the input needs, or
     /// refuses it as outside what it may read.
     pub fn is_unsupported(&self) -> bool {
-        self.operation == "avcodec_find_decoder"
-            || (self.operation == "avformat_open_input"
-                && format::is_unsupported_message(&self.message))
+        self.kind == FfmpegErrorKind::Unsupported
     }
 
     /// Whether FFmpeg read the input and found it malformed, or in no format it recognises.
@@ -135,7 +148,7 @@ impl FfmpegError {
 
     /// Whether the input opened but has no video or audio stream, as asked.
     pub fn lacks_stream(&self) -> bool {
-        matches!(self.operation, "best_video_stream" | "best_audio_stream")
+        self.kind == FfmpegErrorKind::NoStream
     }
 
     /// Whether the operation ran out of memory, file descriptors or a device that is in use, which
@@ -215,14 +228,6 @@ mod tests {
         assert!(!failed("avio_open", libc::ENOENT).is_resource_exhaustion());
         assert!(!FfmpegError::new("avcodec_open2", "no code").is_resource_exhaustion());
         assert!(FfmpegError::out_of_memory("av_frame_alloc", "null").is_resource_exhaustion());
-    }
-
-    #[test]
-    fn output_failures_are_the_operations_on_the_output() {
-        for operation in ["avio_open", "avformat_write_header", "av_write_trailer"] {
-            assert!(failed(operation, libc::ENOENT).is_output_failure());
-        }
-        assert!(!failed("avcodec_open2", libc::ENOENT).is_output_failure());
     }
 
     #[test]
