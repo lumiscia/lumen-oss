@@ -232,13 +232,8 @@ export class Lumen {
     const contentType =
       options.contentType ??
       (body instanceof Blob && body.type !== "" ? body.type : undefined) ??
-      (fileName !== undefined ? contentTypeOf(fileName) : undefined);
-    if (contentType === undefined) {
-      throw new LumenError(
-        "invalid_upload",
-        `Could not tell the content type of ${fileName === undefined ? "the upload" : `"${fileName}"`}: pass contentType.`,
-      );
-    }
+      (fileName !== undefined ? contentTypeOf(fileName) : undefined) ??
+      "application/octet-stream";
 
     const created = await this.#request("POST", "/media", {
       body: { contentType, fileName: fileName ?? "upload", sizeBytes },

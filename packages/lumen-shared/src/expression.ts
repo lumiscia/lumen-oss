@@ -622,6 +622,13 @@ export interface ExprFunction<
   (...args: A): Expr<R>;
 }
 
+const identifier = "[A-Za-z_][A-Za-z0-9_]*";
+
+/** A name and a comma-separated list of parameter names, like the composition schema's pattern. */
+const signaturePattern = new RegExp(
+  `^\\s*(${identifier})\\s*\\(\\s*(${identifier}(?:\\s*,\\s*${identifier})*)?\\s*\\)\\s*$`,
+);
+
 /** Rejects implementations whose parameters can't hold the expressions `fn` passes them. */
 type CheckedSignature<A extends readonly unknown[]> = false extends {
   [I in keyof A]: Expr<never> extends A[I] ? true : false;
@@ -637,9 +644,11 @@ export function fn<A extends readonly AnyArg[], R extends Value>(
   signature: CheckedSignature<A>,
   impl: (...params: A) => Expr<R>,
 ): ExprFunction<A, R> {
-  const match = /^\s*(\w+)\s*\((.*)\)\s*$/.exec(signature);
+  const match = signaturePattern.exec(signature);
   if (match === null) {
-    throw new TypeError(`Invalid function signature \`${signature}\`; expected \`name(a, b)\`.`);
+    throw new TypeError(
+      `Invalid function signature \`${signature}\`; expected \`name(a, b)\` with identifiers for the name and parameters.`,
+    );
   }
   const [, name = "", list = ""] = match;
   const params = list.trim() === "" ? [] : list.split(",").map((param) => param.trim());

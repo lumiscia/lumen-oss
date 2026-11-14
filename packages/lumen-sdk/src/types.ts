@@ -23,6 +23,7 @@ export type QualityPreset = "draft" | "standard" | "high" | "lossless" | (string
 
 export interface RenderOptions {
   readonly signal?: AbortSignal;
+  /** Only the hosted API honours it; `lumen-server` ignores the header and runs every request. */
   readonly idempotencyKey?: string;
   /** Media by the alias the composition uses: a URL, or an upload to reference. */
   readonly media?: RenderMediaManifest;
@@ -154,7 +155,10 @@ export interface UploadMediaOptions {
   readonly body: UploadMediaBody;
   /** Defaults to the file's name, or `upload`. */
   readonly fileName?: string;
-  /** Defaults to the blob's type, then the file name's extension. A body with neither needs it. */
+  /**
+   * Defaults to the blob's type, then the file name's extension, then `application/octet-stream`.
+   * The host reads the file's bytes, not this, to tell what it is.
+   */
   readonly contentType?: string;
   /** Required for a stream. Taken from any other body. */
   readonly sizeBytes?: number;
