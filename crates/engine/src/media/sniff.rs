@@ -48,11 +48,14 @@ pub fn sniff(head: &[u8]) -> Sniff {
     if starts(b"#?RADIANCE") || starts(b"#?RGBE") || starts(&[0x76, 0x2f, 0x31, 0x01]) {
         return Sniff::Kind(Environment);
     }
+    // Renders decode PNG, JPEG, GIF, WebP, TIFF, BMP and ICO. HEIC and AVIF are recognised below
+    // but not decoded.
     if starts(&[0x89, b'P', b'N', b'G'])
         || starts(&[0xff, 0xd8, 0xff])
         || starts(b"GIF8")
         || starts(b"II*\0")
         || starts(b"MM\0*")
+        || starts(&[0, 0, 1, 0])
         || riff(b"WEBP")
     {
         return Sniff::Kind(Image);
@@ -98,6 +101,10 @@ pub fn sniff(head: &[u8]) -> Sniff {
     {
         return Sniff::Kind(Font);
     }
+    // BMP's magic is two bytes, so it is tried after every longer one.
+    if starts(b"BM") {
+        return Sniff::Kind(Image);
+    }
     Sniff::Unknown
 }
 
@@ -107,9 +114,11 @@ mod tests {
 
     #[test]
     fn files_are_recognised_by_their_first_bytes() {
-        let cases: [(&[u8], Sniff); 20] = [
+        let cases: [(&[u8], Sniff); 23] = [
             (b"\x89PNG\r\n\x1a\n", Sniff::Kind(AssetKind::Image)),
             (b"RIFF\0\0\0\0WEBPVP8 ", Sniff::Kind(AssetKind::Image)),
+            (b"BM\x36\0\x0c\0", Sniff::Kind(AssetKind::Image)),
+            (b"\0\0\x01\0\x01\0", Sniff::Kind(AssetKind::Image)),
             (b"\0\0\0\x18ftypheic", Sniff::Kind(AssetKind::Image)),
             (b"\0\0\0\x18ftypavif", Sniff::Kind(AssetKind::Image)),
             (b"\0\0\0\x18ftypmif1", Sniff::Kind(AssetKind::Image)),
@@ -117,6 +126,7 @@ mod tests {
             (b"\0\0\0\x18ftypmp42", Sniff::Streams),
             (b"\0\0\0\x18ftypisom", Sniff::Streams),
             (b"\x1a\x45\xdf\xa3\x01", Sniff::Streams),
+            (b"\0\0\x01\xba\x44", Sniff::Streams),
             (b"OggS\0\x02", Sniff::Streams),
             (b"RIFF\0\0\0\0AVI LIST", Sniff::Streams),
             (b"RIFF\0\0\0\0WAVEfmt ", Sniff::Kind(AssetKind::Audio)),

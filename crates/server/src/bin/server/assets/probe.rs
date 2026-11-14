@@ -6,8 +6,8 @@ use lumen_3d::model::ModelInfo;
 use lumen_engine::{
     error::{MediaError, MediaFailure},
     media::{
-        FfmpegAudioResolver, FfmpegVideoResolver, ImageFileResolver, ImageResolver,
-        VideoFrameResolver,
+        AssetKind, FfmpegAudioResolver, FfmpegVideoResolver, ImageFileResolver, ImageResolver,
+        Sniff, VideoFrameResolver, sniff,
     },
 };
 use lumen_ffmpeg::{EncodeCodec, InputContext};
@@ -60,27 +60,32 @@ fn probe_file(path: &Path) -> Result<(MediaKind, MediaMetadata), Rejection> {
         rejection
     };
 
-    if head.starts_with(b"glTF") {
-        return probe_model(path).map(|metadata| (MediaKind::Model, metadata));
-    }
-    if lumen_3d::environment::is_environment_magic(head) {
-        return probe_environment(path).map(|metadata| (MediaKind::Environment, metadata));
-    }
-    if let Some(font) = font_magic(head) {
-        return probe_font(path, font).map(|metadata| (MediaKind::Font, metadata));
-    }
-    if is_image_magic(head) {
-        let image = ImageFileResolver::open(path.to_string_lossy())
-            .map_err(|error| hide_path(engine_rejection(error)))?;
-        let size = image.metadata();
-        return Ok((
-            MediaKind::Image,
-            MediaMetadata {
-                width: Some(size.width),
-                height: Some(size.height),
-                ..MediaMetadata::default()
-            },
-        ));
+    match sniff(head) {
+        Sniff::Kind(AssetKind::Model) => {
+            return probe_model(path).map(|metadata| (MediaKind::Model, metadata));
+        }
+        Sniff::Kind(AssetKind::Environment) => {
+            return probe_environment(path).map(|metadata| (MediaKind::Environment, metadata));
+        }
+        Sniff::Kind(AssetKind::Font) => {
+            let woff = head.starts_with(b"wOFF") || head.starts_with(b"wOF2");
+            return probe_font(path, woff).map(|metadata| (MediaKind::Font, metadata));
+        }
+        // HEIC and AVIF are images the renders' decoders can't open, but FFmpeg can.
+        Sniff::Kind(AssetKind::Image) if head.get(4..8) != Some(b"ftyp") => {
+            let image = ImageFileResolver::open(path.to_string_lossy())
+                .map_err(|error| hide_path(engine_rejection(error)))?;
+            let size = image.metadata();
+            return Ok((
+                MediaKind::Image,
+                MediaMetadata {
+                    width: Some(size.width),
+                    height: Some(size.height),
+                    ..MediaMetadata::default()
+                },
+            ));
+        }
+        _ => {}
     }
     if is_gltf_json_file(path) {
         return Err(Box::new(MediaFailure::unsupported(
@@ -103,33 +108,8 @@ fn is_gltf_json_file(path: &Path) -> bool {
         && lumen_3d::model::is_gltf_json(&prefix)
 }
 
-enum FontMagic {
-    Sfnt,
-    Woff,
-}
-
-fn font_magic(head: &[u8]) -> Option<FontMagic> {
-    match head.get(..4)? {
-        [0, 1, 0, 0] | b"OTTO" | b"true" | b"ttcf" => Some(FontMagic::Sfnt),
-        b"wOFF" | b"wOF2" => Some(FontMagic::Woff),
-        _ => None,
-    }
-}
-
-/// The formats renders decode images from: PNG, JPEG, GIF, WebP, BMP, TIFF and ICO.
-fn is_image_magic(head: &[u8]) -> bool {
-    head.starts_with(&[0x89, b'P', b'N', b'G'])
-        || head.starts_with(&[0xff, 0xd8, 0xff])
-        || head.starts_with(b"GIF8")
-        || (head.starts_with(b"RIFF") && head.get(8..12) == Some(b"WEBP"))
-        || head.starts_with(b"BM")
-        || head.starts_with(b"II*\0")
-        || head.starts_with(b"MM\0*")
-        || head.starts_with(&[0, 0, 1, 0])
-}
-
-fn probe_font(path: &Path, magic: FontMagic) -> Result<MediaMetadata, Rejection> {
-    if matches!(magic, FontMagic::Woff) {
+fn probe_font(path: &Path, woff: bool) -> Result<MediaMetadata, Rejection> {
+    if woff {
         return Err(Box::new(MediaFailure::unsupported(
             FILE,
             "WOFF fonts are not supported: upload a TrueType or OpenType file",
