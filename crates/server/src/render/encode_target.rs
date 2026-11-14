@@ -7,8 +7,8 @@ use std::{
 use lumen_engine::{
     composition::Composition,
     gpu::{
-        GpuCompositionRenderer, RasterHandle, RenderTarget, RenderedFrame, YuvConverter, YuvFormat,
-        YuvLayout,
+        EncodeYuvFormat, EncodeYuvLayout, GpuCompositionRenderer, RasterHandle, RenderTarget,
+        RenderedFrame, YuvConverter,
     },
 };
 use lumen_ffmpeg::{
@@ -235,7 +235,7 @@ impl EncodeTarget {
                 false,
             )
         })?;
-        let layout = YuvLayout::new(settings.width, settings.height, format);
+        let layout = EncodeYuvLayout::new(settings.width, settings.height, format);
         let converter = YuvConverter::new(renderer.gpu_renderer(), layout, true);
         let ring = ReadbackRing::new(&renderer.gpu_renderer().device, layout.size());
         if let Some(error) = unavailable {
@@ -432,7 +432,7 @@ fn read_back<T>(
 /// A frame the readback ring returned, laid out as `layout` says, handed to the encoder.
 fn send_read(
     sink: &mut EncoderSink,
-    layout: YuvLayout,
+    layout: EncodeYuvLayout,
     read: Option<(u32, Vec<u8>)>,
     timing: &mut RenderTiming,
 ) -> Result<(), ServerRenderError> {
@@ -452,15 +452,15 @@ fn send_read(
 }
 
 /// The converter format for frames an encoder takes in `format`.
-fn yuv_format(format: PixelFormat) -> Option<YuvFormat> {
+fn yuv_format(format: PixelFormat) -> Option<EncodeYuvFormat> {
     match format {
-        PixelFormat::Nv12 => Some(YuvFormat::Nv12),
-        PixelFormat::P010 => Some(YuvFormat::P010),
-        PixelFormat::Yuv420p => Some(YuvFormat::Yuv420p),
-        PixelFormat::Yuv420p10 => Some(YuvFormat::Yuv420p10),
-        PixelFormat::Yuva420p => Some(YuvFormat::Yuva420p),
-        PixelFormat::Yuv444p10 => Some(YuvFormat::Yuv444p10),
-        PixelFormat::Yuva444p10 => Some(YuvFormat::Yuva444p10),
+        PixelFormat::Nv12 => Some(EncodeYuvFormat::Nv12),
+        PixelFormat::P010 => Some(EncodeYuvFormat::P010),
+        PixelFormat::Yuv420p => Some(EncodeYuvFormat::Yuv420p),
+        PixelFormat::Yuv420p10 => Some(EncodeYuvFormat::Yuv420p10),
+        PixelFormat::Yuva420p => Some(EncodeYuvFormat::Yuva420p),
+        PixelFormat::Yuv444p10 => Some(EncodeYuvFormat::Yuv444p10),
+        PixelFormat::Yuva444p10 => Some(EncodeYuvFormat::Yuva444p10),
         _ => None,
     }
 }
