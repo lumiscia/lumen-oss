@@ -5,6 +5,7 @@ use super::{Model, ModelError, ModelScene};
 /// What a model offers a `model_3d` node to choose from: the clips `animation` names, the
 /// materials `texture_material` names and the cameras `camera` names.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub animations: Vec<AnimationInfo>,
@@ -16,6 +17,7 @@ pub struct ModelInfo {
 /// One animation clip. `animation` selects the first clip of that `name`, or else the clip at that
 /// `index`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AnimationInfo {
     pub index: usize,
@@ -29,6 +31,7 @@ pub struct AnimationInfo {
 /// One material. `texture_material` selects the first material of that `name`; an unnamed material
 /// can't be selected.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct MaterialInfo {
     pub index: usize,
@@ -42,6 +45,7 @@ pub struct MaterialInfo {
 /// One camera. `camera` selects the first camera of that `name`, or else the camera at that
 /// `index`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct CameraInfo {
     pub index: usize,

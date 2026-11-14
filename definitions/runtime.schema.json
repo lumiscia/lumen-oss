@@ -1,0 +1,721 @@
+{
+  "$defs": {
+    "AnimationInfo": {
+      "description": "One animation clip. `animation` selects the first clip of that `name`, or else the clip at that\n`index`.",
+      "properties": {
+        "duration": {
+          "description": "Seconds from the start to the last key of any channel, morph target weights' included.",
+          "format": "float",
+          "type": "number"
+        },
+        "index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Absent when the file doesn't name the clip.",
+          "type": "string"
+        }
+      },
+      "required": ["index", "duration"],
+      "type": "object"
+    },
+    "AssetKind": {
+      "description": "What an asset holds, which its store knows from checking it.",
+      "oneOf": [
+        {
+          "enum": ["image", "video", "audio", "font"],
+          "type": "string"
+        },
+        {
+          "const": "model",
+          "description": "A binary glTF (`.glb`) 3D model.",
+          "type": "string"
+        },
+        {
+          "const": "environment",
+          "description": "An equirectangular Radiance `.hdr` or OpenEXR `.exr` environment map.",
+          "type": "string"
+        },
+        {
+          "const": "lut",
+          "description": "An Adobe/Resolve `.cube` colour lookup table.",
+          "type": "string"
+        }
+      ]
+    },
+    "AudioPlan": {
+      "description": "What the mixer plays: the voices, and the segments of root samples each plays.",
+      "properties": {
+        "segments": {
+          "items": {
+            "$ref": "#/$defs/AudioSegment"
+          },
+          "type": "array"
+        },
+        "voices": {
+          "items": {
+            "$ref": "#/$defs/AudioVoice"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["voices", "segments"],
+      "type": "object"
+    },
+    "AudioSegment": {
+      "description": "Root samples `start + i` for `i` in `0..frames`, where a voice plays its clip at\n`position + step * i` samples from the clip's start, at a gain moving linearly from `gain[0]`\nat `i = 0` to `gain[1]` at `i = frames`. Only positions in `[from, to)` sound: the clip, cut\nby the windows of the `clip` nodes that play it.",
+      "properties": {
+        "frames": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "from": {
+          "format": "double",
+          "type": "number"
+        },
+        "gain": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "position": {
+          "format": "double",
+          "type": "number"
+        },
+        "start": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "step": {
+          "format": "double",
+          "type": "number"
+        },
+        "to": {
+          "format": "double",
+          "type": "number"
+        },
+        "voice": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["voice", "start", "frames", "position", "step", "from", "to", "gain"],
+      "type": "object"
+    },
+    "AudioVoice": {
+      "description": "An audio clip as one instance plays it: a clip of the root's timeline, or of a template's for\none path of `clip` nodes that plays the template.",
+      "properties": {
+        "duration": {
+          "description": "The clip's length and its fades, in samples of the composition the clip is in.",
+          "format": "double",
+          "type": "number"
+        },
+        "fadeIn": {
+          "format": "double",
+          "type": "number"
+        },
+        "fadeOut": {
+          "format": "double",
+          "type": "number"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "sourceStart": {
+          "description": "The source sample at the clip's start.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": ["sourceId", "sourceStart", "duration", "fadeIn", "fadeOut"],
+      "type": "object"
+    },
+    "CameraInfo": {
+      "description": "One camera. `camera` selects the first camera of that `name`, or else the camera at that\n`index`.",
+      "properties": {
+        "index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Absent when the file doesn't name the camera.",
+          "type": "string"
+        }
+      },
+      "required": ["index"],
+      "type": "object"
+    },
+    "Diagnostic": {
+      "description": "A problem the engine found with a composition. Its `code` is stable and public, and new codes\ncan appear in any release, so treat one you don't know by its severity.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/DiagnosticCode",
+          "description": "Stable and public, such as `node.unknown_param` or `font.fallback`. New codes can appear in\nany release."
+        },
+        "message": {
+          "description": "Free-form text for people to read, which can change in any release.",
+          "type": "string"
+        },
+        "node": {
+          "description": "The node the diagnostic is about, in the graph `path` points into.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "A JSON pointer into the composition, such as `/nodes/3/params/opacity`. Empty for the\nwhole document.",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        }
+      },
+      "required": ["severity", "code", "path", "message"],
+      "type": "object"
+    },
+    "DiagnosticCode": {
+      "description": "A code a diagnostic can have. Codes are stable and public, and new ones can appear in any release, so treat one you don't know by its severity.",
+      "type": "string",
+      "x-lumen-codes": [
+        {
+          "code": "audio.invalid",
+          "severity": "error"
+        },
+        {
+          "code": "audio.limit",
+          "severity": "error"
+        },
+        {
+          "code": "audio.unknown_track",
+          "severity": "error"
+        },
+        {
+          "code": "clip.invalid",
+          "severity": "error"
+        },
+        {
+          "code": "composition.cycle",
+          "severity": "error"
+        },
+        {
+          "code": "connection.input_already_connected",
+          "severity": "error"
+        },
+        {
+          "code": "connection.invalid_from_port",
+          "severity": "error"
+        },
+        {
+          "code": "connection.missing_source_node",
+          "severity": "error"
+        },
+        {
+          "code": "connection.missing_target_node",
+          "severity": "error"
+        },
+        {
+          "code": "connection.unknown_port",
+          "severity": "error"
+        },
+        {
+          "code": "connection.wrong_kind",
+          "severity": "error"
+        },
+        {
+          "code": "document.invalid",
+          "severity": "error"
+        },
+        {
+          "code": "document.schema_version",
+          "severity": "error"
+        },
+        {
+          "code": "document.syntax",
+          "severity": "error"
+        },
+        {
+          "code": "expression.evaluate",
+          "severity": "error"
+        },
+        {
+          "code": "expression.function",
+          "severity": "error"
+        },
+        {
+          "code": "expression.invalid_prop_read",
+          "severity": "error"
+        },
+        {
+          "code": "expression.parse",
+          "severity": "error"
+        },
+        {
+          "code": "font.fallback",
+          "severity": "warning"
+        },
+        {
+          "code": "font.no_outlines",
+          "severity": "warning"
+        },
+        {
+          "code": "graph.cycle",
+          "severity": "error"
+        },
+        {
+          "code": "graph.duplicate_node_id",
+          "severity": "error"
+        },
+        {
+          "code": "graph.missing_media_output",
+          "severity": "error"
+        },
+        {
+          "code": "graph.missing_required_input",
+          "severity": "error"
+        },
+        {
+          "code": "graph.multiple_media_outputs",
+          "severity": "error"
+        },
+        {
+          "code": "graph.node_id_mismatch",
+          "severity": "error"
+        },
+        {
+          "code": "media.color_unsupported",
+          "severity": "warning"
+        },
+        {
+          "code": "media.decode",
+          "severity": "error"
+        },
+        {
+          "code": "media.frame_out_of_range",
+          "severity": "error"
+        },
+        {
+          "code": "media.image_reduced",
+          "severity": "warning"
+        },
+        {
+          "code": "media.not_found",
+          "severity": "error"
+        },
+        {
+          "code": "media.too_large",
+          "severity": "error"
+        },
+        {
+          "code": "media.unsupported",
+          "severity": "error"
+        },
+        {
+          "code": "media.wrong_kind",
+          "severity": "error"
+        },
+        {
+          "code": "node.invalid_param",
+          "severity": "error"
+        },
+        {
+          "code": "node.invalid_params",
+          "severity": "error"
+        },
+        {
+          "code": "node.unknown_param",
+          "severity": "error"
+        },
+        {
+          "code": "node.unknown_type",
+          "severity": "error"
+        },
+        {
+          "code": "node.unsupported",
+          "severity": "error"
+        },
+        {
+          "code": "property.invalid_type",
+          "severity": "error"
+        },
+        {
+          "code": "render.frame_out_of_range",
+          "severity": "error"
+        },
+        {
+          "code": "render.gpu",
+          "severity": "error"
+        },
+        {
+          "code": "render.internal",
+          "severity": "error"
+        },
+        {
+          "code": "render.invalid_output_type",
+          "severity": "error"
+        },
+        {
+          "code": "render.limit",
+          "severity": "error"
+        },
+        {
+          "code": "render.missing_node",
+          "severity": "error"
+        },
+        {
+          "code": "render.node_evaluation",
+          "severity": "error"
+        },
+        {
+          "code": "render.too_deeply_nested",
+          "severity": "error"
+        },
+        {
+          "code": "scene.model_primitives_skipped",
+          "severity": "warning"
+        },
+        {
+          "code": "scene.shadow_limit",
+          "severity": "warning"
+        },
+        {
+          "code": "settings.invalid",
+          "severity": "error"
+        }
+      ]
+    },
+    "DynamicMediaUse": {
+      "description": "A media param set by an expression, whose source is known only when a frame evaluates it.",
+      "properties": {
+        "kinds": {
+          "items": {
+            "$ref": "#/$defs/AssetKind"
+          },
+          "type": "array"
+        },
+        "node": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "param": {
+          "description": "The param's path in the node's `params`, such as `source` or `content[1].font_family`.",
+          "type": "string"
+        },
+        "template": {
+          "description": "The template the node is in, absent for the root.",
+          "type": "string"
+        }
+      },
+      "required": ["node", "param", "kinds"],
+      "type": "object"
+    },
+    "FontDependency": {
+      "description": "A font family a text node names as a literal. A family is not a media source: the host\nresolves it by name, falling back to its own fonts, unless it is written `asset:<id>`.",
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "uses": {
+          "items": {
+            "$ref": "#/$defs/NodeParamAt"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["family", "uses"],
+      "type": "object"
+    },
+    "FrameRequirements": {
+      "description": "The images and video frames one frame of the composition reads.",
+      "properties": {
+        "images": {
+          "description": "The ids of the images, in order and without repeats.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "videos": {
+          "items": {
+            "$ref": "#/$defs/VideoFrameRequirement"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["images", "videos"],
+      "type": "object"
+    },
+    "MaterialInfo": {
+      "description": "One material. `texture_material` selects the first material of that `name`; an unnamed material\ncan't be selected.",
+      "properties": {
+        "hasBaseColorTexture": {
+          "description": "Whether a texture multiplies its base colour, which a `texture` input replaces.",
+          "type": "boolean"
+        },
+        "index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Absent when the file doesn't name the material.",
+          "type": "string"
+        }
+      },
+      "required": ["index", "hasBaseColorTexture"],
+      "type": "object"
+    },
+    "MediaDependency": {
+      "description": "A source the composition names as written (a path, a URL or an alias, or `asset:<id>`), with\neach place it is used.",
+      "properties": {
+        "kinds": {
+          "description": "The kinds of media the uses read, without repeats, in the order the uses first name them.",
+          "items": {
+            "$ref": "#/$defs/AssetKind"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "uses": {
+          "items": {
+            "$ref": "#/$defs/MediaUse"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["source", "kinds", "uses"],
+      "type": "object"
+    },
+    "MediaFailure": {
+      "additionalProperties": false,
+      "description": "A media source that can't be used, the same way for every kind and every host.",
+      "properties": {
+        "actual": {
+          "description": "For `media.too_large`, the value over the limit, when it is known.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "at": {
+          "$ref": "#/$defs/MediaLocation",
+          "description": "Where the composition uses the source, when known."
+        },
+        "code": {
+          "description": "Why the source can't be used, as its public diagnostic code. `media.decode` is data that should be\nwhat the use reads but is corrupt, truncated or in no format the engine identifies;\n`media.unsupported` is data it identifies and doesn't read, such as a codec it lacks.",
+          "enum": [
+            "media.not_found",
+            "media.wrong_kind",
+            "media.unsupported",
+            "media.too_large",
+            "media.decode"
+          ],
+          "type": "string",
+          "x-lumen-type": "MediaFailureCode"
+        },
+        "details": {
+          "type": "string"
+        },
+        "found": {
+          "$ref": "#/$defs/AssetKind",
+          "description": "The kind the source is, when that is established. It is absent when it can't be told,\nsuch as an MP4 that is not video-only or audio-only until opened."
+        },
+        "limit": {
+          "description": "For `media.too_large`, the limit, in the unit `details` names.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source": {
+          "description": "The source as the composition wrote it: a path, URL, alias or `asset:<id>`.",
+          "type": "string"
+        },
+        "wanted": {
+          "description": "The kinds the place using the source reads; empty when the host that failed doesn't know.",
+          "items": {
+            "$ref": "#/$defs/AssetKind"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["code", "source", "wanted", "details"],
+      "type": "object"
+    },
+    "MediaInventory": {
+      "description": "Everything a composition needs before it renders, found without rendering it.",
+      "properties": {
+        "dynamic": {
+          "items": {
+            "$ref": "#/$defs/DynamicMediaUse"
+          },
+          "type": "array"
+        },
+        "fonts": {
+          "items": {
+            "$ref": "#/$defs/FontDependency"
+          },
+          "type": "array"
+        },
+        "media": {
+          "description": "Each distinct source, in the order the root's nodes, the templates' nodes and then the\naudio first name it.",
+          "items": {
+            "$ref": "#/$defs/MediaDependency"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["media", "dynamic", "fonts"],
+      "type": "object"
+    },
+    "MediaLocation": {
+      "description": "Where a composition names a source.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/NodeParamAt",
+          "properties": {
+            "type": {
+              "const": "node",
+              "type": "string"
+            }
+          },
+          "required": ["type"],
+          "type": "object"
+        },
+        {
+          "description": "The `source_id` of a clip of an audio timeline, in the root or in a template.",
+          "properties": {
+            "clip": {
+              "type": "string"
+            },
+            "index": {
+              "description": "The clip's position in the timeline's `clips`.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "template": {
+              "type": "string"
+            },
+            "track": {
+              "type": "string"
+            },
+            "type": {
+              "const": "audioClip",
+              "type": "string"
+            }
+          },
+          "required": ["type", "track", "clip", "index"],
+          "type": "object"
+        }
+      ]
+    },
+    "MediaUse": {
+      "description": "One place a source is used, and the kinds of media it reads there.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/MediaLocation"
+        },
+        "kinds": {
+          "items": {
+            "$ref": "#/$defs/AssetKind"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["at", "kinds"],
+      "type": "object"
+    },
+    "ModelInfo": {
+      "description": "What a model offers a `model_3d` node to choose from: the clips `animation` names, the\nmaterials `texture_material` names and the cameras `camera` names.",
+      "properties": {
+        "animations": {
+          "items": {
+            "$ref": "#/$defs/AnimationInfo"
+          },
+          "type": "array"
+        },
+        "cameras": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CameraInfo"
+          },
+          "type": "array"
+        },
+        "materials": {
+          "items": {
+            "$ref": "#/$defs/MaterialInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["animations", "materials", "cameras"],
+      "type": "object"
+    },
+    "NodeParamAt": {
+      "description": "A param of a node, in the root composition or in a template.",
+      "properties": {
+        "node": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "param": {
+          "description": "The param's path in the node's `params`, such as `source` or `content[1].font_family`.",
+          "type": "string"
+        },
+        "template": {
+          "description": "The template the node is in, absent for the root.",
+          "type": "string"
+        }
+      },
+      "required": ["node", "param"],
+      "type": "object"
+    },
+    "Severity": {
+      "description": "Whether a diagnostic stops a composition rendering.",
+      "oneOf": [
+        {
+          "const": "error",
+          "description": "The composition doesn't render.",
+          "type": "string"
+        },
+        {
+          "const": "warning",
+          "description": "The composition renders, but not as it asks.",
+          "type": "string"
+        }
+      ]
+    },
+    "VideoFrameRequirement": {
+      "description": "The frames of one video stream a frame reads.",
+      "properties": {
+        "frames": {
+          "description": "The frame numbers in the video, ascending.",
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "streamId": {
+          "type": "string"
+        }
+      },
+      "required": ["streamId", "frames"],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

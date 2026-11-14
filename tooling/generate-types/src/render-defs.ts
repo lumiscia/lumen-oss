@@ -35,6 +35,7 @@ const ignoredKeywords = new Set([
   "title",
   "description",
   "default",
+  "format",
   "minimum",
   "maximum",
   "exclusiveMinimum",
@@ -51,6 +52,11 @@ export interface TypeContext {
   readonly declarations: Map<string, string>;
   /** Every type name the rendered types mention. */
   readonly used: Set<string>;
+  /**
+   * Whether the types are of values the engine returns: objects are closed unless the schema says
+   * otherwise, and are declared as interfaces.
+   */
+  readonly payloads: boolean;
 }
 
 export const object = (value: unknown): JsonSchema =>
@@ -76,6 +82,7 @@ const propertyKey = (key: string): string => (identifier.test(key) ? key : JSON.
 export function createTypeContext(
   defs: Readonly<Record<string, JsonSchema>>,
   names: Iterable<readonly [string, string]> = [],
+  payloads = false,
 ): TypeContext {
   const defNames = Object.entries(defs).map(([key, def]): [string, string] => {
     const name = def["x-lumen-type"];
@@ -85,6 +92,7 @@ export function createTypeContext(
     names: new Map([...defNames, ...names]),
     declarations: new Map(),
     used: new Set(),
+    payloads,
   };
 }
 
@@ -105,7 +113,10 @@ export function typeDeclaration(
   documented: boolean,
 ): string {
   const doc = documented ? docComment(schema.description, "") : "";
-  return `${doc}export type ${name} = ${typeBody(schema, context, "")};`;
+  const body = typeBody(schema, context, "");
+  return context.payloads && body.startsWith("{")
+    ? `${doc}export interface ${name} ${body}`
+    : `${doc}export type ${name} = ${body};`;
 }
 
 /** Declares every `$defs` entry that carries an `x-lumen-type`. */
@@ -156,7 +167,9 @@ function typeBody(schema: JsonSchema, context: TypeContext, indent: string): str
     if (schema.$ref === expressionRef) return reference("ExpressionString");
     const name = context.names.get(schema.$ref);
     if (name === undefined) throw new Error(`unknown $ref \`${schema.$ref}\``);
-    return reference(name);
+    return schema.properties === undefined
+      ? reference(name)
+      : `(${reference(name)} & ${objectType(schema, context, indent)})`;
   }
   if (schema.const !== undefined) return JSON.stringify(schema.const);
   if (Array.isArray(schema.enum))
@@ -204,13 +217,14 @@ function typeBody(schema: JsonSchema, context: TypeContext, indent: string): str
 
 /**
  * Optional properties unless `required`. `additionalProperties: true` adds an index signature,
+ * as does leaving it out, except in a context of payloads,
  * and a schema there makes a record, keyed by `x-lumen-keyType` when it has one.
  */
 function objectType(schema: JsonSchema, context: TypeContext, indent: string): string {
   const properties = Object.entries(object(schema.properties));
   const additional = schema.additionalProperties;
   const additionalIsSchema = additional !== null && typeof additional === "object";
-  const open = additional === undefined || additional === true;
+  const open = additional === true || (additional === undefined && !context.payloads);
   if (properties.length === 0 && (additionalIsSchema || open)) {
     const keys = schema["x-lumen-keyType"];
     const values = additionalIsSchema ? schemaType(object(additional), context, indent) : "unknown";

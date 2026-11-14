@@ -1,4 +1,5 @@
 import type {
+  AssetKind,
   MediaFailure,
   MediaInventory,
   MediaLocation,
@@ -70,9 +71,9 @@ export function previewDependencies(
   const dependencies = new Map<string, PreviewMediaDependency>();
   const add = (
     source: string,
-    kind: MediaSourceKind,
+    kind: AssetKind,
     at: MediaLocation | undefined,
-    wanted: readonly MediaSourceKind[],
+    wanted: readonly AssetKind[],
   ) => {
     const added = dependency(source, kind, at, wanted, media.get(source));
     if (!dependencies.has(added.key)) {
@@ -135,9 +136,9 @@ export function samePreviewMediaInput(left: PreviewMediaInput, right: PreviewMed
 
 function dependency(
   source: string,
-  kind: MediaSourceKind,
+  kind: AssetKind,
   at: MediaLocation | undefined,
-  wanted: readonly MediaSourceKind[],
+  wanted: readonly AssetKind[],
   entry: PreviewMediaEntry | undefined,
 ): PreviewMediaDependency {
   const base = { key: `${kind}:${source}`, kind, source, ...(at && { at }) };
@@ -181,8 +182,8 @@ function dependency(
 /** The kind an entry says it holds, by its `kind` or its blob's type, if `kinds` reads it. */
 function entryKind(
   entry: PreviewMediaEntry | undefined,
-  kinds: readonly MediaSourceKind[],
-): MediaSourceKind | undefined {
+  kinds: readonly AssetKind[],
+): AssetKind | undefined {
   const kind = entry?.kind ?? (entry && sourceKind(entry.source));
   return kind !== undefined && kinds.includes(kind) ? kind : undefined;
 }
