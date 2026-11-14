@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use serde::Serialize;
+
 use crate::{
     composition::Composition,
     error::{LumenError, MediaError},
@@ -10,15 +12,23 @@ use crate::{
 
 use super::MediaStore;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// The images and video frames one frame of the composition reads.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct FrameRequirements {
+    /// The ids of the images, in order and without repeats.
     pub images: Vec<String>,
     pub videos: Vec<VideoFrameRequirement>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The frames of one video stream a frame reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct VideoFrameRequirement {
     pub stream_id: String,
+    /// The frame numbers in the video, ascending.
     pub frames: Vec<u32>,
 }
 

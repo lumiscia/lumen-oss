@@ -1,7 +1,7 @@
 import type {
-  LumenModelAnimation,
-  LumenModelCamera,
-  LumenModelMaterial,
+  AnimationInfo,
+  CameraInfo,
+  MaterialInfo,
   VideoBitDepth,
   VideoCodec,
 } from "@lumiscia/lumen-types";
@@ -124,9 +124,9 @@ export interface MediaMetadata {
    * Models: the clips `animation`, the materials `texture_material` and the cameras `camera` of a
    * `model_3d` select.
    */
-  readonly animations?: readonly LumenModelAnimation[];
-  readonly materials?: readonly LumenModelMaterial[];
-  readonly cameras?: readonly LumenModelCamera[];
+  readonly animations?: readonly AnimationInfo[];
+  readonly materials?: readonly MaterialInfo[];
+  readonly cameras?: readonly CameraInfo[];
 }
 
 export interface TemporaryMedia {

@@ -1,6 +1,6 @@
 import type {
+  Diagnostic,
   LumenComposition,
-  LumenDiagnostic,
   VideoBitDepth,
   VideoCodec,
 } from "@lumiscia/lumen-types";
@@ -74,7 +74,7 @@ export interface PreviewOptions extends CommandOptions {
 /** What `lumen check` found: `ok` is false when any diagnostic is an error. */
 export interface CheckReport {
   readonly ok: boolean;
-  readonly diagnostics: readonly LumenDiagnostic[];
+  readonly diagnostics: readonly Diagnostic[];
 }
 
 /** What a finished `render()` or `preview()` wrote. */

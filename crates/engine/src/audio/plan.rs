@@ -59,6 +59,7 @@ const SAMPLE_RATE: f64 = AUDIO_SAMPLE_RATE as f64;
 
 /// What the mixer plays: the voices, and the segments of root samples each plays.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AudioPlan {
     pub voices: Vec<AudioVoice>,
@@ -68,6 +69,7 @@ pub struct AudioPlan {
 /// An audio clip as one instance plays it: a clip of the root's timeline, or of a template's for
 /// one path of `clip` nodes that plays the template.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AudioVoice {
     pub source_id: String,
@@ -87,6 +89,7 @@ pub struct AudioVoice {
 /// at `i = 0` to `gain[1]` at `i = frames`. Only positions in `[from, to)` sound: the clip, cut
 /// by the windows of the `clip` nodes that play it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AudioSegment {
     pub voice: usize,

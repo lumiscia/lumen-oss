@@ -2,7 +2,8 @@ import { readFile } from "node:fs/promises";
 
 import { expect, test } from "vitest";
 
-import { compositionSchemaPath } from "../src/paths.js";
+import { compositionSchemaPath, runtimeSchemaPath } from "../src/paths.js";
+import { renderRuntimeTypes } from "../src/render-runtime.js";
 import { renderTypes } from "../src/render.js";
 
 test("rejects a kind with a param named like one of its input ports", async () => {
@@ -27,4 +28,15 @@ test("renders the media params each node kind declares, the same every time", as
   expect(meta).toContain('"blur": {},');
   expect(meta).toContain('export type MediaSourceKind = "audio" | "environment"');
   expect(renderTypes(schema).meta).toBe(meta);
+});
+
+test("renders diagnostic codes as an open union beside their table", async () => {
+  const schema = JSON.parse(await readFile(runtimeSchemaPath, "utf8"));
+  const types = renderRuntimeTypes(schema);
+
+  expect(types).toMatch(
+    /export type DiagnosticCode =\n {2}\| "audio\.invalid"[\s\S]*\| \(string & \{\}\);/u,
+  );
+  expect(types).toContain('{ code: "media.not_found", severity: "error" },');
+  expect(types).toContain("export interface Diagnostic {");
 });

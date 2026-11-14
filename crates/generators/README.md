@@ -1,6 +1,6 @@
 # lumen-generators
 
-`lumen-generators` generates the composition schema from the Rust node definitions.
+`lumen-generators` generates the composition schema from the Rust node definitions, and the runtime schema (diagnostics, the media inventory and the other values the engine returns) from the Rust types that serialise them.
 
 This crate is experimental because the node system, schemas, and generated package contracts are still changing.
 

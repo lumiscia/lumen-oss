@@ -1,4 +1,4 @@
-import type { LumenDiagnostic, LumenModelInfo, MediaInventory } from "@lumiscia/lumen-types";
+import type { Diagnostic, ModelInfo, MediaInventory } from "@lumiscia/lumen-types";
 
 import { LumenMediaBridge, toUint8Array } from "./media/index.js";
 import type { LumenMediaTarget, MediaSourceInput, VideoSourceRegistration } from "./media/index.js";
@@ -46,7 +46,7 @@ export interface LumenPreviewBindings {
    * Checks a composition without loading it. With `fonts`, also warns of families none of them
    * provides.
    */
-  check(compositionJson: string, fonts?: string[] | null): LumenDiagnostic[];
+  check(compositionJson: string, fonts?: string[] | null): Diagnostic[];
   /**
    * What a composition needs before it renders: the media its nodes and audio clips name, with
    * the kinds each reads and where it is used, and the font families its text uses. Throws, with
@@ -58,7 +58,7 @@ export interface LumenPreviewBindings {
    * `animation` and `texture_material`. Reads the file as a render would and throws on one it
    * cannot read.
    */
-  modelInfo(bytes: Uint8Array): LumenModelInfo;
+  modelInfo(bytes: Uint8Array): ModelInfo;
   LumenPreviewController: new () => LumenPreviewControllerBinding;
 }
 

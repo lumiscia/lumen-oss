@@ -19,7 +19,9 @@ use crate::{
 /// The most diagnostics one check or parse reports.
 pub const MAX_DIAGNOSTICS: usize = 50;
 
+/// Whether a diagnostic stops a composition rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// The composition doesn't render.
@@ -28,10 +30,14 @@ pub enum Severity {
     Warning,
 }
 
+/// A problem the engine found with a composition. Its `code` is stable and public, and new codes
+/// can appear in any release, so treat one you don't know by its severity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 pub struct Diagnostic {
     pub severity: Severity,
-    /// Stable and public; see the crate README for the list.
+    /// Stable and public, such as `node.unknown_param` or `font.fallback`. New codes can appear in
+    /// any release.
     pub code: &'static str,
     /// A JSON pointer into the composition, such as `/nodes/3/params/opacity`. Empty for the
     /// whole document.
@@ -39,6 +45,7 @@ pub struct Diagnostic {
     /// The node the diagnostic is about, in the graph `path` points into.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node: Option<NodeId>,
+    /// Free-form text for people to read, which can change in any release.
     pub message: String,
 }
 
@@ -81,7 +88,12 @@ impl Diagnostic {
 
 /// Every code a diagnostic can have.
 pub fn codes() -> impl Iterator<Item = &'static str> {
-    [
+    code_list().map(|(code, _)| code)
+}
+
+/// Every code a diagnostic can have, with the severity of the diagnostics that carry it.
+pub fn code_list() -> impl Iterator<Item = (&'static str, Severity)> {
+    let errors = [
         DocumentError::CODES,
         GraphValidationError::CODES,
         PropertyError::CODES,
@@ -89,11 +101,12 @@ pub fn codes() -> impl Iterator<Item = &'static str> {
         MediaError::CODES,
         MediaReason::CODES,
         RenderError::CODES,
-        Warning::CODES,
     ]
     .into_iter()
     .flatten()
-    .copied()
+    .map(|code| (*code, Severity::Error));
+    let warnings = Warning::CODES.iter().map(|code| (*code, Severity::Warning));
+    errors.chain(warnings)
 }
 
 /// Escapes a JSON pointer reference token.

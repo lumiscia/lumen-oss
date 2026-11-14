@@ -1,4 +1,4 @@
-import type { MediaFailure, MediaFailureKind, MediaLocation } from "@lumiscia/lumen-types";
+import type { MediaFailure, AssetKind, MediaLocation } from "@lumiscia/lumen-types";
 
 import { errorMediaFailure } from "./errors.js";
 
@@ -8,7 +8,7 @@ export type MediaStatus = "pending" | "ready" | "failed";
 export interface MediaDependency<TInput> {
   /** Tells apart the kinds one source is read as. */
   readonly key: string;
-  readonly kind: MediaFailureKind;
+  readonly kind: AssetKind;
   /** The source as the composition writes it, or the font family. */
   readonly source: string;
   /** Where the composition first uses it. */
@@ -19,7 +19,7 @@ export interface MediaDependency<TInput> {
 
 /** A dependency's state, as the page is told it. */
 export interface MediaEntryState {
-  readonly kind: MediaFailureKind;
+  readonly kind: AssetKind;
   readonly source: string;
   readonly status: MediaStatus;
   readonly failure: MediaFailure | null;
