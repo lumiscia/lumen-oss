@@ -104,6 +104,16 @@ pub fn checked(
     };
     let status = response.status.as_u16();
     let body = || -> Value {
+        let content_type = response
+            .headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            content_type.starts_with("application/json"),
+            "{} answered {status} as `{content_type}`, not JSON",
+            operation.id
+        );
         serde_json::from_slice(&response.body).unwrap_or_else(|error| {
             panic!("{} answered {status} without JSON: {error}", operation.id)
         })

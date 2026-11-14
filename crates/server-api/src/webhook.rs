@@ -14,7 +14,8 @@ pub struct RenderWebhook {
     pub kind: RenderWebhookType,
     /// When the event happened, as RFC 3339 in UTC.
     pub timestamp: String,
-    /// The render as it ended, as reading it returns it.
+    /// The render as it ended, as reading it returns it. Its `url` is absolute, since a webhook
+    /// has no API address to resolve a relative one against.
     pub data: Render,
 }
 

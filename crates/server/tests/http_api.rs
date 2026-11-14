@@ -653,13 +653,7 @@ fn codes_and_paths(diagnostics: &Value) -> Vec<(String, String)> {
 fn checks_say_what_is_wrong_and_invalid_renders_carry_the_same_diagnostics() {
     let server = Server::start(&[]);
     let check = |body: &Value| -> Value {
-        let response = server
-            .http
-            .post(format!("{}/renders/check", server.base))
-            .bearer_auth(TOKEN)
-            .json(body)
-            .send()
-            .expect("POST /renders/check");
+        let response = server.post_to("/renders/check", body);
         assert_eq!(response.status(), StatusCode::OK);
         response.json().expect("check body")
     };

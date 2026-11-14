@@ -23,8 +23,7 @@
         "description": "The body of `POST /renders/check`. A render request is one too.",
         "properties": {
           "composition": {
-            "$ref": "composition.schema.json",
-            "description": "The composition document, as `composition.schema.json` describes it."
+            "description": "The composition document to check. Any JSON is taken: what is wrong with it, by\n`composition.schema.json` and beyond, is what the report says."
           },
           "media": {
             "additionalProperties": {
@@ -976,7 +975,7 @@
         "properties": {
           "data": {
             "$ref": "#/components/schemas/Render",
-            "description": "The render as it ended, as reading it returns it."
+            "description": "The render as it ended, as reading it returns it. Its `url` is absolute, since a webhook\nhas no API address to resolve a relative one against."
           },
           "timestamp": {
             "description": "When the event happened, as RFC 3339 in UTC.",
@@ -1243,8 +1242,8 @@
                 }
               }
             },
-            "description": "`request_too_large`: The JSON body is over the server's limit.\n\n`media_download_too_large`: A downloaded media file is over its size limit.\n\n`media_too_large`: The media is over the server's size limit, or the bytes sent are more than `sizeBytes`.",
-            "x-lumen-codes": ["request_too_large", "media_download_too_large", "media_too_large"]
+            "description": "`request_too_large`: The JSON body is over the server's limit.\n\n`media_download_too_large`: A downloaded media file is over its size limit.",
+            "x-lumen-codes": ["request_too_large", "media_download_too_large"]
           },
           "415": {
             "content": {
@@ -1291,19 +1290,8 @@
                 }
               }
             },
-            "description": "`media_download_failed`: A media URL could not be downloaded.",
-            "x-lumen-codes": ["media_download_failed"]
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "`media_upload_limit`: As many uploads as the server allows are waiting for their content.",
-            "x-lumen-codes": ["media_upload_limit"]
+            "description": "`media_download_failed`: A media URL could not be downloaded.\n\n`media_stage_failed`: Downloaded media could not be written to the render's staging directory.",
+            "x-lumen-codes": ["media_download_failed", "media_stage_failed"]
           }
         },
         "security": [
@@ -2089,14 +2077,13 @@
                 }
               }
             },
-            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.\n\n`invalid_media_alias`: A media manifest alias is not a plain file name.\n\n`media_manifest_too_large`: The media manifest has too many entries.\n\n`invalid_project_payload`: The payload is not a composition, or names media this server doesn't have.\n\n`invalid_quality`: The quality preset, codec or bit depth resolves to no encoder here.\n\n`invalid_render_profile`: An encoder that doesn't exist, or a frame rate it can't encode.\n\n`invalid_output`: The output can't be rendered, such as an empty frame range or encoder settings on an image.\n\n`output_too_large`: An image sequence has more frames, or adds up to more bytes, than the server allows.",
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.\n\n`invalid_media_alias`: A media manifest alias is not a plain file name.\n\n`media_manifest_too_large`: The media manifest has too many entries.\n\n`invalid_project_payload`: The payload is not a composition, or names media this server doesn't have.\n\n`invalid_quality`: The quality preset, codec or bit depth resolves to no encoder here.\n\n`invalid_output`: The output can't be rendered, such as an empty frame range or encoder settings on an image.\n\n`output_too_large`: An image sequence has more frames, or adds up to more bytes, than the server allows.",
             "x-lumen-codes": [
               "invalid_request_body",
               "invalid_media_alias",
               "media_manifest_too_large",
               "invalid_project_payload",
               "invalid_quality",
-              "invalid_render_profile",
               "invalid_output",
               "output_too_large"
             ]
@@ -2209,12 +2196,11 @@
                 }
               }
             },
-            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.\n\n`invalid_media_alias`: A media manifest alias is not a plain file name.\n\n`media_manifest_too_large`: The media manifest has too many entries.\n\n`invalid_project_payload`: The payload is not a composition, or names media this server doesn't have.",
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.\n\n`invalid_media_alias`: A media manifest alias is not a plain file name.\n\n`media_manifest_too_large`: The media manifest has too many entries.",
             "x-lumen-codes": [
               "invalid_request_body",
               "invalid_media_alias",
-              "media_manifest_too_large",
-              "invalid_project_payload"
+              "media_manifest_too_large"
             ]
           },
           "500": {
@@ -2577,6 +2563,17 @@
             },
             "description": "`render_not_found`: No render has this id, or it was evicted.",
             "x-lumen-codes": ["render_not_found"]
+          },
+          "426": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request`: Another request the router refused, such as a path segment that doesn't parse.",
+            "x-lumen-codes": ["invalid_request"]
           }
         },
         "security": [

@@ -14,8 +14,11 @@ export interface CheckReport {
 
 /** The body of `POST /renders/check`. A render request is one too. */
 export interface CheckRequest {
-  /** The composition document, as `composition.schema.json` describes it. */
-  readonly composition: LumenComposition;
+  /**
+   * The composition document to check. Any JSON is taken: what is wrong with it, by
+   * `composition.schema.json` and beyond, is what the report says.
+   */
+  readonly composition: unknown;
   /** The media manifest a render would stage, whose aliases count as present. */
   readonly media?: Readonly<Record<string, string>>;
 }
@@ -421,7 +424,10 @@ export type RenderStatus =
  * `lumen-server` delivers none.
  */
 export interface RenderWebhook {
-  /** The render as it ended, as reading it returns it. */
+  /**
+   * The render as it ended, as reading it returns it. Its `url` is absolute, since a webhook
+   * has no API address to resolve a relative one against.
+   */
   readonly data: Render;
   /** When the event happened, as RFC 3339 in UTC. */
   readonly timestamp: string;

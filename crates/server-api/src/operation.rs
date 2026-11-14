@@ -101,10 +101,23 @@ impl Operation {
     }
 
     /// The operation a request for `method` on `path` is, with `path` a real one such as
-    /// `/renders/r_1`.
+    /// `/renders/r_1`. As a router does, a path that is a route's own wins over one that fits a
+    /// parameter, so `GET /renders/check` is no operation: that path only takes `POST`.
     pub fn of(method: &str, path: &str) -> Option<&'static Operation> {
+        let literal_segments = |operation: &&Operation| {
+            operation
+                .path
+                .split('/')
+                .filter(|segment| !segment.starts_with('{'))
+                .count()
+        };
+        let route = OPERATIONS
+            .iter()
+            .filter(|operation| operation.matches(path))
+            .max_by_key(literal_segments)?
+            .path;
         OPERATIONS.iter().find(|operation| {
-            operation.method.as_str().eq_ignore_ascii_case(method) && operation.matches(path)
+            operation.path == route && operation.method.as_str().eq_ignore_ascii_case(method)
         })
     }
 
@@ -149,12 +162,6 @@ const PART_NUMBER: PathParam = PathParam {
 
 const RENDER_NOT_FOUND: (u16, &[&str]) = (404, &["render_not_found"]);
 const MEDIA_NOT_FOUND: (u16, &[&str]) = (404, &["media_not_found"]);
-/// What refuses a composition or its media manifest before anything renders.
-const INVALID_INPUT: &[&str] = &[
-    "invalid_media_alias",
-    "media_manifest_too_large",
-    "invalid_project_payload",
-];
 
 /// Every route of the API.
 pub const OPERATIONS: &[Operation] = &[
@@ -188,7 +195,6 @@ pub const OPERATIONS: &[Operation] = &[
                     "media_manifest_too_large",
                     "invalid_project_payload",
                     "invalid_quality",
-                    "invalid_render_profile",
                     "invalid_output",
                     "output_too_large",
                 ],
@@ -207,7 +213,10 @@ pub const OPERATIONS: &[Operation] = &[
         params: &[],
         request: Body::Json("CheckRequest"),
         success: &[(200, Body::Json("CheckReport"))],
-        errors: &[(422, INVALID_INPUT), (500, &["check_failed"])],
+        errors: &[
+            (422, &["invalid_media_alias", "media_manifest_too_large"]),
+            (500, &["check_failed"]),
+        ],
         token: true,
     },
     Operation {
@@ -258,7 +267,8 @@ pub const OPERATIONS: &[Operation] = &[
         params: &[RENDER_ID],
         request: Body::Empty,
         success: &[(101, Body::Socket("RenderEvent"))],
-        errors: &[RENDER_NOT_FOUND],
+        // `426` is a request that can't become a WebSocket, such as one over HTTP/1.0.
+        errors: &[RENDER_NOT_FOUND, (426, &["invalid_request"])],
         token: true,
     },
     Operation {
@@ -302,14 +312,13 @@ pub const OPERATIONS: &[Operation] = &[
         request: Body::Json("UrlMediaRequest"),
         success: &[(201, Body::Json("MediaResponse"))],
         errors: &[
-            (413, &["media_download_too_large", "media_too_large"]),
+            (413, &["media_download_too_large"]),
             (
                 422,
                 &["media_download_failed", "media_download_forbidden_host"],
             ),
             (500, &["media_store_failed"]),
-            (502, &["media_download_failed"]),
-            (503, &["media_upload_limit"]),
+            (502, &["media_download_failed", "media_stage_failed"]),
         ],
         token: true,
     },
@@ -486,6 +495,8 @@ mod tests {
             id("PUT", "/media/m_1/multipart/u_1/parts/2"),
             Some("putMultipartPart")
         );
+        assert_eq!(id("GET", "/renders/check"), None);
+        assert_eq!(id("DELETE", "/media/url"), None);
         assert_eq!(id("GET", "/renders"), None);
         assert_eq!(id("GET", "/renders/"), None);
         assert_eq!(id("PATCH", "/renders/r_1"), None);

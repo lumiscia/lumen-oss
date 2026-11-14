@@ -107,14 +107,22 @@ export class Conformance {
       return undefined;
     }
     const segments = pathname.slice(this.#basePath.length).split("/");
+    // As a router does, a path that is a route's own wins over one that fits a parameter.
+    const literals = (operation: Described) =>
+      operation.segments.filter((segment) => !segment.startsWith("{")).length;
+    const route = this.#operations
+      .filter(
+        (operation) =>
+          operation.segments.length === segments.length &&
+          operation.segments.every(
+            (expected, index) =>
+              (expected.startsWith("{") && segments[index] !== "") || expected === segments[index],
+          ),
+      )
+      .sort((a, b) => literals(b) - literals(a))[0];
     return this.#operations.find(
       (operation) =>
-        operation.method === method &&
-        operation.segments.length === segments.length &&
-        operation.segments.every(
-          (expected, index) =>
-            (expected.startsWith("{") && segments[index] !== "") || expected === segments[index],
-        ),
+        operation.method === method && operation.segments.join("/") === route?.segments.join("/"),
     );
   }
 
@@ -137,6 +145,11 @@ export class Conformance {
       return;
     }
     const name = ref.slice(ref.lastIndexOf("/") + 1);
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.startsWith("application/json")) {
+      this.violations.push(`${where} as \`${contentType}\`, not JSON`);
+      return;
+    }
     const body: unknown = await response.json().catch(() => undefined);
     const validate = this.#validator(name);
     if (!validate(body)) {
