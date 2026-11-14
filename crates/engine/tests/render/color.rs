@@ -776,7 +776,7 @@ fn emissive_light_past_a_half_float_stays_finite() {
             .map(|tone_mapping| {
                 Case::new(
                     format!("3D emissive light, {tone_mapping}"),
-                    crate::scene::render_3d_with(
+                    crate::support::scene::render_3d_with(
                         json!({ "tone_mapping": tone_mapping }),
                         vec![
                             json!({ "id": 1, "type": "shape_3d", "params": { "emissive": 1e30 } }),

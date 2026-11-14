@@ -184,7 +184,7 @@ fn image_textures_count_the_size_images_are_decoded_at() {
 #[cfg(feature = "3d")]
 mod scene_caches {
     use super::*;
-    use crate::scene::{environment_file, model, render_3d_with};
+    use crate::support::scene::{environment_file, model, render_3d_with};
     use lumen_3d::glam::Vec3;
     use serde_json::Value;
 
