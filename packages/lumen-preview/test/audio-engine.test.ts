@@ -1,11 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  AUDIO_STALL_TIMEOUT_MS,
-  LUMEN_AUDIO_SAMPLE_RATE,
-  LumenAudioEngine,
-  type AudioEngineTimeline,
-} from "../src/audio-engine.js";
+import { AUDIO_STALL_TIMEOUT_MS, LumenAudioEngine } from "../src/audio-engine.js";
+import { LUMEN_AUDIO_SAMPLE_RATE, type AudioEngineTimeline } from "../src/audio-protocol.js";
 import { errorMediaFailure } from "../src/media/errors.js";
 
 type Posted = {
