@@ -16,6 +16,8 @@ use serde::{
     Deserialize, Deserializer,
     de::{Error as _, MapAccess, Visitor, value::MapAccessDeserializer},
 };
+#[cfg(feature = "metadata")]
+use serde_json::json;
 use serde_json::{Number, Value};
 
 use crate::{
@@ -80,7 +82,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
 #[derive(Deserialize)]
 struct DocumentJson {
     timeline: Object<TimelineJson>,
-    render_settings: Object<RootRenderSettingsJson>,
+    render_settings: Object<RenderSettingsJson>,
     #[serde(default)]
     functions: BTreeMap<String, String>,
     #[serde(default)]
@@ -96,11 +98,74 @@ struct DocumentJson {
     connections: Vec<Object<ConnectionJson>>,
 }
 
+#[cfg(feature = "metadata")]
+impl DocumentJson {
+    fn schema() -> Value {
+        let lumen_version = SCHEMA_VERSION;
+        let lumen_version_pattern = format!("^{}(\\.[0-9]+)?$", lumen_version.replace('.', "\\."));
+        json!({
+            "type": "object",
+            "required": ["timeline", "render_settings", "nodes", "connections"],
+            "additionalProperties": true,
+            "properties": {
+                "$schema": {
+                    "description": "URL of the composition schema, for editors.",
+                    "type": "string"
+                },
+                "lumenSchemaVersion": {
+                    "description": format!("The Lumen major.minor the composition was written for, such as `{lumen_version}`; an engine reads only its own line. Absent means the engine's own version."),
+                    "type": "string",
+                    "pattern": lumen_version_pattern
+                },
+                "metadata": MetadataJson::schema(),
+                "timeline": { "$ref": "#/$defs/timeline" },
+                "audio": { "$ref": "#/$defs/audio" },
+                "render_settings": { "$ref": "#/$defs/renderSettings" },
+                "functions": {
+                    "description": "Expression functions keyed by signature, such as `rise(start)`. Calls expand where they're used.",
+                    "type": "object",
+                    "x-lumen-keyType": "`${string}(${string})`",
+                    "propertyNames": {
+                        "pattern": "^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*\\s*(,\\s*[A-Za-z_][A-Za-z0-9_]*\\s*)*)?\\)\\s*$"
+                    },
+                    "additionalProperties": { "type": "string" }
+                },
+                "compositions": {
+                    "description": "Reusable compositions by name, which `clip` nodes play. Node ids are scoped to each template.",
+                    "type": "object",
+                    "additionalProperties": { "$ref": "#/$defs/compositionTemplate" }
+                },
+                "nodes": {
+                    "type": "array",
+                    "items": {}
+                },
+                "connections": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/connection" }
+                }
+            }
+        })
+    }
+}
+
 /// Keys other than `name` are ignored.
 #[derive(Deserialize)]
 struct MetadataJson {
     #[serde(rename = "name", default, deserialize_with = "present")]
     _name: Option<String>,
+}
+
+#[cfg(feature = "metadata")]
+impl MetadataJson {
+    fn schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "description": "Display name of the composition.", "type": "string" }
+            },
+            "additionalProperties": true
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -121,6 +186,27 @@ impl TimelineJson {
     }
 }
 
+#[cfg(feature = "metadata")]
+impl TimelineJson {
+    fn schema() -> Value {
+        json!({
+            "x-lumen-type": "Timeline",
+            "description": "Length and frame rate. `fps` defaults to 30 at the root, and a template's timeline takes the root's `fps`.",
+            "type": "object",
+            "required": ["duration_frames"],
+            "properties": {
+                "fps": { "type": "number", "exclusiveMinimum": 0 },
+                "duration_frames": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 4294967295u32
+                }
+            },
+            "additionalProperties": false
+        })
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RenderSettingsJson {
@@ -128,41 +214,31 @@ struct RenderSettingsJson {
     width: u32,
     #[serde(deserialize_with = "whole_u32")]
     height: u32,
-    #[serde(default, deserialize_with = "retired_background_color")]
-    background_color: (),
 }
 
 impl RenderSettingsJson {
     fn settings(&self) -> RenderSettings {
-        let Self {
-            width,
-            height,
-            background_color: (),
-        } = *self;
-        RenderSettings { width, height }
+        RenderSettings {
+            width: self.width,
+            height: self.height,
+        }
     }
 }
 
-/// The root's settings.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RootRenderSettingsJson {
-    #[serde(deserialize_with = "whole_u32")]
-    width: u32,
-    #[serde(deserialize_with = "whole_u32")]
-    height: u32,
-    #[serde(default, deserialize_with = "retired_background_color")]
-    background_color: (),
-}
-
-impl RootRenderSettingsJson {
-    fn settings(&self) -> RenderSettings {
-        let Self {
-            width,
-            height,
-            background_color: (),
-        } = *self;
-        RenderSettings { width, height }
+#[cfg(feature = "metadata")]
+impl RenderSettingsJson {
+    fn schema() -> Value {
+        json!({
+            "x-lumen-type": "RenderSettings",
+            "description": "The canvas size in pixels.",
+            "type": "object",
+            "required": ["width", "height"],
+            "properties": {
+                "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
+                "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 }
+            },
+            "additionalProperties": false
+        })
     }
 }
 
@@ -183,6 +259,34 @@ struct TemplateJson {
     connections: Vec<Object<ConnectionJson>>,
 }
 
+#[cfg(feature = "metadata")]
+impl TemplateJson {
+    fn schema() -> Value {
+        json!({
+            "x-lumen-type": "CompositionTemplate",
+            "description": "A composition a `clip` plays. Without `render_settings` it takes the root's size, and without `timeline` the root's timeline; a `timeline` without `fps` takes the root's fps.",
+            "type": "object",
+            "required": ["nodes", "connections"],
+            "properties": {
+                "render_settings": { "$ref": "#/$defs/renderSettings" },
+                "timeline": { "$ref": "#/$defs/timeline" },
+                "audio": { "$ref": "#/$defs/audio" },
+                "props": {
+                    "description": "Props that `prop('name')` reads inside the template, set per `clip`.",
+                    "type": "object",
+                    "additionalProperties": { "$ref": "#/$defs/compositionProp" }
+                },
+                "nodes": { "type": "array", "items": { "$ref": "#/properties/nodes/items" } },
+                "connections": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/connection" }
+                }
+            },
+            "additionalProperties": false
+        })
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PropDefJson {
@@ -190,6 +294,31 @@ struct PropDefJson {
     kind: PropKind,
     #[serde(default, deserialize_with = "present")]
     default: Option<Value>,
+}
+
+#[cfg(feature = "metadata")]
+impl PropDefJson {
+    fn schema() -> Value {
+        let declaration = |kind: &str, default: Value| {
+            json!({
+                "type": "object",
+                "required": ["type"],
+                "properties": { "type": { "const": kind }, "default": default },
+                "additionalProperties": false
+            })
+        };
+        json!({
+            "x-lumen-type": "CompositionPropDeclaration",
+            "description": "A template prop's type and the value clips that don't set it get. Without a default it is empty, 0, transparent, [0, 0] or [0, 0, 0].",
+            "oneOf": [
+                declaration("string", json!({ "type": "string" })),
+                declaration("number", json!({ "type": "number" })),
+                declaration("color", json!({ "$ref": "#/$defs/color" })),
+                declaration("vec2", json!({ "$ref": "#/$defs/vec2" })),
+                declaration("vec3", json!({ "$ref": "#/$defs/vec3" }))
+            ]
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -213,11 +342,55 @@ struct ConnectionJson {
     to_port: String,
 }
 
+#[cfg(feature = "metadata")]
+impl ConnectionJson {
+    fn schema() -> Value {
+        json!({
+            "x-lumen-type": "Connection",
+            "type": "object",
+            "required": ["from_node", "to_node", "to_port"],
+            "properties": {
+                "from_node": { "type": "integer", "minimum": 0 },
+                "from_port": {
+                    "description": "The output of `from_node` to read. Optional: it defaults to `output`, the only output any node has.",
+                    "type": "string"
+                },
+                "to_node": { "type": "integer", "minimum": 0 },
+                "to_port": { "type": "string" }
+            },
+            "additionalProperties": false
+        })
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AudioJson {
     tracks: Vec<Object<AudioTrackJson>>,
     clips: Vec<Object<AudioClipJson>>,
+}
+
+#[cfg(feature = "metadata")]
+impl AudioJson {
+    fn schema() -> Value {
+        json!({
+            "x-lumen-type": "AudioTimeline",
+            "description": "Audio tracks and clips. A template's audio plays wherever a `clip` plays the template, following the clip's start, duration, offset, speed and end.",
+            "type": "object",
+            "required": ["tracks", "clips"],
+            "properties": {
+                "tracks": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/audioTrack" }
+                },
+                "clips": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/audioClip" }
+                }
+            },
+            "additionalProperties": false
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -233,6 +406,25 @@ struct AudioTrackJson {
     solo: bool,
     #[serde(default)]
     gain: GainJson,
+}
+
+#[cfg(feature = "metadata")]
+impl AudioTrackJson {
+    fn schema() -> Value {
+        json!({
+            "x-lumen-type": "AudioTrack",
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+                "id": { "type": "string" },
+                "name": { "type": "string" },
+                "muted": { "type": "boolean" },
+                "solo": { "type": "boolean" },
+                "gain": GainJson::schema()
+            },
+            "additionalProperties": false
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -254,24 +446,38 @@ struct AudioClipJson {
     fade_in_ms: u64,
     #[serde(default)]
     fade_out_ms: u64,
-    #[serde(
-        rename = "start_frame",
-        default,
-        deserialize_with = "retired_clip_time"
-    )]
-    _start_frame: (),
-    #[serde(
-        rename = "duration_frames",
-        default,
-        deserialize_with = "retired_clip_time"
-    )]
-    _duration_frames: (),
-    #[serde(
-        rename = "source_start_seconds",
-        default,
-        deserialize_with = "retired_clip_time"
-    )]
-    _source_start_seconds: (),
+}
+
+#[cfg(feature = "metadata")]
+impl AudioClipJson {
+    fn schema() -> Value {
+        json!({
+            "x-lumen-type": "AudioClip",
+            "type": "object",
+            "required": ["id", "source_id", "track_id", "start_ms", "duration_ms"],
+            "properties": {
+                "id": { "type": "string" },
+                "source_id": { "type": "string" },
+                "track_id": { "type": "string" },
+                "name": { "type": "string" },
+                "start_ms": { "type": "integer", "minimum": 0 },
+                "duration_ms": { "type": "integer", "minimum": 1 },
+                "source_start_ms": { "type": "integer", "minimum": 0 },
+                "gain": GainJson::schema(),
+                "fade_in_ms": {
+                    "description": "Milliseconds the clip rises from silence over at its start, on an equal-power curve.",
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "fade_out_ms": {
+                    "description": "Milliseconds the clip falls to silence over at its end, on an equal-power curve.",
+                    "type": "integer",
+                    "minimum": 0
+                }
+            },
+            "additionalProperties": false
+        })
+    }
 }
 
 /// A gain as the document holds it: a number of at least 0, or an `=expression` parsed once
@@ -305,6 +511,20 @@ impl<'de> Deserialize<'de> for GainJson {
             },
             other => Err(D::Error::custom(format!("{expected}, got {other}"))),
         }
+    }
+}
+
+#[cfg(feature = "metadata")]
+impl GainJson {
+    /// An audio track's or clip's gain: a number, or an expression of the composition's time.
+    fn schema() -> Value {
+        json!({
+            "description": "Gain, 1 by default. An expression is evaluated in the time of the composition the audio is in, and reads `frame`, `time`, `fps`, `width`, `height` and props.",
+            "anyOf": [
+                { "type": "number", "minimum": 0, "maximum": f32::MAX as f64 },
+                { "$ref": "#/$defs/expression" }
+            ]
+        })
     }
 }
 
@@ -406,16 +626,26 @@ fn whole_u32<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error
     })
 }
 
-fn retired_background_color<'de, D: Deserializer<'de>>(_: D) -> Result<(), D::Error> {
-    Err(D::Error::custom(
-        "is no longer supported and was never drawn; connect a `background` node to color the canvas",
-    ))
+/// The schema of the document root without its nodes: `properties.nodes.items` is left for the
+/// caller, which knows the node kinds.
+#[cfg(feature = "metadata")]
+pub fn root_schema() -> Value {
+    DocumentJson::schema()
 }
 
-fn retired_clip_time<'de, D: Deserializer<'de>>(_: D) -> Result<(), D::Error> {
-    Err(D::Error::custom(
-        "is no longer supported; clips take `start_ms`, `duration_ms` and `source_start_ms` in whole milliseconds",
-    ))
+/// The `$defs` the root schema refers to, in the order the schema lists them.
+#[cfg(feature = "metadata")]
+pub fn schema_defs() -> Vec<(&'static str, Value)> {
+    vec![
+        ("timeline", TimelineJson::schema()),
+        ("renderSettings", RenderSettingsJson::schema()),
+        ("compositionTemplate", TemplateJson::schema()),
+        ("compositionProp", PropDefJson::schema()),
+        ("connection", ConnectionJson::schema()),
+        ("audio", AudioJson::schema()),
+        ("audioTrack", AudioTrackJson::schema()),
+        ("audioClip", AudioClipJson::schema()),
+    ]
 }
 
 /// Why a document isn't a composition: its errors, at most [`MAX_DIAGNOSTICS`] of them, each
@@ -1272,7 +1502,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_clip_times_are_whole_milliseconds_and_retired_keys_fail() {
+    fn audio_clip_times_are_whole_milliseconds() {
         let error = |clip: Value| {
             let audio = serde_json::json!({ "tracks": [{ "id": "main" }], "clips": [clip] });
             format!("{:#}", audio_composition(audio).unwrap_err())
@@ -1286,19 +1516,6 @@ mod tests {
                 .extend(extra.as_object().unwrap().clone());
             clip
         };
-        for key in ["start_frame", "duration_frames", "source_start_seconds"] {
-            let message = error(clip(serde_json::json!({ key: 1 })));
-            assert!(
-                message.contains(&format!("audio.clips[0].{key}: is no longer supported")),
-                "{message}"
-            );
-        }
-        // A retired key is named even when the key it was replaced by is missing.
-        let message = error(serde_json::json!({
-            "id": "a", "source_id": "voice", "track_id": "main", "start_frame": 1, "duration_ms": 1
-        }));
-        assert!(message.contains("start_frame: is no longer"), "{message}");
-
         for (key, value) in [
             ("start_ms", serde_json::json!(1.5)),
             ("start_ms", serde_json::json!(1.0)),
@@ -1700,24 +1917,6 @@ mod tests {
             let json = composition_json(timeline, r#"{ "width": 100, "height": 100 }"#);
             let err = parse(&json).unwrap_err().to_string();
             assert!(err.contains("duration_frames"), "{timeline}: {err}");
-        }
-    }
-
-    #[test]
-    fn background_color_fails_and_says_what_to_use_instead() {
-        let timeline = r#"{ "fps": 30, "duration_frames": 10 }"#;
-        for color in ["[9, 17, 31, 255]", "\"#000000\"", "null"] {
-            let err = parse(&composition_json(
-                timeline,
-                &format!(r#"{{ "width": 100, "height": 100, "background_color": {color} }}"#),
-            ))
-            .unwrap_err()
-            .to_string();
-            assert!(
-                err.contains("render_settings.background_color: is no longer supported")
-                    && err.contains("`background` node"),
-                "{color}: {err}"
-            );
         }
     }
 

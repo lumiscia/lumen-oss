@@ -48,240 +48,22 @@ fn render_schema() -> Result<String> {
         .values()
         .map(node_schema_json)
         .collect::<Result<Vec<_>>>()?;
-    let lumen_version = lumen_engine::SCHEMA_VERSION;
-    let lumen_version_pattern = format!("^{}(\\.[0-9]+)?$", lumen_version.replace('.', "\\."));
-    let mut schema = json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "x-lumen-schemaVersion": SCHEMA_VERSION,
-        "x-lumen-lumenSchemaVersion": lumen_version,
-        "x-lumen-expressions": expressions_json(),
-        "x-lumen-portKinds": PortKind::ALL.map(PortKind::name),
-        "type": "object",
-        "required": ["timeline", "render_settings", "nodes", "connections"],
-        "additionalProperties": true,
-        "properties": {
-            "$schema": {
-                "description": "URL of the composition schema, for editors.",
-                "type": "string"
-            },
-            "lumenSchemaVersion": {
-                "description": format!("The Lumen major.minor the composition was written for, such as `{lumen_version}`; an engine reads only its own line. Absent means the engine's own version."),
-                "type": "string",
-                "pattern": lumen_version_pattern
-            },
-            "metadata": {
-                "type": "object",
-                "properties": {
-                    "name": { "description": "Display name of the composition.", "type": "string" }
-                },
-                "additionalProperties": true
-            },
-            "timeline": { "$ref": "#/$defs/timeline" },
-            "audio": { "$ref": "#/$defs/audio" },
-            "render_settings": { "$ref": "#/$defs/renderSettings" },
-            "functions": {
-                "description": "Expression functions keyed by signature, such as `rise(start)`. Calls expand where they're used.",
-                "type": "object",
-                "x-lumen-keyType": "`${string}(${string})`",
-                "propertyNames": {
-                    "pattern": "^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*\\s*(,\\s*[A-Za-z_][A-Za-z0-9_]*\\s*)*)?\\)\\s*$"
-                },
-                "additionalProperties": { "type": "string" }
-            },
-            "compositions": {
-                "description": "Reusable compositions by name, which `clip` nodes play. Node ids are scoped to each template.",
-                "type": "object",
-                "additionalProperties": { "$ref": "#/$defs/compositionTemplate" }
-            },
-            "nodes": {
-                "type": "array",
-                "items": { "oneOf": node_variants }
-            },
-            "connections": {
-                "type": "array",
-                "items": { "$ref": "#/$defs/connection" }
-            }
-        },
-        "$defs": {
-            "timeline": {
-                "x-lumen-type": "Timeline",
-                "description": "Length and frame rate. `fps` defaults to 30 at the root, and a template's timeline takes the root's `fps`.",
-                "type": "object",
-                "required": ["duration_frames"],
-                "properties": {
-                    "fps": { "type": "number", "exclusiveMinimum": 0 },
-                    "duration_frames": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 4294967295u32
-                    }
-                },
-                "additionalProperties": false
-            },
-            "renderSettings": {
-                "x-lumen-type": "RenderSettings",
-                "description": "The canvas size in pixels.",
-                "type": "object",
-                "required": ["width", "height"],
-                "properties": {
-                    "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
-                    "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 }
-                },
-                "additionalProperties": false
-            },
-            "templateRenderSettings": {
-                "x-lumen-type": "TemplateRenderSettings",
-                "type": "object",
-                "required": ["width", "height"],
-                "properties": {
-                    "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
-                    "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 }
-                },
-                "additionalProperties": false
-            },
-            "compositionTemplate": {
-                "x-lumen-type": "CompositionTemplate",
-                "description": "A composition a `clip` plays. Without `render_settings` it takes the root's size, and without `timeline` the root's timeline; a `timeline` without `fps` takes the root's fps.",
-                "type": "object",
-                "required": ["nodes", "connections"],
-                "properties": {
-                    "render_settings": { "$ref": "#/$defs/templateRenderSettings" },
-                    "timeline": { "$ref": "#/$defs/timeline" },
-                    "audio": { "$ref": "#/$defs/audio" },
-                    "props": {
-                        "description": "Props that `prop('name')` reads inside the template, set per `clip`.",
-                        "type": "object",
-                        "additionalProperties": { "$ref": "#/$defs/compositionProp" }
-                    },
-                    "nodes": { "type": "array", "items": { "$ref": "#/properties/nodes/items" } },
-                    "connections": {
-                        "type": "array",
-                        "items": { "$ref": "#/$defs/connection" }
-                    }
-                },
-                "additionalProperties": false
-            },
-            "compositionProp": {
-                "x-lumen-type": "CompositionPropDeclaration",
-                "description": "A template prop's type and the value clips that don't set it get. Without a default it is empty, 0, transparent, [0, 0] or [0, 0, 0].",
-                "oneOf": [
-                    prop_declaration_json("string", json!({ "type": "string" })),
-                    prop_declaration_json("number", json!({ "type": "number" })),
-                    prop_declaration_json("color", json!({ "$ref": "#/$defs/color" })),
-                    prop_declaration_json("vec2", json!({ "$ref": "#/$defs/vec2" })),
-                    prop_declaration_json("vec3", json!({ "$ref": "#/$defs/vec3" }))
-                ]
-            },
-            "expression": {
-                "description": "An expression evaluated per frame in place of a literal value.",
-                "type": "string",
-                "pattern": "^=([^=]|$)"
-            },
-            "color": {
-                "oneOf": [
-                    {
-                        "type": "array",
-                        "minItems": 3,
-                        "maxItems": 4,
-                        "items": { "type": "integer", "minimum": 0, "maximum": 255 }
-                    },
-                    {
-                        "type": "string",
-                        "pattern": "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
-                    }
-                ]
-            },
-            "vec2": {
-                "type": "array",
-                "prefixItems": [{ "type": "number" }, { "type": "number" }],
-                "items": false,
-                "minItems": 2,
-                "maxItems": 2
-            },
-            "vec3": {
-                "type": "array",
-                "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }],
-                "items": false,
-                "minItems": 3,
-                "maxItems": 3
-            },
-            "connection": {
-                "x-lumen-type": "Connection",
-                "type": "object",
-                "required": ["from_node", "to_node", "to_port"],
-                "properties": {
-                    "from_node": { "type": "integer", "minimum": 0 },
-                    "from_port": {
-                        "description": "The output of `from_node` to read. Optional: it defaults to `output`, the only output any node has.",
-                        "type": "string"
-                    },
-                    "to_node": { "type": "integer", "minimum": 0 },
-                    "to_port": { "type": "string" }
-                },
-                "additionalProperties": false
-            },
-            "audio": {
-                "x-lumen-type": "AudioTimeline",
-                "description": "Audio tracks and clips. A template's audio plays wherever a `clip` plays the template, following the clip's start, duration, offset, speed and end.",
-                "type": "object",
-                "required": ["tracks", "clips"],
-                "properties": {
-                    "tracks": {
-                        "type": "array",
-                        "items": { "$ref": "#/$defs/audioTrack" }
-                    },
-                    "clips": {
-                        "type": "array",
-                        "items": { "$ref": "#/$defs/audioClip" }
-                    }
-                },
-                "additionalProperties": false
-            },
-            "audioTrack": {
-                "x-lumen-type": "AudioTrack",
-                "type": "object",
-                "required": ["id"],
-                "properties": {
-                    "id": { "type": "string" },
-                    "name": { "type": "string" },
-                    "muted": { "type": "boolean" },
-                    "solo": { "type": "boolean" },
-                    "gain": audio_gain_json()
-                },
-                "additionalProperties": false
-            },
-            "audioClip": {
-                "x-lumen-type": "AudioClip",
-                "type": "object",
-                "required": ["id", "source_id", "track_id", "start_ms", "duration_ms"],
-                "properties": {
-                    "id": { "type": "string" },
-                    "source_id": { "type": "string" },
-                    "track_id": { "type": "string" },
-                    "name": { "type": "string" },
-                    "start_ms": { "type": "integer", "minimum": 0 },
-                    "duration_ms": { "type": "integer", "minimum": 1 },
-                    "source_start_ms": { "type": "integer", "minimum": 0 },
-                    "gain": audio_gain_json(),
-                    "fade_in_ms": {
-                        "description": "Milliseconds the clip rises from silence over at its start, on an equal-power curve.",
-                        "type": "integer",
-                        "minimum": 0
-                    },
-                    "fade_out_ms": {
-                        "description": "Milliseconds the clip falls to silence over at its end, on an equal-power curve.",
-                        "type": "integer",
-                        "minimum": 0
-                    }
-                },
-                "additionalProperties": false
-            }
-        }
-    });
-    schema["$defs"]
-        .as_object_mut()
-        .expect("`$defs` is an object")
-        .extend(kind_defs_json()?);
+    let mut schema = lumen_engine::json::root_schema();
+    schema["$schema"] = json!("https://json-schema.org/draft/2020-12/schema");
+    schema["x-lumen-schemaVersion"] = json!(SCHEMA_VERSION);
+    schema["x-lumen-lumenSchemaVersion"] = json!(lumen_engine::json::SCHEMA_VERSION);
+    schema["x-lumen-expressions"] = expressions_json();
+    schema["x-lumen-portKinds"] = json!(PortKind::ALL.map(PortKind::name));
+    schema["properties"]["nodes"]["items"] = json!({ "oneOf": node_variants });
+    let mut defs = Map::new();
+    defs.extend(
+        lumen_engine::json::schema_defs()
+            .into_iter()
+            .map(|(name, def)| (name.to_string(), def)),
+    );
+    defs.extend(value_defs_json());
+    defs.extend(kind_defs_json()?);
+    schema["$defs"] = Value::Object(defs);
     for media in AudioClip::MEDIA_PARAMS {
         schema["$defs"]["audioClip"]["properties"][media.param]["x-lumen-media"] =
             media_json(media);
@@ -289,15 +71,46 @@ fn render_schema() -> Result<String> {
     Ok(format!("{}\n", serde_json::to_string_pretty(&schema)?))
 }
 
-/// An audio track's or clip's gain: a number, or an expression of the composition's time.
-fn audio_gain_json() -> Value {
-    json!({
-        "description": "Gain, 1 by default. An expression is evaluated in the time of the composition the audio is in, and reads `frame`, `time`, `fps`, `width`, `height` and props.",
-        "anyOf": [
-            { "type": "number", "minimum": 0, "maximum": f32::MAX as f64 },
-            { "$ref": "#/$defs/expression" }
-        ]
-    })
+/// `$defs` of the value shapes shared by the document and node params.
+fn value_defs_json() -> Map<String, Value> {
+    let Value::Object(defs) = json!({
+        "expression": {
+            "description": "An expression evaluated per frame in place of a literal value.",
+            "type": "string",
+            "pattern": "^=([^=]|$)"
+        },
+        "color": {
+            "oneOf": [
+                {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 4,
+                    "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+                },
+                {
+                    "type": "string",
+                    "pattern": "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
+                }
+            ]
+        },
+        "vec2": {
+            "type": "array",
+            "prefixItems": [{ "type": "number" }, { "type": "number" }],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+        },
+        "vec3": {
+            "type": "array",
+            "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }],
+            "items": false,
+            "minItems": 3,
+            "maxItems": 3
+        }
+    }) else {
+        unreachable!("the literal is an object")
+    };
+    defs
 }
 
 /// `$defs` of the param kinds whose fields are a delegate's `property_defs()`, and the outer
@@ -566,15 +379,6 @@ fn object_schema_json<P: NodeParams>(
         schema["required"] = json!(required);
     }
     Ok(schema)
-}
-
-fn prop_declaration_json(kind: &str, default: Value) -> Value {
-    json!({
-        "type": "object",
-        "required": ["type"],
-        "properties": { "type": { "const": kind }, "default": default },
-        "additionalProperties": false
-    })
 }
 
 fn expressions_json() -> Value {
