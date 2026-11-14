@@ -8,8 +8,8 @@ use serde_json::Value;
 
 use crate::expr::Expression;
 use crate::node::{
-    Deferred, DelegateEvalContext, DelegateEvaluable, Delegated, Override, PropertyRead,
-    vector::paint::Paint,
+    Deferred, DelegateEvalContext, DelegateEvaluable, Delegated, Override, ParamTypeDef,
+    PropertyRead, vector::paint::Paint,
 };
 
 use super::text::{TextFontStyle, TextTransform, text_enum};
@@ -22,6 +22,12 @@ use super::text::{TextFontStyle, TextTransform, text_enum};
 /// text it belongs to.
 #[derive(Debug, Clone, Default, PartialEq, lumen_macros::StructuralHash)]
 pub struct TextContent(pub Vec<SpanLayout>);
+
+pub(crate) static TEXT_CONTENT: ParamTypeDef = ParamTypeDef {
+    name: "text_content",
+    #[cfg(feature = "metadata")]
+    schema: || serde_json::json!({ "$ref": "#/$defs/textContent" }),
+};
 
 impl TextContent {
     pub fn plain(text: String) -> Self {
@@ -106,6 +112,12 @@ pub struct TextSpan {
 #[derive(Debug, Clone, Default, PartialEq, Eq, lumen_macros::StructuralHash)]
 pub struct FontFeatures(pub BTreeMap<[u8; 4], u32>);
 
+pub(crate) static FONT_FEATURES: ParamTypeDef = ParamTypeDef {
+    name: "font_features",
+    #[cfg(feature = "metadata")]
+    schema: || serde_json::json!({ "$ref": "#/$defs/fontFeatures" }),
+};
+
 impl FontFeatures {
     /// These features overridden by `over`'s, for shaping.
     pub(crate) fn merged(&self, over: Option<&Self>) -> Vec<lumen_text::FontFeature> {
@@ -155,6 +167,12 @@ pub struct TextLine {
     pub extent: (f64, f64),
 }
 
+pub(crate) static TEXT_LINE: ParamTypeDef = ParamTypeDef {
+    name: "text_line",
+    #[cfg(feature = "metadata")]
+    schema: || serde_json::json!({ "$ref": "#/$defs/textLine" }),
+};
+
 impl Default for TextLine {
     fn default() -> Self {
         Self {
@@ -186,6 +204,12 @@ pub struct TextHighlight {
     #[meta(step = 0.01)]
     pub extent: (f64, f64),
 }
+
+pub(crate) static TEXT_HIGHLIGHT: ParamTypeDef = ParamTypeDef {
+    name: "text_highlight",
+    #[cfg(feature = "metadata")]
+    schema: || serde_json::json!({ "$ref": "#/$defs/textHighlight" }),
+};
 
 impl Default for TextHighlight {
     fn default() -> Self {
@@ -313,6 +337,12 @@ pub struct TextStroke {
     #[meta()]
     pub align: TextStrokeAlign,
 }
+
+pub(crate) static TEXT_STROKE: ParamTypeDef = ParamTypeDef {
+    name: "text_stroke",
+    #[cfg(feature = "metadata")]
+    schema: || serde_json::json!({ "$ref": "#/$defs/textStroke" }),
+};
 
 impl Default for TextStroke {
     fn default() -> Self {

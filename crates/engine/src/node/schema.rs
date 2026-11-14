@@ -2,28 +2,43 @@ use super::ids::NodeId;
 use super::media_source::MediaParam;
 use super::ports::{InputPortDef, PortKind};
 
+/// What a param holds. The scalar kinds are variants; a compound type declares its own
+/// [`ParamTypeDef`] beside its parser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
 pub enum PropertyKind {
-    Float = 0,
-    Int = 1,
-    Bool = 2,
-    String = 3,
-    Color = 4,
-    Vec2 = 5,
-    Enum = 6,
-    Paint = 7,
-    ShaderUniforms = 8,
-    ClipProps = 9,
-    TextContent = 10,
-    TextLine = 11,
-    TextHighlight = 12,
-    FontFeatures = 13,
-    TextStroke = 14,
-    DashPattern = 15,
-    Repeat = 16,
-    Vec3 = 17,
-    Region = 18,
+    Float,
+    Int,
+    Bool,
+    String,
+    Color,
+    Vec2,
+    Vec3,
+    Enum,
+    Custom(&'static ParamTypeDef),
+}
+
+/// A param type of its own: one Rust type with its own JSON shape.
+#[derive(Debug, Clone, Copy)]
+pub struct ParamTypeDef {
+    /// The name published as `x-lumen-kind`, e.g. "text_content".
+    pub name: &'static str,
+    /// The JSON schema of a value of this type.
+    #[cfg(feature = "metadata")]
+    pub schema: fn() -> serde_json::Value,
+}
+
+impl PartialEq for ParamTypeDef {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for ParamTypeDef {}
+
+impl std::hash::Hash for ParamTypeDef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

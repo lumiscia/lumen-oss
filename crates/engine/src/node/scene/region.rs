@@ -1,11 +1,19 @@
 use serde_json::Value;
 
 use crate::expr::Expression;
-use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, Delegated, PropertyRead};
+use crate::node::{
+    Deferred, DelegateEvalContext, DelegateEvaluable, Delegated, ParamTypeDef, PropertyRead,
+};
 
 /// The part of a raster a node shows, `[x, y, width, height]` in pixels, or all of it when unset.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::StructuralHash)]
 pub struct Region(pub Option<[i64; 4]>);
+
+pub(crate) static REGION: ParamTypeDef = ParamTypeDef {
+    name: "region",
+    #[cfg(feature = "metadata")]
+    schema: || serde_json::json!({ "$ref": "#/$defs/region" }),
+};
 
 /// [`Region`] whose four numbers take literals or expressions. The whole region cannot be an
 /// expression.

@@ -13,10 +13,16 @@ use crate::{
     json::{StringParam, classify_string},
 };
 
-use super::Deferred;
+use super::{Deferred, ParamTypeDef};
 
 #[derive(Debug, Clone, Default, lumen_macros::StructuralHash)]
 pub struct ShaderUniforms(pub BTreeMap<String, ShaderUniformValue>);
+
+pub(crate) static SHADER_UNIFORMS: ParamTypeDef = ParamTypeDef {
+    name: "shader_uniforms",
+    #[cfg(feature = "metadata")]
+    schema: || serde_json::json!({ "$ref": "#/$defs/shaderUniforms" }),
+};
 
 #[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub enum ShaderUniformValue {
