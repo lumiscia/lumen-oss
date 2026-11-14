@@ -247,7 +247,7 @@ fn software_encoders_encode_through_a_preset() {
         (EncodeCodec::Hevc, "libx265"),
         (EncodeCodec::Av1, "libsvtav1"),
     ] {
-        if super::codec::encoder_info(encoder).is_err() {
+        if super::codec::encoder_info(&encoder.into()).is_err() {
             eprintln!("{encoder} not in this FFmpeg build; skipping");
             continue;
         }
@@ -398,7 +398,7 @@ fn alpha_planes_reach_prores_in_mov_and_vp9_in_webm() {
             [3, 3],
         ),
     ] {
-        if super::codec::encoder_info(encoder).is_err() {
+        if super::codec::encoder_info(&encoder.into()).is_err() {
             eprintln!("{encoder} not in this FFmpeg build; skipping its alpha round trip");
             continue;
         }
@@ -466,7 +466,7 @@ fn alpha_needs_an_encoder_that_writes_it() {
 fn prores_options_that_would_drop_alpha_fail_at_open() {
     use crate::{EncodeCodec, QualityConfig, QualityRequest};
 
-    if super::codec::encoder_info("prores_ks").is_err() {
+    if super::codec::encoder_info(&"prores_ks".into()).is_err() {
         eprintln!("prores_ks not in this FFmpeg build; skipping");
         return;
     }

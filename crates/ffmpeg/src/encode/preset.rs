@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, env, fmt, path::Path, str::FromStr};
 use serde::Deserialize;
 
 use super::choice::{EncoderCandidate, VideoEncoderChoice};
-use super::codec::{BitDepth, EncoderFamily, check_alpha, check_bit_depth, encoder_info};
+use super::codec::{BitDepth, Encoder, EncoderFamily, check_alpha, check_bit_depth, encoder_info};
 use super::quality::{
     EncoderQuality, RateControl, check_raw_options, one_rate_control, parse_bitrate,
     portable_options,
@@ -356,7 +356,7 @@ impl QualityConfig {
                 return Err(format!("codecs.{codec}.encoders lists no encoders"));
             }
             for encoder in &encoders {
-                let encodes = encoder_codec(encoder)
+                let encodes = encoder_codec(&Encoder::parse(encoder))
                     .map_err(|error| format!("codecs.{codec}.encoders: {error}"))?;
                 if encodes != codec {
                     return Err(format!(
@@ -436,8 +436,8 @@ impl QualityConfig {
     fn resolve_with(
         &self,
         request: &QualityRequest,
-        codec_of: impl Fn(&str) -> Result<EncodeCodec, String>,
-        writes: impl Fn(&str, BitDepth, bool) -> Result<(), String>,
+        codec_of: impl Fn(&Encoder) -> Result<EncodeCodec, String>,
+        writes: impl Fn(&Encoder, BitDepth, bool) -> Result<(), String>,
     ) -> Result<VideoEncoderChoice, String> {
         let pinned = request
             .encoder
@@ -463,8 +463,9 @@ impl QualityConfig {
                 .unwrap_or(codec.default_bit_depth())
         };
 
-        if let Some(encoder) = pinned {
-            let encodes = codec_of(encoder)?;
+        if let Some(pinned) = pinned {
+            let encoder = Encoder::parse(pinned);
+            let encodes = codec_of(&encoder)?;
             if let Some(asked) = request.codec
                 && asked != encodes
             {
@@ -472,11 +473,11 @@ impl QualityConfig {
                     "this host encodes with `{encoder}`, which encodes {encodes}, not {asked}"
                 ));
             }
-            let quality = quality_for(encoder).ok_or_else(|| {
-                format!("quality preset `{name}` has no settings for `{encoder}`, the encoder this host uses")
+            let quality = quality_for(pinned).ok_or_else(|| {
+                format!("quality preset `{name}` has no settings for `{pinned}`, the encoder this host uses")
             })?;
             let bit_depth = bit_depth_for(encodes);
-            writes(encoder, bit_depth, alpha)?;
+            writes(&encoder, bit_depth, alpha)?;
             return Ok(VideoEncoderChoice::single(encoder, quality)
                 .with_bit_depth(bit_depth)
                 .with_alpha(alpha));
@@ -513,7 +514,7 @@ impl QualityConfig {
             .iter()
             .filter_map(|encoder| {
                 Some(EncoderCandidate {
-                    encoder: encoder.clone(),
+                    encoder: Encoder::parse(encoder),
                     quality: quality_for(encoder)?,
                 })
             })
@@ -527,7 +528,7 @@ impl QualityConfig {
                 "none of the {codec} encoders quality preset `{name}` has settings for are in this FFmpeg build: {}",
                 candidates
                     .iter()
-                    .map(|candidate| candidate.encoder.as_str())
+                    .map(|candidate| candidate.encoder.name())
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
@@ -576,7 +577,7 @@ impl QualityConfig {
 }
 
 /// The codec `encoder` writes, if this build has it and it's one a render can ask for.
-fn encoder_codec(encoder: &str) -> Result<EncodeCodec, String> {
+fn encoder_codec(encoder: &Encoder) -> Result<EncodeCodec, String> {
     let info = encoder_info(encoder).map_err(|error| error.message)?;
     EncodeCodec::of(info.codec).ok_or_else(|| {
         format!(
@@ -632,7 +633,8 @@ enum BitrateFile {
 }
 
 impl EncoderFile {
-    fn into_quality(self, encoder: &str) -> Result<EncoderQuality, String> {
+    fn into_quality(self, name: &str) -> Result<EncoderQuality, String> {
+        let encoder = &Encoder::parse(name);
         encoder_codec(encoder)?;
         let bitrate = self
             .bitrate
@@ -645,7 +647,7 @@ impl EncoderFile {
         // A speed preset lumen knows the values of is checked the same way in either spelling.
         let preset = match self.preset {
             None if matches!(
-                EncoderFamily::of(encoder),
+                encoder.family(),
                 EncoderFamily::X264
                     | EncoderFamily::X265
                     | EncoderFamily::SvtAv1
@@ -654,7 +656,7 @@ impl EncoderFile {
             {
                 options.remove("preset")
             }
-            None if EncoderFamily::of(encoder) == EncoderFamily::Vpx => options.remove("cpu-used"),
+            None if encoder.family() == EncoderFamily::Vpx => options.remove("cpu-used"),
             preset => preset,
         };
         let quality = EncoderQuality {
@@ -703,33 +705,23 @@ mod tests {
     }
 
     /// The codec each encoder name writes, standing in for this FFmpeg build. `missing_*` isn't in it.
-    fn codec_by_name(encoder: &str) -> Result<EncodeCodec, String> {
-        if encoder.starts_with("missing") {
-            Err(format!("encoder `{encoder}` not found"))
-        } else if encoder == "libx264" || encoder.starts_with("h264_") {
-            Ok(EncodeCodec::H264)
-        } else if encoder == "libx265" || encoder.starts_with("hevc_") {
-            Ok(EncodeCodec::Hevc)
-        } else if encoder.starts_with("prores") {
-            Ok(EncodeCodec::ProRes)
-        } else if encoder == "libvpx-vp9" || encoder.starts_with("vp9_") {
-            Ok(EncodeCodec::Vp9)
-        } else {
-            Ok(EncodeCodec::Av1)
+    fn codec_by_name(encoder: &Encoder) -> Result<EncodeCodec, String> {
+        match encoder.codec() {
+            Some(codec) if !encoder.name().starts_with("missing") => Ok(codec),
+            _ => Err(format!("encoder `{encoder}` not found")),
         }
     }
 
     /// Which encoders write 10-bit and alpha, standing in for this FFmpeg build.
-    fn depth_by_name(encoder: &str, depth: BitDepth, alpha: bool) -> Result<(), String> {
-        let eight_bit_only = encoder == "libx264"
-            || encoder.starts_with("h264_")
-            || encoder.ends_with("_videotoolbox");
+    fn depth_by_name(encoder: &Encoder, depth: BitDepth, alpha: bool) -> Result<(), String> {
         let codec = codec_by_name(encoder)?;
+        let eight_bit_only =
+            codec == EncodeCodec::H264 || encoder.family() == EncoderFamily::VideoToolbox;
         if depth == BitDepth::Ten && eight_bit_only {
             Err(format!("`{encoder}` can't encode 10-bit"))
         } else if codec == EncodeCodec::ProRes && depth == BitDepth::Eight {
             Err(format!("`{encoder}` is always 10-bit"))
-        } else if alpha && EncoderFamily::of(encoder).is_hardware() {
+        } else if alpha && encoder.family().is_hardware() {
             Err(format!("`{encoder}` is a hardware encoder"))
         } else if alpha && !codec.carries_alpha() {
             Err(format!("`{encoder}` can't write alpha"))
@@ -753,7 +745,7 @@ mod tests {
         choice
             .candidates()
             .iter()
-            .map(|candidate| candidate.encoder.as_str())
+            .map(|candidate| candidate.encoder.name())
             .collect()
     }
 
@@ -774,10 +766,11 @@ mod tests {
         );
         for (name, preset) in &config.presets {
             for (encoder, quality) in &preset.encoders {
-                assert_eq!(quality.check_encoder(encoder), Ok(()), "{name} {encoder}");
-                if encoder_info(encoder).is_ok() {
+                let parsed = Encoder::parse(encoder);
+                assert_eq!(quality.check_encoder(&parsed), Ok(()), "{name} {encoder}");
+                if encoder_info(&parsed).is_ok() {
                     assert_eq!(
-                        check_raw_options(encoder, &quality.options).map_err(|e| e.message),
+                        check_raw_options(&parsed, &quality.options).map_err(|e| e.message),
                         Ok(()),
                         "{name} {encoder}"
                     );
@@ -962,7 +955,7 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("libx265"), "{error}");
         // A missing candidate before an available one is left to fall through at look-up.
-        let only_software = |encoder: &str| match encoder {
+        let only_software = |encoder: &Encoder| match encoder.name() {
             "libx265" => Ok(EncodeCodec::Hevc),
             _ => Err("not built".to_string()),
         };

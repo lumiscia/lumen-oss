@@ -1,12 +1,12 @@
 use std::fmt::Display;
 
-use super::codec::{BitDepth, EncoderInfo, encoder_info};
+use super::codec::{BitDepth, Encoder, EncoderInfo, encoder_info};
 use super::quality::EncoderQuality;
 
 /// An encoder a render may use, with the settings it runs with.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EncoderCandidate {
-    pub encoder: String,
+    pub encoder: Encoder,
     pub quality: EncoderQuality,
 }
 
@@ -31,7 +31,7 @@ impl VideoEncoderChoice {
     }
 
     /// Exactly `encoder`, with no fallback, at 8 bits and opaque.
-    pub fn single(encoder: impl Into<String>, quality: EncoderQuality) -> Self {
+    pub fn single(encoder: impl Into<Encoder>, quality: EncoderQuality) -> Self {
         Self {
             candidates: vec![EncoderCandidate {
                 encoder: encoder.into(),
@@ -103,7 +103,7 @@ impl VideoEncoderChoice {
         loop {
             let candidate = candidates.next().expect("a choice has a candidate");
             match open(candidate) {
-                Ok(opened) => return Ok((opened, candidate.encoder.clone())),
+                Ok(opened) => return Ok((opened, candidate.encoder.name().to_string())),
                 Err(error) => match candidates.peek() {
                     Some(next) => warn(&fallback_warning(candidate, next, &error)),
                     None => return Err(error),
@@ -135,7 +135,7 @@ mod tests {
             encoders
                 .iter()
                 .map(|encoder| EncoderCandidate {
-                    encoder: encoder.to_string(),
+                    encoder: Encoder::parse(encoder),
                     quality: EncoderQuality::default(),
                 })
                 .collect(),
@@ -153,8 +153,10 @@ mod tests {
         let opened = choice
             .open(
                 |candidate| {
-                    tried.borrow_mut().push(candidate.encoder.clone());
-                    open(&candidate.encoder)
+                    tried
+                        .borrow_mut()
+                        .push(candidate.encoder.name().to_string());
+                    open(candidate.encoder.name())
                 },
                 |warning| warnings.push(warning.to_string()),
             )
@@ -217,7 +219,7 @@ mod tests {
             .look_up(|warning| warnings.push(warning.to_string()))
             .unwrap();
         assert_eq!(looked_up.candidates().len(), 1);
-        assert_eq!(looked_up.first().encoder, "libx264");
+        assert_eq!(looked_up.first().encoder.name(), "libx264");
         assert_eq!(info.codec, crate::VideoCodec::H264);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].starts_with("missing_encoder is unavailable"));

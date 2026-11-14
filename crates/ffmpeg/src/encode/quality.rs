@@ -2,7 +2,8 @@ use crate::ffi::{self, CodecContextGuard, sys};
 use crate::video::EncodeMode;
 use crate::{FfmpegError, Result};
 
-use super::codec::{EncoderFamily, video_encoder_by_name};
+use super::codec::{Encoder, EncoderFamily, video_encoder_by_name};
+use super::preset::EncodeCodec;
 
 /// The bitrate `--preset` alone targets with the `lumen` rate-control flags.
 const FLAG_DEFAULT_BIT_RATE: u64 = 14_000_000;
@@ -53,7 +54,7 @@ impl EncoderQuality {
 
     /// Whether `encoder` supports this rate control and preset, without opening it. Errors with
     /// the message opening it would give.
-    pub fn check_encoder(&self, encoder: &str) -> std::result::Result<(), String> {
+    pub fn check_encoder(&self, encoder: &Encoder) -> std::result::Result<(), String> {
         portable_options(encoder, self)
             .map(|_| ())
             .map_err(|error| error.message)
@@ -140,7 +141,7 @@ pub(crate) struct PortableOptions {
 }
 
 pub(crate) fn quality_options(
-    encoder: &str,
+    encoder: &Encoder,
     quality: &EncoderQuality,
     mode: EncodeMode,
 ) -> Result<QualityOptions> {
@@ -153,10 +154,10 @@ pub(crate) fn quality_options(
     // flight on more than one queue, with or without B-frames. Zero-copy encodes use the one
     // encode queue lumen lists on the shared device. CPU-upload encodes create their own device
     // with every queue, and `limit_queues` does nothing on FFmpeg 8.0.
-    if encoder == "h264_vulkan" && mode == EncodeMode::CpuUpload {
+    if encoder.is(EncoderFamily::Vulkan, EncodeCodec::H264) && mode == EncodeMode::CpuUpload {
         private.push(("async_depth", "1".to_string()));
     }
-    if EncoderFamily::of(encoder) == EncoderFamily::Vpx {
+    if encoder.family() == EncoderFamily::Vpx {
         private.push(("row-mt", "1".to_string()));
     }
     Ok(QualityOptions {
@@ -170,8 +171,11 @@ pub(crate) fn quality_options(
 /// The context settings and private AVOptions `rate_control` and `preset` map to on `encoder`.
 /// A quantizer or rate factor sets the bitrate to 0, so the encoder doesn't also target one.
 /// `prores_ks` always encodes the 4444 profile, the one that holds alpha.
-pub(crate) fn portable_options(encoder: &str, quality: &EncoderQuality) -> Result<PortableOptions> {
-    let family = EncoderFamily::of(encoder);
+pub(crate) fn portable_options(
+    encoder: &Encoder,
+    quality: &EncoderQuality,
+) -> Result<PortableOptions> {
+    let family = encoder.family();
     let error = |message: String| FfmpegError::new("VideoEncoder::create", message);
     let unsupported = |what: &str, supported: &str| {
         error(format!(
@@ -241,7 +245,11 @@ pub(crate) fn portable_options(encoder: &str, quality: &EncoderQuality) -> Resul
             0
         }
         (Some(RateControl::Crf(cq)), EncoderFamily::Nvenc) => {
-            let max = if encoder.starts_with("av1_") { 63 } else { 51 };
+            let max = if encoder.codec() == Some(EncodeCodec::Av1) {
+                63
+            } else {
+                51
+            };
             if cq == 0 || cq > max {
                 return Err(error(format!(
                     "invalid CRF {cq} for encoder `{encoder}` (0 means automatic); use 1-{max}"
@@ -251,7 +259,7 @@ pub(crate) fn portable_options(encoder: &str, quality: &EncoderQuality) -> Resul
             options.push(("cq", cq.to_string()));
             // Without a maximum, HEVC NVENC caps VBR near 10 Mb/s at 1080p whatever `cq` asks
             // for. NVENC signals the level from `maxrate`; 100 Mb/s gives level 5.0 at 1080p.
-            if encoder.starts_with("hevc_") {
+            if encoder.codec() == Some(EncodeCodec::Hevc) {
                 options.push(("maxrate", HEVC_NVENC_CQ_MAX_RATE.to_string()));
             }
             0
@@ -277,7 +285,7 @@ pub(crate) fn portable_options(encoder: &str, quality: &EncoderQuality) -> Resul
             0
         }
         (Some(RateControl::Qp(qp)), EncoderFamily::Nvenc) => {
-            if !encoder.starts_with("av1_") {
+            if encoder.codec() != Some(EncodeCodec::Av1) {
                 check_range("QP", qp, 0, 51)?;
             }
             options.push(("rc", "constqp".to_string()));
@@ -296,7 +304,10 @@ pub(crate) fn portable_options(encoder: &str, quality: &EncoderQuality) -> Resul
         }
         (
             Some(RateControl::Qp(_)),
-            EncoderFamily::VideoToolbox | EncoderFamily::Vpx | EncoderFamily::Other,
+            EncoderFamily::VideoToolbox
+            | EncoderFamily::Vpx
+            | EncoderFamily::Vaapi
+            | EncoderFamily::Other,
         ) => {
             return Err(unsupported(
                 "constant quantizer rate control",
@@ -317,7 +328,7 @@ pub(crate) fn portable_options(encoder: &str, quality: &EncoderQuality) -> Resul
 pub(crate) fn apply_quality_options(
     context: *mut sys::AVCodecContext,
     quality: &QualityOptions,
-    encoder: &str,
+    encoder: &Encoder,
 ) -> Result<()> {
     let chosen = quality.private.iter().map(|(name, value)| (*name, value));
     let raw = quality
@@ -341,7 +352,7 @@ fn set_option(
     flags: i32,
     name: &str,
     value: &str,
-    encoder: &str,
+    encoder: &Encoder,
 ) -> Result<()> {
     let c_name = ffi::cstring("av_opt_set", name)?;
     let c_value = ffi::cstring("av_opt_set", value)?;
@@ -361,7 +372,7 @@ fn set_option(
 
 /// Checks raw `options` against `encoder`'s AVOptions on a context that is never opened, so a
 /// bad key, an unparsable value or one outside the option's range errors without any hardware.
-pub(crate) fn check_raw_options(encoder: &str, options: &[(String, String)]) -> Result<()> {
+pub(crate) fn check_raw_options(encoder: &Encoder, options: &[(String, String)]) -> Result<()> {
     let codec = video_encoder_by_name(encoder)?;
     let context = CodecContextGuard(unsafe { sys::avcodec_alloc_context3(codec) });
     if context.0.is_null() {
@@ -401,7 +412,7 @@ mod tests {
         preset: Option<&str>,
     ) -> Result<QualityOptions> {
         quality_options(
-            encoder,
+            &Encoder::parse(encoder),
             &quality(Some(rate_control), preset),
             EncodeMode::CpuUpload,
         )
@@ -519,7 +530,7 @@ mod tests {
         let quantised = options("prores_ks", RateControl::Qp(8), None).unwrap();
         assert_eq!(quantised.global_quality, 8 * sys::FF_QP2LAMBDA);
         let profile_rate = quality_options(
-            "prores_ks",
+            &Encoder::parse("prores_ks"),
             &EncoderQuality::default(),
             EncodeMode::CpuUpload,
         )
@@ -535,7 +546,12 @@ mod tests {
     #[test]
     fn h264_vulkan_limits_frames_in_flight_only_when_it_owns_its_device() {
         let async_depth = |mode| {
-            let quality = quality_options("h264_vulkan", &EncoderQuality::default(), mode).unwrap();
+            let quality = quality_options(
+                &Encoder::parse("h264_vulkan"),
+                &EncoderQuality::default(),
+                mode,
+            )
+            .unwrap();
             quality.private.contains(&("async_depth", "1".to_string()))
         };
         assert!(async_depth(EncodeMode::CpuUpload));
@@ -560,12 +576,14 @@ mod tests {
     #[test]
     fn check_encoder_gives_the_error_opening_would() {
         let crf = quality(Some(RateControl::Crf(20)), None);
-        assert_eq!(crf.check_encoder("libx264"), Ok(()));
+        assert_eq!(crf.check_encoder(&Encoder::parse("libx264")), Ok(()));
         assert_eq!(
-            crf.check_encoder("h264_vulkan"),
-            Err(quality_options("h264_vulkan", &crf, EncodeMode::CpuUpload)
-                .unwrap_err()
-                .message)
+            crf.check_encoder(&Encoder::parse("h264_vulkan")),
+            Err(
+                quality_options(&Encoder::parse("h264_vulkan"), &crf, EncodeMode::CpuUpload)
+                    .unwrap_err()
+                    .message
+            )
         );
     }
 
@@ -621,7 +639,10 @@ mod tests {
     #[test]
     fn raw_options_are_checked_without_opening_the_encoder() {
         let check = |name: &str, value: &str| {
-            check_raw_options("libx264", &[(name.to_string(), value.to_string())])
+            check_raw_options(
+                &Encoder::parse("libx264"),
+                &[(name.to_string(), value.to_string())],
+            )
         };
         assert_eq!(check("tune", "film"), Ok(()));
         assert_eq!(check("g", "48"), Ok(()));

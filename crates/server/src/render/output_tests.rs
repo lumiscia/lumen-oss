@@ -614,7 +614,7 @@ fn a_ten_bit_video_keeps_more_luma_levels_than_eight_bits_have() {
         ("libx265", lossless),
         ("libsvtav1", EncoderQuality::default()),
     ] {
-        if lumen_ffmpeg::encoder_info(encoder).is_err() {
+        if lumen_ffmpeg::encoder_info(&encoder.into()).is_err() {
             eprintln!("{encoder} isn't in this FFmpeg build; skipping its 10-bit render");
             continue;
         }
@@ -753,7 +753,7 @@ fn alpha_videos_match_the_png_in_straight_colour_with_no_dark_fringe() {
             1.0,
         ),
     ] {
-        if lumen_ffmpeg::encoder_info(encoder).is_err() {
+        if lumen_ffmpeg::encoder_info(&encoder.into()).is_err() {
             eprintln!("{encoder} isn't in this FFmpeg build; skipping its alpha round trip");
             continue;
         }
@@ -846,7 +846,7 @@ fn alpha_in_a_format_or_encoder_that_cannot_hold_it_is_refused() {
             assert!(render_project(&composition, &options, &mut |_| {}).is_ok());
             continue;
         }
-        if lumen_ffmpeg::encoder_info(encoder).is_err() {
+        if lumen_ffmpeg::encoder_info(&encoder.into()).is_err() {
             continue;
         }
         let Err(error) = render_project(&composition, &options, &mut |_| {}) else {
@@ -881,12 +881,12 @@ fn resolving_alpha_names_what_can_hold_it() {
     );
     let h264 = alpha(OutputFormat::Mov, Some(lumen_ffmpeg::EncodeCodec::H264)).unwrap_err();
     assert!(h264.to_string().contains("a .mov holds prores"), "{h264}");
-    if lumen_ffmpeg::encoder_info("prores_ks").is_err() {
+    if lumen_ffmpeg::encoder_info(&"prores_ks".into()).is_err() {
         eprintln!("prores_ks not in this FFmpeg build; skipping the ProRes selections");
         return;
     }
     let prores = alpha(OutputFormat::Mov, None).unwrap();
-    assert_eq!(prores.first().encoder, "prores_ks");
+    assert_eq!(prores.first().encoder.name(), "prores_ks");
     assert!(prores.alpha());
     assert_eq!(prores.bit_depth(), lumen_ffmpeg::BitDepth::Ten);
     let opaque = super::resolve_encoder(

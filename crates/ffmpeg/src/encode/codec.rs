@@ -8,6 +8,7 @@ use crate::video::VideoCodec;
 use crate::{FfmpegError, Result};
 
 use super::audio::AudioEncoderConfig;
+use super::preset::EncodeCodec;
 
 /// A video encoder this FFmpeg build has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,7 +18,7 @@ pub struct EncoderInfo {
 }
 
 /// The encoders lumen drives differently from the rest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EncoderFamily {
     X264,
     X265,
@@ -29,33 +30,12 @@ pub enum EncoderFamily {
     Nvenc,
     Vulkan,
     VideoToolbox,
+    /// Takes only VAAPI frames, which lumen has no way to fill.
+    Vaapi,
     Other,
 }
 
 impl EncoderFamily {
-    /// The family of an encoder by its FFmpeg name.
-    pub fn of(encoder: &str) -> Self {
-        if encoder == "libx264" {
-            Self::X264
-        } else if encoder == "libx265" {
-            Self::X265
-        } else if encoder == "libsvtav1" {
-            Self::SvtAv1
-        } else if encoder == "libvpx-vp9" {
-            Self::Vpx
-        } else if encoder == "prores_ks" {
-            Self::ProRes
-        } else if encoder.ends_with("_nvenc") {
-            Self::Nvenc
-        } else if encoder.ends_with("_vulkan") {
-            Self::Vulkan
-        } else if encoder.ends_with("_videotoolbox") {
-            Self::VideoToolbox
-        } else {
-            Self::Other
-        }
-    }
-
     /// Whether the encoder runs on a GPU or media engine, which none can write alpha on.
     pub fn is_hardware(self) -> bool {
         matches!(self, Self::Nvenc | Self::Vulkan | Self::VideoToolbox)
@@ -68,6 +48,98 @@ impl EncoderFamily {
                 | (Self::Vulkan, GpuBackend::Vulkan)
                 | (Self::VideoToolbox, GpuBackend::Metal)
         )
+    }
+}
+
+/// An FFmpeg encoder name with the family and codec its spelling says. Every rule that depends
+/// on which encoder it is reads those, so the name is only classified here.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Encoder {
+    name: String,
+    family: EncoderFamily,
+    codec: Option<EncodeCodec>,
+}
+
+impl Encoder {
+    /// Classifies `name`, such as `libx264` or `h264_vulkan`. A name no rule recognises is
+    /// [`EncoderFamily::Other`] with no codec; whether the FFmpeg build has it is up to
+    /// [`encoder_info`].
+    pub fn parse(name: &str) -> Self {
+        let family = match name {
+            "libx264" => EncoderFamily::X264,
+            "libx265" => EncoderFamily::X265,
+            "libsvtav1" => EncoderFamily::SvtAv1,
+            "libvpx-vp9" => EncoderFamily::Vpx,
+            "prores_ks" => EncoderFamily::ProRes,
+            _ if name.ends_with("_nvenc") => EncoderFamily::Nvenc,
+            _ if name.ends_with("_vulkan") => EncoderFamily::Vulkan,
+            _ if name.ends_with("_videotoolbox") => EncoderFamily::VideoToolbox,
+            _ if name.ends_with("_vaapi") => EncoderFamily::Vaapi,
+            _ => EncoderFamily::Other,
+        };
+        let codec = match (family, name) {
+            (EncoderFamily::X264, _) => Some(EncodeCodec::H264),
+            (EncoderFamily::X265, _) => Some(EncodeCodec::Hevc),
+            (EncoderFamily::SvtAv1, _) => Some(EncodeCodec::Av1),
+            (EncoderFamily::Vpx, _) => Some(EncodeCodec::Vp9),
+            (EncoderFamily::ProRes, _) => Some(EncodeCodec::ProRes),
+            (_, "libaom-av1") => Some(EncodeCodec::Av1),
+            _ if name.starts_with("h264_") => Some(EncodeCodec::H264),
+            _ if name.starts_with("hevc_") => Some(EncodeCodec::Hevc),
+            _ if name.starts_with("av1_") => Some(EncodeCodec::Av1),
+            _ if name.starts_with("vp9_") => Some(EncodeCodec::Vp9),
+            _ if name.starts_with("prores") => Some(EncodeCodec::ProRes),
+            _ => None,
+        };
+        Self {
+            name: name.to_string(),
+            family,
+            codec,
+        }
+    }
+
+    /// The FFmpeg name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn family(&self) -> EncoderFamily {
+        self.family
+    }
+
+    /// The codec the name says the encoder writes, if it says. FFmpeg's registry has the final
+    /// word, which [`encoder_info`] reads.
+    pub fn codec(&self) -> Option<EncodeCodec> {
+        self.codec
+    }
+
+    /// Whether this is `family` writing `codec`, such as `av1_vulkan`.
+    pub(crate) fn is(&self, family: EncoderFamily, codec: EncodeCodec) -> bool {
+        self.family == family && self.codec == Some(codec)
+    }
+}
+
+impl From<&str> for Encoder {
+    fn from(name: &str) -> Self {
+        Self::parse(name)
+    }
+}
+
+impl From<String> for Encoder {
+    fn from(name: String) -> Self {
+        Self::parse(&name)
+    }
+}
+
+impl From<&Encoder> for Encoder {
+    fn from(encoder: &Encoder) -> Self {
+        encoder.clone()
+    }
+}
+
+impl fmt::Display for Encoder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.name)
     }
 }
 
@@ -120,7 +192,7 @@ impl fmt::Display for BitDepth {
 /// Errors with why `encoder` can't write `depth`, without opening it. H.264 output is always
 /// 8-bit, ProRes always 10-bit, VideoToolbox has no 10-bit path, and a software encoder must take
 /// 10-bit YUV 4:2:0. Vulkan and NVENC encoders find out whether their device can when they open.
-pub fn check_bit_depth(encoder: &str, depth: BitDepth) -> std::result::Result<(), String> {
+pub fn check_bit_depth(encoder: &Encoder, depth: BitDepth) -> std::result::Result<(), String> {
     let codec = match video_encoder_by_name(encoder) {
         Ok(codec) => codec,
         // An encoder this build lacks is skipped or refused where it is looked up.
@@ -144,7 +216,7 @@ pub fn check_bit_depth(encoder: &str, depth: BitDepth) -> std::result::Result<()
             "H.264 output is always 8-bit, so `{encoder}` can't encode {depth}; use hevc or av1"
         ));
     }
-    match EncoderFamily::of(encoder) {
+    match encoder.family() {
         EncoderFamily::VideoToolbox => Err(format!(
             "{depth} is not supported by this encoder (`{encoder}`)"
         )),
@@ -164,8 +236,8 @@ pub fn check_bit_depth(encoder: &str, depth: BitDepth) -> std::result::Result<()
 /// Errors with why `encoder` can't write video with an alpha channel at `depth`, without opening
 /// it. Only software encoders do: `prores_ks` as 10-bit 4:4:4 with alpha, and `libvpx-vp9` as
 /// 8-bit 4:2:0 with alpha.
-pub fn check_alpha(encoder: &str, depth: BitDepth) -> std::result::Result<(), String> {
-    if EncoderFamily::of(encoder).is_hardware() {
+pub fn check_alpha(encoder: &Encoder, depth: BitDepth) -> std::result::Result<(), String> {
+    if encoder.family().is_hardware() {
         return Err(format!(
             "`{encoder}` is a hardware encoder, and none can write alpha; use prores_ks or libvpx-vp9"
         ));
@@ -212,24 +284,26 @@ pub(crate) fn cpu_input_format(
     }
 }
 
-/// Looks up a video encoder by its FFmpeg name, such as `libx264` or `h264_vulkan`.
-pub fn encoder_info(name: &str) -> Result<EncoderInfo> {
-    let codec = video_encoder_by_name(name)?;
+/// Looks `encoder` up in this FFmpeg build.
+pub fn encoder_info(encoder: &Encoder) -> Result<EncoderInfo> {
+    let codec = video_encoder_by_name(encoder)?;
     Ok(EncoderInfo {
         codec: VideoCodec::from_av_codec_id(unsafe { (*codec).id }),
-        family: EncoderFamily::of(name),
+        family: encoder.family(),
     })
 }
 
-pub(crate) fn video_encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
-    // These take only VAAPI frames, and lumen has no way to fill those.
-    if name.ends_with("_vaapi") {
+pub(crate) fn video_encoder_by_name(encoder: &Encoder) -> Result<*const sys::AVCodec> {
+    let name = encoder.name();
+    if encoder.family() == EncoderFamily::Vaapi {
         return Err(FfmpegError::new(
             "encoder_info",
             format!("VAAPI encoder `{name}` is not supported; use a Vulkan encoder or libx264"),
         ));
     }
-    let codec = encoder_by_name(name)?;
+    let codec = encoder_by_name(name, |avcodec_major| {
+        missing_encoder_message(encoder, avcodec_major)
+    })?;
     if unsafe { (*codec).type_ } != sys::AVMediaType::AVMEDIA_TYPE_VIDEO {
         return Err(FfmpegError::new(
             "encoder_info",
@@ -237,7 +311,7 @@ pub(crate) fn video_encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
         ));
     }
     // Vulkan encoders take frames from their own hardware frames context.
-    if EncoderFamily::of(name) != EncoderFamily::Vulkan {
+    if encoder.family() != EncoderFamily::Vulkan {
         let (format, described) = match VideoCodec::from_av_codec_id(unsafe { (*codec).id }) {
             VideoCodec::ProRes => (
                 sys::AVPixelFormat::AV_PIX_FMT_YUV444P10LE,
@@ -327,7 +401,9 @@ unsafe fn terminated_list<T: PartialEq>(list: *const T, end: T) -> Option<&'stat
     Some(unsafe { std::slice::from_raw_parts(list, count) })
 }
 
-pub(crate) fn encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
+/// Finds the encoder `name`, with `missing` describing it for the libavcodec major version when
+/// this build has none.
+fn encoder_by_name(name: &str, missing: impl FnOnce(u32) -> String) -> Result<*const sys::AVCodec> {
     let c_name = CString::new(name).map_err(|_| {
         FfmpegError::new(
             "avcodec_find_encoder_by_name",
@@ -338,7 +414,7 @@ pub(crate) fn encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
     if codec.is_null() {
         Err(FfmpegError::new(
             "avcodec_find_encoder_by_name",
-            missing_encoder_message(name, unsafe { sys::avcodec_version() } >> 16),
+            missing(unsafe { sys::avcodec_version() } >> 16),
         ))
     } else {
         Ok(codec)
@@ -346,8 +422,9 @@ pub(crate) fn encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
 }
 
 /// libavcodec 62 is FFmpeg 8.0, the first release with `av1_vulkan`.
-fn missing_encoder_message(name: &str, avcodec_major: u32) -> String {
-    if name == "av1_vulkan" && avcodec_major < 62 {
+fn missing_encoder_message(encoder: &Encoder, avcodec_major: u32) -> String {
+    let name = encoder.name();
+    if encoder.is(EncoderFamily::Vulkan, EncodeCodec::Av1) && avcodec_major < 62 {
         format!(
             "`av1_vulkan` needs FFmpeg 8.0 or newer, but this FFmpeg has libavcodec {avcodec_major}"
         )
@@ -380,10 +457,7 @@ pub fn check_audio_encoder(config: &AudioEncoderConfig) -> std::result::Result<(
 
 pub(crate) fn find_audio_encoder(config: &AudioEncoderConfig) -> Result<*const sys::AVCodec> {
     if let Some(name) = config.encoder_name.as_deref() {
-        return encoder_by_name(name).map_err(|mut error| {
-            error.message = missing_audio_encoder_message(name);
-            error
-        });
+        return encoder_by_name(name, |_| missing_audio_encoder_message(name));
     }
     let codec = unsafe { sys::avcodec_find_encoder(sys::AVCodecID::AV_CODEC_ID_AAC) };
     if codec.is_null() {
@@ -419,6 +493,40 @@ pub(crate) fn select_audio_sample_format(
 mod tests {
     use super::*;
 
+    fn lookup(name: &str) -> Result<EncoderInfo> {
+        encoder_info(&Encoder::parse(name))
+    }
+
+    #[test]
+    fn names_parse_to_their_family_and_codec() {
+        use EncodeCodec as C;
+        use EncoderFamily as F;
+        for (name, family, codec) in [
+            ("libx264", F::X264, Some(C::H264)),
+            ("libx265", F::X265, Some(C::Hevc)),
+            ("libsvtav1", F::SvtAv1, Some(C::Av1)),
+            ("libaom-av1", F::Other, Some(C::Av1)),
+            ("libvpx-vp9", F::Vpx, Some(C::Vp9)),
+            ("prores_ks", F::ProRes, Some(C::ProRes)),
+            ("h264_nvenc", F::Nvenc, Some(C::H264)),
+            ("hevc_nvenc", F::Nvenc, Some(C::Hevc)),
+            ("av1_nvenc", F::Nvenc, Some(C::Av1)),
+            ("h264_vulkan", F::Vulkan, Some(C::H264)),
+            ("hevc_vulkan", F::Vulkan, Some(C::Hevc)),
+            ("av1_vulkan", F::Vulkan, Some(C::Av1)),
+            ("h264_videotoolbox", F::VideoToolbox, Some(C::H264)),
+            ("hevc_videotoolbox", F::VideoToolbox, Some(C::Hevc)),
+            ("h264_vaapi", F::Vaapi, Some(C::H264)),
+            ("aac", F::Other, None),
+            ("missing_encoder", F::Other, None),
+        ] {
+            let encoder = Encoder::parse(name);
+            assert_eq!(encoder.name(), name);
+            assert_eq!(encoder.family(), family, "{name}");
+            assert_eq!(encoder.codec(), codec, "{name}");
+        }
+    }
+
     #[test]
     fn encoder_names_resolve_to_the_codec_ffmpeg_registered_them_under() {
         for (name, codec) in [
@@ -436,11 +544,11 @@ mod tests {
             ("hevc_videotoolbox", VideoCodec::Hevc),
         ] {
             // A build only registers some of these.
-            if let Ok(info) = encoder_info(name) {
+            if let Ok(info) = lookup(name) {
                 assert_eq!(info.codec, codec, "{name}");
             }
         }
-        assert_eq!(encoder_info("libx264").unwrap().codec, VideoCodec::H264);
+        assert_eq!(lookup("libx264").unwrap().codec, VideoCodec::H264);
     }
 
     #[test]
@@ -452,15 +560,18 @@ mod tests {
             ("aac", "not a video encoder"),
             ("h264_vaapi", "VAAPI"),
         ] {
-            let error = encoder_info(name).unwrap_err();
+            let error = lookup(name).unwrap_err();
             assert!(error.message.contains(expected), "{name}: {error}");
         }
     }
 
     #[test]
     fn ten_bit_needs_an_encoder_that_writes_it() {
-        assert_eq!(check_bit_depth("libx264", BitDepth::Eight), Ok(()));
-        let h264 = check_bit_depth("libx264", BitDepth::Ten).unwrap_err();
+        assert_eq!(
+            check_bit_depth(&Encoder::parse("libx264"), BitDepth::Eight),
+            Ok(())
+        );
+        let h264 = check_bit_depth(&Encoder::parse("libx264"), BitDepth::Ten).unwrap_err();
         assert!(h264.contains("always 8-bit"), "{h264}");
         for encoder in [
             "libx265",
@@ -469,12 +580,17 @@ mod tests {
             "av1_vulkan",
             "hevc_nvenc",
         ] {
-            if encoder_info(encoder).is_ok() {
-                assert_eq!(check_bit_depth(encoder, BitDepth::Ten), Ok(()), "{encoder}");
+            if lookup(encoder).is_ok() {
+                assert_eq!(
+                    check_bit_depth(&Encoder::parse(encoder), BitDepth::Ten),
+                    Ok(()),
+                    "{encoder}"
+                );
             }
         }
-        if encoder_info("hevc_videotoolbox").is_ok() {
-            let error = check_bit_depth("hevc_videotoolbox", BitDepth::Ten).unwrap_err();
+        if lookup("hevc_videotoolbox").is_ok() {
+            let error =
+                check_bit_depth(&Encoder::parse("hevc_videotoolbox"), BitDepth::Ten).unwrap_err();
             assert!(error.contains("not supported by this encoder"), "{error}");
         }
         assert_eq!("10".parse(), Ok(BitDepth::Ten));
@@ -483,9 +599,10 @@ mod tests {
 
     #[test]
     fn av1_vulkan_below_ffmpeg_8_says_so() {
-        assert!(missing_encoder_message("av1_vulkan", 61).contains("FFmpeg 8.0"));
+        let message = |name, major| missing_encoder_message(&Encoder::parse(name), major);
+        assert!(message("av1_vulkan", 61).contains("FFmpeg 8.0"));
         // FFmpeg 8.0 or newer without the encoder is a build problem, not a version one.
-        assert!(!missing_encoder_message("av1_vulkan", 62).contains("FFmpeg 8.0"));
-        assert!(!missing_encoder_message("h264_vulkan", 61).contains("FFmpeg 8.0"));
+        assert!(!message("av1_vulkan", 62).contains("FFmpeg 8.0"));
+        assert!(!message("h264_vulkan", 61).contains("FFmpeg 8.0"));
     }
 }
