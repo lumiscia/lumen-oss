@@ -6,15 +6,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::{composition::Composition, gpu::GpuCompositionRenderer, media::VideoFrameResolver};
 use anyhow::Context;
-use lumen_engine::{
-    composition::Composition, gpu::GpuCompositionRenderer, media::VideoFrameResolver,
-};
 use lumen_ffmpeg::{EncodeCodec, QualityConfig, QualityRequest, VideoEncoderChoice};
 
 use super::{
-    CancelToken, ErrorCode, OutputFormat, RenderOptions, RenderOutput, RenderProgress,
-    SequenceLimits, ServerRenderError,
+    CancelToken, Error, ErrorCode, OutputFormat, RenderOptions, RenderOutput, RenderProgress,
+    SequenceLimits,
     archive::{ArchiveError, StoredZip},
     device_budget::DeviceReservation,
     encode_target::{EncodeTarget, OpenedTarget},
@@ -43,20 +41,20 @@ pub fn render_project(
     composition: &Composition,
     options: &RenderOptions,
     on_progress: &mut dyn FnMut(RenderProgress),
-) -> Result<RenderedOutput, ServerRenderError> {
+) -> Result<RenderedOutput, Error> {
     let format = options.output.format;
     options.output.validate(
         composition.timeline().duration_frames,
         &options.sequence_limits,
     )?;
     if options.cancel.is_cancelled() {
-        return Err(ServerRenderError::cancelled());
+        return Err(Error::cancelled());
     }
     let media_root = media_root(options.media_root.as_deref())?;
     if let Some(dir) = options.config.font_dir()
         && !dir.is_dir()
     {
-        return Err(ServerRenderError::new(
+        return Err(Error::new(
             ErrorCode::InvalidConfig,
             format!("font directory `{}` is not a directory", dir.display()),
             false,
@@ -134,8 +132,8 @@ pub fn render_project(
     Ok(RenderedOutput { format, bytes })
 }
 
-fn output_io(context: &str, error: std::io::Error) -> ServerRenderError {
-    ServerRenderError::new(ErrorCode::OutputIo, context, true).caused_by(error)
+fn output_io(context: &str, error: std::io::Error) -> Error {
+    Error::new(ErrorCode::OutputIo, context, true).caused_by(error)
 }
 
 /// Runs `render` and stores each of its frames in the ZIP at `path`.
@@ -145,7 +143,7 @@ fn write_archive(
     format: OutputFormat,
     limits: &SequenceLimits,
     on_progress: &mut dyn FnMut(RenderProgress),
-) -> Result<(), ServerRenderError> {
+) -> Result<(), Error> {
     let extension = format.image_extension().expect("a sequence is images");
     let last_frame = render.frames().end - 1;
     let file =
@@ -153,7 +151,7 @@ fn write_archive(
     let mut zip = StoredZip::new(std::io::BufWriter::new(file));
     let mut total_bytes = 0_u64;
     let archive_failed = |error: ArchiveError| match error {
-        ArchiveError::Full => ServerRenderError::new(
+        ArchiveError::Full => Error::new(
             ErrorCode::OutputTooLarge,
             "the sequence is too large for one archive",
             false,
@@ -164,7 +162,7 @@ fn write_archive(
         &mut |image| {
             total_bytes += image.bytes.len() as u64;
             if total_bytes > limits.max_bytes {
-                return Err(ServerRenderError::new(
+                return Err(Error::new(
                     ErrorCode::OutputTooLarge,
                     format!(
                         "the sequence is past {} bytes of images at frame {}",
@@ -191,7 +189,7 @@ fn write_archive(
 pub struct RenderReport {
     pub frames: u32,
     /// Warnings rendering raised, such as fonts that fell back.
-    pub diagnostics: Vec<lumen_engine::diagnostic::Diagnostic>,
+    pub diagnostics: Vec<crate::diagnostic::Diagnostic>,
     pub held_bytes: u64,
     pub submitted_passes: u64,
     pub skipped_passes: u64,
@@ -243,9 +241,9 @@ impl<'a> Mp4Render<'a> {
         output: &Path,
         render: &RenderOutput,
         cancel: CancelToken,
-    ) -> Result<Self, ServerRenderError> {
+    ) -> Result<Self, Error> {
         if !render.format.is_video() {
-            return Err(ServerRenderError::new(
+            return Err(Error::new(
                 ErrorCode::InvalidOutput,
                 "a video render needs the mp4, mov or webm format",
                 false,
@@ -258,7 +256,7 @@ impl<'a> Mp4Render<'a> {
         output::check_video(
             render.format,
             Some(EncodeCodec::of(info.codec).ok_or_else(|| {
-                ServerRenderError::new(
+                Error::new(
                     ErrorCode::InvalidOutput,
                     format!(
                         "`{}` encodes {:?}, which lumen doesn't write",
@@ -270,7 +268,7 @@ impl<'a> Mp4Render<'a> {
             })?),
             choice.alpha(),
         )
-        .map_err(|message| ServerRenderError::new(ErrorCode::InvalidOutput, message, false))?;
+        .map_err(|message| Error::new(ErrorCode::InvalidOutput, message, false))?;
         tracing::info!(encoder = %choice.first().encoder, codec = ?info.codec, "selected video encoder");
 
         let OpenedTarget {
@@ -306,11 +304,11 @@ impl<'a> Mp4Render<'a> {
         };
         render
             .renderer
-            .set_output_alpha(lumen_engine::gpu::OutputAlpha::Opaque);
+            .set_output_alpha(crate::gpu::OutputAlpha::Opaque);
         render
             .renderer
             .compile_with_output_format(composition, render.target.output_format())
-            .map_err(|err| ServerRenderError::engine("failed to compile composition", err))?;
+            .map_err(|err| Error::engine("failed to compile composition", err))?;
         Ok(render)
     }
 
@@ -337,7 +335,7 @@ impl<'a> Mp4Render<'a> {
     pub fn run(
         mut self,
         on_progress: &mut dyn FnMut(RenderProgress),
-    ) -> Result<RenderReport, ServerRenderError> {
+    ) -> Result<RenderReport, Error> {
         let started = Instant::now();
         let total_frames = self.frames.end - self.frames.start;
         let mut timing = RenderTiming::default();
@@ -382,8 +380,8 @@ impl<'a> Mp4Render<'a> {
     }
 }
 
-fn invalid_render_profile(err: lumen_ffmpeg::FfmpegError) -> ServerRenderError {
-    ServerRenderError::new(ErrorCode::InvalidRenderProfile, err.to_string(), false)
+fn invalid_render_profile(err: lumen_ffmpeg::FfmpegError) -> Error {
+    Error::new(ErrorCode::InvalidRenderProfile, err.to_string(), false)
 }
 
 pub(super) fn prefetch_media_frames(
@@ -392,15 +390,14 @@ pub(super) fn prefetch_media_frames(
     frame: u32,
 ) {
     let Ok(requirements) =
-        lumen_engine::media::collect_frame_requirements(composition, media_store, frame)
+        crate::media::collect_frame_requirements(composition, media_store, frame)
     else {
         return;
     };
     for video in requirements.videos {
-        let Ok((_, resolver)) = lumen_engine::media::resolve_as::<dyn VideoFrameResolver>(
-            media_store,
-            &video.stream_id,
-        ) else {
+        let Ok((_, resolver)) =
+            crate::media::resolve_as::<dyn VideoFrameResolver>(media_store, &video.stream_id)
+        else {
             continue;
         };
         let mut frames = video.frames;

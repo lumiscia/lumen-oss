@@ -14,7 +14,7 @@ use lumen_engine::{diagnostic::Diagnostic, json::ParseError};
 use lumen_server_api::{ErrorBody, ErrorCode};
 use serde_json::Value;
 
-use crate::server::{RenderJobError, sanitized_diagnostics};
+use crate::{RenderJobError, sanitized_diagnostics};
 
 use super::MAX_REQUEST_BODY_BYTES;
 

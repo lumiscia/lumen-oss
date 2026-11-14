@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { previewDependencies, type PreviewMediaEntry } from "../../src/media/dependencies.js";
 // lumen-server checks the same cases against its media root and asset store.
-import rulesSource from "../../../../crates/server/tests/fixtures/source-rules.json?raw";
+import rulesSource from "../../../../crates/engine/tests/fixtures/source-rules.json?raw";
 
 type Rules = { cases: { source: string; provided: boolean; code: string | null }[] };
 

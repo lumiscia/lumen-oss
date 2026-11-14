@@ -15,7 +15,7 @@ use axum::{
     routing::{get, post, put},
 };
 use clap::Parser;
-use lumen_server::render::{
+use lumen_engine::render::{
     FONT_DIR_ENV, GpuSettings, HARDWARE_DECODE_ENV, MAX_ARCHIVE_FRAMES, RenderConfig,
     existing_font_dir, is_enabled_flag,
 };
@@ -266,7 +266,8 @@ fn router(state: AppState) -> Router {
 fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "lumen_server=info,warn".to_string()),
+            std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| "lumen_server=info,lumen_engine::render=info,warn".to_string()),
         )
         .with_writer(std::io::stderr)
         .init();

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use lumen_ffmpeg::EncodeCodec;
 
-use super::{ErrorCode, ServerRenderError};
+use super::{Error, ErrorCode};
 
 /// The JPEG quality used when [`RenderOutput::jpeg_quality`] is unset.
 pub const DEFAULT_JPEG_QUALITY: u8 = 90;
@@ -31,7 +31,121 @@ pub struct RenderOutput {
     pub jpeg_quality: Option<u8>,
 }
 
-pub use lumen_server_api::{FrameRange, OutputFormat};
+/// The file a render writes, or for a sequence the archive of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum OutputFormat {
+    /// A video of the frames, with the composition's audio cut to the same span: H.264, HEVC or
+    /// AV1, and AAC.
+    #[default]
+    Mp4,
+    /// A QuickTime video of the frames in ProRes 4444, with alpha when asked for, and AAC.
+    Mov,
+    /// A WebM video of the frames in VP9, with alpha when asked for, and Opus.
+    Webm,
+    /// One frame as a PNG. Transparency is kept: the pixels are straight (not premultiplied)
+    /// RGBA, as the renderer's final image has it.
+    Png,
+    /// One frame as an opaque JPEG. Transparent pixels are composited onto black, as they are in a
+    /// video.
+    Jpeg,
+    /// One PNG per frame, in one ZIP.
+    PngSequence,
+    /// One opaque JPEG per frame, in one ZIP.
+    JpegSequence,
+}
+
+impl OutputFormat {
+    pub const ALL: [Self; 7] = [
+        Self::Mp4,
+        Self::Mov,
+        Self::Webm,
+        Self::Png,
+        Self::Jpeg,
+        Self::PngSequence,
+        Self::JpegSequence,
+    ];
+
+    /// The name it is spelled with, such as `png_sequence`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Mp4 => "mp4",
+            Self::Mov => "mov",
+            Self::Webm => "webm",
+            Self::Png => "png",
+            Self::Jpeg => "jpeg",
+            Self::PngSequence => "png_sequence",
+            Self::JpegSequence => "jpeg_sequence",
+        }
+    }
+
+    /// The `Content-Type` of what a render of this format produces. A sequence is one ZIP.
+    pub fn content_type(self) -> &'static str {
+        match self {
+            Self::Mp4 => "video/mp4",
+            Self::Mov => "video/quicktime",
+            Self::Webm => "video/webm",
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::PngSequence | Self::JpegSequence => "application/zip",
+        }
+    }
+
+    /// The file extension, without the dot, of what a render of this format produces.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Mp4 => "mp4",
+            Self::Mov => "mov",
+            Self::Webm => "webm",
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::PngSequence | Self::JpegSequence => "zip",
+        }
+    }
+
+    pub fn is_video(self) -> bool {
+        matches!(self, Self::Mp4 | Self::Mov | Self::Webm)
+    }
+
+    /// One frame as one image.
+    pub fn is_still(self) -> bool {
+        matches!(self, Self::Png | Self::Jpeg)
+    }
+
+    pub fn is_sequence(self) -> bool {
+        matches!(self, Self::PngSequence | Self::JpegSequence)
+    }
+
+    pub fn is_jpeg(self) -> bool {
+        matches!(self, Self::Jpeg | Self::JpegSequence)
+    }
+
+    /// The extension of one frame of an image format, which is `None` for video.
+    pub fn image_extension(self) -> Option<&'static str> {
+        match self {
+            Self::Png | Self::PngSequence => Some("png"),
+            Self::Jpeg | Self::JpegSequence => Some("jpg"),
+            Self::Mp4 | Self::Mov | Self::Webm => None,
+        }
+    }
+}
+
+/// The frames of the timeline a render covers, as `start..end` with `end` not included, like the
+/// player's `range: { in, out }`. Frame numbers are the composition's, so a ranged render of frames
+/// 30 to 60 draws what a full render draws there; its output starts at time 0.
+///
+/// `start` defaults to 0 and `end` to the timeline's end, except for a still, whose `end` defaults
+/// to the frame after `start`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FrameRange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<u32>,
+}
 
 /// The codecs a video of `format` holds, the first being the one it takes when nothing asks for
 /// another; empty for images. An MP4's default is the quality config's.
@@ -113,14 +227,8 @@ impl RenderOutput {
     /// The frames to render, or [`ErrorCode::InvalidOutput`] for a range that is empty or reaches
     /// past a timeline of `duration_frames`, a JPEG quality outside `1..=100`, a JPEG quality on
     /// another format, or a still of more than one frame. Nothing here touches the GPU.
-    pub fn resolve(&self, duration_frames: u32) -> Result<Range<u32>, ServerRenderError> {
-        let invalid = |message: String| {
-            Err(ServerRenderError::new(
-                ErrorCode::InvalidOutput,
-                message,
-                false,
-            ))
-        };
+    pub fn resolve(&self, duration_frames: u32) -> Result<Range<u32>, Error> {
+        let invalid = |message: String| Err(Error::new(ErrorCode::InvalidOutput, message, false));
         if let Some(quality) = self.jpeg_quality {
             if !self.format.is_jpeg() {
                 return invalid("jpeg_quality only applies to the jpeg formats".to_string());
@@ -159,11 +267,11 @@ impl RenderOutput {
         &self,
         duration_frames: u32,
         limits: &SequenceLimits,
-    ) -> Result<Range<u32>, ServerRenderError> {
+    ) -> Result<Range<u32>, Error> {
         let frames = self.resolve(duration_frames)?;
         let count = frames.end - frames.start;
         if self.format.is_sequence() && count > limits.max_frames.min(MAX_ARCHIVE_FRAMES) {
-            return Err(ServerRenderError::new(
+            return Err(Error::new(
                 ErrorCode::OutputTooLarge,
                 format!(
                     "the sequence has {count} frames, and at most {} are allowed",

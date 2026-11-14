@@ -1,13 +1,13 @@
-use std::{error::Error, fmt};
+use std::{error::Error as StdError, fmt};
 
-use lumen_engine::error::LumenError;
+use crate::error::LumenError;
 
-type Source = Box<dyn Error + Send + Sync + 'static>;
+type Source = Box<dyn StdError + Send + Sync + 'static>;
 
 /// Why a render failed: a [`code`](Self::code) to match on, a message, and the error that caused
-/// it as [`source`](Error::source).
+/// it as [`source`](StdError::source).
 #[derive(Debug)]
-pub struct ServerRenderError {
+pub struct Error {
     code: ErrorCode,
     message: String,
     retryable: bool,
@@ -19,7 +19,7 @@ pub struct ServerRenderError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
     /// The engine failed, such as `media.not_found` for a source that isn't there or `render.gpu`
-    /// for the GPU. The code is one of [`lumen_engine::diagnostic::codes`].
+    /// for the GPU. The code is one of [`crate::diagnostic::codes`].
     Engine(&'static str),
     /// `invalid_project_payload`: the payload is not a composition.
     InvalidProjectPayload,
@@ -66,34 +66,13 @@ impl ErrorCode {
     }
 }
 
-/// The HTTP API's code for a render that failed with `code`. An engine code has no variant of its
-/// own there.
-impl From<ErrorCode> for lumen_server_api::ErrorCode {
-    fn from(code: ErrorCode) -> Self {
-        use lumen_server_api::ErrorCode as Api;
-        match code {
-            ErrorCode::Engine(code) => Api::Other(code.to_string()),
-            ErrorCode::InvalidProjectPayload => Api::InvalidProjectPayload,
-            ErrorCode::InvalidQuality => Api::InvalidQuality,
-            ErrorCode::InvalidRenderProfile => Api::InvalidRenderProfile,
-            ErrorCode::InvalidConfig => Api::InvalidConfig,
-            ErrorCode::InvalidOutput => Api::InvalidOutput,
-            ErrorCode::OutputTooLarge => Api::OutputTooLarge,
-            ErrorCode::RenderFailed => Api::RenderFailed,
-            ErrorCode::EncodeFailed => Api::EncodeFailed,
-            ErrorCode::OutputIo => Api::OutputIo,
-            ErrorCode::Cancelled => Api::RenderCancelled,
-        }
-    }
-}
-
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl ServerRenderError {
+impl Error {
     /// A failure with `code` and nothing that caused it.
     pub(crate) fn new(code: ErrorCode, message: impl Into<String>, retryable: bool) -> Self {
         Self {
@@ -139,7 +118,7 @@ impl ServerRenderError {
 
     /// The engine error this failure comes from, if any.
     pub fn engine_error(&self) -> Option<&LumenError> {
-        let mut next: Option<&(dyn Error + 'static)> = self.source.as_deref().map(|e| e as _);
+        let mut next: Option<&(dyn StdError + 'static)> = self.source.as_deref().map(|e| e as _);
         while let Some(error) = next {
             if let Some(engine) = error.downcast_ref::<LumenError>() {
                 return Some(engine);
@@ -150,22 +129,22 @@ impl ServerRenderError {
     }
 }
 
-impl fmt::Display for ServerRenderError {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
     }
 }
 
-impl Error for ServerRenderError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
+impl StdError for Error {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
         self.source.as_deref().map(|error| error as _)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::error::{MediaError, RenderError};
     use anyhow::Context;
-    use lumen_engine::error::{MediaError, RenderError};
 
     use super::*;
 
@@ -185,9 +164,8 @@ mod tests {
         ];
         for (code, name) in codes {
             assert_eq!(code.as_str(), name);
-            assert_eq!(lumen_server_api::ErrorCode::from(code).as_str(), name);
             assert!(
-                lumen_engine::diagnostic::codes().all(|engine| engine != name),
+                crate::diagnostic::codes().all(|engine| engine != name),
                 "{name} is an engine code"
             );
         }
@@ -196,7 +174,7 @@ mod tests {
 
     #[test]
     fn an_engine_failure_keeps_its_code_and_error() {
-        let error = ServerRenderError::engine(
+        let error = Error::engine(
             "render failed at frame 3",
             MediaError::source_not_found("hero.png", "no such file in the media root"),
         );
@@ -213,7 +191,7 @@ mod tests {
 
     #[test]
     fn a_media_failure_is_retryable_only_when_it_is_a_shortage_that_can_pass() {
-        use lumen_engine::error::MediaFailure;
+        use crate::error::MediaFailure;
 
         let failures = [
             (
@@ -243,7 +221,7 @@ mod tests {
             ),
         ];
         for (failure, code, retryable) in failures {
-            let error = ServerRenderError::engine("render failed", MediaError::from(failure));
+            let error = Error::engine("render failed", MediaError::from(failure));
             assert_eq!(error.code(), ErrorCode::Engine(code));
             assert_eq!(error.retryable(), retryable, "{code}");
         }
@@ -255,8 +233,8 @@ mod tests {
             details: "device lost".to_string(),
         }))
         .context("failed to initialize wgpu renderer");
-        let error = ServerRenderError::new(ErrorCode::RenderFailed, "no renderer", false)
-            .caused_by(gpu.unwrap_err());
+        let error =
+            Error::new(ErrorCode::RenderFailed, "no renderer", false).caused_by(gpu.unwrap_err());
 
         assert_eq!(error.code(), ErrorCode::Engine("render.gpu"));
         assert!(error.retryable());
@@ -265,7 +243,7 @@ mod tests {
 
     #[test]
     fn a_cause_from_outside_the_engine_keeps_the_server_code() {
-        let error = ServerRenderError::new(ErrorCode::EncodeFailed, "encoder failed", true)
+        let error = Error::new(ErrorCode::EncodeFailed, "encoder failed", true)
             .caused_by(anyhow::anyhow!("libx264 refused the frame"));
 
         assert_eq!(error.code(), ErrorCode::EncodeFailed);

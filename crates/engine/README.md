@@ -477,6 +477,114 @@ the engine's own reads and in FFmpeg's, while opening and while decoding) is a `
 
 <!-- generated:diagnostic-codes:end -->
 
+## Render library
+
+The `render` feature adds `lumen_engine::render`: a composition to an MP4, MOV or WebM, a still or an image sequence on a GPU with FFmpeg, with media read from a directory on disk (`LocalMediaStore`) and fonts from a font directory and the system (`FontCatalog`). The `lumen` CLI and `lumen-server` render with it.
+
+```toml
+lumen-engine = { version = "0.6", features = ["render", "vulkan"] }
+```
+
+The library reads no environment variables. A `RenderConfig` holds what renders take from the host, and `lumen` and `lumen-server` build it from their flags and environment: `font_dir` from `--font-dir` or `LUMEN_FONT_DIR`, `hardware_decode` from `LUMEN_HARDWARE_DECODE`, `gpu` (a `GpuSettings`) from `GpuSettings::from_env()`, which reads `WGPU_BACKEND`, `WGPU_POWER_PREF`, `LUMEN_GPU_FORCE_FALLBACK_ADAPTER` and the other wgpu variables, and `temp_dir`, where a render keeps its output while encoding, from `std::env::temp_dir()`. Its default has no font directory, decodes video on the CPU, picks the high-performance adapter on any backend and leaves the temporary directory to the system, which reads `TMPDIR`. `RenderOptions::media_root` defaults to the current directory.
+
+Without `RenderOptions::encoder`, a render resolves the built-in quality presets. `lumen` and `lumen-server` also let `LUMEN_VIDEO_ENCODER` pin an encoder, through `QualityRequest::with_env_encoder()` in `lumen-ffmpeg`; embedders pin one by passing `RenderOptions::encoder` themselves.
+
+```rust
+use lumen_engine::render::{ErrorCode, RenderConfig, RenderOptions, render_project};
+
+let options = RenderOptions {
+    config: RenderConfig {
+        font_dir: Some("/srv/fonts".into()),
+        hardware_decode: true,
+        ..RenderConfig::default()
+    },
+    media_root: Some(job_dir),
+    ..RenderOptions::default()
+};
+match render_project(&composition, &options, &mut |_| {}) {
+    Ok(output) => store(output.bytes, output.format.content_type()),
+    Err(error) if error.code() == ErrorCode::Engine("media.not_found") => missing_media(error),
+    Err(error) if error.retryable() => retry_later(),
+    Err(error) => fail(error.code().as_str(), error),
+}
+```
+
+To stop a render, give it a `CancelToken` and call `cancel()` on a clone of it from anywhere. The render checks it while it waits for GPU device room, before each frame, between the audio chunks and drained frames after the last frame, and before it finishes the encoder, so it stops within a frame, closes its encoder, removes its temporary output, releases its media, and ends with `ErrorCode::Cancelled`. `Mp4Render::open` takes the token for a render opened by hand. A cancel that arrives once the output is complete is too late and the render succeeds.
+
+```rust
+use lumen_engine::render::{CancelToken, RenderOptions};
+
+let cancel = CancelToken::new();
+let options = RenderOptions { cancel: cancel.clone(), ..RenderOptions::default() };
+let watcher = std::thread::spawn(move || {
+    // ... when the job is withdrawn:
+    cancel.cancel();
+});
+```
+
+### Output
+
+`RenderOptions::output` is a `RenderOutput`: a `format` and the `frames` it covers. The default is an MP4 of the whole timeline, so options without one render as before. `render_project` returns a `RenderedOutput`: the file's `bytes` and its `format`, whose `content_type()` and `extension()` name the file.
+
+| `OutputFormat` | Artifact                                                                                                                                                  |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Mp4`          | `video/mp4`, `.mp4`: the frames with the composition's audio cut to the same span.                                                                        |
+| `Mov`          | `video/quicktime`, `.mov`: the same, in ProRes 4444 with AAC audio, with alpha when asked for.                                                            |
+| `Webm`         | `video/webm`, `.webm`: the same, in VP9 with Opus audio, with alpha when asked for.                                                                       |
+| `Png`          | `image/png`, `.png`: one frame. Transparency is kept: the image is straight (not premultiplied) RGBA.                                                     |
+| `Jpeg`         | `image/jpeg`, `.jpg`: one frame, opaque. Transparent pixels are composited onto black, as they are in a video. `jpeg_quality` is 1 to 100, 90 when unset. |
+| `PngSequence`  | `application/zip`, `.zip`: a `frame_0000.png` per frame, stored (not deflated) in frame order.                                                            |
+| `JpegSequence` | `application/zip`, `.zip`: a `frame_0000.jpg` per frame, with `jpeg_quality`.                                                                             |
+
+`frames` is `start..end` with `end` not included, like the preview player's `range: { in, out }`. `start` defaults to 0 and `end` to the end of the timeline, except for a still, which is the frame at `start` (`end` defaults to `start + 1`). Frame numbers are the composition's: frames 30 to 60 of a ranged render are what a full render draws there, and a sequence names its files with those numbers, padded to at least four digits or as many as its last frame needs. A video starts at time 0, and its audio is the mix from the first frame's time to the last frame's end, so it lasts as long as the video and there is no silence before it.
+
+```rust
+use lumen_engine::render::{FrameRange, OutputFormat, RenderOptions, RenderOutput};
+
+let options = RenderOptions {
+    output: RenderOutput {
+        format: OutputFormat::PngSequence,
+        frames: FrameRange { start: Some(30), end: Some(60) },
+        ..RenderOutput::default()
+    },
+    ..RenderOptions::default()
+};
+```
+
+Quality presets and encoders (`RenderOptions::encoder`) apply to videos only. A sequence is bounded by `RenderOptions::sequence_limits`, a `SequenceLimits { max_frames, max_bytes }` whose default is what a ZIP holds (65535 frames, 3 GiB of images). A range that is empty or reaches past the timeline, a still of several frames, a JPEG quality outside 1 to 100 or on another format, and a sequence longer than `max_frames` all fail before any GPU work, with `invalid_output` or `output_too_large`. Frames are rendered, encoded and written to the archive one at a time, so memory holds one frame and then the archive. A sequence over `max_bytes`, or a cancelled one, ends with the temporary archive removed. `ImageRender` and `Mp4Render` take a `RenderOutput` too, for renders opened by hand: `ImageRender::run` hands each encoded frame to a callback, which is how `lumen` writes numbered files.
+
+On the CPU upload path, frames are read back through a ring of three buffers while the next ones render, so memory stays at three frames and frames reach the encoder in order.
+
+`LocalMediaStore::new(root, &config)` and `check_composition(payload, staged, assets, &config)` take the same config.
+
+### Error codes
+
+A failed render is a `render::Error`. `code()` is an `ErrorCode` to match on, `as_str()` gives the string `lumen-server` returns, `Display` is a message, and `source()` is the error that caused it. A failure in the engine has the engine's diagnostic code, such as `media.not_found`, `media.decode` or `render.gpu`, from the [codes](#codes) above, and `engine_error()` returns the engine error itself. Of them, `render.gpu` is retryable, and so is a media failure that was a shortage that can pass (out of memory or file descriptors), which is a `media.decode`. The other codes are failures of the render library:
+
+| Code                      | Meaning                                                                                                                                                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_project_payload` | The payload is not a composition. The source is the engine's `ParseError` with its diagnostics.                                                                                                                           |
+| `invalid_quality`         | The quality preset, codec, bit depth or alpha resolves to no encoder.                                                                                                                                                     |
+| `invalid_output`          | The output can't be rendered: an empty range, a range past the timeline, a still of several frames, a JPEG quality outside 1 to 100 or on a format that isn't JPEG, or a video format that can't hold the codec or alpha. |
+| `output_too_large`        | An image sequence has more frames, or adds up to more bytes, than its limits allow.                                                                                                                                       |
+| `invalid_render_profile`  | An encoder that doesn't exist, or a frame rate the encoder can't take.                                                                                                                                                    |
+| `invalid_config`          | The config or options name something that isn't there: a media root or font directory.                                                                                                                                    |
+| `render_failed`           | The GPU work around the engine failed, such as reading a frame back. Retryable.                                                                                                                                           |
+| `encode_failed`           | The encoder failed to open, encode or finish. Retryable when it ran out of memory, file descriptors or hardware encoder sessions, not when its options or the encoder are wrong.                                          |
+| `output_io`               | The output file couldn't be created, written or read back. Retryable when the host ran out of memory or file descriptors.                                                                                                 |
+| `render_cancelled`        | The render's `CancelToken` was cancelled. Not a failure, and not retryable.                                                                                                                                               |
+
+These codes replace the ones earlier versions returned:
+
+| Removed code          | Now                                                                                   |
+| --------------------- | ------------------------------------------------------------------------------------- |
+| `audio_render_failed` | The engine's code when mixing the audio failed, `encode_failed` when encoding it did. |
+| `invalid_fps`         | `invalid_render_profile`.                                                             |
+| `media_root_error`    | `invalid_config`.                                                                     |
+| `font_dir_error`      | `invalid_config`.                                                                     |
+
+A render that failed in the engine used to be `render_failed`, retryable, whatever the cause. It now has the engine's code, so a missing or corrupt source is `media.not_found` or `media.decode` and isn't retryable.
+
 ## Features
 
 - `ffmpeg`: enable FFmpeg-backed media handling through `lumen-engine-ffmpeg`.
@@ -484,6 +592,7 @@ the engine's own reads and in FFmpeg's, while opening and while decoding) is a `
 - `metal`: enable Metal support through `lumen-engine-gpu` and optional FFmpeg interop.
 - `vulkan`: enable Vulkan support through `lumen-engine-gpu` and optional FFmpeg interop.
 - `cuda`: enable CUDA support through optional FFmpeg interop.
+- `render`: the render library, `lumen_engine::render`, with FFmpeg, image decoding and 3D.
 - `3d`: render the 3D scene nodes through `lumen-engine-3d`. Without it, a composition with any of
   them fails `check` with `node.unsupported`.
 
@@ -493,4 +602,5 @@ the engine's own reads and in FFmpeg's, while opening and while decoding) is a `
 cargo check -p lumen-engine
 cargo test -p lumen-engine
 cargo check -p lumen-engine --features ffmpeg,image
+cargo test -p lumen-engine --features render --lib render
 ```

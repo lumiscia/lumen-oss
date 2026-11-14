@@ -7,6 +7,11 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use lumen_engine::render::{
+    CancelToken, FONT_DIR_ENV, FrameRange, GpuSettings, HARDWARE_DECODE_ENV, ImageRender,
+    LocalMediaStore, Mp4Render, OutputFormat, RenderConfig, RenderOutput, RenderProgress,
+    RenderReport, existing_font_dir, frame_number_width, is_enabled_flag, resolve_encoder,
+};
 use lumen_engine::{
     composition::Composition,
     diagnostic::{Diagnostic, Severity},
@@ -16,11 +21,6 @@ use lumen_engine::{
 use lumen_ffmpeg::{
     BitDepth, EncodeCodec, EncoderQuality, QUALITY_CONFIG_ENV, QualityConfig, QualityRequest,
     VideoEncoderChoice, parse_bitrate,
-};
-use lumen_server::render::{
-    CancelToken, FONT_DIR_ENV, FrameRange, GpuSettings, HARDWARE_DECODE_ENV, ImageRender,
-    LocalMediaStore, Mp4Render, OutputFormat, RenderConfig, RenderOutput, RenderProgress,
-    RenderReport, existing_font_dir, frame_number_width, is_enabled_flag, resolve_encoder,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -484,7 +484,7 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("lumen_engine=warn,lumen_server=warn")),
+                .unwrap_or_else(|_| EnvFilter::new("lumen_engine=warn")),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -804,7 +804,7 @@ mod tests {
 
     use lumen_ffmpeg::RateControl;
 
-    use lumen_server::render::{FrameRange, OutputFormat, RenderOutput};
+    use lumen_engine::render::{FrameRange, OutputFormat, RenderOutput};
 
     use super::{
         Cli, Command, EncoderQuality, RenderArgs, SequencePattern, failure_line, parse_frames,

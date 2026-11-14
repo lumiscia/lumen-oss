@@ -4,75 +4,42 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Embeddable render library and local HTTP server for Lumen."
-
-[lib]
-name = "lumen_server"
-path = "src/lib.rs"
-
-[[bin]]
-name = "lumen-server"
-path = "src/bin/lumen-server.rs"
-required-features = ["cli"]
+description = "Local HTTP render server for Lumen."
 
 [features]
-cli = [
-  "dep:axum",
-  "dep:clap",
-  "dep:futures-util",
-  "dep:reqwest",
-  "dep:sha1",
-  "dep:subtle",
-  "dep:tracing-subscriber",
-  "dep:uuid",
-]
 metal = ["lumen-engine/metal", "lumen-ffmpeg/metal"]
-vulkan = ["lumen-engine/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
+vulkan = ["lumen-engine/vulkan", "lumen-ffmpeg/vulkan"]
 cuda = ["lumen-engine/cuda", "lumen-ffmpeg/cuda"]
 
 [dependencies]
 anyhow = "1.0.101"
-pollster = "1.0.1"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter"], optional = true }
+tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter"] }
 tokio = { version = "1.49.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-axum = { version = "0.8.7", default-features = false, features = [
-  "http1",
-  "json",
-  "tokio",
-  "ws",
-], optional = true }
+axum = { version = "0.8.7", default-features = false, features = ["http1", "json", "tokio", "ws"] }
 lumen-engine = { workspace = true, features = [
   "3d",
   "3d-draco",
   "3d-ktx2",
   "3d-meshopt",
   "3d-webp",
-  "ffmpeg",
-  "image",
+  "render",
 ] }
 lumen-3d = { workspace = true, features = ["exr"] }
-lumen-gpu = { workspace = true }
 lumen-ffmpeg = { workspace = true }
-lumen-text = { workspace = true }
 lumen-server-api = { workspace = true }
 fontdb = "0.23.0"
-reqwest = { version = "0.12.24", default-features = false, features = [
-  "json",
-  "rustls-tls",
-], optional = true }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
 tempfile = "3.25.0"
-crc32fast = "1.5.0"
-image = { version = "0.25.9", default-features = false, features = ["jpeg", "png"] }
-clap = { version = "4.6.1", features = ["derive", "env"], optional = true }
-futures-util = { version = "0.3.32", optional = true }
-sha1 = { version = "0.10.7", optional = true }
-subtle = { version = "2.6.1", optional = true }
-uuid = { version = "1.18.1", features = ["v4"], optional = true }
+clap = { version = "4.6.1", features = ["derive", "env"] }
+futures-util = "0.3.32"
+sha1 = "0.10.7"
+subtle = "2.6.1"
+uuid = { version = "1.18.1", features = ["v4"] }
 
 [dev-dependencies]
-libc = "0.2"
+image = { version = "0.25.9", default-features = false, features = ["jpeg", "png"] }
 reqwest = { version = "0.12.24", default-features = false, features = ["blocking"] }
 tungstenite = { version = "0.29.0", default-features = false, features = ["handshake"] }

@@ -1,7 +1,6 @@
 use std::{collections::VecDeque, path::Path};
 
-use anyhow::Context;
-use lumen_engine::{
+use crate::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE},
     composition::Composition,
     gpu::{
@@ -9,14 +8,13 @@ use lumen_engine::{
         RenderedFrame,
     },
 };
+use anyhow::Context;
 use lumen_ffmpeg::{
     AudioEncoderConfig, EncodeMode, Encoder, EncoderQuality, GpuBackend, MuxedEncoder, Rational,
     VideoEncoderConfig,
 };
 
-use super::{
-    CancelToken, RenderTiming, ServerRenderError, encode_failed, has_audio, poll_failed, timed,
-};
+use super::{CancelToken, Error, RenderTiming, encode_failed, has_audio, poll_failed, timed};
 use crate::render::media::LocalMediaStore;
 
 const FRAMES_IN_FLIGHT: usize = 3;
@@ -81,13 +79,11 @@ impl MetalTarget {
         frame: u32,
         pts: u32,
         timing: &mut RenderTiming,
-    ) -> Result<(), ServerRenderError> {
+    ) -> Result<(), Error> {
         let target = self
             .pool
             .acquire(renderer.gpu_renderer(), pts)
-            .map_err(|err| {
-                ServerRenderError::engine(format!("failed to acquire frame {frame}"), err)
-            })?;
+            .map_err(|err| Error::engine(format!("failed to acquire frame {frame}"), err))?;
         let submitted = timed(&mut timing.render, || {
             renderer.render(
                 composition,
@@ -96,7 +92,7 @@ impl MetalTarget {
                 RenderTarget::External(target.external_texture()),
             )
         })
-        .map_err(|err| ServerRenderError::engine(format!("render failed at frame {frame}"), err))?;
+        .map_err(|err| Error::engine(format!("render failed at frame {frame}"), err))?;
         self.pending.push_back(PendingFrame {
             frame,
             target,
@@ -115,7 +111,7 @@ impl MetalTarget {
         renderer: &GpuCompositionRenderer,
         cancel: &CancelToken,
         timing: &mut RenderTiming,
-    ) -> Result<MuxedEncoder, ServerRenderError> {
+    ) -> Result<MuxedEncoder, Error> {
         while !self.pending.is_empty() {
             cancel.check()?;
             self.encode_oldest(renderer, timing)?;
@@ -127,7 +123,7 @@ impl MetalTarget {
         &mut self,
         renderer: &GpuCompositionRenderer,
         timing: &mut RenderTiming,
-    ) -> Result<(), ServerRenderError> {
+    ) -> Result<(), Error> {
         let Some(PendingFrame {
             frame,
             target,

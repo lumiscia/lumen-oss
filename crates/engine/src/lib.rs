@@ -13,6 +13,7 @@
 //! - [`gpu`]: the renderer and the targets frames render into.
 //! - [`audio`]: audio timelines and their mix.
 //! - [`diagnostic`], [`error`]: what checks and renders report.
+//! - `render` (feature `render`): compositions to video, images and image sequences with FFmpeg.
 
 extern crate self as lumen_engine;
 
@@ -34,6 +35,8 @@ pub mod graph;
 pub mod json;
 pub mod media;
 pub mod node;
+#[cfg(feature = "render")]
+pub mod render;
 pub(crate) mod scope;
 
 pub use json::SCHEMA_VERSION;

@@ -24,6 +24,18 @@ cuda = ["lumen-ffmpeg?/cuda"]
 "3d-meshopt" = ["3d", "lumen-3d/meshopt"]
 "3d-ktx2" = ["3d", "lumen-3d/ktx2"]
 "3d-webp" = ["3d", "lumen-3d/webp"]
+# The render library, `lumen_engine::render`: compositions to video, images and image sequences
+# through FFmpeg, with media and fonts read from disk.
+render = [
+  "ffmpeg",
+  "image",
+  "3d",
+  "lumen-3d/exr",
+  "dep:pollster",
+  "dep:fontdb",
+  "dep:tempfile",
+  "dep:crc32fast",
+]
 # Renderer and frame internals that tests read and set. Not a supported host API.
 test-hooks = []
 
@@ -57,12 +69,17 @@ lumen-text = { workspace = true }
 bytemuck = { version = "1.25.0", features = ["derive"] }
 half = { version = "2.7.1", features = ["bytemuck"] }
 objc2-metal = { version = "0.3.2", optional = true }
+pollster = { version = "1.0.1", optional = true }
+fontdb = { version = "0.23.0", optional = true }
+tempfile = { version = "3.25.0", optional = true }
+crc32fast = { version = "1.5.0", optional = true }
 
 [dev-dependencies]
 lumen-engine = { path = ".", features = ["test-hooks"] }
 exr = { version = "1.74.3", default-features = false }
 lumen-3d = { workspace = true, features = ["exr", "test-support"] }
-tempfile = "3.23.0"
+tempfile = "3.25.0"
+libc = "0.2"
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"] }
 pollster = "1.0.1"
 

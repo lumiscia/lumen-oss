@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use axum::body::Bytes;
-use lumen_server::render::{CancelToken, ServerRenderError};
+use lumen_engine::render::{self, CancelToken};
 use lumen_server_api::{self as api, ErrorCode as ApiErrorCode};
 use serde_json::Value;
 use tokio::sync::{Notify, watch};
@@ -82,8 +82,12 @@ impl RenderJobError {
     }
 
     /// A render library error that refused the request, such as an output that can't be rendered.
-    pub fn refused(error: &ServerRenderError) -> Self {
-        Self::new(error.code().into(), &error.to_string(), false)
+    pub fn refused(error: &render::Error) -> Self {
+        Self::new(
+            crate::wire::error_code(error.code()),
+            &error.to_string(),
+            false,
+        )
     }
 
     pub fn invalid_output(message: &str) -> Self {

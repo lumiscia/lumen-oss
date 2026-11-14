@@ -7,11 +7,11 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
+use lumen_engine::render::{RenderConfig, SequenceLimits};
 use lumen_ffmpeg::QualityConfig;
-use lumen_server::render::{RenderConfig, SequenceLimits};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::server::{
+use crate::{
     MediaClient, QueueSpot, RenderJobError, RenderRecord, RenderStatus, assets::AssetStore,
 };
 

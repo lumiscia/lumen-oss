@@ -6,7 +6,7 @@ use std::{
 
 use lumen_ffmpeg::EncoderFamily;
 
-use super::{CancelToken, ServerRenderError};
+use super::{CancelToken, Error};
 
 /// NVIDIA's driver gives a process a fixed number of contexts across all of its Vulkan devices,
 /// 63 on the cards measured. Past that `vkCreateDevice` fails, FFmpeg's device can segfault, and a
@@ -32,7 +32,7 @@ pub(super) fn reserve_devices(
     encoder: EncoderFamily,
     hardware_decode: bool,
     cancel: &CancelToken,
-) -> Result<DeviceReservation<'static>, ServerRenderError> {
+) -> Result<DeviceReservation<'static>, Error> {
     let renderer = if hardware_decode || encoder == EncoderFamily::Nvenc {
         LARGE_RENDERER_CONTEXTS
     } else {
@@ -50,7 +50,7 @@ pub(super) fn reserve_devices(
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub(super) fn reserve_shared_video_device(
     cancel: &CancelToken,
-) -> Result<DeviceReservation<'static>, ServerRenderError> {
+) -> Result<DeviceReservation<'static>, Error> {
     BUDGET.reserve(LARGE_RENDERER_CONTEXTS, cancel)
 }
 
@@ -86,11 +86,7 @@ impl DeviceBudget {
         }
     }
 
-    fn reserve(
-        &self,
-        contexts: u32,
-        cancel: &CancelToken,
-    ) -> Result<DeviceReservation<'_>, ServerRenderError> {
+    fn reserve(&self, contexts: u32, cancel: &CancelToken) -> Result<DeviceReservation<'_>, Error> {
         let contexts = contexts.min(self.capacity);
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if !state.waiting.is_empty() || state.used + contexts > self.capacity {
@@ -109,7 +105,7 @@ impl DeviceBudget {
             if cancel.is_cancelled() {
                 state.waiting.retain(|waiting| *waiting != ticket);
                 self.freed.notify_all();
-                return Err(ServerRenderError::cancelled());
+                return Err(Error::cancelled());
             }
             if state.waiting.front() == Some(&ticket) && state.used + contexts <= self.capacity {
                 break;

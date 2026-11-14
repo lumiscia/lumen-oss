@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lumen_engine::{
+use crate::{
     composition::Composition,
     gpu::{
         EncodeYuvFormat, EncodeYuvLayout, GpuCompositionRenderer, RasterHandle, RenderTarget,
@@ -18,7 +18,7 @@ use lumen_ffmpeg::{
 use lumen_gpu::wgpu::{PollType, SubmissionIndex};
 
 use super::{
-    CancelToken, ErrorCode, ServerRenderError,
+    CancelToken, Error, ErrorCode,
     device_budget::{DeviceReservation, reserve_devices},
     encoder::{AudioCancelled, EncoderSink, has_audio, write_composited_audio},
     gpu::{RenderTiming, create_gpu_renderer},
@@ -77,7 +77,7 @@ impl EncodeTarget {
         media_store: &mut LocalMediaStore,
         output: &Path,
         cancel: &CancelToken,
-    ) -> Result<OpenedTarget, ServerRenderError> {
+    ) -> Result<OpenedTarget, Error> {
         choice
             .open(
                 |candidate| {
@@ -113,9 +113,9 @@ impl EncodeTarget {
         media_store: &mut LocalMediaStore,
         output: &Path,
         cancel: &CancelToken,
-    ) -> Result<OpenedTarget, ServerRenderError> {
+    ) -> Result<OpenedTarget, Error> {
         if cancel.is_cancelled() {
-            return Err(ServerRenderError::cancelled());
+            return Err(Error::cancelled());
         }
         let (encoder, quality) = (&candidate.encoder, &candidate.quality);
         let name = encoder.name();
@@ -127,7 +127,7 @@ impl EncodeTarget {
                     Ok(())
                 }
             })
-            .map_err(|message| ServerRenderError::new(ErrorCode::EncodeFailed, message, false))?;
+            .map_err(|message| Error::new(ErrorCode::EncodeFailed, message, false))?;
         let hardware_decode = media_store.video_options.prefer_hardware_decode;
         let target_family = if alpha { EncoderFamily::Other } else { family };
         let unavailable: Option<anyhow::Error> = match target_family {
@@ -232,7 +232,7 @@ impl EncodeTarget {
             encoder_start_failed(err)
         })?;
         let format = yuv_format(sink.input_format()).ok_or_else(|| {
-            ServerRenderError::new(
+            Error::new(
                 ErrorCode::EncodeFailed,
                 format!(
                     "`{name}` takes {:?} frames, which lumen can't convert to",
@@ -286,7 +286,7 @@ impl EncodeTarget {
         frame: u32,
         pts: u32,
         timing: &mut RenderTiming,
-    ) -> Result<(), ServerRenderError> {
+    ) -> Result<(), Error> {
         match self {
             Self::Cpu {
                 sink,
@@ -331,7 +331,7 @@ impl EncodeTarget {
         frames: &Range<u32>,
         cancel: &CancelToken,
         timing: &mut RenderTiming,
-    ) -> Result<(), ServerRenderError> {
+    ) -> Result<(), Error> {
         #[cfg(not(all(target_os = "macos", feature = "metal")))]
         let _ = renderer;
         match self {
@@ -399,7 +399,7 @@ fn finish_muxed(
     frames: &Range<u32>,
     cancel: &CancelToken,
     timing: &mut RenderTiming,
-) -> Result<(), ServerRenderError> {
+) -> Result<(), Error> {
     timed(&mut timing.audio_mix, || {
         write_composited_audio(composition, media_store, frames, cancel, |frame| {
             encoder
@@ -441,7 +441,7 @@ fn send_read(
     layout: EncodeYuvLayout,
     read: Option<(u32, Vec<u8>)>,
     timing: &mut RenderTiming,
-) -> Result<(), ServerRenderError> {
+) -> Result<(), Error> {
     let Some((frame, data)) = read else {
         return Ok(());
     };
@@ -471,20 +471,20 @@ fn yuv_format(format: PixelFormat) -> Option<EncodeYuvFormat> {
     }
 }
 
-pub(super) fn readback_failed(err: anyhow::Error) -> ServerRenderError {
+pub(super) fn readback_failed(err: anyhow::Error) -> Error {
     render_failed("failed reading rendered pixels back".to_string()).caused_by(err)
 }
 
-fn render_failed(message: String) -> ServerRenderError {
-    ServerRenderError::new(ErrorCode::RenderFailed, message, true)
+fn render_failed(message: String) -> Error {
+    Error::new(ErrorCode::RenderFailed, message, true)
 }
 
-fn encode_failed(message: String) -> ServerRenderError {
-    ServerRenderError::new(ErrorCode::EncodeFailed, message, true)
+fn encode_failed(message: String) -> Error {
+    Error::new(ErrorCode::EncodeFailed, message, true)
 }
 
 /// An error that displays with its causes, so the warning for an encoder that won't open says why.
-struct WithCauses(ServerRenderError);
+struct WithCauses(Error);
 
 impl std::fmt::Display for WithCauses {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -501,7 +501,7 @@ impl std::fmt::Display for WithCauses {
 /// An encoder that wouldn't start. Failing on the output is `output_io`, and running short of
 /// memory, descriptors or a hardware encoder session is retryable. Anything else is a bad option or
 /// an encoder this host can't run, which another attempt won't fix.
-fn encoder_start_failed(error: anyhow::Error) -> ServerRenderError {
+fn encoder_start_failed(error: anyhow::Error) -> Error {
     let message = "lumen-ffmpeg encoder failed to start";
     match error.downcast::<FfmpegError>() {
         Ok(error) => {
@@ -510,22 +510,20 @@ fn encoder_start_failed(error: anyhow::Error) -> ServerRenderError {
             } else {
                 ErrorCode::EncodeFailed
             };
-            ServerRenderError::new(code, message, error.is_resource_exhaustion()).caused_by(error)
+            Error::new(code, message, error.is_resource_exhaustion()).caused_by(error)
         }
-        Err(error) => {
-            ServerRenderError::new(ErrorCode::EncodeFailed, message, false).caused_by(error)
-        }
+        Err(error) => Error::new(ErrorCode::EncodeFailed, message, false).caused_by(error),
     }
 }
 
-pub(super) fn gpu_renderer_failed(err: anyhow::Error) -> ServerRenderError {
+pub(super) fn gpu_renderer_failed(err: anyhow::Error) -> Error {
     render_failed("failed to create GPU renderer".to_string()).caused_by(err)
 }
 
 /// A failure mixing the audio has the engine's code, and one encoding it is `encode_failed`.
-fn audio_render_failed(err: anyhow::Error) -> ServerRenderError {
+fn audio_render_failed(err: anyhow::Error) -> Error {
     if err.is::<AudioCancelled>() {
-        return ServerRenderError::cancelled();
+        return Error::cancelled();
     }
     encode_failed("failed to write the audio".to_string()).caused_by(err)
 }
@@ -537,9 +535,9 @@ pub(super) fn render_raster(
     media_store: &LocalMediaStore,
     frame: u32,
     timing: &mut RenderTiming,
-) -> Result<RenderedFrame, ServerRenderError> {
-    let failed = |err: lumen_engine::error::LumenError| {
-        ServerRenderError::engine(format!("render failed at frame {frame}"), err)
+) -> Result<RenderedFrame, Error> {
+    let failed = |err: crate::error::LumenError| {
+        Error::engine(format!("render failed at frame {frame}"), err)
     };
     let bound = timed(&mut timing.bind, || {
         renderer.bind_frame(composition, frame, media_store, RenderTarget::Owned)
@@ -553,7 +551,7 @@ pub(super) fn checked_size(
     composition: &Composition,
     raster: &RasterHandle,
     frame: u32,
-) -> Result<lumen_gpu::Size, ServerRenderError> {
+) -> Result<lumen_gpu::Size, Error> {
     let size = raster.domain.storage_size;
     let settings = composition.render_settings();
     if (size.width, size.height) != (settings.width, settings.height) {
@@ -570,7 +568,7 @@ pub(super) fn checked_size(
     all(target_os = "macos", feature = "metal"),
 ))]
 #[cfg(all(target_os = "macos", feature = "metal"))]
-fn poll_failed(frame: u32, err: impl std::fmt::Display) -> ServerRenderError {
+fn poll_failed(frame: u32, err: impl std::fmt::Display) -> Error {
     render_failed(format!("GPU poll failed at frame {frame}: {err}"))
 }
 
@@ -580,7 +578,7 @@ pub(super) fn poll(
     frame: u32,
     timing: &mut RenderTiming,
     until: Option<SubmissionIndex>,
-) -> Result<(), ServerRenderError> {
+) -> Result<(), Error> {
     let (poll_type, spent) = match until {
         Some(submission) => (
             PollType::Wait {

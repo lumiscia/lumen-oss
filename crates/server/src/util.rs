@@ -45,12 +45,12 @@ pub(crate) fn input_hash(
     composition: &serde_json::Value,
     media: &std::collections::HashMap<String, String>,
     encoder: Option<&lumen_ffmpeg::VideoEncoderChoice>,
-    output: &lumen_server::render::RenderOutput,
+    output: &lumen_engine::render::RenderOutput,
 ) -> String {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     composition.to_string().hash(&mut hash);
     encoder.hash(&mut hash);
-    if *output != lumen_server::render::RenderOutput::default() {
+    if *output != lumen_engine::render::RenderOutput::default() {
         serde_json::to_string(output)
             .unwrap_or_default()
             .hash(&mut hash);
