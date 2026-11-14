@@ -1,5 +1,7 @@
 import type { Diagnostic } from "@lumiscia/lumen-types";
 
+import { readWasmError } from "../wasm-error.js";
+
 export { errorMediaFailure } from "../media/errors.js";
 
 export function describeError(error: unknown): string {
@@ -8,9 +10,7 @@ export function describeError(error: unknown): string {
 
 /** The diagnostics a wasm parse failure carries, or none. */
 export function errorDiagnostics(error: unknown): Diagnostic[] {
-  const diagnostics: unknown =
-    typeof error === "object" && error !== null ? Reflect.get(error, "diagnostics") : undefined;
-  return Array.isArray(diagnostics) ? (diagnostics as Diagnostic[]) : [];
+  return readWasmError(error).diagnostics;
 }
 
 /**
@@ -18,9 +18,8 @@ export function errorDiagnostics(error: unknown): Diagnostic[] {
  * no `render.*` code, such as a media failure, which `media` says.
  */
 export function errorRenderDiagnostics(error: unknown): Diagnostic[] {
-  const code: unknown =
-    typeof error === "object" && error !== null ? Reflect.get(error, "code") : undefined;
-  return typeof code === "string" && code.startsWith("render.")
+  const { code } = readWasmError(error);
+  return code?.startsWith("render.")
     ? [{ severity: "error", code, path: "", message: describeError(error) }]
     : [];
 }

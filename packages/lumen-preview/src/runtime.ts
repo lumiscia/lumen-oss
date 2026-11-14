@@ -9,6 +9,7 @@ import type {
 } from "./media/index.js";
 import type { PlaybackRange } from "./playback-range.js";
 import { FrameRequirementLoader } from "./requirements-loader.js";
+import { readWasmError } from "./wasm-error.js";
 
 export type LumenLogLevel = "off" | "error" | "warn" | "info" | "debug" | "trace";
 
@@ -210,7 +211,7 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
     }
 
     private isRecoverableFrameMiss(error: unknown): boolean {
-      return (error as { code?: unknown } | null)?.code === "media_frame_out_of_range";
+      return readWasmError(error).frameNotLoaded;
     }
   }
 

@@ -35,16 +35,19 @@ vi.mock("../../src/audio-engine.js", () => ({
     range: FakeRange | null = null;
     timeline: { durationFrames: number; fps: number; segments: unknown[] } | null = null;
     timelineJson: string | null = null;
-    loadAudioTimeline = vi.fn((json: string | null) => {
-      if (json === this.timelineJson) {
-        return false;
-      }
-      this.timelineJson = json;
-      this.timeline = json === null ? null : JSON.parse(json);
-      audio.playing = false;
-      audio.positionMs = 0;
-      return true;
-    });
+    loadAudioTimeline = vi.fn(
+      (json: string | null, length: { durationFrames: number; fps: number }) => {
+        const key = json === null ? null : JSON.stringify([json, length]);
+        if (key === this.timelineJson) {
+          return false;
+        }
+        this.timelineJson = key;
+        this.timeline = json === null ? null : { ...JSON.parse(json), ...length };
+        audio.playing = false;
+        audio.positionMs = 0;
+        return true;
+      },
+    );
     play = vi.fn((ms?: number) => {
       audio.positionMs = this.wrap(ms ?? audio.positionMs);
       audio.playing = (this.timeline?.segments.length ?? 0) > 0;
@@ -97,11 +100,9 @@ class FakeCanvas {
   }
 }
 
-/** What the engine serializes, which includes the length, so a new length is a new timeline. */
-function audioTimeline(totalFrames: number, clip: string | null = "music", fps = 10): string {
+/** The plan the engine serializes. */
+function audioTimeline(clip: string | null = "music"): string {
   return JSON.stringify({
-    durationFrames: totalFrames,
-    fps,
     segments: clip === null ? [] : [{ voice: 0 }],
     voices: clip === null ? [] : [{ sourceId: clip }],
   });
@@ -143,7 +144,7 @@ async function started(inputs?: object) {
   return fake;
 }
 
-async function playable(inputs?: object, audioTimelineJson: string | null = audioTimeline(100)) {
+async function playable(inputs?: object, audioTimelineJson: string | null = audioTimeline()) {
   const fake = await started(inputs);
   const { loadId } = fake.worker.ofType("load").at(-1) as { loadId: number };
   fake.worker.emit({
@@ -386,7 +387,7 @@ describe("LumenPreviewSession", () => {
     function loaded(
       worker: FakeWorker,
       totalFrames: number,
-      audioTimelineJson: string | null = audioTimeline(totalFrames),
+      audioTimelineJson: string | null = audioTimeline(),
       fps = 10,
     ) {
       worker.emit({
@@ -400,19 +401,18 @@ describe("LumenPreviewSession", () => {
       });
     }
 
-    it("reads a composition object once, however often the same inputs are set", async () => {
-      const toJSON = vi.fn(() => ({ metadata: { name: "built" } }) as unknown as LumenComposition);
-      const built = { toJSON };
+    it("reads a composition object again on every call, so one edited in place loads", async () => {
+      let document = composition("A");
+      const built = { toJSON: () => document };
       const { session, worker } = await started({ composition: built });
       session.setInputs({ composition: built });
-      session.setInputs({ composition: built, rate: 2 });
-
-      expect(toJSON).toHaveBeenCalledTimes(1);
       expect(worker.ofType("load")).toHaveLength(1);
 
-      session.setInputs({ composition: { toJSON } });
-      expect(toJSON).toHaveBeenCalledTimes(2);
-      expect(worker.ofType("load")).toHaveLength(1);
+      document = composition("B");
+      session.setInputs({ composition: built });
+
+      expect(worker.ofType("load")).toHaveLength(2);
+      expect(JSON.parse(worker.ofType("load")[1]?.compositionJson as string)).toEqual(document);
     });
 
     it("keeps playing through the load, and the audio isn't touched when its timeline is the same", async () => {
@@ -443,7 +443,7 @@ describe("LumenPreviewSession", () => {
 
     it("leaves a worker slightly ahead of the audio where it is", async () => {
       const { preview, session, worker } = await started();
-      loaded(worker, 300, audioTimeline(300, "music", 30), 30);
+      loaded(worker, 300, audioTimeline("music"), 30);
       const loadId = worker.ofType("load").at(-1)?.loadId as number;
       preview.play();
       audio.clockRunning = true;
@@ -451,7 +451,7 @@ describe("LumenPreviewSession", () => {
       worker.emit({ actualFps: 30, frame: 32, loadId, renderMs: 1, seekId: 0, type: "frame" });
 
       session.setInputs({ composition: composition("colour") });
-      loaded(worker, 300, audioTimeline(300, "music", 30), 30);
+      loaded(worker, 300, audioTimeline("music"), 30);
 
       expect(preview.getSnapshot()).toMatchObject({ frame: 32, isPlaying: true });
       expect(worker.ofType("seek")).toEqual([]);
@@ -464,7 +464,7 @@ describe("LumenPreviewSession", () => {
     it("keeps silent playback moving through updates faster than a frame", async () => {
       let nowMs = 0;
       vi.spyOn(performance, "now").mockImplementation(() => nowMs);
-      const silent = audioTimeline(300, null, 30);
+      const silent = audioTimeline(null);
       const { preview, session, worker } = await started();
       loaded(worker, 300, silent, 30);
       preview.play();
@@ -526,9 +526,12 @@ describe("LumenPreviewSession", () => {
 
       session.setInputs({ composition: composition("second") });
       audio.positionMs = 2_500;
-      loaded(worker, 100, audioTimeline(100, "voice"));
+      loaded(worker, 100, audioTimeline("voice"));
 
-      expect(engine?.loadAudioTimeline).toHaveBeenLastCalledWith(audioTimeline(100, "voice"));
+      expect(engine?.loadAudioTimeline).toHaveBeenLastCalledWith(audioTimeline("voice"), {
+        durationFrames: 100,
+        fps: 10,
+      });
       expect(engine?.play).toHaveBeenLastCalledWith(2_500);
       expect(preview.getSnapshot()).toMatchObject({ frame: 25, isPlaying: true });
       expect(worker.ofType("seek").at(-1)?.clock).toMatchObject({ originMs: 2_500 });
@@ -1340,7 +1343,7 @@ describe("LumenPreviewSession", () => {
 
         session.setInputs({ composition: composition("second"), range: { in: 20, out: 50 } });
         worker.emit({
-          audioTimelineJson: audioTimeline(40),
+          audioTimelineJson: audioTimeline(),
           fps: 10,
           height: 720,
           loadId: worker.ofType("load").at(-1)?.loadId as number,
@@ -1521,7 +1524,7 @@ describe("LumenPreviewSession", () => {
         update(session, { composition: composition("second"), onTimeUpdate });
         const { loadId } = worker.ofType("load").at(-1) as { loadId: number };
         worker.emit({
-          audioTimelineJson: audioTimeline(100),
+          audioTimelineJson: audioTimeline(),
           fps: 10,
           height: 720,
           loadId,

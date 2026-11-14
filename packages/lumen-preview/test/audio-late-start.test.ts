@@ -102,8 +102,6 @@ async function createAudio() {
   });
   engine.loadAudioTimeline(
     JSON.stringify({
-      durationFrames: 18_000,
-      fps: 30,
       segments: [
         {
           frames: 28_800_000,
@@ -118,6 +116,7 @@ async function createAudio() {
       ],
       voices: [{ duration: 28_800_000, fadeIn: 0, fadeOut: 0, sourceId: "voice", sourceStart: 0 }],
     }),
+    { durationFrames: 18_000, fps: 30 },
   );
 
   const deliver = ({ chunkFrames, generation, startSample }: ChunkRequest) =>

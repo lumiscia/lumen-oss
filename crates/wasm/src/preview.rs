@@ -14,9 +14,9 @@ use crate::{
     install_panic_hook,
     media::{WasmMediaStore, file_kind},
     renderer::SurfaceCompositionRenderer,
-    types::{AudioTimelinePayload, FrameRequirementsPayload},
     utils::{
-        composition_json_to_composition, parse_failure, raw_frame_from_rgba, validate_rgba_len,
+        composition_json_to_composition, js_error, js_parse_error, raw_frame_from_rgba,
+        validate_rgba_len,
     },
 };
 
@@ -141,7 +141,7 @@ impl LumenPreviewController {
     #[wasm_bindgen(js_name = "loadComposition")]
     pub fn load_composition(&self, composition_json: &str) -> Result<(), JsValue> {
         let composition = composition_json_to_composition(composition_json)
-            .map_err(|error| parse_failure(&error))?;
+            .map_err(|error| js_parse_error(&error))?;
 
         self.update_state(|state| state.install_composition(composition))?;
         let state = self.state()?;
@@ -157,7 +157,7 @@ impl LumenPreviewController {
     }
 
     /// What the loaded composition's audio plays over its timeline, as the JSON of an
-    /// [`AudioTimelinePayload`], or `None` when it has no audio.
+    /// [`AudioPlan`], or `None` when it has no audio.
     #[wasm_bindgen(js_name = "audioTimeline")]
     pub fn audio_timeline(&self) -> Result<Option<String>, JsValue> {
         let state = self.state()?;
@@ -165,13 +165,8 @@ impl LumenPreviewController {
             return Ok(None);
         };
         let plan = lumen_engine::audio::preview_plan(composition, Some(&self.media))
-            .map_err(|error| JsValue::from_str(&error.to_string()))?;
-        let payload = AudioTimelinePayload {
-            plan: &plan,
-            duration_frames: state.duration_frames,
-            fps: state.fps,
-        };
-        serde_json::to_string(&payload)
+            .map_err(|error| js_error(&error))?;
+        serde_json::to_string(&plan)
             .map(Some)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -232,10 +227,9 @@ impl LumenPreviewController {
             .composition
             .as_ref()
             .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
-        let payload = collect_frame_requirements(composition, &self.media, frame)
-            .map(FrameRequirementsPayload::from)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        serde_json::to_string(&payload).map_err(|e| JsValue::from_str(&e.to_string()))
+        let requirements = collect_frame_requirements(composition, &self.media, frame)
+            .map_err(|error| js_error(&error))?;
+        serde_json::to_string(&requirements).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen(js_name = "removeImageSource")]
@@ -317,14 +311,12 @@ impl LumenPreviewController {
         match kind {
             #[cfg(feature = "3d")]
             AssetKind::Model => lumen_engine::node::scene::check_model(source, &data)
-                .map_err(|error| crate::utils::render_failure(&error.into()))?,
+                .map_err(|error| js_error(&error.into()))?,
             #[cfg(feature = "3d")]
-            AssetKind::Environment => {
-                lumen_engine::node::scene::check_environment(source, &data)
-                    .map_err(|error| crate::utils::render_failure(&error.into()))?
-            }
+            AssetKind::Environment => lumen_engine::node::scene::check_environment(source, &data)
+                .map_err(|error| js_error(&error.into()))?,
             AssetKind::Lut => lumen_engine::node::processing::color_grade::check_lut(source, &data)
-                .map_err(|error| crate::utils::render_failure(&error.into()))?,
+                .map_err(|error| js_error(&error.into()))?,
             _ => {}
         }
         self.change_media(|media| media.set_file(kind, source.to_string(), data))?;
@@ -826,8 +818,6 @@ mod tests {
                     "to": 72_000.0,
                     "gain": [0.5, 0.5],
                 }],
-                "durationFrames": 200,
-                "fps": 30.0,
             })
         );
     }

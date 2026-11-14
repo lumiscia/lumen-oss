@@ -1,5 +1,7 @@
 import type { MediaFailure, MediaFailureCode, AssetKind } from "@lumiscia/lumen-types";
 
+import { readWasmError } from "../wasm-error.js";
+
 /**
  * Why a media source failed in the browser. They match the engine's reasons for a source it can't
  * use: `invalid_source`, `source_not_registered` and `track_not_found` are `media.not_found`;
@@ -109,12 +111,5 @@ export function errorMediaFailure(error: unknown): MediaFailure | null {
           details: error.message,
         };
   }
-  const media: unknown =
-    typeof error === "object" && error !== null ? Reflect.get(error, "media") : undefined;
-  return typeof media === "object" &&
-    media !== null &&
-    typeof Reflect.get(media, "code") === "string" &&
-    typeof Reflect.get(media, "source") === "string"
-    ? (media as MediaFailure)
-    : null;
+  return readWasmError(error).media ?? null;
 }

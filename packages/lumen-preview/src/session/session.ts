@@ -451,16 +451,11 @@ export class LumenPreviewSession {
     return range;
   }
 
-  /** Loads only when something the worker reads changed, so unchanged inputs can be passed freely. */
+  /** Reads the composition again and loads only when the JSON or another input the worker reads changed. */
   #syncInputs(): void {
     let next: ResolvedPreviewInputs;
     try {
-      next = resolvePreviewInputs(
-        this.#inputs.composition,
-        this.#inputs.media,
-        this.#inputs.fonts,
-        this.#loaded,
-      );
+      next = resolvePreviewInputs(this.#inputs.composition, this.#inputs.media, this.#inputs.fonts);
     } catch (error) {
       const message = describeError(error);
       if (message !== this.#resolveFailure) {
@@ -733,7 +728,11 @@ export class LumenPreviewSession {
     this.#loading = false;
     this.#pendingSeek = null;
     this.#timeline = { fps, totalFrames };
-    const audioChanged = this.#audio?.loadAudioTimeline(event.audioTimelineJson) ?? false;
+    const audioChanged =
+      this.#audio?.loadAudioTimeline(event.audioTimelineJson, {
+        durationFrames: totalFrames,
+        fps,
+      }) ?? false;
 
     const range = this.#applyRange(this.#timeline);
     const lastFrame = range.outFrame - 1;

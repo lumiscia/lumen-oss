@@ -49,7 +49,7 @@
         return () => mounted.dispose();
     });
 
-    // The session ignores inputs that haven't changed, so every change can pass them all on.
+    // Runs only when a prop it read changed, and the session reads the whole set again.
     $effect(() => {
         session?.setInputs({ ...inputs });
     });

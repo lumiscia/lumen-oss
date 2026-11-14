@@ -32,8 +32,6 @@ export type {
   BufferMediaSourceInput,
   DecodedImageFrame,
   FileMediaKind,
-  FrameRequirementsPayload,
-  FrameRequirementsVideoPayload,
   ImageSourceRegistration,
   LumenMediaBridgeOptions,
   LumenMediaTarget,
