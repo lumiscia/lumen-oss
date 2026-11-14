@@ -6,14 +6,10 @@ use std::f64::consts::{PI, TAU};
 use serde_json::{Value, json};
 
 use crate::color::{light, srgb8};
-use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
-
-const RED: [u8; 4] = [255, 0, 0, 255];
-const GREEN: [u8; 4] = [0, 255, 0, 255];
-const BLUE: [u8; 4] = [0, 0, 255, 255];
-const BLACK: [u8; 4] = [0, 0, 0, 255];
-const WHITE: [u8; 4] = [255, 255, 255, 255];
-const CLEAR: [u8; 4] = [0, 0, 0, 0];
+use crate::support::{
+    BLACK, BLUE, CLEAR, Case, Expect, Frame, GREEN, RED, Scene, TestMedia, WHITE, check, gpu,
+    render, scene,
+};
 
 fn one_node(size: (u32, u32), kind: &str, params: Value) -> Scene {
     scene(size, json!([{ "id": 1, "type": kind, "params": params }]))

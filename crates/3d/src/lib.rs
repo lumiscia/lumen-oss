@@ -14,6 +14,8 @@ mod mesh;
 pub mod model;
 mod scene;
 mod shadow;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 mod transform;
 
 pub use bounds::Bounds;

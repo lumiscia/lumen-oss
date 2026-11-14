@@ -10,7 +10,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use serde_json::{Value, json};
 
-use crate::support::{Frame, Gpu, Scene, TestMedia, gpu, panic_message, render, scene};
+use crate::support::{Frame, Gpu, ORANGE, Scene, TestMedia, gpu, panic_message, render, scene};
 
 /// Which render of a layer a row's `layer` function describes.
 #[derive(Clone, Copy)]
@@ -276,7 +276,6 @@ fn check(rows: Vec<Row>) {
     );
 }
 
-const ORANGE: [u8; 4] = [255, 128, 0, 255];
 const PLATE: &str = "plate";
 
 fn plate() -> TestMedia {

@@ -3,16 +3,16 @@
 use exr::prelude::WritableImage;
 use lumen_3d::environment::Equirect;
 use lumen_3d::glam::Vec3;
+use lumen_3d::test_support::write_glb;
 use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
+use crate::support::{
+    BLUE, CLEAR, Case, Expect, Frame, GREEN, RED, Scene, TestMedia, check, gpu, render, scene,
+};
 
 pub(super) const SIZE: (u32, u32) = (64, 64);
 pub(super) const CENTER: u32 = 32;
-const CLEAR: [u8; 4] = [0, 0, 0, 0];
-const RED: [u8; 4] = [255, 0, 0, 255];
-const GREEN: [u8; 4] = [0, 255, 0, 255];
 
 /// `scene_nodes`, the last of which is the scene, drawn by a `render_3d` filling the canvas.
 fn render_3d(scene_nodes: Vec<Value>) -> Scene {
@@ -525,8 +525,6 @@ fn an_output_larger_than_the_device_allows_fails() {
         );
     }
 }
-
-const BLUE: [u8; 4] = [0, 0, 255, 255];
 
 /// A 64 x 64 image of straight RGBA, the colour of each pixel given by `color(x, y)`.
 fn image(color: impl Fn(u32, u32) -> [u8; 4]) -> TestMedia {
@@ -1663,18 +1661,7 @@ pub(super) fn model_glb(materials: Value, image: Option<&[u8]>, quads: &[Quad]) 
         document["images"] = json!([{ "bufferView": view, "mimeType": "image/png" }]);
         document["textures"] = json!([{ "source": 0 }]);
     }
-    let mut json = serde_json::to_vec(&document).unwrap();
-    json.resize(json.len().next_multiple_of(4), b' ');
-    let mut glb = b"glTF".to_vec();
-    glb.extend(2u32.to_le_bytes());
-    glb.extend(((12 + 8 + json.len() + 8 + bin.len()) as u32).to_le_bytes());
-    glb.extend((json.len() as u32).to_le_bytes());
-    glb.extend(b"JSON");
-    glb.extend(json);
-    glb.extend((bin.len() as u32).to_le_bytes());
-    glb.extend(b"BIN\0");
-    glb.extend(bin);
-    glb
+    write_glb(&serde_json::to_vec(&document).unwrap(), &bin)
 }
 
 /// An unlit material of `color`, in linear light with straight alpha.

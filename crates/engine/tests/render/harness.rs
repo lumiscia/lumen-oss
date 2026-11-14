@@ -5,13 +5,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use serde_json::json;
 
 use crate::support::{
-    Case, Expect, Scene, TestMedia, check, check_matching, gpu, panic_message, scene,
-    within_rounding,
+    CLEAR, Case, Expect, GREEN, RED, Scene, TestMedia, check, check_matching, gpu, panic_message,
+    scene, within_rounding,
 };
-
-const RED: [u8; 4] = [255, 0, 0, 255];
-const GREEN: [u8; 4] = [0, 255, 0, 255];
-const CLEAR: [u8; 4] = [0, 0, 0, 0];
 
 fn solid((width, height): (u32, u32), color: [u8; 4]) -> Scene {
     scene(

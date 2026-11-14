@@ -7,14 +7,11 @@ use lumen_engine::gpu::GpuCompositionRenderer;
 use serde_json::{Value, json};
 
 use crate::color::light;
-use crate::support::{Case, Expect, Frame, Gpu, Scene, check, render, scene};
+use crate::support::{Case, Expect, Frame, Gpu, RED, Scene, WHITE, check, render, scene};
 use crate::text_pixels::{
     Mode, alpha, changes, check_rows, frame_of, frame_with, ink_box, ink_columns, ink_rows,
     inter_text, mass, media, merged, text_scene, whole,
 };
-
-const WHITE: [u8; 4] = [255; 4];
-const RED: [u8; 4] = [255, 0, 0, 255];
 
 /// Inter text with `params`, on a square canvas.
 fn styled(size: u32, content: Value, params: Value) -> Scene {

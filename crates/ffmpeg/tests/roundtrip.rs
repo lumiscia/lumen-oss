@@ -2,7 +2,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use lumen_ffmpeg::{
@@ -11,14 +10,6 @@ use lumen_ffmpeg::{
     FfmpegErrorKind, InputContext, MuxedEncoder, PixelFormat, RateControl, Rational, VideoCodec,
     VideoDecoder, VideoDecoderConfig, VideoEncoderConfig, YuvVideoFrame,
 };
-
-fn temp_path(name: &str, extension: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!("lumen_ffmpeg_{name}_{unique}.{extension}"))
-}
 
 fn frame(width: u32, height: u32, pts: i64) -> CpuVideoFrame {
     let mut data = vec![0; width as usize * height as usize * 4];
@@ -182,22 +173,22 @@ fn reports_missing_input_as_structured_error() {
 
 #[test]
 fn a_file_without_audio_has_no_audio_stream() {
-    let path = temp_path("no_audio", "mp4");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("no_audio.mp4");
     make_video(&path);
     let input = InputContext::open(path.to_string_lossy().to_string()).expect("open input");
     let error = input.best_audio_stream().expect_err("no audio stream");
     assert_eq!(error.kind, FfmpegErrorKind::NoStream);
     assert!(error.lacks_stream());
     assert!(input.best_video_stream().is_ok());
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn a_format_outside_the_allowlist_is_unsupported() {
-    let path = temp_path("unlisted", "y4m");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("unlisted.y4m");
     fs::write(&path, "YUV4MPEG2 W16 H16 F25:1 Ip A1:1\nFRAME\n").expect("write y4m");
     let error = InputContext::open(path.to_string_lossy().to_string()).expect_err("unsupported");
-    let _ = fs::remove_file(path);
     assert_eq!(error.kind, FfmpegErrorKind::Unsupported);
     assert!(error.is_unsupported());
 }
@@ -220,7 +211,8 @@ fn an_output_that_cannot_be_created_is_an_output_failure() {
 
 #[test]
 fn encodes_opens_and_decodes_cpu_video() {
-    let path = temp_path("video_roundtrip", "mp4");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("video_roundtrip.mp4");
     make_video(&path);
 
     let info = InputContext::open(path.to_string_lossy().to_string())
@@ -238,12 +230,12 @@ fn encodes_opens_and_decodes_cpu_video() {
     }
 
     assert_bt709_tags(&path);
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn encodes_muxed_video_and_audio() {
-    let path = temp_path("muxed_roundtrip", "mp4");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("muxed_roundtrip.mp4");
     make_muxed_video(&path);
 
     let input = InputContext::open(path.to_string_lossy().to_string()).expect("open output");
@@ -256,17 +248,16 @@ fn encodes_muxed_video_and_audio() {
     assert_eq!(info.audio_streams[0].sample_rate, 48_000);
     assert_eq!(info.audio_streams[0].channels, 2);
     assert_eq!(decode_all(&path).len(), 30);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn encodes_cpu_frames_with_nvenc_when_requested() {
+    let dir = tempfile::tempdir().expect("temp dir");
     if !hardware_test_enabled("LUMEN_FFMPEG_TEST_NVENC", "NVENC") {
         return;
     }
 
-    let path = temp_path("nvenc_roundtrip", "mp4");
+    let path = dir.path().join("nvenc_roundtrip.mp4");
     let mut config = VideoEncoderConfig::cpu_rgba(640, 360, 30, "h264_nvenc");
     config.quality.rate_control = Some(RateControl::Bitrate(2_000_000));
     write_video(&path, config, 30);
@@ -277,19 +268,18 @@ fn encodes_cpu_frames_with_nvenc_when_requested() {
     assert_eq!(info.video_streams[0].codec, VideoCodec::H264);
     assert_eq!(info.video_streams[0].width, 640);
     assert_eq!(info.video_streams[0].height, 360);
-
-    let _ = fs::remove_file(path);
 }
 
 #[cfg(all(feature = "cuda", target_os = "linux"))]
 #[test]
 fn encodes_cuda_frames_with_nvenc_when_requested() {
+    let dir = tempfile::tempdir().expect("temp dir");
     if !hardware_test_enabled("LUMEN_FFMPEG_TEST_CUDA_NVENC", "CUDA NVENC") {
         return;
     }
 
     for with_audio in [false, true] {
-        let path = temp_path("cuda_nvenc_roundtrip", "mp4");
+        let path = dir.path().join("cuda_nvenc_roundtrip.mp4");
         make_cuda_video_with_nvenc(&path, 640, 360, with_audio);
 
         let input = InputContext::open(path.to_string_lossy().to_string()).expect("open output");
@@ -304,14 +294,13 @@ fn encodes_cuda_frames_with_nvenc_when_requested() {
             assert_eq!(info.audio_streams[0].channels, 2);
         }
         assert_bt709_tags(&path);
-
-        let _ = fs::remove_file(path);
     }
 }
 
 #[cfg(all(feature = "cuda", target_os = "linux"))]
 #[test]
 fn cuda_nvenc_keeps_each_frame_when_the_source_buffer_is_reused() {
+    let dir = tempfile::tempdir().expect("temp dir");
     use lumen_ffmpeg::{CudaDriver, EncodeMode, GpuBackend, GpuVideoInput};
 
     if !hardware_test_enabled("LUMEN_FFMPEG_TEST_CUDA_NVENC", "CUDA NVENC") {
@@ -325,7 +314,7 @@ fn cuda_nvenc_keeps_each_frame_when_the_source_buffer_is_reused() {
         .allocate_nv12_frame(width, height)
         .expect("CUDA frame allocation");
 
-    let path = temp_path("cuda_nvenc_order", "mp4");
+    let path = dir.path().join("cuda_nvenc_order.mp4");
     let mut video = VideoEncoderConfig::cpu_rgba(width, height, 30, "h264_nvenc");
     video.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
     video.quality.rate_control = Some(RateControl::Bitrate(4_000_000));
@@ -350,16 +339,16 @@ fn cuda_nvenc_keeps_each_frame_when_the_source_buffer_is_reused() {
             "frame {index} holds the content of another frame: luma {luma}, expected {expected}"
         );
     }
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn decodes_and_resamples_audio_with_cli_fixture() {
+    let dir = tempfile::tempdir().expect("temp dir");
     if Command::new("ffmpeg").arg("-version").output().is_err() {
         eprintln!("ffmpeg CLI unavailable; skipping audio fixture test");
         return;
     }
-    let path = temp_path("audio", "wav");
+    let path = dir.path().join("audio.wav");
     let status = Command::new("ffmpeg")
         .args([
             "-y",
@@ -399,16 +388,15 @@ fn decodes_and_resamples_audio_with_cli_fixture() {
     assert_eq!(converted.sample_rate, 48_000);
     assert_eq!(converted.channels, 2);
     assert!(!converted.interleaved_f32.is_empty());
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn decodes_frames_across_resolution_change() {
+    let dir = tempfile::tempdir().expect("temp dir");
     let clips = [("32x24", 32usize, 24usize), ("64x48", 64, 48)];
     let mut stream = Vec::new();
     for (size, _, _) in clips {
-        let path = temp_path("resolution_clip", "h264");
+        let path = dir.path().join("resolution_clip.h264");
         let available = run_fixture(
             Command::new("ffmpeg")
                 .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
@@ -421,9 +409,8 @@ fn decodes_frames_across_resolution_change() {
             return;
         }
         stream.extend(fs::read(&path).expect("read clip"));
-        let _ = fs::remove_file(path);
     }
-    let path = temp_path("resolution_change", "h264");
+    let path = dir.path().join("resolution_change.h264");
     fs::write(&path, stream).expect("write stream");
 
     let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open stream");
@@ -460,19 +447,17 @@ fn decodes_frames_across_resolution_change() {
 
     assert!(sizes.contains(&(clips[0].1, clips[0].2)));
     assert!(sizes.contains(&(clips[1].1, clips[1].2)));
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn encodes_fractional_frame_rate_exactly() {
-    let path = temp_path("ntsc_roundtrip", "mp4");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("ntsc_roundtrip.mp4");
     write_video(&path, libx264(32, 24, Rational::new(30_000, 1001)), 30);
 
     let input = InputContext::open(path.to_string_lossy().to_string()).expect("open output");
     let rate = input.media_info().video_streams[0].avg_frame_rate;
     assert_eq!(rate.numerator * 1001, rate.denominator * 30_000);
-
-    let _ = fs::remove_file(path);
 }
 
 fn noisy_frame(width: u32, height: u32, seed: u32) -> CpuVideoFrame {
@@ -506,9 +491,10 @@ fn encode_noise(path: &Path, config: VideoEncoderConfig) -> Result<(), FfmpegErr
 
 #[test]
 fn libx264_crf_controls_output_size() {
+    let dir = tempfile::tempdir().expect("temp dir");
     let mut sizes = Vec::new();
     for crf in [18, 40] {
-        let path = temp_path("x264_crf", "mp4");
+        let path = dir.path().join("x264_crf.mp4");
         let mut config = libx264(128, 72, 30);
         config.quality.rate_control = Some(RateControl::Crf(crf));
         config.quality.preset = Some("ultrafast".to_string());
@@ -518,7 +504,6 @@ fn libx264_crf_controls_output_size() {
             .media_info();
         assert_eq!(info.video_streams[0].codec, VideoCodec::H264);
         sizes.push(fs::metadata(&path).expect("encoded file").len());
-        let _ = fs::remove_file(path);
     }
     assert!(sizes[0] > sizes[1], "lower CRF should be larger: {sizes:?}");
 }
@@ -532,12 +517,13 @@ fn av1_vulkan(width: u32, height: u32) -> VideoEncoderConfig {
 /// Needs Vulkan AV1 encode and decode. On RADV, set `RADV_PERFTEST=video_encode,video_decode`.
 #[test]
 fn vulkan_encoder_uploads_cpu_frames() {
+    let dir = tempfile::tempdir().expect("temp dir");
     if !hardware_test_enabled(VULKAN_TEST_VARIABLE, "Vulkan encode") {
         return;
     }
     const FRAMES: usize = 10;
     let (width, height) = (256_usize, 144_usize);
-    let path = temp_path("vulkan_upload", "mkv");
+    let path = dir.path().join("vulkan_upload.mkv");
     let mut encoder = MuxedEncoder::create(
         path.to_string_lossy().to_string(),
         av1_vulkan(width as u32, height as u32),
@@ -571,7 +557,7 @@ fn vulkan_encoder_uploads_cpu_frames() {
         (width, height)
     );
 
-    let raw = temp_path("vulkan_upload", "rgba");
+    let raw = dir.path().join("vulkan_upload.rgba");
     assert!(
         run_fixture(
             Command::new("ffmpeg")
@@ -606,17 +592,15 @@ fn vulkan_encoder_uploads_cpu_frames() {
             "patch {index}: decoded {actual:?}, expected {expected:?}"
         );
     }
-
-    let _ = fs::remove_file(path);
-    let _ = fs::remove_file(raw);
 }
 
 #[test]
 fn vulkan_encoder_supports_qp_and_rejects_crf() {
+    let dir = tempfile::tempdir().expect("temp dir");
     if !hardware_test_enabled(VULKAN_TEST_VARIABLE, "Vulkan encode") {
         return;
     }
-    let path = temp_path("vulkan_qp", "mkv");
+    let path = dir.path().join("vulkan_qp.mkv");
     let mut config = av1_vulkan(256, 144);
     config.quality.rate_control = Some(RateControl::Crf(23));
     let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config.clone()) {
@@ -627,7 +611,6 @@ fn vulkan_encoder_supports_qp_and_rejects_crf() {
 
     config.quality.rate_control = Some(RateControl::Qp(100));
     encode_noise(&path, config).expect("av1_vulkan QP encode");
-    let _ = fs::remove_file(path);
 }
 
 #[derive(Clone, Copy)]
@@ -710,14 +693,15 @@ fn run_fixture(command: &mut Command, name: &str) -> bool {
 
 /// Encodes known Y'CbCr values with libx264, passing them through unconverted under the given tags.
 fn encode_patches(
+    dir: &Path,
     name: &str,
     (width, height): (usize, usize),
     matrix: Matrix,
     full_range: bool,
     tags: &[&str],
 ) -> Option<PathBuf> {
-    let raw = temp_path(name, "yuv");
-    let path = temp_path(name, "h264");
+    let raw = dir.join(format!("{name}.yuv"));
+    let path = dir.join(format!("{name}.h264"));
     fs::write(&raw, patch_frames(width, height, matrix, full_range)).expect("write raw frames");
     let available = run_fixture(
         Command::new("ffmpeg")
@@ -733,7 +717,6 @@ fn encode_patches(
             .arg(&path),
         name,
     );
-    let _ = fs::remove_file(raw);
     if !available {
         return None;
     }
@@ -824,6 +807,7 @@ struct RotationCase {
 
 #[test]
 fn decodes_known_ycbcr_unchanged_with_the_stream_tags() {
+    let dir = tempfile::tempdir().expect("temp dir");
     let cases = [
         ColourCase {
             name: "bt709_sd",
@@ -876,6 +860,7 @@ fn decodes_known_ycbcr_unchanged_with_the_stream_tags() {
     ];
     for case in cases {
         let Some(path) = encode_patches(
+            dir.path(),
             case.name,
             case.size,
             case.matrix,
@@ -891,22 +876,22 @@ fn decodes_known_ycbcr_unchanged_with_the_stream_tags() {
             assert_tags(frame, reported, case.name);
             assert_patches(frame, case.matrix, case.full_range, case.name);
         }
-        let _ = fs::remove_file(path);
     }
 }
 
 #[test]
 fn keeps_the_tags_across_a_resolution_change() {
+    let dir = tempfile::tempdir().expect("temp dir");
     let sizes = [(64, 48), (128, 96)];
     let mut stream = Vec::new();
     for size in sizes {
-        let Some(path) = encode_patches("colour_clip", size, BT709, false, BT709_TV) else {
+        let Some(path) = encode_patches(dir.path(), "colour_clip", size, BT709, false, BT709_TV)
+        else {
             return;
         };
         stream.extend(fs::read(&path).expect("read clip"));
-        let _ = fs::remove_file(path);
     }
-    let path = temp_path("colour_resolution_change", "h264");
+    let path = dir.path().join("colour_resolution_change.h264");
     fs::write(&path, stream).expect("write stream");
 
     let frames = decode_all(&path);
@@ -924,13 +909,20 @@ fn keeps_the_tags_across_a_resolution_change() {
         assert_tags(frame, bt709, &context);
         assert_patches(frame, BT709, false, &context);
     }
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn applies_display_rotation_to_stream_info_and_frames() {
+    let dir = tempfile::tempdir().expect("temp dir");
     let (width, height) = (64usize, 32usize);
-    let Some(coded) = encode_patches("rotation", (width, height), BT709, false, BT709_TV) else {
+    let Some(coded) = encode_patches(
+        dir.path(),
+        "rotation",
+        (width, height),
+        BT709,
+        false,
+        BT709_TV,
+    ) else {
         return;
     };
     // FFmpeg's `display_rotation` is counterclockwise.
@@ -952,7 +944,7 @@ fn applies_display_rotation_to_stream_info_and_frames() {
         },
     ];
     for case in cases {
-        let path = temp_path("rotated", "mp4");
+        let path = dir.path().join("rotated.mp4");
         let status = Command::new("ffmpeg")
             .args(["-y", "-hide_banner", "-loglevel", "error"])
             .args(["-display_rotation", case.display_rotation, "-i"])
@@ -982,15 +974,14 @@ fn applies_display_rotation_to_stream_info_and_frames() {
             false,
             &format!("rotation {}", case.display_rotation),
         );
-        let _ = fs::remove_file(path);
     }
-    let _ = fs::remove_file(coded);
 }
 
 #[test]
 fn best_video_stream_prefers_the_default_track_over_stream_order() {
-    let thumbnail = temp_path("thumbnail", "mp4");
-    let main = temp_path("main_track", "mp4");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let thumbnail = dir.path().join("thumbnail.mp4");
+    let main = dir.path().join("main_track.mp4");
     for (path, source, frames) in [
         (&thumbnail, "testsrc=size=16x16:rate=30", "2"),
         (&main, "testsrc=size=64x36:rate=30", "30"),
@@ -1014,7 +1005,7 @@ fn best_video_stream_prefers_the_default_track_over_stream_order() {
             return;
         }
     }
-    let path = temp_path("two_video_tracks", "mp4");
+    let path = dir.path().join("two_video_tracks.mp4");
     let status = Command::new("ffmpeg")
         .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
         .arg(&thumbnail)
@@ -1031,13 +1022,11 @@ fn best_video_stream_prefers_the_default_track_over_stream_order() {
     assert_eq!(input.media_info().video_streams[0].width, 16);
     let best = input.best_video_stream().expect("best stream");
     assert_eq!((best.stream_index, best.width), (1, 64));
-    for path in [path, thumbnail, main] {
-        let _ = fs::remove_file(path);
-    }
 }
 
 #[test]
 fn decodes_every_column_when_the_width_is_not_a_multiple_of_eight() {
+    let dir = tempfile::tempdir().expect("temp dir");
     let formats = [
         ("yuv420p", [854, 1022, 1366].as_slice()),
         ("yuv422p", [854, 1022].as_slice()),
@@ -1047,7 +1036,7 @@ fn decodes_every_column_when_the_width_is_not_a_multiple_of_eight() {
     for (format, widths) in formats {
         for &width in widths {
             let name = format!("columns_{format}_{width}");
-            let path = temp_path(&name, "mp4");
+            let path = dir.path().join(format!("{name}.mp4"));
             let available = run_fixture(
                 Command::new("ffmpeg")
                     .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
@@ -1081,7 +1070,6 @@ fn decodes_every_column_when_the_width_is_not_a_multiple_of_eight() {
                     );
                 }
             }
-            let _ = fs::remove_file(path);
         }
     }
 }

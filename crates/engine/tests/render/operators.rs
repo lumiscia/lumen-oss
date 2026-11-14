@@ -5,11 +5,8 @@
 use serde_json::{Value, json};
 
 use crate::color::{encode, linear, over, premultiplied, rgba8, scaled, srgb8};
-use crate::support::{Case, Expect, Frame, Scene, check, scene};
+use crate::support::{BLACK, CLEAR, Case, Expect, Frame, Scene, WHITE, check, scene};
 
-const WHITE: [u8; 4] = [255, 255, 255, 255];
-const CLEAR: [u8; 4] = [0, 0, 0, 0];
-const BLACK: [u8; 4] = [0, 0, 0, 255];
 /// A translucent, saturated colour whose straight and premultiplied forms differ.
 const TEAL: [u8; 4] = [60, 120, 200, 128];
 

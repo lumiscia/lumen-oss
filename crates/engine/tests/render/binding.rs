@@ -5,11 +5,7 @@ use lumen_gpu::{RectI, Size};
 use serde_json::{Value, json};
 
 use crate::color::{linear, opaque};
-use crate::support::{Case, Expect, TestMedia, check, gpu, render, scene};
-
-const RED: [u8; 4] = [255, 0, 0, 255];
-const GREEN: [u8; 4] = [0, 255, 0, 255];
-const CLEAR: [u8; 4] = [0, 0, 0, 0];
+use crate::support::{CLEAR, Case, Expect, GREEN, RED, TestMedia, check, gpu, render, scene};
 
 fn composition((width, height): (u32, u32), nodes: Value) -> Composition {
     scene((width, height), nodes).frames(12).into()

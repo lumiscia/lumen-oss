@@ -26,6 +26,14 @@ const INSTALL_GPU: &str = "Install a Vulkan driver, or lavapipe (the mesa-vulkan
     and run with LUMEN_GPU_FORCE_FALLBACK_ADAPTER=1 WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=1 \
     WGPU_BACKEND=vulkan WGPU_POWER_PREF=none VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd*.json";
 
+pub const CLEAR: [u8; 4] = [0, 0, 0, 0];
+pub const BLACK: [u8; 4] = [0, 0, 0, 255];
+pub const WHITE: [u8; 4] = [255, 255, 255, 255];
+pub const RED: [u8; 4] = [255, 0, 0, 255];
+pub const GREEN: [u8; 4] = [0, 255, 0, 255];
+pub const BLUE: [u8; 4] = [0, 0, 255, 255];
+pub const ORANGE: [u8; 4] = [255, 128, 0, 255];
+
 const OUTPUT_NODE: u32 = 9999;
 
 // One device for the whole binary. Holding its guard runs a test alone, as fonts are process-global.

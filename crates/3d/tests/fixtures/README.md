@@ -21,6 +21,5 @@ exponential filters, a fallback buffer and `KHR_mesh_quantization`. gltfpack res
 31 keys.
 
 `review-*.glb` are files made by hand during review to reach past the reader's limits, each of
-which must be an error without any panic: a Zstandard level with a 1 GiB window (`zstd`), a WebP
-whose image is larger than its canvas (`webp-size`), an animated WebP (`animated`), and four
-small WebPs each 2048 × 2048 (`floor`).
+which must be an error without any panic: a Zstandard level with a 1 GiB window (`zstd`), an
+animated WebP (`animated`), and four small WebPs each 2048 × 2048 (`floor`).

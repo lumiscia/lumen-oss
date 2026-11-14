@@ -1686,6 +1686,7 @@ dependencies = [
  "objc2-metal",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

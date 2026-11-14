@@ -5,9 +5,7 @@ use lumen_engine::{
 };
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, Scene, TestMedia, check, gpu, render, scene};
-
-pub const CLEAR: [u8; 4] = [0, 0, 0, 0];
+use crate::support::{CLEAR, Case, Expect, Scene, TestMedia, check, gpu, render, scene};
 
 pub fn probe(red: u8) -> [u8; 4] {
     [red, 7, 0, 255]

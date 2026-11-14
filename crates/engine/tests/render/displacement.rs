@@ -3,12 +3,10 @@
 
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, Scene, check, scene};
+use crate::support::{CLEAR, Case, Expect, Scene, WHITE, check, scene};
 
 const WIDTH: u32 = 32;
 const HEIGHT: u32 = 8;
-const WHITE: [u8; 4] = [255; 4];
-const CLEAR: [u8; 4] = [0; 4];
 
 /// A white bar over columns 8 to 11.
 fn bar() -> Value {

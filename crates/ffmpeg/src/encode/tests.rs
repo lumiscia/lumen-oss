@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::fs;
 
 #[cfg(ffmpeg_frame_cropping)]
 use crate::FfmpegError;
@@ -17,22 +13,15 @@ use crate::video::{CpuVideoFrame, EncodeMode, PixelFormat};
 
 use super::{muxed::MuxedEncoder, quality::RateControl, video::VideoEncoderConfig};
 
-fn temp_path(name: &str, extension: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!("lumen_ffmpeg_{name}_{unique}.{extension}"))
-}
-
 #[cfg(feature = "vulkan")]
 #[test]
 fn cpu_upload_encoder_rejects_gpu_input() {
+    let dir = tempfile::tempdir().expect("temp dir");
     use ash::vk::Handle;
 
     use crate::gpu::VulkanVideoFrame;
 
-    let path = temp_path("gpu_failure", "mp4");
+    let path = dir.path().join("gpu_failure.mp4");
     let config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
     let mut encoder =
         MuxedEncoder::create(path.to_string_lossy().to_string(), config).expect("libx264 encoder");
@@ -52,19 +41,18 @@ fn cpu_upload_encoder_rejects_gpu_input() {
         .write_gpu_frame(&input)
         .expect_err("CPU encoder should reject GPU input");
     assert_eq!(error.backend, Some(GpuBackend::Vulkan));
-
-    let _ = fs::remove_file(path);
 }
 
 #[cfg(feature = "vulkan")]
 #[test]
 fn vulkan_texture_encoder_rejects_invalid_config_at_create() {
+    let dir = tempfile::tempdir().expect("temp dir");
     for (width, height, expected) in [
         (15, 16, "even dimensions"),
         (16, 15, "even dimensions"),
         (16, 16, "vulkan_device"),
     ] {
-        let path = temp_path("gpu_create_failure", "mp4");
+        let path = dir.path().join("gpu_create_failure.mp4");
         let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, "h264_vulkan");
         config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
 
@@ -75,16 +63,15 @@ fn vulkan_texture_encoder_rejects_invalid_config_at_create() {
         assert_eq!(error.operation, "VideoEncoder::create");
         assert_eq!(error.backend, Some(GpuBackend::Vulkan));
         assert!(error.message.contains(expected), "{error}");
-
-        let _ = fs::remove_file(path);
     }
 }
 
 #[cfg(ffmpeg_frame_cropping)]
 #[test]
 fn vulkan_av1_crops_coded_padding_in_the_container() {
+    let dir = tempfile::tempdir().expect("temp dir");
     let (width, height) = (256, 138);
-    let path = temp_path("vulkan_crop", "mp4");
+    let path = dir.path().join("vulkan_crop.mp4");
     let config = VideoEncoderConfig::cpu_rgba(width, height, 30, "av1_vulkan");
     let mut encoder = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
         Ok(encoder) => encoder,
@@ -130,8 +117,6 @@ fn vulkan_av1_crops_coded_padding_in_the_container() {
         sides,
         [0, crop.coded_height - height, 0, crop.coded_width - width]
     );
-
-    let _ = fs::remove_file(path);
 }
 
 fn noisy_frame(width: u32, height: u32, seed: u32) -> CpuVideoFrame {
@@ -158,8 +143,9 @@ fn noisy_frame(width: u32, height: u32, seed: u32) -> CpuVideoFrame {
 #[cfg(ffmpeg_frame_cropping)]
 #[test]
 fn finishing_a_vulkan_encoder_that_got_no_frames_does_not_crash() {
+    let dir = tempfile::tempdir().expect("temp dir");
     for name in ["h264_vulkan", "av1_vulkan"] {
-        let path = temp_path("vulkan_no_frames", "mp4");
+        let path = dir.path().join("vulkan_no_frames.mp4");
         let config = VideoEncoderConfig::cpu_rgba(256, 144, 30, name);
         let encoder = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
             Ok(encoder) => encoder,
@@ -170,13 +156,13 @@ fn finishing_a_vulkan_encoder_that_got_no_frames_does_not_crash() {
             Err(error) => panic!("{name} is available but failed to initialise: {error}"),
         };
         encoder.finish().expect("finish encode");
-        let _ = fs::remove_file(path);
     }
 }
 
 #[test]
 fn unsupported_rate_control_errors_at_create() {
-    let path = temp_path("unsupported_crf", "mp4");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("unsupported_crf.mp4");
     let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
     config.quality.rate_control = Some(RateControl::Crf(23));
     config.quality.preset = Some("p4".to_string());
@@ -186,12 +172,12 @@ fn unsupported_rate_control_errors_at_create() {
         Err(error) => error,
     };
     assert!(error.message.contains("invalid preset"), "{error}");
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn an_option_that_changes_the_pixel_format_errors_at_create() {
-    let path = temp_path("pixel_format_option", "mp4");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("pixel_format_option.mp4");
     let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
     config.quality.options = vec![("pixel_format".to_string(), "yuv444p".to_string())];
     let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
@@ -199,12 +185,12 @@ fn an_option_that_changes_the_pixel_format_errors_at_create() {
         Err(error) => error,
     };
     assert!(error.message.contains("pixel format"), "{error}");
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn a_frame_without_a_pts_errors() {
-    let path = temp_path("no_pts", "mp4");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("no_pts.mp4");
     let config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
     let mut encoder =
         MuxedEncoder::create(path.to_string_lossy().to_string(), config).expect("libx264 encoder");
@@ -214,12 +200,12 @@ fn a_frame_without_a_pts_errors() {
     };
     let error = encoder.write_video_frame(&frame).unwrap_err();
     assert!(error.message.contains("pts"), "{error}");
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn texture_input_needs_an_encoder_of_that_backend() {
-    let path = temp_path("texture_mismatch", "mp4");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("texture_mismatch.mp4");
     let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
     let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
@@ -227,7 +213,6 @@ fn texture_input_needs_an_encoder_of_that_backend() {
         Err(error) => error,
     };
     assert!(error.message.contains("libx264"), "{error}");
-    let _ = fs::remove_file(path);
 }
 
 /// Missing encoder, no Vulkan device, or a device without video encode support.
@@ -241,6 +226,7 @@ fn vulkan_encode_unavailable(error: &FfmpegError) -> bool {
 /// Encodes a few frames with each software encoder's `standard` settings, where this build has it.
 #[test]
 fn software_encoders_encode_through_a_preset() {
+    let dir = tempfile::tempdir().expect("temp dir");
     use crate::{EncodeCodec, QualityConfig, QualityRequest};
 
     for (codec, encoder) in [
@@ -258,7 +244,7 @@ fn software_encoders_encode_through_a_preset() {
                 ..QualityRequest::default()
             })
             .expect("standard has an entry");
-        let path = temp_path(encoder, "mp4");
+        let path = dir.path().join(format!("{encoder}.mp4"));
         let mut config = VideoEncoderConfig::cpu_rgba(64, 64, 30, encoder);
         config.quality = choice.first().quality.clone();
         let mut muxed =
@@ -270,13 +256,13 @@ fn software_encoders_encode_through_a_preset() {
         }
         muxed.finish().expect("finish encode");
         assert!(fs::metadata(&path).expect("output").len() > 0);
-        let _ = fs::remove_file(path);
     }
 }
 
 #[test]
 fn a_container_that_cannot_hold_the_codec_errors_at_create() {
-    let path = temp_path("h264_in_webm", "webm");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("h264_in_webm.webm");
     let config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
     let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
         Ok(_) => panic!("webm can't hold H.264"),
@@ -286,7 +272,6 @@ fn a_container_that_cannot_hold_the_codec_errors_at_create() {
         error.message.contains("webm container can't hold") && error.message.contains("libx264"),
         "{error}"
     );
-    let _ = fs::remove_file(path);
 }
 
 /// A flat frame of `format` with luma `y`, neutral chroma, and alpha `left` on the left half and
@@ -378,6 +363,7 @@ fn alpha_sample(frame: &crate::video::YuvVideoFrame, x: u32, y: u32) -> u16 {
 
 #[test]
 fn alpha_planes_reach_prores_in_mov_and_vp9_in_webm() {
+    let dir = tempfile::tempdir().expect("temp dir");
     use super::codec::BitDepth;
 
     for (encoder, extension, format, depth, (y, left, right), tolerance) in [
@@ -402,7 +388,7 @@ fn alpha_planes_reach_prores_in_mov_and_vp9_in_webm() {
             eprintln!("{encoder} not in this FFmpeg build; skipping its alpha round trip");
             continue;
         }
-        let path = temp_path(encoder, extension);
+        let path = dir.path().join(format!("{encoder}.{extension}"));
         let mut config = VideoEncoderConfig::cpu_rgba(64, 64, 30, encoder);
         config.bit_depth = depth;
         config.alpha = true;
@@ -440,13 +426,13 @@ fn alpha_planes_reach_prores_in_mov_and_vp9_in_webm() {
                 "{encoder} alpha {alpha} at {x}, wrote {expected_alpha}"
             );
         }
-        let _ = fs::remove_file(path);
     }
 }
 
 #[test]
 fn alpha_needs_an_encoder_that_writes_it() {
-    let path = temp_path("alpha_h264", "mp4");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("alpha_h264.mp4");
     let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
     config.alpha = true;
     let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
@@ -457,13 +443,13 @@ fn alpha_needs_an_encoder_that_writes_it() {
         error.message.contains("prores (.mov) or vp9 (.webm)"),
         "{error}"
     );
-    let _ = fs::remove_file(path);
 }
 
 /// prores_ks drops the alpha plane at `alpha_bits` 0 and outside the 4444 profiles, so a preset
 /// or direct caller asking for either fails when the encoder opens instead of writing opaque video.
 #[test]
 fn prores_options_that_would_drop_alpha_fail_at_open() {
+    let dir = tempfile::tempdir().expect("temp dir");
     use crate::{EncodeCodec, QualityConfig, QualityRequest};
 
     if super::codec::encoder_info(&"prores_ks".into()).is_err() {
@@ -490,12 +476,11 @@ fn prores_options_that_would_drop_alpha_fail_at_open() {
         config
     };
     let refused = |config: VideoEncoderConfig, option: &str| {
-        let path = temp_path("prores_refused", "mov");
+        let path = dir.path().join("prores_refused.mov");
         match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
             Ok(_) => panic!("{option} would drop alpha"),
             Err(error) => assert!(error.message.contains(option), "{error}"),
         }
-        let _ = fs::remove_file(path);
     };
 
     refused(config_with("0"), "`alpha_bits` to 0");
@@ -506,7 +491,7 @@ fn prores_options_that_would_drop_alpha_fail_at_open() {
     hq.quality.options = vec![("profile".into(), "hq".into())];
     refused(hq, "`profile` to 3");
 
-    let path = temp_path("prores_alpha_bits", "mov");
+    let path = dir.path().join("prores_alpha_bits.mov");
     let mut muxed =
         MuxedEncoder::create(path.to_string_lossy().to_string(), config_with("16")).expect("open");
     for pts in 0..3 {
@@ -521,5 +506,4 @@ fn prores_options_that_would_drop_alpha_fail_at_open() {
     assert!(decoded.has_alpha, "alpha_bits 16 keeps the alpha plane");
     let shift = decoded.depth - 10;
     assert_eq!(alpha_sample(&decoded, 56, 32) >> shift, 300);
-    let _ = fs::remove_file(path);
 }

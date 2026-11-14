@@ -4,9 +4,7 @@ use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
 use crate::color::{linear, opaque, srgb8};
-use crate::support::{Case, Expect, Scene, TestMedia, check, gpu, render, scene};
-
-const BLACK: [u8; 4] = [0, 0, 0, 255];
+use crate::support::{BLACK, Case, Expect, Scene, TestMedia, check, gpu, render, scene};
 
 /// A shader that writes `color`, a WGSL `vec4<f32>` expression, to every pixel.
 pub fn fill_shader(color: &str) -> String {

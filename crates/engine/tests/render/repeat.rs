@@ -3,10 +3,9 @@
 use lumen_engine::{composition::Composition, node::NodeId};
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, Scene, TestMedia, check, gpu, render, scene};
+use crate::support::{CLEAR, Case, Expect, Scene, TestMedia, check, gpu, render, scene};
 
 const SIZE: (u32, u32) = (112, 64);
-const CLEAR: [u8; 4] = [0, 0, 0, 0];
 
 /// `params` with the fields of `more` added over them.
 fn with(mut params: Value, more: Value) -> Value {

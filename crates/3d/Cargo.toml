@@ -20,6 +20,8 @@ ktx2 = ["dep:basisu", "dep:ruzstd"]
 webp = ["image/webp"]
 # Derives the JSON Schema of `ModelInfo`.
 metadata = ["dep:schemars"]
+# Helpers for tests of code that reads models.
+test-support = []
 
 [dependencies]
 base64 = "0.22.1"

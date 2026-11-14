@@ -11,7 +11,7 @@ use lumen_engine::media::{
 use serde_json::{Value, json};
 
 use crate::color::{over, premultiplied, rgba8};
-use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, scene};
+use crate::support::{CLEAR, Case, Expect, Frame, Scene, TestMedia, check, scene};
 use crate::text_pixels;
 
 /// The left half of a media file: transparent, with a red that must never reach the output.
@@ -20,7 +20,6 @@ const HIDDEN_RED: [u8; 4] = [255, 0, 0, 0];
 const STRAIGHT: [u8; 4] = [60, 120, 200, 128];
 /// `STRAIGHT` premultiplied: each colour channel times 128 / 255, rounded.
 const TRANSLUCENT: [u8; 4] = [30, 60, 100, 128];
-const CLEAR: [u8; 4] = [0; 4];
 
 const MEDIA_SIZE: (u32, u32) = (16, 8);
 const MEDIA_ROW: u32 = MEDIA_SIZE.1 / 2;

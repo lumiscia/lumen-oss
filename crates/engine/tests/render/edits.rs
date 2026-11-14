@@ -9,10 +9,8 @@ use serde_json::{Value, json};
 use crate::color::srgb8;
 use crate::shaders::{fill_shader, shader_scene};
 use crate::support::{
-    Scene, TestMedia, gpu, read_rgba8, render, render_held, scene, within_rounding,
+    CLEAR, Scene, TestMedia, gpu, read_rgba8, render, render_held, scene, within_rounding,
 };
-
-const CLEAR: [u8; 4] = [0, 0, 0, 0];
 
 fn assert_uniform(rgba: &[u8], color: [u8; 4], what: &str) {
     for pixel in rgba.chunks(4) {

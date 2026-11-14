@@ -1,24 +1,12 @@
 //! `AudioRangeReader` must return the samples at the positions it is asked for, whatever order the
 //! ranges come in, and keep audio that starts late or resumes after a gap in place.
 
-use std::{
-    fs,
-    process::Command,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, process::Command};
 
 use lumen_ffmpeg::AudioRangeReader;
 
 const SAMPLE_RATE: usize = 48_000;
 const SAMPLES: usize = 3 * SAMPLE_RATE;
-
-fn temp_path(name: &str, extension: &str) -> std::path::PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!("lumen_audio_range_{name}_{unique}.{extension}"))
-}
 
 /// The left channel at `index`; the right channel is its negative.
 fn ramp(index: usize) -> f32 {
@@ -70,7 +58,8 @@ fn assert_range(reader: &mut AudioRangeReader, start: usize, frames: usize, expe
 
 #[test]
 fn reads_each_range_from_where_it_was_asked() {
-    let path = temp_path("ramp", "wav");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("ramp.wav");
     fs::write(&path, ramp_wav(SAMPLE_RATE)).expect("write wav");
     let mut reader = AudioRangeReader::open(path.to_string_lossy().to_string()).expect("open");
 
@@ -82,13 +71,12 @@ fn reads_each_range_from_where_it_was_asked() {
     assert_range(&mut reader, SAMPLES - 200, 500, 200);
     assert_range(&mut reader, SAMPLES + 10_000, 10, 0);
     assert_range(&mut reader, 70_000, 20_000, 20_000);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn audio_that_starts_late_reads_as_silence_until_it_begins() {
-    let path = temp_path("late", "mkv");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("late.mkv");
     let generated = Command::new("ffmpeg")
         .args(["-y", "-hide_banner", "-loglevel", "error"])
         .args(["-f", "lavfi", "-i", "color=c=black:s=16x16:r=10:d=2"])
@@ -108,7 +96,6 @@ fn audio_that_starts_late_reads_as_silence_until_it_begins() {
     }
     let mut reader = AudioRangeReader::open(path.to_string_lossy().to_string()).expect("open");
     let range = reader.read(0, SAMPLE_RATE).expect("read range");
-    let _ = fs::remove_file(path);
 
     assert_eq!(range.samples, SAMPLE_RATE);
     let peak = |from: usize, to: usize| {
@@ -141,7 +128,8 @@ fn peak(range: &lumen_ffmpeg::AudioFrame, from: usize, to: usize) -> f32 {
 
 #[test]
 fn a_range_is_the_same_whether_reached_by_rewinding_or_decoding_on() {
-    let path = temp_path("resampled", "wav");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("resampled.wav");
     fs::write(&path, ramp_wav(11_025)).expect("write wav");
     let path_string = path.to_string_lossy().to_string();
 
@@ -159,14 +147,14 @@ fn a_range_is_the_same_whether_reached_by_rewinding_or_decoding_on() {
             "{frames} samples from {start}"
         );
     }
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn a_stream_whose_layout_changes_keeps_decoding() {
-    let stereo = temp_path("stereo", "aac");
-    let mono = temp_path("mono", "aac");
-    let joined = temp_path("joined", "aac");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let stereo = dir.path().join("stereo.aac");
+    let mono = dir.path().join("mono.aac");
+    let joined = dir.path().join("joined.aac");
     let sine = |frequency: u32, layout: &str| {
         format!(
             "sine=frequency={frequency}:sample_rate=48000:duration=1,aformat=channel_layouts={layout}"
@@ -183,9 +171,6 @@ fn a_stream_whose_layout_changes_keeps_decoding() {
 
     let mut reader = AudioRangeReader::open(joined.to_string_lossy().to_string()).expect("open");
     let range = reader.read(0, 2 * SAMPLE_RATE).expect("read range");
-    for path in [stereo, mono, joined] {
-        let _ = fs::remove_file(path);
-    }
 
     assert!(
         range.samples > 2 * SAMPLE_RATE - 4_096,
@@ -198,7 +183,8 @@ fn a_stream_whose_layout_changes_keeps_decoding() {
 
 #[test]
 fn a_gap_in_the_timestamps_reads_as_silence() {
-    let path = temp_path("gap", "mkv");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("gap.mkv");
     if !generate(
         &[
             "-f",
@@ -216,7 +202,6 @@ fn a_gap_in_the_timestamps_reads_as_silence() {
     }
     let mut reader = AudioRangeReader::open(path.to_string_lossy().to_string()).expect("open");
     let range = reader.read(0, 5 * SAMPLE_RATE).expect("read range");
-    let _ = fs::remove_file(path);
 
     // Matroska timestamps are whole milliseconds, so the end can be up to a millisecond off.
     assert!(
@@ -233,7 +218,8 @@ const CHIRP: &str = "aevalsrc=0.4*sin(2*PI*(300+200*t)*t):d=6:s=48000";
 
 #[test]
 fn frames_wholly_behind_the_clock_are_dropped() {
-    let path = temp_path("restart", "mkv");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("restart.mkv");
     if !generate(
         &[
             "-f",
@@ -258,7 +244,6 @@ fn frames_wholly_behind_the_clock_are_dropped() {
         .expect("open")
         .read(4 * SAMPLE_RATE as u64, SAMPLE_RATE)
         .expect("read seeked");
-    let _ = fs::remove_file(path);
 
     // The second after the timestamps step back repeats audio that was already placed.
     assert!(
@@ -284,10 +269,11 @@ fn frames_wholly_behind_the_clock_are_dropped() {
 
 #[test]
 fn a_gap_before_a_rate_change_is_kept_in_mpegts() {
+    let dir = tempfile::tempdir().expect("temp dir");
     let (first, second, joined) = (
-        temp_path("first", "ts"),
-        temp_path("second", "ts"),
-        temp_path("joined", "ts"),
+        dir.path().join("first.ts"),
+        dir.path().join("second.ts"),
+        dir.path().join("joined.ts"),
     );
     let source = |rate: u32| format!("aevalsrc=0.4*sin(2*PI*(300+200*t)*t):d=3:s={rate}");
     if !generate(
@@ -329,9 +315,6 @@ fn a_gap_before_a_rate_change_is_kept_in_mpegts() {
 
     let mut reader = AudioRangeReader::open(joined.to_string_lossy().to_string()).expect("open");
     let range = reader.read(0, 9 * SAMPLE_RATE).expect("read range");
-    for path in [first, second, joined] {
-        let _ = fs::remove_file(path);
-    }
 
     assert!(
         range.samples.abs_diff(8 * SAMPLE_RATE) < 4_096,

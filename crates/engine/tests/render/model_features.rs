@@ -1,11 +1,12 @@
 //! `model_3d`'s vertex colours, second texture coordinates, texture transforms, morph targets,
 //! lights and cameras, each drawn as what it stands for would be.
 
+use lumen_3d::test_support::write_glb;
 use lumen_engine::composition::Composition;
 use serde_json::{Value, json};
 
 use crate::scene::{CENTER, light, merge, model, ortho, render_3d_with};
-use crate::support::{Case, Expect, Scene, TestMedia, check, gpu, render};
+use crate::support::{BLUE, Case, Expect, GREEN, RED, Scene, TestMedia, WHITE, check, gpu, render};
 
 const FLOAT: u32 = 5126;
 const UNSIGNED_BYTE: u32 = 5121;
@@ -104,18 +105,7 @@ impl Gltf {
         let mut bin = self.bin.clone();
         bin.resize(bin.len().next_multiple_of(4), 0);
         document["buffers"][0]["byteLength"] = json!(bin.len());
-        let mut json = serde_json::to_vec(&document).unwrap();
-        json.resize(json.len().next_multiple_of(4), b' ');
-        let mut glb = b"glTF".to_vec();
-        glb.extend(2u32.to_le_bytes());
-        glb.extend(((12 + 8 + json.len() + 8 + bin.len()) as u32).to_le_bytes());
-        glb.extend((json.len() as u32).to_le_bytes());
-        glb.extend(b"JSON");
-        glb.extend(json);
-        glb.extend((bin.len() as u32).to_le_bytes());
-        glb.extend(b"BIN\0");
-        glb.extend(bin);
-        glb
+        write_glb(&serde_json::to_vec(&document).unwrap(), &bin)
     }
 }
 
@@ -208,11 +198,6 @@ fn png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     png.extend(chunk(b"IEND", &[]));
     png
 }
-
-const RED: [u8; 4] = [255, 0, 0, 255];
-const GREEN: [u8; 4] = [0, 255, 0, 255];
-const BLUE: [u8; 4] = [0, 0, 255, 255];
-const WHITE: [u8; 4] = [255, 255, 255, 255];
 
 #[test]
 fn vertex_colours_multiply_the_base_colour_in_linear_light() {
