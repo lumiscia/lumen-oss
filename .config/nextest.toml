@@ -1,0 +1,11 @@
+# A test that hangs is stopped and reported by name, instead of the whole job running into its
+# time limit. The slowest tests render on a software GPU in CI and take tens of seconds.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 4 }
+
+# A render test's process sometimes aborts while exiting on the CI software GPU, after the test
+# has passed ("corrupted size vs. prev_size"); `instance::an_empty_scene_is_not_placed` does it most.
+# The cause is not known yet. nextest reports a retried pass as flaky, so it stays visible.
+[[profile.default.overrides]]
+filter = 'binary(render)'
+retries = 2
