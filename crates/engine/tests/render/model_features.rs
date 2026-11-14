@@ -5,7 +5,7 @@ use lumen_3d::test_support::write_glb;
 use lumen_engine::composition::Composition;
 use serde_json::{Value, json};
 
-use crate::scene::{CENTER, light, merge, model, ortho, render_3d_with};
+use crate::support::scene::{CENTER, light, merge, model, ortho, render_3d_with};
 use crate::support::{BLUE, Case, Expect, GREEN, RED, Scene, TestMedia, WHITE, check, gpu, render};
 
 const FLOAT: u32 = 5126;
@@ -455,7 +455,7 @@ fn morphed_normals_light_a_surface_as_vertex_normals_tilted_the_same_way_do() {
             vec![light(10, json!({ "rotation": [0, 40, 0] }))],
         )
     };
-    let flat = crate::scene::frame_of(lit("flat.glb"), &media);
+    let flat = crate::support::scene::frame_of(lit("flat.glb"), &media);
     check(vec![
         Case::new(
             "the morphed normal",
@@ -516,7 +516,7 @@ fn morphed_normals_of_different_lengths_and_directions_light_as_their_unit_norma
 /// everything over it, lit from straight above by a light casting sharp shadows, with `model`.
 fn shadowed_ground(model: Value) -> Scene {
     crate::support::scene(
-        crate::scene::SIZE,
+        crate::support::scene::SIZE,
         json!([
             { "id": 50, "type": "shape_3d", "params": {
                 "shape": "plane", "size": [6, 1, 6], "roughness": 1 } },
@@ -785,12 +785,12 @@ fn a_models_lights_light_the_scene_in_the_units_the_extension_defines() {
         light(10, params)
     };
     // 12 candela 2 metres away is 3 lux.
-    let point = crate::scene::frame_of(lit("point.glb", true, vec![]), &media);
-    let sun = crate::scene::frame_of(
+    let point = crate::support::scene::frame_of(lit("point.glb", true, vec![]), &media);
+    let sun = crate::support::scene::frame_of(
         lit("point.glb", false, vec![facing(json!({ "intensity": 3 }))]),
         &media,
     );
-    let unlit = crate::scene::frame_of(lit("point.glb", false, vec![]), &media);
+    let unlit = crate::support::scene::frame_of(lit("point.glb", false, vec![]), &media);
     let (a, b) = (point.pixel(CENTER, CENTER), sun.pixel(CENTER, CENTER));
     assert!(
         (0..3).all(|c| a[c].abs_diff(b[c]) <= 1),

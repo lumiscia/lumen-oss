@@ -5,7 +5,9 @@ use lumen_3d::glam::Vec3;
 use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
-use crate::scene::{Quad, SIZE, fox, fox_media, light, merge, model, model_glb, ortho, texel_png};
+use crate::support::scene::{
+    Quad, SIZE, fox, fox_media, light, merge, model, model_glb, ortho, texel_png,
+};
 use crate::support::{Frame, Scene, TestMedia, gpu, render, scene};
 
 const BACKGROUND: [u8; 4] = [255, 255, 255, 255];

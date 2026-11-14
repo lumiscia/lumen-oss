@@ -22,6 +22,9 @@ use lumen_engine::{
 use lumen_gpu::wgpu;
 use serde_json::{Value, json};
 
+#[cfg(feature = "3d")]
+pub mod scene;
+
 const INSTALL_GPU: &str = "Install a Vulkan driver, or lavapipe (the mesa-vulkan-drivers package) \
     and run with LUMEN_GPU_FORCE_FALLBACK_ADAPTER=1 WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=1 \
     WGPU_BACKEND=vulkan WGPU_POWER_PREF=none VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd*.json";

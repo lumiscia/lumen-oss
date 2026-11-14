@@ -31,7 +31,19 @@ mod repeat;
 #[cfg(feature = "3d")]
 mod scene;
 #[cfg(feature = "3d")]
+mod scene_environment;
+#[cfg(feature = "3d")]
+mod scene_mips;
+#[cfg(feature = "3d")]
+mod scene_models;
+#[cfg(feature = "3d")]
 mod scene_output;
+#[cfg(feature = "3d")]
+mod scene_planes;
+#[cfg(feature = "3d")]
+mod scene_regions;
+#[cfg(feature = "3d")]
+mod scene_shadows;
 mod shaders;
 mod support;
 mod sweep_blurs;
