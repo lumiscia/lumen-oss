@@ -1,6 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 
-import { Composition, Lumen, LumenError, assetSource } from "@lumiscia/lumen-sdk";
+import { Lumen, LumenError, assetSource } from "@lumiscia/lumen-sdk";
+
+import { createComposition } from "./composition.js";
 
 const apiKey = process.env.LUMISCIA_API_KEY;
 if (!apiKey) {
@@ -16,44 +18,7 @@ const clip = await lumen.uploadMedia({
   fileName: "clip.mp4",
 });
 
-const composition = new Composition({
-  renderSettings: { width: 1280, height: 720 },
-  timeline: { fps: 30, durationSeconds: 4 },
-});
-
-const video = composition.addNode({
-  type: "media_in",
-  params: { kind: "video", source: assetSource(clip) },
-});
-const scaled = composition.addNode({
-  type: "resize",
-  params: { width: 1280, height: 720, mode: "fill" },
-  inputs: { source: video },
-});
-const title = composition.addNode({
-  type: "text",
-  params: {
-    content: "Hello from Lumen",
-    font_family: "Roboto",
-    font_size: 96,
-    color: [255, 255, 255, 255],
-    position: [64, 520],
-  },
-});
-const merged = composition.addNode({
-  type: "merge",
-  inputs: { base: scaled, overlay: title },
-});
-composition.addNode({ type: "media_output", inputs: { source: merged } });
-
-composition.addAudioTrack({ id: "clip-audio", name: "Clip audio" }).addAudio({
-  source: assetSource(clip),
-  startSeconds: 0,
-  durationSeconds: 4,
-  trackId: "clip-audio",
-});
-
-const render = await lumen.render(composition);
+const render = await lumen.render(createComposition(assetSource(clip)));
 try {
   const done = await lumen.waitForRender(render, {
     onProgress: ({ progress }) => console.log(`${Math.round(progress * 100)}%`),

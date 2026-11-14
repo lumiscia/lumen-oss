@@ -5,6 +5,13 @@ Each example previews or renders a 4 s clip with sound (`assets/clip.mp4`) under
 - `vite-react` and `vite-svelte` preview it in the browser, which needs WebGPU.
 - `node` renders it through the hosted API and writes `out.mp4`.
 
+The compositions are written with `nodes`, one function per node kind, and every example is laid out the same way under `src/`:
+
+- `compositions/` (`composition.ts` in `node`) builds each `Composition` from components.
+- `components/` holds the pieces they share, such as `footage` for a video that fills the frame and `title` for a line of type.
+- `theme.ts` holds the frame size, frame rate, length, colours and fonts.
+- `media.ts` names the media the compositions read and where they load from. `node` has none: it uploads the clip and passes its `asset:` source in.
+
 From the repository root:
 
 ```bash
@@ -18,7 +25,7 @@ just wasm-bindings-debug
 pnpm --filter @lumiscia/example-vite-react dev   # or example-vite-svelte
 ```
 
-Add `?scene=3d` to the URL for a 3D scene.
+In `vite-react`, add `?scene=3d` to the URL for a 3D scene: shapes, the clip on a plane and the glTF fox walking round them.
 
 `dev` builds the workspace packages first, and stops with that command if the bindings are missing.
 
