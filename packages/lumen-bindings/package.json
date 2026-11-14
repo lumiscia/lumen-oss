@@ -22,12 +22,15 @@
   },
   "files": [
     "dist",
+    "urls-2d.d.ts",
+    "urls-2d.js",
     "urls.d.ts",
     "urls.js",
     "wasm"
   ],
   "type": "module",
   "sideEffects": [
+    "./dist/browser/worker-2d.js",
     "./dist/browser/worker.js",
     "./dist/node/index.js"
   ],
@@ -55,14 +58,20 @@
       "types": "./urls.d.ts",
       "default": "./urls.js"
     },
+    "./urls-2d": {
+      "types": "./urls-2d.d.ts",
+      "default": "./urls-2d.js"
+    },
     "./wasm": "./wasm/lumen_wasm_bg.wasm",
-    "./worker": "./dist/browser/worker.js"
+    "./wasm-2d": "./wasm/lumen_wasm_2d_bg.wasm",
+    "./worker": "./dist/browser/worker.js",
+    "./worker-2d": "./dist/browser/worker-2d.js"
   },
   "scripts": {
-    "build": "test -f wasm/lumen_wasm.d.ts || { echo 'packages/lumen-bindings: wasm/ is missing. Generate it with: just wasm-bindings-debug' >&2; exit 1; } && (tsc -p tsconfig.json && esbuild dist/browser/worker.js --bundle --minify --format=esm --platform=browser --allow-overwrite --outfile=dist/browser/worker.js)",
-    "check": "test -f wasm/lumen_wasm.d.ts || { echo 'packages/lumen-bindings: wasm/ is missing. Generate it with: just wasm-bindings-debug' >&2; exit 1; } && tsc -p tsconfig.json --noEmit",
+    "build": "test -f wasm/lumen_wasm.d.ts && test -f wasm/lumen_wasm_2d.d.ts || { echo 'packages/lumen-bindings: wasm/ is missing. Generate it with: just wasm-bindings-debug' >&2; exit 1; } && (tsc -p tsconfig.json && esbuild dist/browser/worker.js dist/browser/worker-2d.js --bundle --minify --format=esm --platform=browser --allow-overwrite --outdir=dist/browser)",
+    "check": "test -f wasm/lumen_wasm.d.ts && test -f wasm/lumen_wasm_2d.d.ts || { echo 'packages/lumen-bindings: wasm/ is missing. Generate it with: just wasm-bindings-debug' >&2; exit 1; } && tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist wasm wasm.tmp-* *.tsbuildinfo",
-    "test:node": "node test/node-load.mjs && node test/init-overlap.mjs"
+    "test:node": "node test/node-load.mjs && node test/init-overlap.mjs && node test/wasm-2d.mjs"
   },
   "dependencies": {
     "@lumiscia/lumen-preview": "workspace:*"

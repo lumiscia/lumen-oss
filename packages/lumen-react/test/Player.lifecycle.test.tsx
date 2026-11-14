@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createLumenPreview } from "@lumiscia/lumen-preview";
 
-import { Player } from "../src/Player.js";
+import { Player } from "../src/index.js";
 
 class FakeWorker {
   static instances: FakeWorker[] = [];

@@ -54,6 +54,12 @@ export const App = () => {
 
 Pass `media` and `fonts` (name to URL) to `Player` when the composition uses them. `examples/vite-react` is a complete app.
 
+`Player` from `@lumiscia/lumen-react` loads the wasm that renders 2D and 3D nodes. A page that only shows 2D compositions can import `Player` from `@lumiscia/lumen-react/2d` instead: its wasm has no 3D and is about a quarter smaller to download, and it reports each 3D node as a `node.unsupported` error. It runs in its own worker, `@lumiscia/lumen-bindings/worker-2d`, so a page that passes `wasmUrl` to this `Player` passes `workerUrl` too. The rest of the package is the same from either entry point.
+
+```tsx
+import { Player, createLumenPreview } from "@lumiscia/lumen-react/2d";
+```
+
 The preview renders in a worker, which loads the wasm renderer. Both come from `@lumiscia/lumen-bindings`, a dependency of this package, and Vite or plain ESM finds them next to it. They can be on another origin, such as a CDN, that sends CORS headers. A worker on another origin starts from a `blob:` URL that imports it, so a Content Security Policy must allow `blob:` and that origin in `worker-src`. A page that serves them elsewhere passes `workerUrl` and `wasmUrl` to `Player`, pointing at `@lumiscia/lumen-bindings/worker` and `@lumiscia/lumen-bindings/wasm`. With a bundler, its asset imports give those URLs:
 
 ```js
@@ -61,7 +67,7 @@ import wasmUrl from "@lumiscia/lumen-bindings/wasm?url";
 import workerUrl from "@lumiscia/lumen-bindings/worker?url";
 ```
 
-The reliable way to host these files with any bundler or CDN is `runtimeUrl`: a directory serving `worker.js`, `lumen_wasm_bg.wasm`, `audio-worker.js` and `audio-worklet.js`, which the `@lumiscia/lumen-preview` README lists. With it, `Player` derives every runtime URL from that directory and needs none of the Vite settings below.
+The reliable way to host these files with any bundler or CDN is `runtimeUrl`: a directory serving `worker.js` and `lumen_wasm_bg.wasm` (`worker-2d.js` and `lumen_wasm_2d_bg.wasm` for the `/2d` `Player`), `audio-worker.js` and `audio-worklet.js`, which the `@lumiscia/lumen-preview` README lists. With it, `Player` derives every runtime URL from that directory and needs none of the Vite settings below.
 
 ```jsx
 <Player preview={preview} composition={composition} runtimeUrl="/lumen-runtime/" />

@@ -1,22 +1,12 @@
-export { Player, type PlayerProps } from "./Player.js";
-export {
-  LumenPreviewContext,
-  createLumenPreview,
-  useLumenPreview,
-  type LumenPreviewErrorCode,
-  type LumenPreviewState,
-} from "./preview.js";
-export type {
-  LumenLogLevel,
-  LumenPreviewComposition,
-  LumenPreviewError,
-  LumenPreviewFonts,
-  LumenPreviewMedia,
-  LumenPreviewMediaEntry,
-  LumenPreviewRange,
-  LumenPreviewStats,
-  LumenPreviewStatsCallback,
-  LumenPreviewTimeUpdate,
-  LumenPreviewTimeUpdateCallback,
-  MediaSourceInput,
-} from "@lumiscia/lumen-preview";
+import * as urls from "@lumiscia/lumen-bindings/urls";
+
+import { createPlayer } from "./Player.js";
+
+/** Previews a composition with the full wasm, which renders 2D and 3D nodes. */
+export const Player = createPlayer({
+  ...urls,
+  wasmFile: "lumen_wasm_bg.wasm",
+  workerFile: "worker.js",
+});
+
+export * from "./shared.js";

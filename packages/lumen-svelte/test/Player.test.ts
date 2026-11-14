@@ -4,8 +4,10 @@ import { flushSync, mount, unmount } from "svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as defaults from "@lumiscia/lumen-bindings/urls";
+import * as defaults2d from "@lumiscia/lumen-bindings/urls-2d";
 import type { LumenPreviewComposition } from "@lumiscia/lumen-preview";
 
+import Player2d from "../src/lib/Player2d.svelte";
 import { createLumenPreview } from "../src/lib/preview.svelte.js";
 import Harness from "./PlayerHarness.svelte";
 
@@ -24,7 +26,8 @@ interface MockSession {
 
 const sessions = vi.hoisted(() => [] as MockSession[]);
 
-vi.mock("@lumiscia/lumen-preview", () => ({
+vi.mock("@lumiscia/lumen-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@lumiscia/lumen-preview")>()),
   mountPreview: (host: HTMLElement, options: MockSession["options"]) => {
     const session = { dispose: vi.fn(), host, options, update: vi.fn() };
     sessions.push(session);
@@ -69,11 +72,39 @@ describe("Player", () => {
     flushSync();
     expect(sessions[0]?.options).toMatchObject({
       runtimeUrl: "/lumen/",
-      wasmUrl: undefined,
-      workerUrl: undefined,
+      wasmUrl: new URL("/lumen/lumen_wasm_bg.wasm", document.baseURI).href,
+      workerUrl: new URL("/lumen/worker.js", document.baseURI).href,
     });
 
     await unmount(component);
+  });
+
+  it("starts the 2D wasm from the 2d entry point", async () => {
+    const component = mount(Harness, {
+      target: document.body,
+      props: { initialPreview: createLumenPreview(), player: Player2d },
+    });
+    flushSync();
+    expect(sessions[0]?.options).toMatchObject({
+      wasmUrl: defaults2d.wasmUrl.href,
+      workerUrl: defaults2d.workerUrl.href,
+    });
+    await unmount(component);
+
+    const inRuntime = mount(Harness, {
+      target: document.body,
+      props: {
+        initialOptions: { runtimeUrl: "/lumen" },
+        initialPreview: createLumenPreview(),
+        player: Player2d,
+      },
+    });
+    flushSync();
+    expect(sessions[1]?.options).toMatchObject({
+      wasmUrl: new URL("/lumen/lumen_wasm_2d_bg.wasm", document.baseURI).href,
+      workerUrl: new URL("/lumen/worker-2d.js", document.baseURI).href,
+    });
+    await unmount(inRuntime);
   });
 
   it("sends a changed input to the current session", async () => {
