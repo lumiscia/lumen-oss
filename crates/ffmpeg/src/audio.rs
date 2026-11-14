@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, ptr};
 
 use crate::{
-    FfmpegError, Result,
+    FfmpegError, FfmpegErrorKind, Result,
     ffi::{self, AvFrame, CodecContextGuard, sys},
     format::{InputContext, Packet, Rational},
 };
@@ -48,10 +48,10 @@ impl AudioDecoder {
         let parameters = input.stream_parameters(stream_index)?;
         let codec = unsafe { sys::avcodec_find_decoder((*parameters).codec_id) };
         if codec.is_null() {
-            return Err(FfmpegError::new(
-                "avcodec_find_decoder",
-                "no audio decoder found",
-            ));
+            return Err(
+                FfmpegError::new("avcodec_find_decoder", "no audio decoder found")
+                    .with_kind(FfmpegErrorKind::Unsupported),
+            );
         }
         let mut context = CodecContextGuard(unsafe { sys::avcodec_alloc_context3(codec) });
         if context.0.is_null() {

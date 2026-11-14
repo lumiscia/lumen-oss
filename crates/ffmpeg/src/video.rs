@@ -6,7 +6,7 @@ use std::ptr;
 use std::ptr::NonNull;
 
 use crate::{
-    FfmpegError, Result,
+    FfmpegError, FfmpegErrorKind, Result,
     encode::hw::AvBufferRef,
     ffi::{self, AvFrame, SWS_BILINEAR, sys},
     format::{InputContext, Packet, Rational},
@@ -1478,7 +1478,8 @@ fn find_decoder(codec_id: sys::AVCodecID) -> Result<*const sys::AVCodec> {
                 "no decoder found for {}",
                 crate::format::codec_name(codec_id)
             ),
-        ))
+        )
+        .with_kind(FfmpegErrorKind::Unsupported))
     } else {
         Ok(decoder)
     }

@@ -8,8 +8,8 @@ use std::{
 use lumen_ffmpeg::{
     AudioDecoder, AudioEncoderConfig, AudioFrame, AudioResampler, AudioResamplerConfig,
     ColorMatrix, ColorTags, CpuVideoFrame, DecodeMode, DecodedVideoFrame, FfmpegError,
-    InputContext, MuxedEncoder, PixelFormat, RateControl, Rational, VideoCodec, VideoDecoder,
-    VideoDecoderConfig, VideoEncoderConfig, YuvVideoFrame,
+    FfmpegErrorKind, InputContext, MuxedEncoder, PixelFormat, RateControl, Rational, VideoCodec,
+    VideoDecoder, VideoDecoderConfig, VideoEncoderConfig, YuvVideoFrame,
 };
 
 fn temp_path(name: &str, extension: &str) -> PathBuf {
@@ -178,6 +178,44 @@ fn reports_missing_input_as_structured_error() {
         Some("/definitely/not/a/media/file.mp4")
     );
     assert!(error.code.is_some());
+}
+
+#[test]
+fn a_file_without_audio_has_no_audio_stream() {
+    let path = temp_path("no_audio", "mp4");
+    make_video(&path);
+    let input = InputContext::open(path.to_string_lossy().to_string()).expect("open input");
+    let error = input.best_audio_stream().expect_err("no audio stream");
+    assert_eq!(error.kind, FfmpegErrorKind::NoStream);
+    assert!(error.lacks_stream());
+    assert!(input.best_video_stream().is_ok());
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn a_format_outside_the_allowlist_is_unsupported() {
+    let path = temp_path("unlisted", "y4m");
+    fs::write(&path, "YUV4MPEG2 W16 H16 F25:1 Ip A1:1\nFRAME\n").expect("write y4m");
+    let error = InputContext::open(path.to_string_lossy().to_string()).expect_err("unsupported");
+    let _ = fs::remove_file(path);
+    assert_eq!(error.kind, FfmpegErrorKind::Unsupported);
+    assert!(error.is_unsupported());
+}
+
+#[test]
+fn an_output_that_cannot_be_created_is_an_output_failure() {
+    let path = std::env::temp_dir()
+        .join("lumen-no-such-dir")
+        .join("out.mp4");
+    let Err(error) = MuxedEncoder::create_with_audio(
+        path.to_string_lossy().to_string(),
+        libx264(32, 24, 24),
+        None,
+    ) else {
+        panic!("the output can't be created");
+    };
+    assert_eq!(error.kind, FfmpegErrorKind::Output);
+    assert!(error.is_output_failure());
 }
 
 #[test]

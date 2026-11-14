@@ -592,7 +592,7 @@ pub(super) fn poll(
 
 #[cfg(test)]
 mod start_failure_tests {
-    use lumen_ffmpeg::EncoderQuality;
+    use lumen_ffmpeg::{EncoderQuality, FfmpegErrorKind};
 
     use super::*;
 
@@ -602,27 +602,35 @@ mod start_failure_tests {
         error.into()
     }
 
+    fn output_failed(errno: i32) -> anyhow::Error {
+        let mut error = FfmpegError::new("avio_open", "failed").with_kind(FfmpegErrorKind::Output);
+        error.code = Some(-errno);
+        error.into()
+    }
+
     #[test]
     fn failing_on_the_output_is_output_io() {
-        let error = encoder_start_failed(failed("avio_open", libc::ENOENT));
+        let error = encoder_start_failed(output_failed(libc::ENOENT));
         assert_eq!(error.code(), ErrorCode::OutputIo);
         assert!(!error.retryable());
     }
 
     #[test]
     fn running_short_of_a_resource_is_retryable() {
-        for (operation, errno, code) in [
-            ("avcodec_open2", libc::ENOMEM, ErrorCode::EncodeFailed),
+        for (cause, code) in [
             (
-                "av_hwdevice_ctx_create",
-                libc::EBUSY,
+                failed("avcodec_open2", libc::ENOMEM),
                 ErrorCode::EncodeFailed,
             ),
-            ("avio_open", libc::EMFILE, ErrorCode::OutputIo),
+            (
+                failed("av_hwdevice_ctx_create", libc::EBUSY),
+                ErrorCode::EncodeFailed,
+            ),
+            (output_failed(libc::EMFILE), ErrorCode::OutputIo),
         ] {
-            let error = encoder_start_failed(failed(operation, errno));
-            assert_eq!(error.code(), code, "{operation}");
-            assert!(error.retryable(), "{operation}");
+            let error = encoder_start_failed(cause);
+            assert_eq!(error.code(), code);
+            assert!(error.retryable());
         }
     }
 
@@ -638,7 +646,7 @@ mod start_failure_tests {
 
     #[test]
     fn the_ffmpeg_error_stays_the_source() {
-        let error = encoder_start_failed(failed("avio_open", libc::ENOENT));
+        let error = encoder_start_failed(output_failed(libc::ENOENT));
         let source = std::error::Error::source(&error).expect("source");
         assert!(source.downcast_ref::<FfmpegError>().is_some());
     }

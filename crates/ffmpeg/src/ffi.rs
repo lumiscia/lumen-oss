@@ -4,7 +4,7 @@ use std::{
     sync::Once,
 };
 
-use crate::{FfmpegError, Result};
+use crate::{FfmpegError, FfmpegErrorKind, Result};
 
 pub(crate) use ffmpeg_sys_next as sys;
 
@@ -35,6 +35,7 @@ pub(crate) fn check(code: i32, operation: &'static str) -> Result<()> {
 pub(crate) fn error_from_code(operation: &'static str, code: i32) -> FfmpegError {
     FfmpegError {
         operation,
+        kind: FfmpegErrorKind::Other,
         path: None,
         code: Some(code),
         message: av_error_string(code),

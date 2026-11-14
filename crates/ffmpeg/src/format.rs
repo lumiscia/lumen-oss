@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    ColorTags, PixelFormat, Result, VideoCodec,
+    ColorTags, FfmpegErrorKind, PixelFormat, Result, VideoCodec,
     ffi::{self, AvPacket, sys},
 };
 use sys::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
@@ -179,10 +179,6 @@ const IMAGE2_CODECS: [sys::AVCodecID; 2] = [
 
 const UNSUPPORTED_INPUT: &str = "container format or protocol is not supported";
 
-pub(crate) fn is_unsupported_message(message: &str) -> bool {
-    message == UNSUPPORTED_INPUT
-}
-
 /// The demuxers `path` can be opened with. `image2` is only safe with `pattern_type=none`, which makes
 /// it read `path` itself instead of expanding `%d` and globs. Given a name with no file behind it,
 /// that option leaves an empty stream that opens successfully, so `image2` also needs a real file.
@@ -263,19 +259,22 @@ impl InputContext {
                     ),
                     "avformat_open_input",
                 )
+                .map_err(|mut error| {
+                    // FFmpeg reports a format or protocol outside the allowlists as EINVAL.
+                    if error.code == Some(-libc::EINVAL) {
+                        error.message = UNSUPPORTED_INPUT.to_string();
+                        error.kind = FfmpegErrorKind::Unsupported;
+                    }
+                    error
+                })
             });
             sys::av_dict_free(&mut options);
-            opened.map_err(|mut error| {
-                // FFmpeg reports a format or protocol outside the allowlists as EINVAL.
-                if error.code == Some(-libc::EINVAL) {
-                    error.message = UNSUPPORTED_INPUT.to_string();
-                }
-                error.with_path(path.clone())
-            })?;
+            opened.map_err(|error| error.with_path(path.clone()))?;
             if is_refused_image2(ptr) {
                 sys::avformat_close_input(&mut ptr);
                 return Err(
                     crate::FfmpegError::new("avformat_open_input", UNSUPPORTED_INPUT)
+                        .with_kind(FfmpegErrorKind::Unsupported)
                         .with_path(path),
                 );
             }
@@ -348,13 +347,19 @@ impl InputContext {
     pub fn best_video_stream(&self) -> Result<VideoStreamInfo> {
         self.best_stream_index(AVMEDIA_TYPE_VIDEO)
             .map(|index| self.video_stream_info(index))
-            .ok_or_else(|| crate::FfmpegError::new("best_video_stream", "no video stream found"))
+            .ok_or_else(|| {
+                crate::FfmpegError::new("best_video_stream", "no video stream found")
+                    .with_kind(FfmpegErrorKind::NoStream)
+            })
     }
 
     pub fn best_audio_stream(&self) -> Result<AudioStreamInfo> {
         self.best_stream_index(AVMEDIA_TYPE_AUDIO)
             .map(|index| self.audio_stream_info(index))
-            .ok_or_else(|| crate::FfmpegError::new("best_audio_stream", "no audio stream found"))
+            .ok_or_else(|| {
+                crate::FfmpegError::new("best_audio_stream", "no audio stream found")
+                    .with_kind(FfmpegErrorKind::NoStream)
+            })
     }
 
     fn best_stream_index(&self, media_type: sys::AVMediaType) -> Option<usize> {
