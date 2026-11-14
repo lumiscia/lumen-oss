@@ -54,12 +54,14 @@ describe("public exports", () => {
       "UrlMediaSourceInput",
       "createLumenPreview",
       "mountPreview",
+      "runtimeFileUrl",
     ]);
     expect(Object.keys(root).sort()).toEqual([
       "LumenPreviewContext",
       "LumenPreviewSession",
       "createLumenPreview",
       "mountPreview",
+      "runtimeFileUrl",
     ]);
   });
 

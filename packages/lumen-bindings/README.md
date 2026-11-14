@@ -33,6 +33,14 @@ document.querySelector("button")?.addEventListener("click", () => {
 
 Both URLs are resolved with `new URL(..., import.meta.url)`, so Vite emits the files as assets without extra plugins, and plain ESM served from a static path or a CDN finds them next to `urls.js`. Another origin needs CORS headers on both files. A worker on another origin starts from a `blob:` URL that imports it, so a Content Security Policy must allow `blob:` and that origin in `worker-src`. A page that serves copies elsewhere passes those URLs instead. `@lumiscia/lumen-bindings/worker` and `@lumiscia/lumen-bindings/wasm` name the two files for a bundler's asset imports, such as Vite's `?url`. In React or Svelte, use `Player` from `@lumiscia/lumen-react` or `@lumiscia/lumen-svelte` instead of `mountPreview`.
 
+The package ships two builds, each a wasm and the worker that runs it. `lumen_wasm_bg.wasm` with `worker.js`, the default, renders 2D and 3D nodes and reads glTF models with Draco, meshopt and WebP compression, but not KTX2. `lumen_wasm_2d_bg.wasm` with `worker-2d.js` has no 3D and is about a quarter smaller to download; it reports each 3D node as a `node.unsupported` error. A page that only shows 2D compositions takes both URLs from `/urls-2d` instead of `/urls`, or points a bundler's asset imports at `@lumiscia/lumen-bindings/wasm-2d` and `@lumiscia/lumen-bindings/worker-2d`. A wasm runs only in its own build's worker. A page imports only the build it names, so a bundler emits only that one. `Player` from `@lumiscia/lumen-react/2d` and `@lumiscia/lumen-svelte/2d` uses the 2D build. The `/browser` and `/node` entry points load the full build.
+
+```ts
+import { wasmUrl, workerUrl } from "@lumiscia/lumen-bindings/urls-2d";
+
+mountPreview(document.body, { preview, composition, wasmUrl, workerUrl });
+```
+
 With Vite 6 or 7, keep `@lumiscia/lumen-bindings` and `@lumiscia/lumen-preview` out of the dev server's dependency pre-bundling. It moves the modules that locate the worker, wasm and audio worker into `node_modules/.vite/deps`, so they 404. Vite 8 and `vite build` need nothing.
 
 ```js

@@ -1,6 +1,8 @@
 <script lang="ts">
     import type { LumenPreviewComposition } from "@lumiscia/lumen-preview";
 
+    import type { Component } from "svelte";
+
     import Player from "../src/lib/Player.svelte";
     import type { LumenPreviewContext } from "../src/lib/preview.svelte.js";
     import type { PlayerProps } from "../src/lib/types.js";
@@ -8,9 +10,10 @@
     type Props = {
         initialOptions?: Partial<PlayerProps>;
         initialPreview: LumenPreviewContext;
+        player?: Component<PlayerProps>;
     };
 
-    let { initialOptions = {}, initialPreview }: Props = $props();
+    let { initialOptions = {}, initialPreview, player: PlayerComponent = Player }: Props = $props();
     const getInitialOptions = () => initialOptions;
     const getInitialPreview = () => initialPreview;
     let preview = $state.raw(getInitialPreview());
@@ -30,7 +33,7 @@
     }
 </script>
 
-<Player
+<PlayerComponent
     {preview}
     {composition}
     class="stage"

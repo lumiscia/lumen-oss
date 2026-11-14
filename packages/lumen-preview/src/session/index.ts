@@ -1,4 +1,4 @@
-export { LumenPreviewSession, mountPreview } from "./session.js";
+export { LumenPreviewSession, mountPreview, runtimeFileUrl } from "./session.js";
 export type {
   LumenPreviewStats,
   LumenPreviewStatsCallback,

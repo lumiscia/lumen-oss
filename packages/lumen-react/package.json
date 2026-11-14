@@ -31,6 +31,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./2d": {
+      "types": "./dist/2d.d.ts",
+      "default": "./dist/2d.js"
     }
   },
   "scripts": {

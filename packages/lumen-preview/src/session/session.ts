@@ -138,7 +138,7 @@ export class LumenPreviewSession {
     workerUrl,
     ...inputs
   }: LumenPreviewSessionOptions) {
-    const runtimeFile = (name: string) => (runtimeUrl ? runtimeAsset(runtimeUrl, name) : null);
+    const runtimeFile = (name: string) => (runtimeUrl ? runtimeFileUrl(runtimeUrl, name) : null);
     const workerModuleUrl = audio?.workerModuleUrl ?? runtimeFile("audio-worker.js");
     const workletModuleUrl = audio?.workletModuleUrl ?? runtimeFile("audio-worklet.js");
     this.#audioOptions = {
@@ -1006,7 +1006,7 @@ export function mountPreview(
  * `name` in the directory `runtimeUrl` names, which it is whether or not its path ends with a
  * slash. Its query is kept on every file, and its fragment dropped.
  */
-function runtimeAsset(runtimeUrl: string | URL, name: string): string {
+export function runtimeFileUrl(runtimeUrl: string | URL, name: string): string {
   const base = new URL(absoluteUrl(runtimeUrl));
   if (!base.pathname.endsWith("/")) {
     base.pathname += "/";
