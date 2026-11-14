@@ -1,5 +1,147 @@
 # @lumiscia/lumen-react
 
+## 0.6.0-beta.3
+
+### Minor Changes
+
+- 7ee7925: The object from `createLumenPreview()` is read-only for an app. It has `subscribe`, `getSnapshot`, `play`, `pause`, `seek` and `whenReady`; `update()`, `attach()` and `detach()` are gone, and `LumenPreviewPatch` and `LumenPreviewTransport` are no longer exported. Only the session mounted with the preview changes its state.
+
+  `getSnapshot()` returns a read-only `LumenPreviewState`: the same object until the state changes, then a new one. Read it, or pass `preview.subscribe` and `preview.getSnapshot` to `useSyncExternalStore`, instead of changing it.
+
+  ```ts
+  // Before
+  preview.update({ isLoaded: true }); // set the state by hand
+
+  // After: the state follows the session
+  const preview = createLumenPreview();
+  mountPreview(host, { preview, composition, runtime });
+  preview.getSnapshot().isLoaded;
+  ```
+
+- 0091154: The browser preview's runtime files (the render worker, the wasm, the audio worker and the audio worklet) now all come from `@lumiscia/lumen-bindings`, which describes each build with one manifest: `runtime` from `@lumiscia/lumen-bindings/urls` and `runtime2d` from `@lumiscia/lumen-bindings/urls-2d`. Each entry is `{ file, url }`: where the file is served by default, and its name in a directory you host yourself.
+
+  `<Player preview={preview} composition={composition} />` in React and Svelte works as before, with no configuration.
+
+  `mountPreview` and `LumenPreviewSession` take the manifest as `runtime`, in place of `wasmUrl` and `workerUrl`:
+
+  ```ts
+  // before
+  import { wasmUrl, workerUrl } from "@lumiscia/lumen-bindings/urls";
+  mountPreview(host, { preview, composition, wasmUrl, workerUrl });
+
+  // after
+  import { runtime } from "@lumiscia/lumen-bindings/urls";
+  mountPreview(host, { preview, composition, runtime });
+  ```
+
+  Self-hosting with `runtimeUrl` now takes every file from one package, and selects the 2D build when given `runtime2d`. Copy the four files the manifest names from `@lumiscia/lumen-bindings` into one directory; `audio-worker.js` and `audio-worklet.js` no longer come from `@lumiscia/lumen-preview`:
+
+  ```ts
+  // before: worker.js and lumen_wasm_bg.wasm from lumen-bindings, the audio files from lumen-preview,
+  // and the 2D build only by passing wasmUrl and workerUrl as well
+  mountPreview(host, { preview, composition, runtimeUrl: "/lumen-runtime/" });
+
+  // after: worker-2d.js, lumen_wasm_2d_bg.wasm, audio-worker.js and audio-worklet.js, all from lumen-bindings
+  import { runtime2d } from "@lumiscia/lumen-bindings/urls-2d";
+  mountPreview(host, { preview, composition, runtime: runtime2d, runtimeUrl: "/lumen-runtime/" });
+  ```
+
+  To serve one file somewhere else, pass a manifest of your own. On `Player`, `runtime` replaces the `wasmUrl` and `workerUrl` props and defaults to the manifest of the entry point it comes from:
+
+  ```tsx
+  // before
+  <Player preview={preview} composition={composition} wasmUrl={wasmUrl} workerUrl={workerUrl} />;
+
+  // after
+  import { runtime } from "@lumiscia/lumen-bindings/urls";
+  <Player
+    preview={preview}
+    composition={composition}
+    runtime={{ ...runtime, wasm: { file: "lumen_wasm_bg.wasm", url: wasmUrl } }}
+  />;
+  ```
+
+  `audio.workerModuleUrl` and `audio.workletModuleUrl` are gone from the session's options (use `runtime.audioWorker` and `runtime.audioWorklet`), and so is `runtimeFileUrl`. The Vite 6 and 7 dev setting now needs only `optimizeDeps: { exclude: ["@lumiscia/lumen-bindings"] }`.
+
+  `@lumiscia/lumen-bindings` has one export path per module or file: `.`, `./node`, `./urls`, `./urls-2d`, `./wasm`, `./wasm-2d`, `./worker`, `./worker-2d`, `./audio-worker` and `./audio-worklet`. Import `@lumiscia/lumen-bindings` instead of `/browser` or `/bundler`, and `@lumiscia/lumen-bindings/worker` instead of `/browser/worker.js`.
+
+  `createLumenBindings(options)` is now `loadLumenBindings(options)`, which returns a promise of the bindings themselves, and the `LumenBindings` type is gone:
+
+  ```ts
+  // before
+  const { check } = await createLumenBindings().preview();
+
+  // after
+  import { loadLumenBindings } from "@lumiscia/lumen-bindings/node";
+  const { check } = await loadLumenBindings();
+  ```
+
+- 58a05d3: `LumenPreviewSession.update()` is now `setInputs()`. It still replaces every input, so one left out returns to its default, and the name says so: `session.setInputs({ muted: true })` clears the composition, which `update` suggested it wouldn't. Unchanged inputs do nothing. It reads the composition again on every call, so one edited in place is picked up, and it costs a serialization: call it when an input may have changed rather than on every frame.
+
+  ```ts
+  // Before
+  session.update({ composition, rate: 2 });
+
+  // After
+  session.setInputs({ composition, rate: 2 });
+  ```
+
+  `Player` in `@lumiscia/lumen-react` and `@lumiscia/lumen-svelte` passes every prop it doesn't use itself on to `setInputs`, so a prop can no longer be missed.
+
+- d3ce7e8: The browser preview ships two builds. The default renders 2D and 3D nodes, and now reads glTF models with Draco meshes and WebP textures as well as meshopt buffers. KTX2 textures stay out of the browser build, because their transcoder would make the wasm about 350 KB larger to download; `lumen` and `lumen-server` still read them.
+
+  A page that only shows 2D compositions can load the 2D-only build instead, which has no 3D and is about a quarter smaller to download (1.23 MB against 1.65 MB, brotli-compressed). It reports each 3D node as a `node.unsupported` error. Import `Player` from the `/2d` entry point:
+
+  ```tsx
+  import { Player, createLumenPreview } from "@lumiscia/lumen-react/2d";
+  // or, in Svelte: import { Player, createLumenPreview } from "@lumiscia/lumen-svelte/2d";
+  ```
+
+  With `mountPreview`, take the 2D manifest from `@lumiscia/lumen-bindings/urls-2d`. The 2D wasm runs only in its own worker, `worker-2d.js`:
+
+  ```ts
+  import { mountPreview } from "@lumiscia/lumen-preview";
+  import { runtime2d } from "@lumiscia/lumen-bindings/urls-2d";
+
+  mountPreview(host, { preview, composition, runtime: runtime2d });
+  ```
+
+  A bundler emits only the build a page imports. With `runtimeUrl`, the `/2d` `Player` loads `worker-2d.js` and `lumen_wasm_2d_bg.wasm` from that directory, and pages that call `mountPreview` themselves pass `runtime: runtime2d` with the same `runtimeUrl`.
+
+### Patch Changes
+
+- Updated dependencies [a822c9b]
+- Updated dependencies [0b4d4bc]
+- Updated dependencies [659dfe2]
+- Updated dependencies [dea8cf4]
+- Updated dependencies [db60e86]
+- Updated dependencies [cf41f99]
+- Updated dependencies [48b2345]
+- Updated dependencies [8035fb4]
+- Updated dependencies [f50053d]
+- Updated dependencies [6b74bfe]
+- Updated dependencies [c7bec4f]
+- Updated dependencies [2a50568]
+- Updated dependencies [3a7cd1a]
+- Updated dependencies [ff3f2bc]
+- Updated dependencies [d6018ec]
+- Updated dependencies [7ee7925]
+- Updated dependencies [e6f9ce0]
+- Updated dependencies [74a7d18]
+- Updated dependencies [1274c06]
+- Updated dependencies [ef080a4]
+- Updated dependencies [f9b71d6]
+- Updated dependencies [0091154]
+- Updated dependencies [9ac3206]
+- Updated dependencies [7573c49]
+- Updated dependencies [a6503ab]
+- Updated dependencies [58a05d3]
+- Updated dependencies [a3287b8]
+- Updated dependencies [d3ce7e8]
+- Updated dependencies [9e66ebe]
+  - @lumiscia/lumen-bindings@0.6.0-beta.3
+  - @lumiscia/lumen-preview@0.6.0-beta.3
+
 ## 0.6.0-beta.2
 
 ### Patch Changes

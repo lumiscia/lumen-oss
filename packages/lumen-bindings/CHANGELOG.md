@@ -1,5 +1,490 @@
 # @lumiscia/lumen-bindings
 
+## 0.6.0-beta.3
+
+### Minor Changes
+
+- a822c9b: `lumen-server`'s HTTP API has one definition: the new `lumen-server-api` crate holds its request, response, socket-event and error types, the server (de)serialises with them, and `definitions/openapi.json` is generated from them for other implementations of the API. `@lumiscia/lumen-types` exports the generated types (`RenderRequest`, `Render`, `RenderEvent`, `ErrorBody`, `ErrorCode`, `Media`, …), with `errorCodes` (each code and what it means) and `outputFiles` (each output format's content type and extension). `VideoCodec` and `VideoBitDepth` keep their names and now come from that schema.
+
+  Every object on the wire is camelCase. The composition inside a request keeps its own format.
+
+  | Before                                      | Now                                                |
+  | ------------------------------------------- | -------------------------------------------------- |
+  | `bit_depth` (render request)                | `bitDepth`                                         |
+  | `output.jpeg_quality` (render request)      | `output.jpegQuality`                               |
+  | `render.outputUrl`                          | `render.url`                                       |
+  | `progress.artifactUrl`                      | `render.url`                                       |
+  | `progress.renderId`                         | `render.id`                                        |
+  | `progress.state`                            | `render.status`                                    |
+  | `progress.progress`                         | `render.progress`                                  |
+  | `progress.error`                            | `render.error.message`                             |
+  | `progress.errorCode`                        | `render.error.code`                                |
+  | `progress.retryable`                        | `render.error.retryable`                           |
+  | `progress.durationMs`                       | `render.durationMs`                                |
+  | `progress.outputBytes`                      | `render.outputBytes`                               |
+  | `progress.stage`, `progress.organizationId` | removed (`render.status`, `render.organizationId`) |
+
+  A render has one shape. `POST /renders`, `GET /renders/:id`, `POST /renders/:id/cancel` and `GET /renders/:id/progress` all return it as `render`, and `/progress` no longer adds a second `progress` object:
+
+  ```json
+  {
+    "render": {
+      "id": "r_…",
+      "status": "succeeded",
+      "progress": 1,
+      "url": "/renders/r_…/artifact",
+      "createdAt": "2026-11-14T00:00:00Z",
+      "inputHash": "…",
+      "organizationId": "self-hosted",
+      "costMicros": 0,
+      "outputBytes": 48213,
+      "durationMs": 912
+    }
+  }
+  ```
+
+  When a render fails on a media source, its `error` (and the body of a `409` from its artifact) carries `media`, the engine's `MediaFailure` from `definitions/runtime.schema.json`:
+
+  ```json
+  {
+    "code": "media.decode",
+    "message": "…",
+    "retryable": false,
+    "media": { "code": "media.decode", "source": "hero.png", "wanted": ["image"], "details": "…" }
+  }
+  ```
+
+  A `codec` or `bitDepth` that isn't one of the API's values is now refused with `422` and `invalid_request_body` instead of `invalid_quality`. Socket events keep their shape.
+
+  The SDK sends and reads the new names; its public types are unchanged.
+
+- 0b4d4bc: **An audio track's or clip's level is `gain` in the document, as it is in the builder.** The JSON key was `volume` while `addAudio({ gain })` wrote it, so a hand-written `"gain"` was ignored and the clip played at full level. Audio tracks, clips and the `audio` object now reject keys they do not list, like the rest of the document, so a leftover `volume` (or any other stray key) is an error naming its path, such as `audio.clips[0].volume: unknown field`. `name` stays accepted on tracks and clips. Error messages and JSON pointers say `gain` too: `audio.tracks[0].gain: must be at least 0`.
+
+  Before:
+
+  ```json
+  {
+    "audio": {
+      "tracks": [{ "id": "music", "volume": 0.5 }],
+      "clips": [
+        {
+          "id": "a",
+          "source_id": "music.mp3",
+          "track_id": "music",
+          "start_ms": 0,
+          "duration_ms": 4000,
+          "volume": "=tween(0, 1, 60, 15)"
+        }
+      ]
+    }
+  }
+  ```
+
+  After:
+
+  ```json
+  {
+    "audio": {
+      "tracks": [{ "id": "music", "gain": 0.5 }],
+      "clips": [
+        {
+          "id": "a",
+          "source_id": "music.mp3",
+          "track_id": "music",
+          "start_ms": 0,
+          "duration_ms": 4000,
+          "gain": "=tween(0, 1, 60, 15)"
+        }
+      ]
+    }
+  }
+  ```
+
+  `addAudio` and `addAudioTrack` keep taking `gain`; they now write `gain`. In a connection, `from_port` may be left out: it defaults to `output`, the only output any node has, and the schema no longer lists it as required.
+
+- 659dfe2: In the Rust API, `PropertyKind` keeps one variant per scalar kind (`Float`, `Int`, `Bool`, `String`, `Color`, `Vec2`, `Vec3`, `Enum`). The kinds of compound params, such as text content, paint and region, become `PropertyKind::Custom(&ParamTypeDef)`. A `ParamTypeDef` carries the kind's `name`, which is the published `x-lumen-kind`, and with the `metadata` feature a `schema` function for the JSON schema of a value. The composition schema and the generated types are unchanged.
+
+  ```rust
+  // before
+  match property.expected {
+      PropertyKind::TextContent => /* ... */,
+      _ => /* ... */,
+  }
+
+  // after
+  match property.expected {
+      PropertyKind::Custom(def) if def.name == "text_content" => /* ... */,
+      _ => /* ... */,
+  }
+  ```
+
+  A `Delegate` enum with no `#[delegate(kind = ...)]` implements `NodeParamType` by hand and returns its own `PropertyKind::Custom`.
+
+- dea8cf4: **A composition no longer holds encoding settings.** `codec`, `quality`, `bit_depth` and `alpha` are gone from `render_settings`, and a document that still has them is rejected as an unknown field. How a video is encoded is decided by the render request, then by the codec the output container holds (`prores` in a `.mov`, `vp9` in a `.webm`), then by the host's defaults. Every surface already took these options, so move them there; `lumen render comp.json -o out.mov` with no flags still picks ProRes.
+
+  Before:
+
+  ```json
+  {
+    "render_settings": {
+      "width": 1920,
+      "height": 1080,
+      "codec": "hevc",
+      "quality": "high",
+      "bit_depth": 10
+    }
+  }
+  ```
+
+  After, a composition with only the canvas, and the encoding on the render:
+
+  ```json
+  { "render_settings": { "width": 1920, "height": 1080 } }
+  ```
+
+  ```bash
+  lumen render comp.json -o out.mp4 --codec hevc --quality high --bit-depth 10
+  ```
+
+  ```ts
+  await lumen.render(composition, { codec: "hevc", quality: "high", bitDepth: 10 });
+  await render(composition, { output: "out.mp4", codec: "hevc", quality: "high", bitDepth: 10 });
+  ```
+
+  `new Composition({ renderSettings })` takes only `width` and `height`. `VideoCodec` and `VideoBitDepth` stay exported from `@lumiscia/lumen-types`, which the SDK and the `lumen` wrapper now import them from.
+
+  **Rust API:** `lumen_engine::composition::{OutputCodec, OutputSettings, BitDepth}` and `Composition::output_settings()` are removed; use `lumen_ffmpeg::{EncodeCodec, BitDepth}`. The engine's GPU encode targets take `lumen_engine::gpu::BitDepth`, which converts from `lumen_ffmpeg::BitDepth` with `From`. `lumen_server::render::resolve_encoder` reads only the request, the container and the host's config.
+
+- db60e86: `lumen_ffmpeg::FfmpegError` now carries a `kind: FfmpegErrorKind` (`Output`, `NoStream`, `Unsupported` or `Other`), set where the error is raised, and `is_output_failure`, `lacks_stream` and `is_unsupported` read it instead of matching `operation` and message text. `operation` is a label for messages only. Code that builds `FfmpegError` with a struct literal adds `kind`, or uses `FfmpegError::new(..).with_kind(..)`.
+- cf41f99: **Expression helpers show their documentation and argument names on hover.** `abs`, `clamp`, `tween`, `keyframes` and the rest are now generated as one documented function per builtin from the engine's table, instead of being derived from it with conditional types. Hovering a helper shows the table's description and its real parameter names; before, an editor showed `args_0`.
+
+  Before, hovering `smoothstep` showed `(args_0: Num, args_1: Num, args_2: Num) => Expr<number>` and no description. After:
+
+  ```ts
+  /** Hermite smoothing of `x` between two edges. */
+  function smoothstep(edge0: Num, edge1: Num, x: Num): Expr<number>;
+  ```
+
+  Every call that type-checked before still does, with the same result type, with one loss: an optional argument can be skipped with an explicit `undefined` before a later one, as in `spring(0, undefined, 20)`, without a type error. It still throws at run time, as it did.
+
+  The helper types `Builtins`, `CamelCase`, `Interpolate`, `Tween`, `MakeKey` and `Keyframes` are no longer exported; their overloads are part of the functions. `expressionBuiltins` in `@lumiscia/lumen-types` says `"same"` instead of `"any"` for the arguments of `lerp`, `tween` and `key` that must share one type, and for the return of `lerp` and `tween`. The engine accepts and evaluates the same expressions.
+
+- 8035fb4: The preview controller takes models, environment maps and LUTs through one set of methods that name the kind, instead of three of each. `setFile`, `removeFile` and `hasFile` replace `setModel`, `setEnvironment`, `setLut`, `removeModelSource`, `removeEnvironmentSource`, `removeLutSource`, `hasModel`, `hasEnvironment` and `hasLut`. The kind is `"model"`, `"environment"` or `"lut"`, and any other kind throws.
+
+  ```ts
+  // Before
+  controller.setModel("fox", bytes);
+  controller.removeModelSource("fox");
+
+  // After
+  controller.setFile("model", "fox", bytes);
+  controller.removeFile("model", "fox");
+  controller.hasFile("model", "fox"); // true or false
+  ```
+
+  In `@lumiscia/lumen-preview/advanced`, `LumenMediaTarget` has the same three methods, and all of its members are required. `LumenMediaBridge` registers these files with `registerFile(kind, id, source)` in place of `registerModelSource`, `registerEnvironmentSource` and `registerLutSource`, and `registerVideoSource` takes its options as an object, no longer a bare fps number. `registerVideoSourceBytes` is removed; pass the bytes to `registerVideoSource`.
+
+- 6b74bfe: Errors and warnings say where they happen in one way. Diagnostic codes and the shape of a diagnostic are unchanged.
+
+  - A warning a render raises, such as `font.fallback` or `media.image_reduced`, now has its node's pointer as its `path`, such as `/nodes/3` or `/compositions/card/nodes/0`. It used to have only the root's or the template's. A render raises at most 32 warnings per composition, and `media.image_reduced` warns once for each node that shows the image, where it used to warn once per image.
+  - Evaluation errors spell the node's kind as the document's `type` does: `render_3d node 4 evaluation failed: …`, `model_3d node 1 …`, `clip node 2 …`, where some read `Render3d node 4`.
+  - Some messages put the place first: ``node 1: unknown param `paintt` ``, `node 3: duplicate node id`, ``node 2 `color`: invalid type: expected a solid color, got a gradient``, ``node 4: input `source` takes a raster, but node 1 outputs a scene: …``. A media failure reads ``image `big.png` (composition `card`: node 3 `source`) is too large``, with a colon where it had a comma.
+
+  For Rust embedders, `lumen_engine::error::At { template, node, param }` is the one location type. The variants that held `node_id` or `template` fields hold `at: At`, `GraphValidationError::InTemplate` is gone (the template is in `at`), and `Warning` is a struct with `at` and `kind: WarningKind`:
+
+  ```rust
+  // Before
+  Warning::FontFallback { template: None, node_id: NodeId::new(3), family: "Brand".into() }
+  // After
+  Warning {
+      at: At::node(NodeId::new(3)),
+      kind: WarningKind::FontFallback { family: "Brand".into() },
+  }
+  ```
+
+- 2a50568: **A template's `render_settings` has the same type as the root's.** `TemplateRenderSettings` is gone from `@lumiscia/lumen-types`; use `RenderSettings`.
+
+  ```ts
+  // Before
+  import type { TemplateRenderSettings } from "@lumiscia/lumen-types";
+
+  // After
+  import type { RenderSettings } from "@lumiscia/lumen-types";
+  ```
+
+  A document that still carries the long-retired `background_color` in `render_settings`, or `start_frame`, `duration_frames` or `source_start_seconds` on an audio clip, now fails with the ordinary unknown-field error (`render_settings.background_color: unknown field`) instead of a message that says what to use instead. Remove the key; colour the canvas with a `background` node, and give audio clips `start_ms`, `duration_ms` and `source_start_ms`.
+
+- 3a7cd1a: The HTTP API is described by an OpenAPI 3.1 document, `definitions/openapi.json`, which replaces `definitions/api.schema.json`. It has what the schema had (the request, response, event and error types, now under `components/schemas`) and what it lacked: every route with its method, path and parameters, the body each takes, the status and body of each answer, and the error codes each status carries (`x-lumen-codes`). `@lumiscia/lumen-types` ships it with the two schemas it refers to:
+
+  ```ts
+  import openapi from "@lumiscia/lumen-types/openapi.json" with { type: "json" };
+  import { apiOperations, apiVersion, type ApiOperationTypes } from "@lumiscia/lumen-types";
+
+  apiOperations.getRender; // { method: "GET", path: "/renders/{id}", request: "none", response: "json" }
+  type Created = ApiOperationTypes["createRender"]["response"]; // CreateRenderResponse
+  ```
+
+  `lumen-server` builds its router from the same table of routes, so it serves the document's routes and no others, and `GET /health` answers `version`, the `info.version` of the document the server implements (`"0.6"`). The descriptions in `errorCodes` no longer start with a status: the document says which statuses carry which code.
+
+  A host of the API can be checked against the document with the SDK's suite, `LUMEN_API_URL=... LUMEN_API_TOKEN=... pnpm test:conformance` in this repository, with a profile file for what it does differently on purpose (`definitions/README.md`).
+
+  **Render webhooks** follow the Standard Webhooks payload as well as its signature. `verifyWebhook` returns the event with the render inside it, the same `Render` that `getRender` returns:
+
+  ```ts
+  // Before
+  const event = await verifyWebhook({ body, headers, secret });
+  event.event; // "render.succeeded"
+  event.id;
+  event.artifactUrl;
+  event.error; // string
+
+  // Now
+  const event = await verifyWebhook({ body, headers, secret });
+  event.type; // "render.succeeded" | "render.failed"
+  event.timestamp;
+  event.data.id;
+  if (event.type === "render.succeeded") event.data.url;
+  if (event.type === "render.failed") event.data.error.message;
+  ```
+
+  A host that sends webhooks posts `{ "type", "timestamp", "data": <render> }`; the flat body with `event`, `artifactUrl` and a string `error` is no longer accepted. `lumen-server` still delivers none.
+
+- ff3f2bc: `lumen_ffmpeg::Encoder` is an encoder name parsed once into its `EncoderFamily` and the codec its spelling says, and the rules that depend on which encoder it is read those instead of matching the name again. `EncoderCandidate::encoder` and `VideoEncoderConfig::encoder` are an `Encoder` (`name()` is the FFmpeg name), `encoder_info`, `check_bit_depth` and `check_alpha` take `&Encoder`, `VideoEncoderConfig::cpu_rgba` and `VideoEncoderChoice::single` still take a name, and `EncoderFamily::of` is `Encoder::parse(name).family()`. `EncoderFamily` has a `Vaapi` variant, so code matching it exhaustively needs the new arm.
+- e6f9ce0: Remove unused Rust items from the media crates: `CudaVideoFrame::from_device_ptr` (build CUDA frames with `CudaDeviceAllocation::as_video_frame`), `MetalPixelBufferFrame::retain_pixel_buffer`, `VulkanVideoFrame::nv12_pitch`, `nv12_chroma_offset` and `nv12_size` (use `VulkanFrameLayout::nv12`), `CudaDriver::driver_version` and the engine's `duration_samples`.
+- 74a7d18: The preview controller no longer has five operations that nothing used: `validateComposition`, `clearMedia`, `clearVideos`, `clearVideoSource` and `hasFont`.
+
+  To check a composition without loading it, use `check` on the preview bindings, which returns diagnostics instead of throwing:
+
+  ```ts
+  const { check } = await loadLumenBindings();
+  const diagnostics = check(compositionJson);
+  ```
+
+  To drop media, remove the sources one at a time with `removeImageSource`, `removeVideoSource`, `removeFontFamily` and the other `remove…` methods, or call `clear()` to drop everything with the composition.
+
+- 1274c06: Rename the encode-side `lumen_engine::gpu::YuvFormat` and `YuvLayout` to `EncodeYuvFormat` and `EncodeYuvLayout`, so they no longer share names with the decoded-frame types in `lumen_engine::media`.
+- f9b71d6: The render library is now `lumen_engine::render`, behind the engine's new `render` feature: compositions to MP4, MOV, WebM, stills and image sequences on a GPU with FFmpeg, with the disk media store (`LocalMediaStore`) and the font catalog (`FontCatalog`). `lumen-server` is only the HTTP server: a binary with no library and no `cli` feature, so `cargo run -p lumen-server` builds it as it is.
+
+  An embedder depends on the engine instead of the server:
+
+  ```toml
+  # Before
+  lumen-server = { version = "0.6", features = ["vulkan"] }
+  # Now
+  lumen-engine = { version = "0.6", features = ["render", "vulkan"] }
+  ```
+
+  ```rust
+  // Before
+  use lumen_server::render::{RenderOptions, ServerRenderError, render_project};
+  // Now
+  use lumen_engine::render::{self, RenderOptions, render_project};
+  fn failed(error: &render::Error) { /* … */ }
+  ```
+
+  The `render` feature turns on `ffmpeg`, `image` and `3d`; the compressed 3D formats (`3d-draco`, `3d-ktx2`, `3d-meshopt`, `3d-webp`) and `vulkan`, `metal` and `cuda` stay opt-in. Every item keeps its name except:
+
+  | Before                                            | Now                                           |
+  | ------------------------------------------------- | --------------------------------------------- |
+  | `lumen_server::render::*`                         | `lumen_engine::render::*`                     |
+  | `ServerRenderError`                               | `render::Error`                               |
+  | `From<ErrorCode> for lumen_server_api::ErrorCode` | removed; `lumen-server` maps the codes itself |
+  | `cargo run -p lumen-server --features cli`        | `cargo run -p lumen-server`                   |
+
+  `lumen_engine::render::OutputFormat` and `FrameRange` are the engine's own types now, with the same JSON as the `lumen-server-api` types of the same names, which stay as they are. The engine's `OutputFormat` is not `#[non_exhaustive]`.
+
+  The render library logs under `lumen_engine::render`, so `RUST_LOG=lumen_server=debug` becomes `RUST_LOG=lumen_server=debug,lumen_engine::render=debug` to see a render's own logs. `lumen-server` still logs them at `info` by default.
+
+- 0091154: The browser preview's runtime files (the render worker, the wasm, the audio worker and the audio worklet) now all come from `@lumiscia/lumen-bindings`, which describes each build with one manifest: `runtime` from `@lumiscia/lumen-bindings/urls` and `runtime2d` from `@lumiscia/lumen-bindings/urls-2d`. Each entry is `{ file, url }`: where the file is served by default, and its name in a directory you host yourself.
+
+  `<Player preview={preview} composition={composition} />` in React and Svelte works as before, with no configuration.
+
+  `mountPreview` and `LumenPreviewSession` take the manifest as `runtime`, in place of `wasmUrl` and `workerUrl`:
+
+  ```ts
+  // before
+  import { wasmUrl, workerUrl } from "@lumiscia/lumen-bindings/urls";
+  mountPreview(host, { preview, composition, wasmUrl, workerUrl });
+
+  // after
+  import { runtime } from "@lumiscia/lumen-bindings/urls";
+  mountPreview(host, { preview, composition, runtime });
+  ```
+
+  Self-hosting with `runtimeUrl` now takes every file from one package, and selects the 2D build when given `runtime2d`. Copy the four files the manifest names from `@lumiscia/lumen-bindings` into one directory; `audio-worker.js` and `audio-worklet.js` no longer come from `@lumiscia/lumen-preview`:
+
+  ```ts
+  // before: worker.js and lumen_wasm_bg.wasm from lumen-bindings, the audio files from lumen-preview,
+  // and the 2D build only by passing wasmUrl and workerUrl as well
+  mountPreview(host, { preview, composition, runtimeUrl: "/lumen-runtime/" });
+
+  // after: worker-2d.js, lumen_wasm_2d_bg.wasm, audio-worker.js and audio-worklet.js, all from lumen-bindings
+  import { runtime2d } from "@lumiscia/lumen-bindings/urls-2d";
+  mountPreview(host, { preview, composition, runtime: runtime2d, runtimeUrl: "/lumen-runtime/" });
+  ```
+
+  To serve one file somewhere else, pass a manifest of your own. On `Player`, `runtime` replaces the `wasmUrl` and `workerUrl` props and defaults to the manifest of the entry point it comes from:
+
+  ```tsx
+  // before
+  <Player preview={preview} composition={composition} wasmUrl={wasmUrl} workerUrl={workerUrl} />;
+
+  // after
+  import { runtime } from "@lumiscia/lumen-bindings/urls";
+  <Player
+    preview={preview}
+    composition={composition}
+    runtime={{ ...runtime, wasm: { file: "lumen_wasm_bg.wasm", url: wasmUrl } }}
+  />;
+  ```
+
+  `audio.workerModuleUrl` and `audio.workletModuleUrl` are gone from the session's options (use `runtime.audioWorker` and `runtime.audioWorklet`), and so is `runtimeFileUrl`. The Vite 6 and 7 dev setting now needs only `optimizeDeps: { exclude: ["@lumiscia/lumen-bindings"] }`.
+
+  `@lumiscia/lumen-bindings` has one export path per module or file: `.`, `./node`, `./urls`, `./urls-2d`, `./wasm`, `./wasm-2d`, `./worker`, `./worker-2d`, `./audio-worker` and `./audio-worklet`. Import `@lumiscia/lumen-bindings` instead of `/browser` or `/bundler`, and `@lumiscia/lumen-bindings/worker` instead of `/browser/worker.js`.
+
+  `createLumenBindings(options)` is now `loadLumenBindings(options)`, which returns a promise of the bindings themselves, and the `LumenBindings` type is gone:
+
+  ```ts
+  // before
+  const { check } = await createLumenBindings().preview();
+
+  // after
+  import { loadLumenBindings } from "@lumiscia/lumen-bindings/node";
+  const { check } = await loadLumenBindings();
+  ```
+
+- 7573c49: The SDK's API types are the generated ones from `@lumiscia/lumen-types`, and the client gains the three routes it lacked.
+
+  `Render` is a union on `status`. `waitForRender` returns a `SucceededRender`, so its `url` is a `string`, and a `failed` or `cancelled` render has `error`. A render's `progress` is a number, 0 when the API sends none, and `durationMs` and `outputBytes` are new:
+
+  ```ts
+  // Before
+  const done = await lumen.waitForRender(render);
+  await fetch(done.url!);
+
+  // Now
+  const done = await lumen.waitForRender(render); // SucceededRender
+  await fetch(done.url);
+  if (render.status === "failed") console.error(render.error.code); // FailedRender
+  ```
+
+  `TemporaryMedia` is now `Media`, and `parseMedia` rejects a body that lacks one of its fields with `invalid_response`. `RenderFailure.retryable` is always set. `MediaKind`, `MediaMetadata`, `MediaStatus`, `MediaSource`, `OutputFormat`, `FrameRange` and `RenderOutput` are the generated types, re-exported. A media source that fails a render or a request is on `LumenError.media`.
+
+  `check`, `getMedia` and `deleteMedia` are new:
+
+  ```ts
+  const report = await lumen.check(composition, { media }); // CheckReport: { ok, diagnostics }
+  const upload = await lumen.getMedia("asset:m_…"); // the id may carry `asset:`
+  await lumen.deleteMedia(upload);
+  ```
+
+  `render` and `check` accept a `CompositionSource`: a `LumenComposition`, or any object with `toJSON()`. A `Composition` from another copy of the package works too. `CompositionSource` is exported from `@lumiscia/lumen-types`.
+
+  `CheckResponse` is now `CheckReport`, in the `lumen-server-api` crate and the generated types. `@lumiscia/lumen-cli` exports the generated `CheckReport`, `CompositionSource` and `FrameRange` instead of its own copies.
+
+- a6503ab: `lumen-server` is no longer published to crates.io, so `cargo install lumen-server` stops at 0.5. Build it from the repository (`cargo run -p lumen-server --release`); container images for self-hosting will follow. The crate that holds its HTTP API types, `lumen-server-api`, is not published either: other implementations of the API use `definitions/openapi.json` or the generated types in `@lumiscia/lumen-types`.
+- a3287b8: The `lumen_gpu::Recorder` methods a frame calls (`resolve`, `compute_program`, `dynamic_compute_program`, `render_program`, `upload` and `submit`) return `Result<_, FrameError>` instead of `anyhow::Result`, and `FrameError` has a `Device(String)` variant for what the device refuses, such as a failed validation. Match on the variant where you downcast `anyhow::Error` to `FrameError` before; `FrameError` still implements `std::error::Error`, so `?` into `anyhow` keeps working. `lumen_gpu::Renderer` is unchanged.
+- d3ce7e8: The browser preview ships two builds. The default renders 2D and 3D nodes, and now reads glTF models with Draco meshes and WebP textures as well as meshopt buffers. KTX2 textures stay out of the browser build, because their transcoder would make the wasm about 350 KB larger to download; `lumen` and `lumen-server` still read them.
+
+  A page that only shows 2D compositions can load the 2D-only build instead, which has no 3D and is about a quarter smaller to download (1.23 MB against 1.65 MB, brotli-compressed). It reports each 3D node as a `node.unsupported` error. Import `Player` from the `/2d` entry point:
+
+  ```tsx
+  import { Player, createLumenPreview } from "@lumiscia/lumen-react/2d";
+  // or, in Svelte: import { Player, createLumenPreview } from "@lumiscia/lumen-svelte/2d";
+  ```
+
+  With `mountPreview`, take the 2D manifest from `@lumiscia/lumen-bindings/urls-2d`. The 2D wasm runs only in its own worker, `worker-2d.js`:
+
+  ```ts
+  import { mountPreview } from "@lumiscia/lumen-preview";
+  import { runtime2d } from "@lumiscia/lumen-bindings/urls-2d";
+
+  mountPreview(host, { preview, composition, runtime: runtime2d });
+  ```
+
+  A bundler emits only the build a page imports. With `runtimeUrl`, the `/2d` `Player` loads `worker-2d.js` and `lumen_wasm_2d_bg.wasm` from that directory, and pages that call `mountPreview` themselves pass `runtime: runtime2d` with the same `runtimeUrl`.
+
+- 9e66ebe: Every engine failure that leaves the WASM bindings is now an `Error` with the same fields, and a failure of `audioTimeline` or `frameRequirements` is no longer a string. An error carries `code`, the engine's diagnostic code; `media` when a file is the cause; `diagnostics` when a composition doesn't parse; and `frameNotLoaded: true` for a video frame that isn't loaded yet, which now keeps its real code, `media.frame_out_of_range`, instead of `code: "media_frame_out_of_range"`. Failures from a caller's mistake, such as a buffer of the wrong length, and from the GPU stay plain strings.
+
+  `frameRequirements` and `audioTimeline` return the JSON of the engine's `FrameRequirements` and `AudioPlan`, as typed in `@lumiscia/lumen-types`. `frameRequirements` is unchanged. `audioTimeline` no longer has `durationFrames` and `fps`: read them from `durationFrames()` and `fps()` of the controller.
+
+  ```ts
+  // Before
+  try {
+    controller.audioTimeline();
+  } catch (error) {
+    console.error(error); // a string, with no code
+  }
+  // A frame that isn't loaded yet
+  if (error.code === "media_frame_out_of_range") {
+    /* load it and render again */
+  }
+
+  // After
+  try {
+    controller.audioTimeline();
+  } catch (error) {
+    console.error((error as Error).message, (error as { code?: string }).code);
+  }
+  if ((error as { frameNotLoaded?: boolean }).frameNotLoaded) {
+    /* load it and render again */
+  }
+  ```
+
+### Patch Changes
+
+- 48b2345: An upload in parts survives a dropped connection. `uploadMedia` sends a part up to three times when the connection fails, the response drops while it is read, the server answers with an error status of 500 or more, or the API rate limits it. It waits the `Retry-After` the response gives, or else 0.5 s and then 1 s, each lengthened by up to 25%. Another status, and a response that is not JSON, still fails the upload at once.
+
+  `lumen-server` accepts a part again at full size, so a retry of the last part no longer fails with `media_too_large`. A part's etag is now a hash of its bytes, so the same bytes keep the etag a lost response never delivered. One request at a time sends a part number: another gets `409` with the new code `upload_part_in_progress`, which `uploadMedia` also retries.
+
+- f50053d: The engine now recognises BMP and ICO files from their first bytes, so a BMP given where a video is wanted is reported as "an image" instead of unreadable. `lumen-server`'s upload check decides what a file is with the same recogniser as renders, so a format added to one is no longer missing from the other. Uploads are accepted and rejected as before.
+- c7bec4f: `lumen` and `lumen-server` check a render request in one place, `lumen_engine::render::plan`, so asking for video settings on an image output fails with the same message from both. The code is unchanged (`invalid_output` on the server).
+
+  | Where           | Before                                                                                                                                                     | Now                                                                                                      |
+  | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+  | `lumen render`  | `--encoder, --quality, --codec, --bit-depth, --alpha, --bitrate, --crf, --qp and --preset are only supported when output is a video (.mp4, .mov or .webm)` | `quality, codec, bit depth, alpha, rate control and encoder only apply to the mp4, mov and webm formats` |
+  | `POST /renders` | `quality, codec, bitDepth and alpha only apply to the mp4, mov and webm formats`                                                                           | the same as `lumen render`                                                                               |
+
+  `lumen render` now reports these flags after it has read the composition, so a composition that fails to load is reported first. For embedders, `lumen_engine::render` adds `RenderRequest`, `RenderPlan`, `plan` and `CheckReport` (which `check_composition` now returns), and `QualityRequest::with_encoder_fallback` in `lumen-engine-ffmpeg` is public.
+
+- d6018ec: Fixes three preview problems. A composition under 1 fps now plays for its real length instead of being timed as if it ran at 1 fps. A `requestInit.signal` on a whole-file media source now aborts the load, together with the preview's own signal. Render failures no longer print to the browser console when logging is off; set a log level with `setLogLevel` to see them.
+- ef080a4: **A node that fails while rendering inside a template is located in that template.** Before, the diagnostic pointed at the root node that happened to share the failing node's id. For a `motion_blur` with `"samples": "=0 * frame"` as node 2 of the template `card`:
+
+  Before:
+
+  ```json
+  {
+    "code": "render.node_evaluation",
+    "path": "/nodes/0",
+    "message": "motion_blur node 2 evaluation failed: `samples` is 0; it must be from 1 to 64"
+  }
+  ```
+
+  After:
+
+  ```json
+  {
+    "code": "render.node_evaluation",
+    "path": "/compositions/card/nodes/1",
+    "message": "composition `card`: motion_blur node 2 evaluation failed: `samples` is 0; it must be from 1 to 64"
+  }
+  ```
+
+  A font a `text_3d` names that fails to load now points at that node's `font_family` (`/nodes/0/params/font_family`), instead of at the `environment_map` of the `render_3d` that draws it.
+
+- 9ac3206: Parsing a composition again no longer discards what the renderer cached for it. Scenes were
+  identified by where the parsed graph sat in memory, so a second parse of the same document
+  rendered from a cold cache; they are now identified by an id taken from the graph itself.
+- Updated dependencies [8035fb4]
+- Updated dependencies [d6018ec]
+- Updated dependencies [7ee7925]
+- Updated dependencies [74a7d18]
+- Updated dependencies [0091154]
+- Updated dependencies [58a05d3]
+- Updated dependencies [d3ce7e8]
+- Updated dependencies [9e66ebe]
+  - @lumiscia/lumen-preview@0.6.0-beta.3
+
 ## 0.6.0-beta.2
 
 ### Minor Changes
