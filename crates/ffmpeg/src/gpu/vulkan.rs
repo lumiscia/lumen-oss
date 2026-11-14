@@ -147,19 +147,6 @@ impl VulkanVideoFrame {
         }
     }
 
-    /// The row pitch of both planes, as [`VulkanFrameLayout::nv12`] lays them out.
-    pub fn nv12_pitch(width: u32) -> u32 {
-        VulkanFrameLayout::nv12(width, 1).luma_pitch()
-    }
-
-    pub fn nv12_chroma_offset(width: u32, height: u32) -> u64 {
-        VulkanFrameLayout::nv12(width, height).chroma_offset()
-    }
-
-    pub fn nv12_size(width: u32, height: u32) -> u64 {
-        VulkanFrameLayout::nv12(width, height).size()
-    }
-
     pub fn device(&self) -> vk::Device {
         self.device
     }
@@ -777,12 +764,10 @@ mod tests {
             (642, 480, 768, 768 * 480, 768 * 720),
             (2, 3, 256, 256 * 3, 256 * 5),
         ] {
-            assert_eq!(VulkanVideoFrame::nv12_pitch(width), pitch);
-            assert_eq!(
-                VulkanVideoFrame::nv12_chroma_offset(width, height),
-                chroma_offset
-            );
-            assert_eq!(VulkanVideoFrame::nv12_size(width, height), size);
+            let layout = VulkanFrameLayout::nv12(width, height);
+            assert_eq!(layout.luma_pitch(), pitch);
+            assert_eq!(layout.chroma_offset(), chroma_offset);
+            assert_eq!(layout.size(), size);
         }
     }
 

@@ -111,10 +111,6 @@ export function rangeMs(positionMs: number, range: PlaybackRange, fps: number): 
     : Math.min(Math.max(positionMs, startMs), endMs);
 }
 
-export function rangeLengthMs(range: PlaybackRange, fps: number): number {
-  return ((range.outFrame - range.inFrame) * 1_000) / fps;
-}
-
 export function mod(value: number, length: number): number {
   return ((value % length) + length) % length;
 }
