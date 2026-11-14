@@ -765,6 +765,36 @@ impl Render3d {
         !matches!(params.environment_background, Deferred::Value(false))
             && !matches!(&params.environment_map, Deferred::Value(map) if map.is_empty())
     }
+
+    /// Warns that the shadow atlas had no room for the lights it dropped, naming each light's node
+    /// once.
+    fn warn_dropped_shadows(
+        &self,
+        cx: &mut FrameCx<'_>,
+        collected: &Collected,
+        atlas: &ShadowAtlas,
+    ) {
+        let scene = &collected.scene;
+        // Lighting keeps direct lights in scene order.
+        let direct_nodes: Vec<_> = scene
+            .lights
+            .iter()
+            .zip(&collected.light_nodes)
+            .filter(|(light, _)| light.kind != LightKind::Ambient)
+            .map(|(_, &node)| node)
+            .collect();
+        let mut named = std::collections::HashSet::new();
+        let dropped = atlas
+            .dropped
+            .iter()
+            .map(|&index| direct_nodes[index])
+            .filter(|&node| named.insert(node))
+            .collect();
+        cx.warn(
+            self.id,
+            crate::error::WarningKind::ShadowLimit { lights: dropped },
+        );
+    }
 }
 
 impl RecordNode for Render3d {
@@ -874,25 +904,7 @@ impl RecordNode for Render3d {
         if let Some(atlas) = &atlas
             && !atlas.dropped.is_empty()
         {
-            // Lighting keeps direct lights in scene order.
-            let direct_nodes: Vec<_> = scene
-                .lights
-                .iter()
-                .zip(&collected.light_nodes)
-                .filter(|(light, _)| light.kind != LightKind::Ambient)
-                .map(|(_, &node)| node)
-                .collect();
-            let mut named = std::collections::HashSet::new();
-            let dropped = atlas
-                .dropped
-                .iter()
-                .map(|&index| direct_nodes[index])
-                .filter(|&node| named.insert(node))
-                .collect();
-            cx.warn(
-                self.id,
-                crate::error::WarningKind::ShadowLimit { lights: dropped },
-            );
+            self.warn_dropped_shadows(cx, &collected, atlas);
         }
         let mut lights: Vec<GpuLight> = lighting
             .direct
@@ -920,13 +932,7 @@ impl RecordNode for Render3d {
             supersample,
         ));
         let lights = cx.rec.storage_parts(&[bytemuck::cast_slice(&lights)]);
-        let Tables {
-            objects,
-            map_uvs,
-            weights,
-            joints,
-            runs,
-        } = Tables::new(cx, scene, &draws);
+        let tables = Tables::new(cx, scene, &draws);
 
         let color = cx.rec.acquire(
             target_size,
@@ -945,111 +951,32 @@ impl RecordNode for Render3d {
         // Objects without a raster or a map still bind a texture and sampler in its place, which
         // their shader doesn't read, as meshes without skins bind their vertices.
         let unread = cx.transparent(size).tex;
-        let shadow_views = match &atlas {
-            Some(atlas) => cx
-                .rec
-                .storage_parts(&[bytemuck::cast_slice(&gpu_shadow_views(atlas))]),
-            None => cx
-                .rec
-                .storage_parts(&[bytemuck::bytes_of(&GpuShadowView::zeroed())]),
-        };
-        let shadow_map = match &atlas {
-            Some(atlas) => {
-                let (width, height) = atlas.size();
-                let map = cx.rec.acquire(
-                    Size::new(width, height),
-                    DEPTH_FORMAT,
-                    wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                );
-                let program = cx.render_program(
-                    &SCENE_3D_SHADOW,
-                    RenderTargetSpec::depth_only(DepthTest::Write, None),
-                    0,
-                )?;
-                let views = atlas.views.len() as u32;
-                let casting = draws.runs.iter().zip(&runs);
-                for (cast, (run, &rows)) in
-                    casting.filter(|(run, _)| run.key.cast_shadows).enumerate()
-                {
-                    let (base_color, base_color_sampler) = match run.key.maps.base_color {
-                        Some(Map { texture, sampler }) => (
-                            texture,
-                            cx.rec
-                                .sampler(sampler_key(&sampler), || sampler_descriptor(&sampler)),
-                        ),
-                        None => (unread, clamp),
-                    };
-                    let bindings = [
-                        (1, objects),
-                        (2, Res::Buffer(run.key.mesh.vertices)),
-                        (3, Res::Buffer(run.key.mesh.indices)),
-                        (5, rows),
-                        (6, Res::Tex(run.key.texture.unwrap_or(unread))),
-                        (7, Res::Sampler(clamp)),
-                        (8, joints),
-                        (
-                            9,
-                            Res::Buffer(run.key.mesh.data.unwrap_or(run.key.mesh.vertices)),
-                        ),
-                        (10, Res::Tex(base_color)),
-                        (15, Res::Sampler(base_color_sampler)),
-                        (20, shadow_views),
-                        (28, weights),
-                        (29, map_uvs),
-                    ];
-                    let load = if cast == 0 {
-                        TargetLoad::Clear
-                    } else {
-                        TargetLoad::Load
-                    };
-                    cx.rec
-                        .draw_depth(program, &bindings, map, load, run.vertices, views);
-                }
-                map
-            }
-            None => {
-                let (rec, cache) = cx.scene_cache();
-                cache.no_shadows(rec)
-            }
-        };
-        let shadow_sampler = cx.rec.sampler(SHADOW_SAMPLER, || wgpu::SamplerDescriptor {
-            label: Some("lumen 3d shadow sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            compare: Some(wgpu::CompareFunction::LessEqual),
-            ..wgpu::SamplerDescriptor::default()
-        });
+        let Shadows {
+            views: shadow_views,
+            map: shadow_map,
+            sampler: shadow_sampler,
+        } = shadow_pass(cx, atlas.as_ref(), &draws, &tables, unread, clamp)?;
 
-        let environment_sampler = cx
-            .rec
-            .sampler(ENVIRONMENT_SAMPLER, || wgpu::SamplerDescriptor {
-                label: Some("lumen 3d environment sampler"),
-                address_mode_u: wgpu::AddressMode::Repeat,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::MipmapFilterMode::Linear,
-                ..wgpu::SamplerDescriptor::default()
-            });
-        let environment_uniform = cx.rec.uniform(&gpu_environment(
+        let environment_bindings = bind_environment(
+            cx,
             environment.as_ref(),
-            &camera,
-            aspect,
-            &params,
-        ));
-        // Without a map, the shader reads none of these.
-        let (environment_map, environment_brdf) = match &environment {
-            Some(loaded) => {
-                let (rec, cache) = cx.scene_cache();
-                (
-                    loaded.reflections,
-                    Res::Buffer(cache.environments.brdf(rec)),
-                )
-            }
-            None => (unread, lights),
-        };
+            &gpu_environment(environment.as_ref(), &camera, aspect, &params),
+            unread,
+            lights,
+        );
+        let EnvironmentBindings {
+            uniform: environment_uniform,
+            map: environment_map,
+            sampler: environment_sampler,
+            brdf: environment_brdf,
+        } = environment_bindings;
+        let Tables {
+            objects,
+            map_uvs,
+            weights,
+            joints,
+            runs,
+        } = tables;
 
         for (drawn, (run, &rows)) in draws.runs.iter().zip(&runs).enumerate() {
             let depth_test = if run.key.blend {
@@ -1132,42 +1059,226 @@ impl RecordNode for Render3d {
         }
 
         if let Some(loaded) = environment.filter(|_| background) {
-            let program = cx.render_program(&SCENE_3D_BACKGROUND, background_spec(), 0)?;
-            let bindings = [
-                (0, globals),
-                (23, environment_uniform),
-                (24, Res::Tex(loaded.reflections)),
-                (
-                    25,
-                    Res::Tex(loaded.background.unwrap_or(loaded.reflections)),
-                ),
-                (26, Res::Sampler(environment_sampler)),
-            ];
-            let load = if draws.runs.is_empty() {
-                TargetLoad::Clear
-            } else {
-                TargetLoad::Load
-            };
-            cx.rec.draw(program, &bindings, color, load, 3, 1, None);
+            background_pass(cx, &loaded, globals, &environment_bindings, color, &draws)?;
         }
 
-        let output = cx.storage_target(size);
-        cx.spatial_pass(
-            &SCENE_3D_RESOLVE,
-            color,
-            &ResolveParams {
-                supersample,
-                _pad: [0; 3],
-            },
-            output,
-            size,
-        )?;
-        Ok(Raster {
-            tex: output,
-            domain: TextureDomain::full_frame(size),
-            bounds: None,
-        })
+        resolve(cx, color, supersample, size)
     }
+}
+
+/// The shadow map the main pass samples, the views drawn into it, and its sampler.
+#[derive(Clone, Copy)]
+struct Shadows {
+    views: Res,
+    map: TexRef,
+    sampler: lumen_gpu::SamplerRef,
+}
+
+/// Draws the shadow casters of `draws` into `atlas`'s views, or takes the empty shadow map when
+/// no light casts one.
+fn shadow_pass(
+    cx: &mut FrameCx<'_>,
+    atlas: Option<&ShadowAtlas>,
+    draws: &Draws<GpuMesh, TexRef>,
+    tables: &Tables,
+    unread: TexRef,
+    clamp: lumen_gpu::SamplerRef,
+) -> crate::Result<Shadows> {
+    let &Tables {
+        objects,
+        map_uvs,
+        weights,
+        joints,
+        ref runs,
+    } = tables;
+    let shadow_views = match &atlas {
+        Some(atlas) => cx
+            .rec
+            .storage_parts(&[bytemuck::cast_slice(&gpu_shadow_views(atlas))]),
+        None => cx
+            .rec
+            .storage_parts(&[bytemuck::bytes_of(&GpuShadowView::zeroed())]),
+    };
+    let shadow_map = match &atlas {
+        Some(atlas) => {
+            let (width, height) = atlas.size();
+            let map = cx.rec.acquire(
+                Size::new(width, height),
+                DEPTH_FORMAT,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            );
+            let program = cx.render_program(
+                &SCENE_3D_SHADOW,
+                RenderTargetSpec::depth_only(DepthTest::Write, None),
+                0,
+            )?;
+            let views = atlas.views.len() as u32;
+            let casting = draws.runs.iter().zip(runs);
+            for (cast, (run, &rows)) in casting.filter(|(run, _)| run.key.cast_shadows).enumerate()
+            {
+                let (base_color, base_color_sampler) = match run.key.maps.base_color {
+                    Some(Map { texture, sampler }) => (
+                        texture,
+                        cx.rec
+                            .sampler(sampler_key(&sampler), || sampler_descriptor(&sampler)),
+                    ),
+                    None => (unread, clamp),
+                };
+                let bindings = [
+                    (1, objects),
+                    (2, Res::Buffer(run.key.mesh.vertices)),
+                    (3, Res::Buffer(run.key.mesh.indices)),
+                    (5, rows),
+                    (6, Res::Tex(run.key.texture.unwrap_or(unread))),
+                    (7, Res::Sampler(clamp)),
+                    (8, joints),
+                    (
+                        9,
+                        Res::Buffer(run.key.mesh.data.unwrap_or(run.key.mesh.vertices)),
+                    ),
+                    (10, Res::Tex(base_color)),
+                    (15, Res::Sampler(base_color_sampler)),
+                    (20, shadow_views),
+                    (28, weights),
+                    (29, map_uvs),
+                ];
+                let load = if cast == 0 {
+                    TargetLoad::Clear
+                } else {
+                    TargetLoad::Load
+                };
+                cx.rec
+                    .draw_depth(program, &bindings, map, load, run.vertices, views);
+            }
+            map
+        }
+        None => {
+            let (rec, cache) = cx.scene_cache();
+            cache.no_shadows(rec)
+        }
+    };
+    let shadow_sampler = cx.rec.sampler(SHADOW_SAMPLER, || wgpu::SamplerDescriptor {
+        label: Some("lumen 3d shadow sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        compare: Some(wgpu::CompareFunction::LessEqual),
+        ..wgpu::SamplerDescriptor::default()
+    });
+    Ok(Shadows {
+        views: shadow_views,
+        map: shadow_map,
+        sampler: shadow_sampler,
+    })
+}
+
+/// What the main and background passes bind of the environment.
+#[derive(Clone, Copy)]
+struct EnvironmentBindings {
+    uniform: Res,
+    map: TexRef,
+    sampler: lumen_gpu::SamplerRef,
+    brdf: Res,
+}
+
+/// Binds `environment`, seen as `gpu` describes, or `unread` and `lights` in place of its map
+/// and table when there is none.
+fn bind_environment(
+    cx: &mut FrameCx<'_>,
+    environment: Option<&super::environment::LoadedEnvironment>,
+    gpu: &GpuEnvironment,
+    unread: TexRef,
+    lights: Res,
+) -> EnvironmentBindings {
+    let environment_sampler = cx
+        .rec
+        .sampler(ENVIRONMENT_SAMPLER, || wgpu::SamplerDescriptor {
+            label: Some("lumen 3d environment sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..wgpu::SamplerDescriptor::default()
+        });
+    let environment_uniform = cx.rec.uniform(gpu);
+    // Without a map, the shader reads none of these.
+    let (environment_map, environment_brdf) = match &environment {
+        Some(loaded) => {
+            let (rec, cache) = cx.scene_cache();
+            (
+                loaded.reflections,
+                Res::Buffer(cache.environments.brdf(rec)),
+            )
+        }
+        None => (unread, lights),
+    };
+    EnvironmentBindings {
+        uniform: environment_uniform,
+        map: environment_map,
+        sampler: environment_sampler,
+        brdf: environment_brdf,
+    }
+}
+
+/// Draws `loaded`'s background behind what the main pass drew into `color`.
+fn background_pass(
+    cx: &mut FrameCx<'_>,
+    loaded: &super::environment::LoadedEnvironment,
+    globals: Res,
+    environment: &EnvironmentBindings,
+    color: TexRef,
+    draws: &Draws<GpuMesh, TexRef>,
+) -> crate::Result<()> {
+    let EnvironmentBindings {
+        uniform: environment_uniform,
+        sampler: environment_sampler,
+        ..
+    } = *environment;
+    let program = cx.render_program(&SCENE_3D_BACKGROUND, background_spec(), 0)?;
+    let bindings = [
+        (0, globals),
+        (23, environment_uniform),
+        (24, Res::Tex(loaded.reflections)),
+        (
+            25,
+            Res::Tex(loaded.background.unwrap_or(loaded.reflections)),
+        ),
+        (26, Res::Sampler(environment_sampler)),
+    ];
+    let load = if draws.runs.is_empty() {
+        TargetLoad::Clear
+    } else {
+        TargetLoad::Load
+    };
+    cx.rec.draw(program, &bindings, color, load, 3, 1, None);
+    Ok(())
+}
+
+/// Resolves the supersampled `color` into the output at `size`.
+fn resolve(
+    cx: &mut FrameCx<'_>,
+    color: TexRef,
+    supersample: u32,
+    size: Size,
+) -> crate::Result<Raster> {
+    let output = cx.storage_target(size);
+    cx.spatial_pass(
+        &SCENE_3D_RESOLVE,
+        color,
+        &ResolveParams {
+            supersample,
+            _pad: [0; 3],
+        },
+        output,
+        size,
+    )?;
+    Ok(Raster {
+        tex: output,
+        domain: TextureDomain::full_frame(size),
+        bounds: None,
+    })
 }
 
 /// The storage both of `render_3d`'s ways of drawing `draws` bind: the object table and the
