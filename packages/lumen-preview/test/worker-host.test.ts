@@ -35,7 +35,6 @@ vi.mock("../src/media/video-session.js", async (original) => ({
       await video.metadata.get(this.streamId);
       return { fps: 30, frameCount: 30, height: 1, width: 1 };
     }
-    clearFrames() {}
     async decodeFrames() {
       await video.frames;
       return new Map();

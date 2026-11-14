@@ -75,13 +75,6 @@ export class VideoSession {
     void this.serialize(async () => this.resetSequentialDecodeState());
   }
 
-  clearFrames(): void {
-    // The wasm-side store owns uploaded frames, but the sequential decoder
-    // keeps a couple of decoded samples alive to avoid restarting from the
-    // previous keyframe on every playback tick.
-    void this.serialize(async () => this.resetSequentialDecodeState());
-  }
-
   async loadMetadata(): Promise<VideoFrameMetadata> {
     const setup = await this.ensureSetup();
     return setup.timeline.metadata;

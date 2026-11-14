@@ -88,20 +88,6 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     this.videos.clear();
   }
 
-  clearVideos(): void {
-    for (const video of this.videos.values()) {
-      this.resetVideoEntry(video);
-    }
-  }
-
-  clearVideoSource(streamId: string): void {
-    const video = this.videos.get(streamId);
-    if (!video) {
-      return;
-    }
-    this.resetVideoEntry(video);
-  }
-
   removeImageSource(imageId: string, syncTarget = true): void {
     this.images.get(imageId)?.abort.abort();
     this.images.delete(imageId);
@@ -326,11 +312,6 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
       );
     }
     return entry;
-  }
-
-  private resetVideoEntry(entry: VideoEntry): void {
-    entry.session.clearFrames();
-    entry.syncedMetadata = null;
   }
 
   private async syncDecodedFrames(streamId: string, frames: Iterable<number>): Promise<void> {

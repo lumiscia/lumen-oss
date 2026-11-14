@@ -85,8 +85,6 @@ export interface VideoFrameMetadata {
 
 export interface LumenMediaTarget {
   clear(): void;
-  clearVideos(): void;
-  clearVideoSource(streamId: string): void;
   removeEnvironmentSource?(sourceId: string): void;
   removeFontFamily?(fontFamily: string): void;
   removeImageSource?(imageId: string): void;
@@ -94,7 +92,6 @@ export interface LumenMediaTarget {
   removeModelSource?(modelId: string): void;
   removeVideoSource?(streamId: string): void;
   hasEnvironment?(sourceId: string): boolean;
-  hasFont?(fontFamily: string): boolean;
   hasImage(imageId: string): boolean;
   hasLut?(sourceId: string): boolean;
   hasModel?(modelId: string): boolean;

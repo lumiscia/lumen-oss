@@ -10,16 +10,12 @@ export type LumenLogLevel = "off" | "error" | "warn" | "info" | "debug" | "trace
 export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   audioTimeline(): string | undefined;
   clear(): void;
-  clearMedia(): void;
-  clearVideos(): void;
-  clearVideoSource(streamId: string): void;
   currentFrame(): number;
   durationFrames(): number;
   frameRequirements(frame: number): string;
   fps(): number;
   height(): number;
   hasEnvironment(sourceId: string): boolean;
-  hasFont(fontFamily: string): boolean;
   hasLut(sourceId: string): boolean;
   hasModel(modelId: string): boolean;
   loadComposition(compositionJson: string): void;
@@ -36,8 +32,6 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   setLut(sourceId: string, bytes: Uint8Array): void;
   setModel(modelId: string, bytes: Uint8Array): void;
   setLogLevel(level: LumenLogLevel): void;
-  /** Throws as `loadComposition` would on a composition the engine rejects, without loading it. */
-  validateComposition(compositionJson: string): void;
   width(): number;
 }
 
@@ -117,24 +111,6 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
 
     loadComposition(compositionJson: string): void {
       super.loadComposition(compositionJson);
-      this.requirements.reset();
-    }
-
-    clearMedia(): void {
-      super.clearMedia();
-      this.bridge.clear();
-      this.requirements.reset();
-    }
-
-    clearVideos(): void {
-      super.clearVideos();
-      this.bridge.clearVideos();
-      this.requirements.reset();
-    }
-
-    clearVideoSource(streamId: string): void {
-      super.clearVideoSource(streamId);
-      this.bridge.clearVideoSource(streamId);
       this.requirements.reset();
     }
 
