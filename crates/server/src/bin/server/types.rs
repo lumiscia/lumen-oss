@@ -22,17 +22,17 @@ pub struct RenderJobInput {
     #[serde(default)]
     #[serde(rename = "webhookUrl")]
     pub webhook_url: Option<String>,
-    /// A quality preset name, which wins over the composition's.
+    /// A quality preset name. Without one the host's default applies.
     #[serde(default)]
     pub quality: Option<String>,
-    /// `h264`, `hevc` or `av1` for an MP4, `prores` for a MOV or `vp9` for a WebM, which wins over
-    /// the composition's.
+    /// `h264`, `hevc` or `av1` for an MP4, `prores` for a MOV or `vp9` for a WebM. Without one a MOV
+    /// or WebM gets its own codec and an MP4 the host's default.
     #[serde(default)]
     pub codec: Option<String>,
-    /// 8 or 10, which wins over the composition's.
+    /// 8 or 10. Without one the codec's default applies.
     #[serde(default)]
     pub bit_depth: Option<u8>,
-    /// Keeps transparency as an alpha channel, in a MOV or WebM only. Wins over the composition's.
+    /// Keeps transparency as an alpha channel, in a MOV or WebM only.
     #[serde(default)]
     pub alpha: Option<bool>,
     /// What to render: the format and the frames. Without it, an MP4 of the whole timeline.

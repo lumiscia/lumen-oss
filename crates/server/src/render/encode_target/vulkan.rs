@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, anyhow};
 use lumen_engine::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE},
-    composition::{BitDepth, Composition},
+    composition::Composition,
     gpu::{GpuCompositionRenderer, RenderedFrame, VulkanVideoTarget},
 };
 use lumen_ffmpeg::{
@@ -33,7 +33,7 @@ impl VulkanTarget {
         output: &Path,
         encoder: &str,
         quality: &EncoderQuality,
-        depth: BitDepth,
+        depth: lumen_ffmpeg::BitDepth,
     ) -> anyhow::Result<(GpuCompositionRenderer, Self)> {
         let settings = composition.render_settings();
         let (width, height) = (settings.width, settings.height);
@@ -49,7 +49,7 @@ impl VulkanTarget {
         let target = VulkanVideoTarget::new(
             renderer.gpu_renderer(),
             lumen_gpu::Size::new(width, height),
-            depth,
+            depth.into(),
             true,
         );
         let mut config = VideoEncoderConfig::cpu_rgba(
@@ -61,10 +61,7 @@ impl VulkanTarget {
         config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
         config.vulkan_device = Some(device.clone());
         config.quality = quality.clone();
-        config.bit_depth = match depth {
-            BitDepth::Eight => lumen_ffmpeg::BitDepth::Eight,
-            BitDepth::Ten => lumen_ffmpeg::BitDepth::Ten,
-        };
+        config.bit_depth = depth;
         let audio = has_audio(composition)
             .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
         let encoder =

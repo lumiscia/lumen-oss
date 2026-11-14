@@ -10,7 +10,7 @@ use lumen_engine::{
         VideoFrameResolver,
     },
 };
-use lumen_ffmpeg::{InputContext, VideoCodec};
+use lumen_ffmpeg::{EncodeCodec, InputContext};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -379,7 +379,7 @@ fn probe_av(path: &Path) -> Result<(MediaKind, MediaMetadata), Rejection> {
                         duration_ms,
                         fps: Some(metadata.fps),
                         frame_count: Some(metadata.frame_count),
-                        codec: codec_name(stream.codec).map(str::to_string),
+                        codec: EncodeCodec::of(stream.codec).map(|codec| codec.name().to_string()),
                         has_audio: Some(audio.is_some()),
                         ..MediaMetadata::default()
                     },
@@ -402,17 +402,6 @@ fn probe_av(path: &Path) -> Result<(MediaKind, MediaMetadata), Rejection> {
             ..MediaMetadata::default()
         },
     ))
-}
-
-fn codec_name(codec: VideoCodec) -> Option<&'static str> {
-    match codec {
-        VideoCodec::H264 => Some("h264"),
-        VideoCodec::Hevc => Some("hevc"),
-        VideoCodec::Av1 => Some("av1"),
-        VideoCodec::Vp9 => Some("vp9"),
-        VideoCodec::ProRes => Some("prores"),
-        VideoCodec::Unknown => None,
-    }
 }
 
 #[cfg(test)]

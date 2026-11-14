@@ -139,7 +139,7 @@ impl EncodeTarget {
                     output,
                     name,
                     quality,
-                    engine_bit_depth(bit_depth),
+                    bit_depth,
                 ) {
                     Ok((renderer, target)) => {
                         return Ok(OpenedTarget {
@@ -162,7 +162,7 @@ impl EncodeTarget {
                     output,
                     name,
                     quality,
-                    engine_bit_depth(bit_depth),
+                    bit_depth,
                 ) {
                     Ok((renderer, target)) => {
                         return Ok(OpenedTarget {
@@ -462,14 +462,6 @@ fn yuv_format(format: PixelFormat) -> Option<YuvFormat> {
         PixelFormat::Yuv444p10 => Some(YuvFormat::Yuv444p10),
         PixelFormat::Yuva444p10 => Some(YuvFormat::Yuva444p10),
         _ => None,
-    }
-}
-
-#[cfg(all(target_os = "linux", feature = "vulkan"))]
-fn engine_bit_depth(depth: BitDepth) -> lumen_engine::composition::BitDepth {
-    match depth {
-        BitDepth::Eight => lumen_engine::composition::BitDepth::Eight,
-        BitDepth::Ten => lumen_engine::composition::BitDepth::Ten,
     }
 }
 
