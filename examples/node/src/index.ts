@@ -43,7 +43,7 @@ composition.addNode({ type: "media_output", inputs: { source: merged } });
 
 composition
   .addAudioTrack({ id: "clip-audio", name: "Clip audio" })
-  .addAudio({ source: "clip", start: 0, duration: 4, trackId: "clip-audio" });
+  .addAudio({ source: "clip", startSeconds: 0, durationSeconds: 4, trackId: "clip-audio" });
 
 const clip = await lumen.uploadMedia({
   body: await readFile(new URL("../../assets/clip.mp4", import.meta.url)),

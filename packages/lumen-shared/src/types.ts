@@ -187,9 +187,12 @@ export type Size = TemplateRenderSettings;
 
 export type RenderSettingsInput = Partial<LumenComposition["render_settings"]>;
 
-export type TimelineInput = Partial<LumenComposition["timeline"]> & {
-  readonly durationSeconds?: number;
-};
+/** The length is `duration_frames` or `durationSeconds`, not both. */
+export type TimelineInput = Partial<Omit<LumenComposition["timeline"], "duration_frames">> &
+  (
+    | { readonly duration_frames?: number; readonly durationSeconds?: never }
+    | { readonly durationSeconds?: number; readonly duration_frames?: never }
+  );
 
 /**
  * A track declared with `addAudioTrack`. Gain scales every clip on the track; an expression is
@@ -207,19 +210,19 @@ export interface AudioTrackOptions {
 export interface AudioClipOptions {
   /** The audio source's id, as registered with the host. */
   readonly source: string;
-  /** Where the clip starts on the timeline. */
-  readonly start: number;
-  readonly duration: number;
-  /** Where in the source the clip starts playing. */
-  readonly offset?: number;
+  /** Where the clip starts on the timeline, in seconds. */
+  readonly startSeconds: number;
+  readonly durationSeconds: number;
+  /** Where in the source the clip starts playing, in seconds. */
+  readonly offsetSeconds?: number;
   /** The track to play on, declared as a plain track if it isn't one yet. Defaults to `main`. */
   readonly trackId?: string;
   /** A gain, or an expression evaluated in the time of the composition the clip is in. */
   readonly gain?: number | Expr<number>;
-  /** How long the clip rises from silence at its start, on an equal-power curve. */
-  readonly fadeIn?: number;
-  /** How long the clip falls to silence at its end, on an equal-power curve. */
-  readonly fadeOut?: number;
+  /** Seconds the clip rises from silence over at its start, on an equal-power curve. */
+  readonly fadeInSeconds?: number;
+  /** Seconds the clip falls to silence over at its end, on an equal-power curve. */
+  readonly fadeOutSeconds?: number;
   readonly id?: string;
   readonly name?: string;
 }

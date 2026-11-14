@@ -167,9 +167,9 @@ describe("Composition audio", () => {
 
     composition.addAudioTrack({ id: "music", name: "Music", gain: 0.5, solo: true }).addAudio({
       source: "audio:intro",
-      start: 0.5,
-      duration: 2.5,
-      offset: 1.25,
+      startSeconds: 0.5,
+      durationSeconds: 2.5,
+      offsetSeconds: 1.25,
       trackId: "music",
       gain: 0.8,
       id: "intro",
@@ -198,13 +198,19 @@ describe("Composition audio", () => {
 
     composition
       .addAudioTrack({ id: "music", gain: when(time.gte(2).and(time.lt(6)), 0.25, 1) })
-      .addAudio({ source: "music.mp3", start: 0, duration: 10, trackId: "music", fadeIn: 1 })
+      .addAudio({
+        source: "music.mp3",
+        startSeconds: 0,
+        durationSeconds: 10,
+        trackId: "music",
+        fadeInSeconds: 1,
+      })
       .addAudio({
         source: "voice.wav",
-        start: 2,
-        duration: 4,
+        startSeconds: 2,
+        durationSeconds: 4,
         gain: tween(0, 1, 60, 15),
-        fadeOut: 0.5,
+        fadeOutSeconds: 0.5,
       });
 
     expect(composition.toJSON().audio).toEqual({
@@ -234,7 +240,12 @@ describe("Composition audio", () => {
   test("rounds seconds to the nearest millisecond", () => {
     const composition = new Composition();
 
-    composition.addAudio({ source: "audio:a", start: 0.7006, duration: 1.2344, offset: 0.0004 });
+    composition.addAudio({
+      source: "audio:a",
+      startSeconds: 0.7006,
+      durationSeconds: 1.2344,
+      offsetSeconds: 0.0004,
+    });
 
     expect(composition.toJSON().audio?.clips[0]).toMatchObject({
       start_ms: 701,
@@ -247,9 +258,9 @@ describe("Composition audio", () => {
     const composition = new Composition();
 
     composition
-      .addAudio({ source: "audio:a", start: 0, duration: 2 })
-      .addAudio({ source: "audio:b", start: 1, duration: 2 })
-      .addAudio({ source: "audio:c", start: 0, duration: 1, trackId: "voice" });
+      .addAudio({ source: "audio:a", startSeconds: 0, durationSeconds: 2 })
+      .addAudio({ source: "audio:b", startSeconds: 1, durationSeconds: 2 })
+      .addAudio({ source: "audio:c", startSeconds: 0, durationSeconds: 1, trackId: "voice" });
 
     const audio = composition.toJSON().audio;
     expect(audio?.tracks).toEqual([{ id: "main" }, { id: "voice" }]);
@@ -279,7 +290,7 @@ describe("Composition audio", () => {
       },
     });
 
-    composition.addAudio({ source: "b.wav", start: 1, duration: 1 });
+    composition.addAudio({ source: "b.wav", startSeconds: 1, durationSeconds: 1 });
 
     expect(composition.toJSON().audio?.clips.map((clip) => clip.id)).toEqual([
       "main-clip-2",
@@ -307,7 +318,7 @@ describe("Composition audio", () => {
       start_ms: 0,
       duration_ms: 1,
     });
-    composition.addAudio({ source: "b.wav", start: 0, duration: 1 });
+    composition.addAudio({ source: "b.wav", startSeconds: 0, durationSeconds: 1 });
 
     expect(composition.toJSON().audio?.clips.map((clip) => clip.id)).toEqual(["main-clip-1"]);
   });
@@ -324,6 +335,14 @@ describe("Composition timeline defaults", () => {
     const composition = new Composition({ timeline: { durationSeconds: 2.5, fps: 24 } });
 
     expect(composition.toJSON().timeline).toEqual({ duration_frames: 60, fps: 24 });
+  });
+
+  test("throws when given both duration_frames and durationSeconds", () => {
+    const both = { duration_frames: 60, durationSeconds: 2 } as never;
+
+    expect(() => new Composition({ timeline: both })).toThrow(
+      new TypeError("Pass either `duration_frames` or `durationSeconds` in `timeline`, not both."),
+    );
   });
 });
 

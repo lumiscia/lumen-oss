@@ -89,7 +89,12 @@ describe("defineComposition", () => {
       duration: 30,
       props: { level: prop.number(1) },
       build: (composition, { level }) => {
-        composition.addAudio({ source: "whoosh.wav", start: 0, duration: 0.5, gain: level });
+        composition.addAudio({
+          source: "whoosh.wav",
+          startSeconds: 0,
+          durationSeconds: 0.5,
+          gain: level,
+        });
         return composition.addNode({ type: "background" });
       },
     });
