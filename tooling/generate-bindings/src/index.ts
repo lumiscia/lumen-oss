@@ -51,6 +51,8 @@ function buildWasm(features: string[]) {
     wasmCrate,
     "--target",
     wasmTarget,
+    "--target-dir",
+    targetDir,
     ...features,
   ]);
 }

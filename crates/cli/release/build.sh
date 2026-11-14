@@ -42,10 +42,14 @@ installed="$target/vcpkg-installed"
   --host-triplet="$triplet"
 
 # Cargo copies the static libraries into ffmpeg-sys-next when it compiles it, and doesn't notice
-# when vcpkg has rebuilt them.
-cargo clean --manifest-path "$root/Cargo.toml" --release --package ffmpeg-sys-next
+# when vcpkg has rebuilt them. Cargo only cleans a directory it has built in, which it marks with
+# CACHEDIR.TAG; before the first build there is nothing to clean.
+if [ -f "$target/CACHEDIR.TAG" ]; then
+  cargo clean --manifest-path "$root/Cargo.toml" --target-dir "$target" --release --package ffmpeg-sys-next
+fi
 PKG_CONFIG_PATH="$installed/$triplet/lib/pkgconfig" cargo build \
   --manifest-path "$root/Cargo.toml" \
+  --target-dir "$target" \
   --release \
   --locked \
   --package lumen-cli \

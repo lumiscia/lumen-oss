@@ -7,6 +7,7 @@ node_reference := justfile_directory() / "docs/node-reference.md"
 # lavapipe-backed SDK integration test.
 ready: verify-typescript-artifacts
     pnpm build
+    pnpm --filter @lumiscia/lumen-bindings test:node
     pnpm check
     pnpm test
 
@@ -32,16 +33,24 @@ set-schema-version version:
     pnpm --filter @lumiscia/release-tools set-schema-version {{version}}
     just generate-types
 
-# Also covers verify-definitions, since the generated schema is among the checked paths.
-verify-typescript-artifacts: generate-types wasm-bindings-debug
+# Regenerates the checked files and fails, naming the files, when their contents change, so a
+# stale committed file fails and a legitimately dirty tree does not. Also covers verify-definitions,
+# since the generated schema is among the checked paths. `generated/` is gitignored apart from two
+# tracked files, so its files are hashed rather than read from git status.
+verify-typescript-artifacts:
     #!/usr/bin/env bash
     set -euo pipefail
     paths=({{ definitions_out }}/composition.schema.json {{ definitions_out }}/runtime.schema.json {{ node_reference }} {{ generated_types_out }})
-    # `generated/` is gitignored, so new type files only show up with --ignored.
-    changes="$(git status --porcelain -- "${paths[@]}")$(git status --porcelain --ignored -- {{ generated_types_out }})"
-    if [ -n "$changes" ]; then
-        echo "$changes"
+    hashes() { find "${paths[@]}" -type f -print0 | sort -z | xargs -0 sha256sum; }
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+    hashes > "$tmpdir/before"
+    {{ just_executable() }} generate-types
+    {{ just_executable() }} wasm-bindings-debug
+    hashes > "$tmpdir/after"
+    if ! diff -u "$tmpdir/before" "$tmpdir/after"; then
         git diff -- "${paths[@]}"
+        echo "Generated files are stale. Run \`just generate-types\` and commit the result." >&2
         exit 1
     fi
 
