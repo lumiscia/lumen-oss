@@ -30,6 +30,8 @@
   ],
   "type": "module",
   "sideEffects": [
+    "./dist/browser/audio-worker.js",
+    "./dist/browser/audio-worklet.js",
     "./dist/browser/worker-2d.js",
     "./dist/browser/worker.js",
     "./dist/node/index.js"
@@ -40,15 +42,6 @@
     ".": {
       "types": "./dist/browser/index.d.ts",
       "default": "./dist/browser/index.js"
-    },
-    "./browser": {
-      "types": "./dist/browser/index.d.ts",
-      "default": "./dist/browser/index.js"
-    },
-    "./browser/worker.js": "./dist/browser/worker.js",
-    "./bundler": {
-      "types": "./dist/bundler/index.d.ts",
-      "default": "./dist/bundler/index.js"
     },
     "./node": {
       "types": "./dist/node/index.d.ts",
@@ -65,10 +58,12 @@
     "./wasm": "./wasm/lumen_wasm_bg.wasm",
     "./wasm-2d": "./wasm/lumen_wasm_2d_bg.wasm",
     "./worker": "./dist/browser/worker.js",
-    "./worker-2d": "./dist/browser/worker-2d.js"
+    "./worker-2d": "./dist/browser/worker-2d.js",
+    "./audio-worker": "./dist/browser/audio-worker.js",
+    "./audio-worklet": "./dist/browser/audio-worklet.js"
   },
   "scripts": {
-    "build": "test -f wasm/lumen_wasm.d.ts && test -f wasm/lumen_wasm_2d.d.ts || { echo 'packages/lumen-bindings: wasm/ is missing. Generate it with: just wasm-bindings-debug' >&2; exit 1; } && (tsc -p tsconfig.json && esbuild dist/browser/worker.js dist/browser/worker-2d.js --bundle --minify --format=esm --platform=browser --allow-overwrite --outdir=dist/browser)",
+    "build": "test -f wasm/lumen_wasm.d.ts && test -f wasm/lumen_wasm_2d.d.ts || { echo 'packages/lumen-bindings: wasm/ is missing. Generate it with: just wasm-bindings-debug' >&2; exit 1; } && (tsc -p tsconfig.json && esbuild dist/browser/worker.js dist/browser/worker-2d.js dist/browser/audio-worker.js dist/browser/audio-worklet.js --bundle --minify --format=esm --platform=browser --allow-overwrite --outdir=dist/browser)",
     "check": "test -f wasm/lumen_wasm.d.ts && test -f wasm/lumen_wasm_2d.d.ts || { echo 'packages/lumen-bindings: wasm/ is missing. Generate it with: just wasm-bindings-debug' >&2; exit 1; } && tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist wasm wasm.tmp-* *.tsbuildinfo",
     "test:node": "node test/node-load.mjs && node test/init-overlap.mjs && node test/wasm-2d.mjs"

@@ -86,24 +86,30 @@ export interface LumenPreviewSessionInputs {
   volume?: number | undefined;
 }
 
+/** One runtime file: where it is served, and its name in a `runtimeUrl` directory. */
+export interface LumenRuntimeFile {
+  file: string;
+  url: string | URL;
+}
+
+/**
+ * The files the preview runs on: `runtime` from `@lumiscia/lumen-bindings/urls`, or `runtime2d`
+ * from `@lumiscia/lumen-bindings/urls-2d` for the 2D-only build.
+ */
+export interface LumenRuntime {
+  worker: LumenRuntimeFile;
+  wasm: LumenRuntimeFile;
+  audioWorker: LumenRuntimeFile;
+  audioWorklet: LumenRuntimeFile;
+}
+
 export interface LumenPreviewSessionOptions extends LumenPreviewSessionInputs {
   audio?: LumenAudioEngineOptions;
   preview: LumenPreviewContext;
+  runtime: LumenRuntime;
   /**
-   * A directory holding the preview's runtime files under their own names: `worker.js` and
-   * `lumen_wasm_bg.wasm` from `@lumiscia/lumen-bindings`, and `audio-worker.js` and
-   * `audio-worklet.js` from `@lumiscia/lumen-preview`. Each URL not passed on its own is that
-   * file in it.
+   * A directory holding every file of `runtime` under its `file` name. Without it, each file is
+   * loaded from its `url`.
    */
   runtimeUrl?: string | URL | undefined;
-  /**
-   * The wasm the worker loads: `wasmUrl` from `@lumiscia/lumen-bindings/urls`, or a copy of it.
-   * Needed unless `runtimeUrl` is passed.
-   */
-  wasmUrl?: string | URL | undefined;
-  /**
-   * The worker script: `workerUrl` from `@lumiscia/lumen-bindings/urls`, or a copy of it. Needed
-   * unless `runtimeUrl` is passed.
-   */
-  workerUrl?: string | URL | undefined;
 }

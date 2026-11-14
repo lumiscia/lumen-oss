@@ -14,6 +14,6 @@ preview.update({ isLoaded: true }); // set the state by hand
 
 // After: the state follows the session
 const preview = createLumenPreview();
-mountPreview(host, { preview, composition, wasmUrl, workerUrl });
+mountPreview(host, { preview, composition, runtime });
 preview.getSnapshot().isLoaded;
 ```

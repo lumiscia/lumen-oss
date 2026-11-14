@@ -43,6 +43,7 @@
     onTimeUpdate={options.onTimeUpdate}
     range={options.range}
     rate={options.rate}
+    runtime={options.runtime}
     runtimeUrl={options.runtimeUrl}
     volume={options.volume}
 />

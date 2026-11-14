@@ -97,8 +97,8 @@ async function createAudio() {
   );
 
   const engine: LumenAudioEngine = new Engine({
-    workerModuleUrl: "mixer.js",
-    workletModuleUrl: "worklet.js",
+    workerUrl: "mixer.js",
+    workletUrl: "worklet.js",
   });
   engine.loadAudioTimeline(
     JSON.stringify({

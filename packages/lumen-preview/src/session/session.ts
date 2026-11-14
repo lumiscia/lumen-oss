@@ -35,7 +35,12 @@ import {
   type ResolvedPreviewInputs,
 } from "./inputs.js";
 import { EMPTY_PREVIEW_STATS } from "./stats.js";
-import type { LumenPreviewSessionInputs, LumenPreviewSessionOptions } from "./types.js";
+import type {
+  LumenPreviewSessionInputs,
+  LumenPreviewSessionOptions,
+  LumenRuntime,
+  LumenRuntimeFile,
+} from "./types.js";
 
 const CLOCK_CORRECTION_INTERVAL_MS = 250;
 const DEFAULT_LOOKAHEAD_COUNT = 8;
@@ -78,6 +83,7 @@ export class LumenPreviewSession {
   #attachment = 0;
   #audio: LumenAudioEngine | null = null;
   readonly #audioOptions: LumenPreviewSessionOptions["audio"];
+  readonly #runtime: RuntimeUrls;
   #canvas: HTMLCanvasElement | null = null;
   #clock = PARKED_CLOCK;
   #correctionTimer: ReturnType<typeof setInterval> | null = null;
@@ -124,34 +130,17 @@ export class LumenPreviewSession {
   #sentFonts: ReadonlyMap<string, MediaSourceInput> = new Map();
   #sentMedia: ReadonlyMap<string, PreviewMediaEntry> = new Map();
   #timeline: { fps: number; totalFrames: number } | null = null;
-  readonly #wasmUrl: string | URL | null;
   #worker: Worker | null = null;
-  readonly #workerUrl: string | URL | null;
   #workerOptions: PreviewWorkerOptions = {
     logLevel: "off",
     lookaheadCount: DEFAULT_LOOKAHEAD_COUNT,
   };
 
-  constructor({
-    audio,
-    preview,
-    runtimeUrl,
-    wasmUrl,
-    workerUrl,
-    ...inputs
-  }: LumenPreviewSessionOptions) {
-    const runtimeFile = (name: string) => (runtimeUrl ? runtimeFileUrl(runtimeUrl, name) : null);
-    const workerModuleUrl = audio?.workerModuleUrl ?? runtimeFile("audio-worker.js");
-    const workletModuleUrl = audio?.workletModuleUrl ?? runtimeFile("audio-worklet.js");
-    this.#audioOptions = {
-      ...audio,
-      ...(workerModuleUrl && { workerModuleUrl }),
-      ...(workletModuleUrl && { workletModuleUrl }),
-    };
+  constructor({ audio, preview, runtime, runtimeUrl, ...inputs }: LumenPreviewSessionOptions) {
+    this.#audioOptions = audio;
+    this.#runtime = resolveRuntime(runtime, runtimeUrl);
     this.preview = preview;
     this.#previewInternals = internalsOf(preview);
-    this.#wasmUrl = wasmUrl ?? runtimeFile("lumen_wasm_bg.wasm");
-    this.#workerUrl = workerUrl ?? runtimeFile("worker.js");
     this.#inputs = inputs;
   }
 
@@ -214,23 +203,16 @@ export class LumenPreviewSession {
     this.#startup = new AbortController();
     try {
       assertBrowserSupport();
-      if (this.#workerUrl === null || this.#wasmUrl === null) {
-        throw new PreviewStartupError(
-          "worker_failed",
-          "The Lumen preview needs `runtimeUrl`, or both `workerUrl` and `wasmUrl`.",
-        );
-      }
-      const workerUrl = absoluteUrl(this.#workerUrl);
-      worker = createModuleWorker(workerUrl);
+      worker = createModuleWorker(this.#runtime.worker);
       this.#workerOptions = this.#desiredOptions();
       await startWorker(
         worker,
         {
           ...this.#workerOptions,
           type: "start",
-          wasmUrl: absoluteUrl(this.#wasmUrl),
+          wasmUrl: this.#runtime.wasm,
         },
-        workerUrl,
+        this.#runtime.worker,
         this.#startup.signal,
       );
     } catch (error) {
@@ -255,6 +237,8 @@ export class LumenPreviewSession {
     this.#worker = worker;
     this.#audio = new LumenAudioEngine({
       ...this.#audioOptions,
+      workerUrl: this.#runtime.audioWorker,
+      workletUrl: this.#runtime.audioWorklet,
       onClockChange: () => this.#correctClock(),
       onError: (message) => this.#reportError("audio_failed", "audio", message),
     });
@@ -1010,11 +994,38 @@ export function mountPreview(
   return session;
 }
 
+interface RuntimeUrls {
+  worker: string;
+  wasm: string;
+  audioWorker: string;
+  audioWorklet: string;
+}
+
+/** Where each runtime file loads from: its `file` in `runtimeUrl` when that is given, else its `url`. */
+function resolveRuntime(
+  runtime: LumenRuntime | undefined,
+  runtimeUrl: string | URL | undefined,
+): RuntimeUrls {
+  if (!runtime) {
+    throw new TypeError(
+      "The Lumen preview needs `runtime`: `runtime` from `@lumiscia/lumen-bindings/urls`, or `runtime2d` from `@lumiscia/lumen-bindings/urls-2d`.",
+    );
+  }
+  const locate = ({ file, url }: LumenRuntimeFile) =>
+    runtimeUrl === undefined ? absoluteUrl(url) : runtimeFileUrl(runtimeUrl, file);
+  return {
+    worker: locate(runtime.worker),
+    wasm: locate(runtime.wasm),
+    audioWorker: locate(runtime.audioWorker),
+    audioWorklet: locate(runtime.audioWorklet),
+  };
+}
+
 /**
  * `name` in the directory `runtimeUrl` names, which it is whether or not its path ends with a
  * slash. Its query is kept on every file, and its fragment dropped.
  */
-export function runtimeFileUrl(runtimeUrl: string | URL, name: string): string {
+function runtimeFileUrl(runtimeUrl: string | URL, name: string): string {
   const base = new URL(absoluteUrl(runtimeUrl));
   if (!base.pathname.endsWith("/")) {
     base.pathname += "/";

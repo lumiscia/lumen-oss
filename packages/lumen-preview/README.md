@@ -8,7 +8,7 @@ pnpm add @lumiscia/lumen-preview @lumiscia/lumen-bindings @lumiscia/lumen-shared
 
 ```ts
 import { createLumenPreview, mountPreview } from "@lumiscia/lumen-preview";
-import { wasmUrl, workerUrl } from "@lumiscia/lumen-bindings/urls";
+import { runtime } from "@lumiscia/lumen-bindings/urls";
 import { Composition } from "@lumiscia/lumen-shared";
 
 const composition = new Composition({ timeline: { durationSeconds: 3 } });
@@ -21,7 +21,7 @@ const merged = composition.addNode({ type: "merge", inputs: { base: bg, overlay:
 composition.addNode({ type: "media_output", inputs: { source: merged } });
 
 const preview = createLumenPreview();
-mountPreview(document.body, { preview, composition, wasmUrl, workerUrl });
+mountPreview(document.body, { preview, composition, runtime });
 
 // Loading is asynchronous, and play() before it finishes is ignored.
 document.querySelector("button")?.addEventListener("click", () => {
@@ -37,7 +37,7 @@ Pass `media` and `fonts` when the composition uses them. `media` maps each sourc
 mountPreview(document.body, {
   preview,
   composition,
-  runtimeUrl: "/lumen-runtime/",
+  runtime,
   media: {
     "clips/intro.mp4": "/media/intro.mp4",
     logo: { source: logoBlob, kind: "image" },
@@ -82,16 +82,15 @@ The one difference is that the preview has no asset store: an `asset:<id>` resol
 
 ## Runtime files
 
-The preview renders in a worker that loads a wasm module, and plays audio through its own worker and an audio worklet. Pass `runtimeUrl`, a directory that serves all four files under their own names, as the reliable way to host them with any bundler or CDN, with no dev server setting:
+The preview renders in a worker that loads a wasm module, and plays audio through its own worker and an audio worklet. `runtime` names the four files: `runtime` from `@lumiscia/lumen-bindings/urls`, or `runtime2d` from `@lumiscia/lumen-bindings/urls-2d` for the smaller 2D-only build. Each entry is `{ file, url }`: `url` is where the file is served, found next to `@lumiscia/lumen-bindings` (a bundler emits the files as assets), and `file` is its name in a directory the page hosts itself. The [`@lumiscia/lumen-bindings` README](https://github.com/lumiscia/lumen-oss/tree/main/packages/lumen-bindings#runtime-files) lists them and the Vite 6 and 7 dev setting they need.
 
-| File                 | Copy of                                            |
-| -------------------- | -------------------------------------------------- |
-| `worker.js`          | `@lumiscia/lumen-bindings/dist/browser/worker.js`  |
-| `lumen_wasm_bg.wasm` | `@lumiscia/lumen-bindings/wasm/lumen_wasm_bg.wasm` |
-| `audio-worker.js`    | `@lumiscia/lumen-preview/dist/audio-worker.js`     |
-| `audio-worklet.js`   | `@lumiscia/lumen-preview/dist/audio-worklet.js`    |
+To host the files yourself, with any bundler or CDN and no dev server setting, copy the four files the manifest names from `@lumiscia/lumen-bindings` into one directory and pass `runtimeUrl` as well. Every file then loads as its `file` in that directory:
 
-`runtimeUrl` names a directory whether or not it ends with `/`: `https://cdn.example/lumen?v=3` serves `https://cdn.example/lumen/worker.js?v=3`, with its query kept on each file and any fragment dropped. `workerUrl`, `wasmUrl` and `audio.workerModuleUrl` / `audio.workletModuleUrl` still name one file each and win over `runtimeUrl`. To run the smaller 2D-only build, which has no 3D, serve `worker-2d.js` and `lumen_wasm_2d_bg.wasm` from `@lumiscia/lumen-bindings` as well and pass their URLs as `workerUrl` and `wasmUrl`. `runtimeFileUrl(runtimeUrl, name)` gives a file's URL in `runtimeUrl`, and the `/2d` `Player`s of `@lumiscia/lumen-react` and `@lumiscia/lumen-svelte` use it to do this themselves. Without `runtimeUrl`, pass `workerUrl` and `wasmUrl` from `@lumiscia/lumen-bindings/urls`, and the audio files are found next to this package, which works where the bundler emits them as assets; with Vite 6 or 7, the `@lumiscia/lumen-bindings` README has the dev server setting this needs. The files can be on another origin that sends CORS headers. A worker on another origin starts from a `blob:` URL that imports it, so a Content Security Policy must allow `blob:` and that origin in `worker-src`.
+```ts
+mountPreview(document.body, { preview, composition, runtime, runtimeUrl: "/lumen-runtime/" });
+```
+
+`runtimeUrl` names a directory whether or not it ends with `/`: `https://cdn.example/lumen?v=3` serves `https://cdn.example/lumen/worker.js?v=3`, with its query kept on each file and any fragment dropped. To serve one file somewhere else, pass a manifest of your own, such as `{ ...runtime, wasm: { file: "lumen_wasm_bg.wasm", url: "https://cdn.example/lumen.wasm" } }`. The files can be on another origin that sends CORS headers. A worker on another origin starts from a `blob:` URL that imports it, so a Content Security Policy must allow `blob:` and that origin in `worker-src`.
 
 ## Errors
 
@@ -101,8 +100,7 @@ The preview renders in a worker that loads a wasm module, and plays audio throug
 mountPreview(document.body, {
   preview,
   composition,
-  wasmUrl,
-  workerUrl,
+  runtime,
   onError: ({ code, message, diagnostics }) => {
     for (const { severity, code, path, message } of diagnostics) {
       console.warn(`${severity} ${code} at ${path || "/"}: ${message}`);
@@ -166,8 +164,7 @@ Diagnostic codes are public API, and new ones can appear in a patch release, so 
 const session = mountPreview(document.body, {
   preview,
   composition,
-  wasmUrl,
-  workerUrl,
+  runtime,
   range: { in: 30, out: 90 }, // frames 30 to 89
   loop: true,
   rate: 1.5,
@@ -191,11 +188,11 @@ session.rate; // 1.5: the options in effect are readable as loop, rate, volume, 
 
 ## Entry points
 
-`@lumiscia/lumen-preview` exports `createLumenPreview`, `mountPreview`, `LumenPreviewContext`, `LumenPreviewSession` and the types of their state, errors, options and callbacks, including `MediaFailure` and `LumenPreviewMediaState`. Nothing else is public: media decoding and audio are internal.
+`@lumiscia/lumen-preview` exports `createLumenPreview`, `mountPreview`, `LumenPreviewContext`, `LumenPreviewSession` and the types of their state, errors, options and callbacks, including `MediaFailure`, `LumenPreviewMediaState` and `LumenRuntime`. Nothing else is public: media decoding and audio are internal.
 
 The preview object from `createLumenPreview()` is read-only for an app: it has `subscribe`, `getSnapshot`, `play`, `pause`, `seek` and `whenReady`, and only the session mounted with it changes its state. `getSnapshot()` returns the same object until the state changes, then a new one, so it works as a `useSyncExternalStore` snapshot.
 
-`@lumiscia/lumen-preview/advanced` exports only types: the bindings a custom host passes to `@lumiscia/lumen-preview/worker-host` (`LumenBindings`, `LumenPreviewBindings`, `LumenPreviewControllerBinding`, `LumenMediaTarget`) and the types its messages carry (`VideoSourceRegistration`, `PreviewClock`). `@lumiscia/lumen-bindings` implements them, so an application doesn't need this entry.
+`@lumiscia/lumen-preview/advanced` exports only types: the bindings a custom host passes to `@lumiscia/lumen-preview/worker-host` (`LumenPreviewBindings`, `LumenPreviewControllerBinding`, `LumenMediaTarget`) and the types its messages carry (`VideoSourceRegistration`, `PreviewClock`). `@lumiscia/lumen-bindings` implements them, so an application doesn't need this entry.
 
 The preview draws the 3D scene nodes too. The [3D guide](https://github.com/lumiscia/lumen-oss/blob/main/docs/3d.md) covers them.
 

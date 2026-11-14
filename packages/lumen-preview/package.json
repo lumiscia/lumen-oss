@@ -26,6 +26,8 @@
   ],
   "type": "module",
   "sideEffects": [
+    "./dist/audio-worker.js",
+    "./dist/audio-worklet.js",
     "./dist/index.js"
   ],
   "main": "./dist/index.js",
@@ -34,6 +36,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./audio-worker": {
+      "types": "./dist/audio-worker.d.ts",
+      "default": "./dist/audio-worker.js"
+    },
+    "./audio-worklet": {
+      "types": "./dist/audio-worklet.d.ts",
+      "default": "./dist/audio-worklet.js"
     },
     "./advanced": {
       "types": "./dist/advanced.d.ts",

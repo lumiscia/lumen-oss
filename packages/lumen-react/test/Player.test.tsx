@@ -4,8 +4,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import * as defaults from "@lumiscia/lumen-bindings/urls";
-import * as defaults2d from "@lumiscia/lumen-bindings/urls-2d";
+import { runtime } from "@lumiscia/lumen-bindings/urls";
+import { runtime2d } from "@lumiscia/lumen-bindings/urls-2d";
 import { createLumenPreview } from "@lumiscia/lumen-preview/preview";
 
 interface MockSession {
@@ -13,9 +13,8 @@ interface MockSession {
   options: {
     composition?: unknown;
     preview: unknown;
+    runtime: unknown;
     runtimeUrl?: unknown;
-    wasmUrl: unknown;
-    workerUrl: unknown;
   };
   dispose: ReturnType<typeof vi.fn>;
   setInputs: ReturnType<typeof vi.fn>;
@@ -137,62 +136,50 @@ describe("Player", () => {
     await act(async () => root.unmount());
   });
 
-  it("starts the worker this package ships unless told where another is", async () => {
+  it("starts the runtime this package ships unless given another", async () => {
     const preview = createLumenPreview();
     const root = createRoot(document.createElement("div"));
 
     await act(async () => {
       root.render(<Player preview={preview} />);
     });
-    expect(sessions[0]?.options).toMatchObject({
-      wasmUrl: defaults.wasmUrl.href,
-      workerUrl: defaults.workerUrl.href,
-    });
-    expect(defaults.workerUrl.pathname).toMatch(/\/lumen-bindings\/dist\/browser\/worker\.js$/);
-    expect(defaults.wasmUrl.pathname).toMatch(/\/lumen-bindings\/wasm\/lumen_wasm_bg\.wasm$/);
+    expect(sessions[0]?.options.runtime).toBe(runtime);
+    expect(String(runtime.worker.url)).toMatch(/\/lumen-bindings\/dist\/browser\/worker\.js$/);
+    expect(String(runtime.wasm.url)).toMatch(/\/lumen-bindings\/wasm\/lumen_wasm_bg\.wasm$/);
+    expect(String(runtime.audioWorker.url)).toMatch(/\/dist\/browser\/audio-worker\.js$/);
+    expect(String(runtime.audioWorklet.url)).toMatch(/\/dist\/browser\/audio-worklet\.js$/);
 
     await act(async () => {
-      root.render(<Player preview={preview} wasmUrl="/lumen.wasm" workerUrl="/worker.js" />);
+      root.render(<Player preview={preview} runtimeUrl="/lumen/" />);
     });
     expect(sessions[0]?.dispose).toHaveBeenCalledOnce();
-    expect(sessions[1]?.options).toMatchObject({ wasmUrl: "/lumen.wasm", workerUrl: "/worker.js" });
+    expect(sessions[1]?.options).toMatchObject({ runtime, runtimeUrl: "/lumen/" });
 
+    const custom = () => ({ ...runtime, wasm: { file: "lumen.wasm", url: "/lumen.wasm" } });
     await act(async () => {
-      root.render(<Player preview={preview} runtimeUrl="/lumen/" workerUrl="/worker.js" />);
+      root.render(<Player preview={preview} runtime={custom()} />);
     });
-    expect(sessions[2]?.options).toMatchObject({
-      runtimeUrl: "/lumen/",
-      wasmUrl: new URL("/lumen/lumen_wasm_bg.wasm", document.baseURI).href,
-      workerUrl: "/worker.js",
+    expect(sessions[2]?.options.runtime).toEqual(custom());
+
+    // A manifest rebuilt with the same files keeps the session.
+    await act(async () => {
+      root.render(<Player preview={preview} runtime={custom()} />);
     });
+    expect(sessions).toHaveLength(3);
 
     await act(async () => root.unmount());
   });
 
-  it("starts the 2D wasm from the 2d entry point", async () => {
+  it("starts the 2D runtime from the 2d entry point", async () => {
     const preview = createLumenPreview();
     const root = createRoot(document.createElement("div"));
 
     await act(async () => {
       root.render(<Player2d preview={preview} />);
     });
-    expect(sessions[0]?.options).toMatchObject({
-      wasmUrl: defaults2d.wasmUrl.href,
-      workerUrl: defaults2d.workerUrl.href,
-    });
-    expect(defaults2d.wasmUrl.pathname).toMatch(/\/lumen-bindings\/wasm\/lumen_wasm_2d_bg\.wasm$/);
-    expect(defaults2d.workerUrl.pathname).toMatch(
-      /\/lumen-bindings\/dist\/browser\/worker-2d\.js$/,
-    );
-
-    await act(async () => {
-      root.render(<Player2d preview={preview} runtimeUrl="/lumen" />);
-    });
-    expect(sessions[1]?.options).toMatchObject({
-      runtimeUrl: "/lumen",
-      wasmUrl: new URL("/lumen/lumen_wasm_2d_bg.wasm", document.baseURI).href,
-      workerUrl: new URL("/lumen/worker-2d.js", document.baseURI).href,
-    });
+    expect(sessions[0]?.options.runtime).toBe(runtime2d);
+    expect(String(runtime2d.wasm.url)).toMatch(/\/lumen-bindings\/wasm\/lumen_wasm_2d_bg\.wasm$/);
+    expect(String(runtime2d.worker.url)).toMatch(/\/lumen-bindings\/dist\/browser\/worker-2d\.js$/);
 
     await act(async () => root.unmount());
   });

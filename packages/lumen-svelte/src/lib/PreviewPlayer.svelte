@@ -1,35 +1,21 @@
 <script lang="ts">
     import { untrack } from "svelte";
-    import { mountPreview, runtimeFileUrl, type LumenPreviewSession } from "@lumiscia/lumen-preview";
-    import type { PlayerDefaults, PlayerProps } from "./types.js";
+    import { mountPreview, type LumenPreviewSession, type LumenRuntime } from "@lumiscia/lumen-preview";
+    import type { PlayerProps } from "./types.js";
 
     let {
-        defaults,
+        defaultRuntime,
         preview,
+        runtime,
         runtimeUrl,
-        wasmUrl,
-        workerUrl,
         class: className,
         style,
         ...inputs
-    }: PlayerProps & { defaults: PlayerDefaults } = $props();
+    }: PlayerProps & { defaultRuntime: LumenRuntime } = $props();
 
-    // A URL passed wins, then the file in `runtimeUrl`, then the package's own copy.
-    const runtime = $derived(runtimeUrl === undefined ? undefined : String(runtimeUrl));
-    const wasm = $derived(
-        wasmUrl !== undefined
-            ? String(wasmUrl)
-            : runtime === undefined
-              ? String(defaults.wasmUrl)
-              : runtimeFileUrl(runtime, defaults.wasmFile),
-    );
-    const worker = $derived(
-        workerUrl !== undefined
-            ? String(workerUrl)
-            : runtime === undefined
-              ? String(defaults.workerUrl)
-              : runtimeFileUrl(runtime, defaults.workerFile),
-    );
+    // By content, so a manifest rebuilt with the same files doesn't restart the preview.
+    const runtimeKey = $derived(JSON.stringify(runtime ?? defaultRuntime));
+    const directory = $derived(runtimeUrl === undefined ? undefined : String(runtimeUrl));
 
     let host = $state<HTMLDivElement>();
     let session = $state.raw<LumenPreviewSession>();
@@ -38,12 +24,12 @@
         if (!host) {
             return;
         }
+        void runtimeKey;
         const mounted = mountPreview(host, {
             ...untrack(() => ({ ...inputs })),
             preview,
-            runtimeUrl: runtime,
-            wasmUrl: wasm,
-            workerUrl: worker,
+            runtime: untrack(() => runtime ?? defaultRuntime),
+            runtimeUrl: directory,
         });
         session = mounted;
         return () => mounted.dispose();
