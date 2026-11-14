@@ -8,9 +8,10 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use lumen_engine::render::{
-    CancelToken, FONT_DIR_ENV, FrameRange, GpuSettings, HARDWARE_DECODE_ENV, ImageRender,
-    LocalMediaStore, Mp4Render, OutputFormat, RenderConfig, RenderOutput, RenderProgress,
-    RenderReport, existing_font_dir, frame_number_width, is_enabled_flag, resolve_encoder,
+    self, CancelToken, CheckReport, FONT_DIR_ENV, FrameRange, GpuSettings, HARDWARE_DECODE_ENV,
+    ImageRender, LocalMediaStore, Mp4Render, OutputFormat, RenderConfig, RenderOutput, RenderPlan,
+    RenderProgress, RenderReport, RenderRequest, existing_font_dir, frame_number_width,
+    is_enabled_flag,
 };
 use lumen_engine::{
     composition::Composition,
@@ -366,18 +367,9 @@ impl VideoArgs {
             .expect("clap allows at most one rate control")
     }
 
-    /// The encoders a video render of `composition` to `format` tries.
-    fn encoder_choice(
-        &self,
-        composition: &Composition,
-        format: OutputFormat,
-    ) -> Result<VideoEncoderChoice> {
-        let config_path = self
-            .quality_config
-            .as_deref()
-            .filter(|path| !path.as_os_str().is_empty());
-        let config = QualityConfig::load(config_path).map_err(|error| anyhow!(error))?;
-        let request = QualityRequest {
+    /// The quality settings the flags ask for. `LUMEN_VIDEO_ENCODER` is not one of them.
+    fn quality_request(&self) -> QualityRequest {
+        QualityRequest {
             preset: self.quality.clone(),
             codec: self.codec,
             bit_depth: self.bit_depth,
@@ -385,25 +377,20 @@ impl VideoArgs {
             settings: self.quality(),
             encoder: self.encoder.clone(),
         }
-        .with_env_encoder();
-        Ok(resolve_encoder(&config, composition, format, request)?)
     }
 
-    /// Whether any flag only a video takes was given.
-    fn any(&self) -> bool {
-        self.encoder.is_some()
-            || self.quality.is_some()
-            || self.codec.is_some()
-            || self.bit_depth.is_some()
-            || self.alpha.is_some()
-            || self.quality().is_some()
+    fn quality_config(&self) -> Result<QualityConfig> {
+        let config_path = self
+            .quality_config
+            .as_deref()
+            .filter(|path| !path.as_os_str().is_empty());
+        QualityConfig::load(config_path).map_err(|error| anyhow!(error))
     }
 }
 
 impl RenderArgs {
-    /// What the command line asks to write, after checking that no flag only another kind of
-    /// output supports was given. `LUMEN_VIDEO_ENCODER` is a default, so only `--encoder`
-    /// conflicts with an image.
+    /// What the command line asks to write, after checking that no image flag another kind of
+    /// output can't use was given. [`render::plan`] checks the video flags.
     fn plan(&self) -> Result<OutputPlan> {
         let output = self.output.as_path();
         let extension = output
@@ -432,11 +419,6 @@ impl RenderArgs {
                 output.display()
             ),
         };
-        if !format.is_video() && self.video.any() {
-            bail!(
-                "--encoder, --quality, --codec, --bit-depth, --alpha, --bitrate, --crf, --qp and --preset are only supported when output is a video (.mp4, .mov or .webm)"
-            );
-        }
         if format.is_video() && self.image.frame.is_some() {
             bail!("--frame is only supported when output is an image; use --frames for a video");
         }
@@ -477,6 +459,22 @@ impl RenderArgs {
             },
             files: pattern.map_or(Files::One, Files::Sequence),
         })
+    }
+
+    /// What `output` renders of `composition`, with the video flags and the quality config.
+    fn render_plan(&self, output: &RenderOutput, composition: &Composition) -> Result<RenderPlan> {
+        let request = RenderRequest {
+            output: output.clone(),
+            quality: self.video.quality_request(),
+            default_encoder: QualityRequest::default().with_env_encoder().encoder,
+        };
+        // An image takes no quality config, so one that doesn't load doesn't stop it.
+        let config = if output.format.is_video() {
+            self.video.quality_config()?
+        } else {
+            QualityConfig::default()
+        };
+        Ok(render::plan(composition, &request, &config, None)?)
     }
 }
 
@@ -521,16 +519,16 @@ fn check(args: &CheckArgs) -> Result<bool> {
     let raw = args.source.read_composition()?;
     let media_store = args.source.media_store()?;
     let known_font = |family: &str| media_store.resolve(family, AssetKind::Font).is_ok();
-    let diagnostics =
-        lumen_engine::json::check(&raw, Some(&known_font), Some(media_store.assets()));
-    let ok = !diagnostics.iter().any(Diagnostic::is_error);
+    let report = CheckReport::new(lumen_engine::json::check(
+        &raw,
+        Some(&known_font),
+        Some(media_store.assets()),
+    ));
+    let diagnostics = &report.diagnostics;
     match args.format {
-        Format::Json => println!(
-            "{}",
-            serde_json::json!({ "ok": ok, "diagnostics": diagnostics })
-        ),
+        Format::Json => println!("{}", serde_json::to_string(&report)?),
         Format::Text => {
-            for diagnostic in &diagnostics {
+            for diagnostic in diagnostics {
                 println!("{}", diagnostic_line(diagnostic));
             }
             let errors = diagnostics
@@ -544,7 +542,7 @@ fn check(args: &CheckArgs) -> Result<bool> {
             );
         }
     }
-    Ok(ok)
+    Ok(report.ok)
 }
 
 fn diagnostic_line(diagnostic: &Diagnostic) -> String {
@@ -572,12 +570,10 @@ fn print_warnings(diagnostics: &[Diagnostic]) {
 fn run(args: &RenderArgs) -> Result<()> {
     let plan = args.plan()?;
     let composition = load_composition(&args.source)?;
+    let render_plan = args.render_plan(&plan.output, &composition)?;
     let media_store = args.source.media_store()?.explaining_missing_sources();
 
-    if plan.output.format.is_video() {
-        let choice = args
-            .video
-            .encoder_choice(&composition, plan.output.format)?;
+    if let Some(choice) = render_plan.encoder {
         return render_to_partial(&args.output, |partial| {
             render_mp4(
                 &composition,
@@ -1172,16 +1168,36 @@ mod tests {
         assert!(parse(&["--output", "o.mp4", "--bitrate", "0"]).is_err());
     }
 
+    /// A one-frame composition of a black background.
+    fn composition() -> lumen_engine::composition::Composition {
+        lumen_engine::json::parse_value(&serde_json::json!({
+            "timeline": { "duration_frames": 1 },
+            "render_settings": { "width": 16, "height": 16 },
+            "nodes": [
+                { "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255], "width": 16, "height": 16 } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+        }))
+        .expect("composition")
+    }
+
     #[test]
     fn plan_rejects_flags_the_output_cannot_use() {
         let plan = |flags: &[&str]| parse(flags).unwrap().plan();
         let message = |flags: &[&str]| plan(flags).err().unwrap().to_string();
+        let render_message = |flags: &[&str]| {
+            let args = parse(flags).unwrap();
+            let output = args.plan().unwrap().output;
+            let error = args.render_plan(&output, &composition()).unwrap_err();
+            error.to_string()
+        };
         assert!(plan(&["--output", "o.mp4", "--crf", "23"]).is_ok());
         assert!(plan(&["--output", "o.png", "--frame", "3"]).is_ok());
 
         assert!(
-            message(&["--output", "o.png", "--encoder", "libx264"])
-                .contains("only supported when output is a video")
+            render_message(&["--output", "o.png", "--encoder", "libx264"])
+                .contains("only apply to the mp4, mov and webm formats")
         );
         for quality in [
             ["--bitrate", "14M"],
@@ -1194,8 +1210,8 @@ mod tests {
         ] {
             for output in ["o.png", "o.jpg", "o_%d.png"] {
                 assert!(
-                    message(&["--output", output, quality[0], quality[1]])
-                        .contains("only supported when output is a video"),
+                    render_message(&["--output", output, quality[0], quality[1]])
+                        .contains("only apply to the mp4, mov and webm formats"),
                     "{output} {quality:?}"
                 );
             }
@@ -1314,23 +1330,14 @@ mod tests {
             r#"{ "presets": { "archive": { "encoders": { "libx264": { "crf": 16 } } } } }"#,
         )
         .expect("write config");
-        let composition = lumen_engine::json::parse_value(&serde_json::json!({
-            "timeline": { "duration_frames": 1 },
-            "render_settings": { "width": 16, "height": 16 },
-            "nodes": [
-                { "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255], "width": 16, "height": 16 } },
-                { "id": 2, "type": "media_output" }
-            ],
-            "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
-        }))
-        .expect("composition");
+        let composition = composition();
         let choice = |flags: &[&str]| {
             let config = config.to_str().unwrap();
             let base = ["--output", "o.mp4", "--quality-config", config];
             parse(&[&base[..], flags].concat())
                 .unwrap()
-                .video
-                .encoder_choice(&composition, OutputFormat::Mp4)
+                .render_plan(&RenderOutput::of(OutputFormat::Mp4), &composition)
+                .map(|plan| plan.encoder.expect("a video has encoders"))
         };
 
         let archive = choice(&["--quality", "archive"]).expect("archive resolves");

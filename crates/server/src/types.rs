@@ -89,10 +89,6 @@ impl RenderJobError {
             false,
         )
     }
-
-    pub fn invalid_output(message: &str) -> Self {
-        Self::new(ApiErrorCode::InvalidOutput, message, false)
-    }
 }
 
 impl From<RenderJobError> for api::RenderFailure {

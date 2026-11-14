@@ -46,6 +46,15 @@ fn wire_output_format(format: render::OutputFormat) -> api::OutputFormat {
     }
 }
 
+/// The answer to `POST /renders/check`, with diagnostics as a client sees them.
+pub(crate) fn check_report(report: render::CheckReport) -> api::CheckReport {
+    let render::CheckReport { diagnostics, ok } = report;
+    api::CheckReport {
+        ok,
+        diagnostics: crate::sanitized_diagnostics(&diagnostics),
+    }
+}
+
 /// The HTTP API's code for a render that failed with `code`. An engine code has no variant of its
 /// own there.
 pub(crate) fn error_code(code: render::ErrorCode) -> api::ErrorCode {

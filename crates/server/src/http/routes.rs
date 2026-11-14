@@ -7,7 +7,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use lumen_engine::render::{check_composition, resolve_encoder};
+use lumen_engine::render::{self, RenderPlan, check_composition};
 use lumen_engine::{composition::Composition, media::AssetResolver};
 use lumen_ffmpeg::{BitDepth, EncodeCodec, QualityRequest};
 use lumen_server_api::{
@@ -18,8 +18,8 @@ use tokio::sync::OwnedSemaphorePermit;
 
 use crate::{
     Artifact, RenderJob, RenderJobError, RenderRecord, RenderStatus, current_timestamp,
-    execute_render_job, input_hash, new_render_id, sanitized_diagnostics, validate_media_manifest,
-    wire::render_output,
+    execute_render_job, input_hash, new_render_id, validate_media_manifest,
+    wire::{check_report, render_output},
 };
 
 use super::{
@@ -89,54 +89,32 @@ pub(super) async fn create_render(
     })?;
     let composition = composition?;
 
-    // Resolved now with the resolver the render uses, so a request it would fail is refused here.
-    let output = render_output(input.output.unwrap_or_default());
-    output
-        .validate(
-            composition.timeline().duration_frames,
-            &state.sequence_limits,
-        )
-        .map_err(|error| {
-            ApiError::rejected(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                RenderJobError::refused(&error),
-            )
-        })?;
-    if !output.format.is_video()
-        && (input.quality.is_some()
-            || input.codec.is_some()
-            || input.bit_depth.is_some()
-            || input.alpha.is_some())
-    {
-        return Err(ApiError::rejected(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            RenderJobError::invalid_output(
-                "quality, codec, bitDepth and alpha only apply to the mp4, mov and webm formats",
-            ),
-        ));
-    }
-    let encoder = if output.format.is_video() {
-        let request = QualityRequest {
+    // Planned now with the resolver the render uses, so a request it would fail is refused here.
+    let request = render::RenderRequest {
+        output: render_output(input.output.unwrap_or_default()),
+        quality: QualityRequest {
             preset: input.quality,
             codec: input.codec.map(encode_codec),
             bit_depth: input.bit_depth.map(bit_depth),
             alpha: input.alpha,
             ..QualityRequest::default()
-        }
-        .with_env_encoder();
-        Some(
-            resolve_encoder(&state.quality, &composition, output.format, request).map_err(
-                |error| {
-                    ApiError::rejected(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        RenderJobError::refused(&error),
-                    )
-                },
-            )?,
-        )
-    } else {
-        None
+        },
+        default_encoder: QualityRequest::default().with_env_encoder().encoder,
     };
+    let RenderPlan {
+        output, encoder, ..
+    } = render::plan(
+        &composition,
+        &request,
+        &state.quality,
+        Some(&state.sequence_limits),
+    )
+    .map_err(|error| {
+        ApiError::rejected(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            RenderJobError::refused(&error),
+        )
+    })?;
 
     let id = new_render_id();
     let record = state.insert(RenderRecord::new(
@@ -205,7 +183,7 @@ pub(super) async fn check_render(
     validate_media_manifest(&input.media)
         .map_err(|error| ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     let (assets, config) = (state.assets, state.render_config);
-    let diagnostics = tokio::task::spawn_blocking(move || {
+    let report = tokio::task::spawn_blocking(move || {
         check_composition(
             &input.composition,
             &|name| input.media.contains_key(name),
@@ -221,10 +199,7 @@ pub(super) async fn check_render(
             format!("check worker join failed: {error}"),
         )
     })?;
-    Ok(Json(CheckReport {
-        ok: !diagnostics.iter().any(|diagnostic| diagnostic.is_error()),
-        diagnostics: sanitized_diagnostics(&diagnostics),
-    }))
+    Ok(Json(check_report(report)))
 }
 
 /// The render as it is now, for both `GET /renders/{id}` and `GET /renders/{id}/progress`.

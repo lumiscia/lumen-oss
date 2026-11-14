@@ -557,6 +557,8 @@ On the CPU upload path, frames are read back through a ring of three buffers whi
 
 `LocalMediaStore::new(root, &config)` and `check_composition(payload, staged, assets, &config)` take the same config.
 
+`plan(&composition, &request, &quality_config, limits)` is what `lumen` and `lumen-server` do before a render starts: it checks a `RenderRequest` (the output, and for a video its `QualityRequest`) against the timeline, refuses video settings on an image output with `invalid_output`, and resolves the encoders. `check_composition` answers with a `CheckReport { diagnostics, ok }`.
+
 ### Error codes
 
 A failed render is a `render::Error`. `code()` is an `ErrorCode` to match on, `as_str()` gives the string `lumen-server` returns, `Display` is a message, and `source()` is the error that caused it. A failure in the engine has the engine's diagnostic code, such as `media.not_found`, `media.decode` or `render.gpu`, from the [codes](#codes) above, and `engine_error()` returns the engine error itself. Of them, `render.gpu` is retryable, and so is a media failure that was a shortage that can pass (out of memory or file descriptors), which is a `media.decode`. The other codes are failures of the render library:
