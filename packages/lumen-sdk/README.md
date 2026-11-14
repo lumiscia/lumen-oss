@@ -36,15 +36,14 @@ const composition = new Composition({ timeline: { durationSeconds: 3 } }).addOut
 );
 ```
 
-`render` takes `quality`, a preset name (`draft`, `standard`, `high` or `lossless` on every host), `codec`, `h264`, `hevc` or `av1` in an `mp4`, `prores` in a `mov` or `vp9` in a `webm`, and `bitDepth`, 8 (the default) or 10 for `hevc` and `av1` (ProRes is always 10). They win over the composition's `renderSettings.quality`, `renderSettings.codec` and `renderSettings.bit_depth`, and a host that can't serve them rejects the render:
+`render` takes `quality`, a preset name (`draft`, `standard`, `high` or `lossless` on every host), `codec`, `h264`, `hevc` or `av1` in an `mp4`, `prores` in a `mov` or `vp9` in a `webm`, and `bitDepth`, 8 (the default) or 10 for `hevc` and `av1` (ProRes is always 10). A composition holds none of them, and a host that can't serve them rejects the render:
 
 ```ts
-const composition = new Composition({ renderSettings: { codec: "hevc", quality: "high" } });
 await lumen.render(composition, { quality: "lossless", codec: "h264" });
 await lumen.render(composition, { codec: "hevc", bitDepth: 10 });
 ```
 
-A video with an alpha channel is a `mov` in ProRes 4444 or a `webm` in VP9 (with Opus audio), asked for with `alpha: true` or `renderSettings.alpha`. The colour is straight (not premultiplied) and alpha is full range. An MP4, or an encoder that can't write alpha, is rejected rather than rendered opaque:
+A video with an alpha channel is a `mov` in ProRes 4444 or a `webm` in VP9 (with Opus audio), asked for with `alpha: true`. The colour is straight (not premultiplied) and alpha is full range. An MP4, or an encoder that can't write alpha, is rejected rather than rendered opaque:
 
 ```ts
 await lumen.render(composition, { alpha: true, output: { format: "mov" } }); // prores_ks, 10-bit 4:4:4

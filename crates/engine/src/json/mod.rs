@@ -21,8 +21,8 @@ use serde_json::{Number, Value};
 use crate::{
     audio::{AudioClip, AudioGain, AudioTimeline, AudioTrack},
     composition::{
-        BitDepth, Composition, CompositionBuilder, CompositionTemplate, OutputCodec,
-        OutputSettings, PropDef, PropKind, RenderSettings, Scene, TimelineSettings,
+        Composition, CompositionBuilder, CompositionTemplate, PropDef, PropKind, RenderSettings,
+        Scene, TimelineSettings,
     },
     diagnostic::{Diagnostic, MAX_DIAGNOSTICS},
     error::{DocumentError, GraphValidationError, LumenError, Warning},
@@ -143,7 +143,7 @@ impl RenderSettingsJson {
     }
 }
 
-/// The root's settings, which also say how to encode it.
+/// The root's settings.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RootRenderSettingsJson {
@@ -153,34 +153,16 @@ struct RootRenderSettingsJson {
     height: u32,
     #[serde(default, deserialize_with = "retired_background_color")]
     background_color: (),
-    #[serde(default, deserialize_with = "present")]
-    codec: Option<OutputCodec>,
-    #[serde(default, deserialize_with = "present")]
-    quality: Option<String>,
-    #[serde(default, deserialize_with = "present")]
-    bit_depth: Option<BitDepth>,
-    #[serde(default, deserialize_with = "present")]
-    alpha: Option<bool>,
 }
 
 impl RootRenderSettingsJson {
-    fn settings(&self) -> (RenderSettings, OutputSettings) {
+    fn settings(&self) -> RenderSettings {
         let Self {
             width,
             height,
             background_color: (),
-            codec,
-            ref quality,
-            bit_depth,
-            alpha,
         } = *self;
-        let output = OutputSettings {
-            codec,
-            quality: quality.clone(),
-            bit_depth,
-            alpha,
-        };
-        (RenderSettings { width, height }, output)
+        RenderSettings { width, height }
     }
 }
 
@@ -559,7 +541,7 @@ fn load(root: &Value) -> Result<Composition, Vec<LumenError>> {
             ]
         })?;
     let timeline = document.timeline.settings(DEFAULT_FPS);
-    let (render_settings, output) = document.render_settings.settings();
+    let render_settings = document.render_settings.settings();
 
     let function_scope = FunctionScope::enter(&document.functions)
         .map_err(|error| vec![DocumentError::Function { error }.into()])?;
@@ -616,7 +598,6 @@ fn load(root: &Value) -> Result<Composition, Vec<LumenError>> {
             render_settings,
         },
         audio,
-        output,
         compositions: templates,
     }
     .build()

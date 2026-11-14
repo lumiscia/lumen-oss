@@ -5,3 +5,4 @@ export * from "./media.js";
 export * from "./model.js";
 export * from "./node-spec.js";
 export * from "./values.js";
+export * from "./video.js";

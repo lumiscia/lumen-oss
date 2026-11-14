@@ -425,7 +425,7 @@ async fn vulkan_video(
     let target = VulkanVideoTarget::new(
         renderer.gpu_renderer(),
         size,
-        lumen_engine::composition::BitDepth::Eight,
+        lumen_engine::gpu::BitDepth::Eight,
         true,
     );
     let (mut encoder, encoder_name) = open_vulkan_encoder(workload.composition, &device, output)?;
@@ -501,7 +501,7 @@ async fn vk_cuda_nvenc(
     let target_pool = CudaNvencTargetPool::new(
         renderer.gpu_renderer(),
         output_size,
-        lumen_engine::composition::BitDepth::Eight,
+        lumen_engine::gpu::BitDepth::Eight,
         true,
     )?;
     let target = target_pool.acquire(renderer.gpu_renderer())?;

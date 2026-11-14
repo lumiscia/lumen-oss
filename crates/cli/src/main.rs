@@ -158,8 +158,6 @@ struct VideoArgs {
     bit_depth: Option<BitDepth>,
 
     /// Keep transparency as an alpha channel (.mov or .webm)
-    ///
-    /// `--alpha false` renders opaque over a composition that asks for alpha.
     #[arg(
         long,
         value_name = "BOOL",
@@ -1259,7 +1257,7 @@ mod tests {
     }
 
     #[test]
-    fn quality_config_presets_resolve_against_the_composition() {
+    fn quality_config_presets_resolve() {
         let dir = tempfile::tempdir().expect("temp dir");
         let config = dir.path().join("quality.json");
         fs::write(
@@ -1269,7 +1267,7 @@ mod tests {
         .expect("write config");
         let composition = lumen_engine::json::parse_value(&serde_json::json!({
             "timeline": { "duration_frames": 1 },
-            "render_settings": { "width": 16, "height": 16, "quality": "archive" },
+            "render_settings": { "width": 16, "height": 16 },
             "nodes": [
                 { "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255], "width": 16, "height": 16 } },
                 { "id": 2, "type": "media_output" }
@@ -1286,7 +1284,7 @@ mod tests {
                 .encoder_choice(&composition, OutputFormat::Mp4)
         };
 
-        let archive = choice(&[]).expect("archive resolves");
+        let archive = choice(&["--quality", "archive"]).expect("archive resolves");
         assert_eq!(archive.candidates().len(), 1);
         assert_eq!(
             archive.first().quality.rate_control,
