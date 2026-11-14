@@ -127,8 +127,7 @@ pub trait NodeParams: DelegateEvaluable + Default {
         Err(errors
             .into_iter()
             .map(|(param, details)| DocumentError::InvalidParam {
-                node_id,
-                param: param.to_string(),
+                at: crate::error::At::param(node_id, param),
                 details,
             })
             .collect())

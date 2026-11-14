@@ -43,7 +43,7 @@ macro_rules! node_kinds {
                 match kind {
                     $(<$node as JsonNode>::KIND => Ok(Self::$variant(<$node>::from_json(id, params)?)),)+
                     other => Err(vec![DocumentError::UnknownNodeType {
-                        node_id: id,
+                        at: crate::error::At::node(id),
                         kind: other.to_string(),
                     }]),
                 }

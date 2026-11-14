@@ -324,12 +324,7 @@ impl TextMeshes {
 }
 
 fn text_error(node_id: NodeId, details: String) -> LumenError {
-    RenderError::NodeEvaluation {
-        node_id,
-        node_kind: "Text3d",
-        details,
-    }
-    .into()
+    RenderError::evaluating::<super::Text3d>(node_id, details).into()
 }
 
 /// The layout a 2D `text` node would shape `params`' text with at `em` pixels to the em, so that
@@ -378,7 +373,7 @@ pub(super) fn text_mesh(
     };
     cx.note_font(&params.font_family);
     for family in missing {
-        cx.note_font_fallback(node_id, family);
+        cx.warn(node_id, crate::error::WarningKind::FontFallback { family });
     }
     let key = TextKey::new(params, request, font_generation);
     let tick = cx.tick();
@@ -408,7 +403,10 @@ pub(super) fn text_mesh(
     let (id, mesh, skipped) = (cached.id.clone(), cached.mesh, cached.skipped);
     cx.drew_model(&id);
     if skipped > 0 {
-        cx.note_missing_outlines(node_id, skipped);
+        cx.warn(
+            node_id,
+            crate::error::WarningKind::NoOutlines { glyphs: skipped },
+        );
     }
     Ok(mesh)
 }

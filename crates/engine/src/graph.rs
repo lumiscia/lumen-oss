@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    error::{GraphValidationError, LumenError},
+    error::{At, GraphValidationError, LumenError},
     node::{Node, NodeId, NodeKind, PortKind},
 };
 
@@ -19,11 +19,18 @@ pub struct Connection {
 #[derive(Default, Debug, lumen_macros::StructuralHash)]
 pub struct Graph {
     pub nodes: HashMap<NodeId, NodeKind>,
+    /// Each node's index in the document's `nodes`, for a graph read from JSON.
+    pub(crate) positions: HashMap<NodeId, usize>,
 }
 
 impl Graph {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The index of node `id` in the document's `nodes`, for a graph read from JSON.
+    pub(crate) fn position(&self, id: NodeId) -> Option<usize> {
+        self.positions.get(&id).copied()
     }
 
     /// Wires the output of `from_node` into the named input of `to_node`. A variadic input
@@ -35,12 +42,17 @@ impl Graph {
             to_port,
         } = connection;
         if !self.nodes.contains_key(&from_node) {
-            return Err(GraphValidationError::MissingSourceNode { node_id: from_node }.into());
+            return Err(GraphValidationError::MissingSourceNode {
+                at: At::node(from_node),
+            }
+            .into());
         }
-        let target = self
-            .nodes
-            .get_mut(&to_node)
-            .ok_or(GraphValidationError::MissingTargetNode { node_id: to_node })?;
+        let target =
+            self.nodes
+                .get_mut(&to_node)
+                .ok_or(GraphValidationError::MissingTargetNode {
+                    at: At::node(to_node),
+                })?;
         Ok(target.set_input(&to_port, from_node)?)
     }
 
@@ -61,10 +73,11 @@ impl Graph {
             .filter(|node| matches!(node, NodeKind::MediaOutput(_)))
             .count();
         if media_output_count == 0 {
-            errors.push(GraphValidationError::MissingMediaOutput.into());
+            errors.push(GraphValidationError::MissingMediaOutput { at: At::default() }.into());
         } else if media_output_count > 1 {
             errors.push(
                 GraphValidationError::MultipleMediaOutputs {
+                    at: At::default(),
                     count: media_output_count,
                 }
                 .into(),
@@ -79,7 +92,7 @@ impl Graph {
             if node.id() != *key {
                 errors.push(
                     GraphValidationError::NodeIdMismatch {
-                        key: *key,
+                        at: At::node(*key),
                         node_id: node.id(),
                     }
                     .into(),
@@ -99,7 +112,12 @@ impl Graph {
                 if self.nodes.contains_key(&source) {
                     node_sources.push(source);
                 } else {
-                    errors.push(GraphValidationError::MissingSourceNode { node_id: source }.into());
+                    errors.push(
+                        GraphValidationError::MissingSourceNode {
+                            at: At::node(source),
+                        }
+                        .into(),
+                    );
                 }
             }
         }
@@ -127,7 +145,7 @@ fn check_supported(node: &NodeKind, supports_3d: bool, errors: &mut Vec<LumenErr
     if scene && !supports_3d {
         errors.push(
             GraphValidationError::No3dSupport {
-                node_id: node.id(),
+                at: At::node(node.id()),
                 kind: node.kind_name(),
             }
             .into(),
@@ -157,7 +175,7 @@ fn check_inputs(
         if sources.is_empty() && !input.optional {
             errors.push(
                 GraphValidationError::MissingRequiredInput {
-                    node_id: node.id(),
+                    at: At::node(node.id()),
                     port: input.name.to_string(),
                 }
                 .into(),
@@ -169,7 +187,7 @@ fn check_inputs(
             {
                 errors.push(
                     GraphValidationError::WrongInputKind {
-                        node_id: node.id(),
+                        at: At::node(node.id()),
                         port: input.name.to_string(),
                         source_node: source,
                         expected: input.kind,
@@ -220,6 +238,7 @@ fn find_cycle(sources: &HashMap<NodeId, Vec<NodeId>>) -> Result<(), GraphValidat
         .filter_map(|(node, count)| (count > 0).then_some(node))
         .collect();
     Err(GraphValidationError::Cycle {
+        at: At::default(),
         path: cycle_path(&unordered, sources),
     })
 }
@@ -307,7 +326,7 @@ mod tests {
         assert_eq!(
             errors(&render),
             [
-                "connection.wrong_kind: node 1 outputs a raster, but input `scene` of node 3 takes a scene: show the raster in the scene through an image_plane_3d"
+                "connection.wrong_kind: node 3: input `scene` takes a scene, but node 1 outputs a raster: show the raster in the scene through an image_plane_3d"
             ]
         );
         let scene = TestScene {
@@ -318,7 +337,7 @@ mod tests {
         assert_eq!(
             errors(&scene),
             [
-                "connection.wrong_kind: node 2 outputs a scene, but input `texture` of node 4 takes a raster: draw the scene into a raster through a render_3d, and wire that in"
+                "connection.wrong_kind: node 4: input `texture` takes a raster, but node 2 outputs a scene: draw the scene into a raster through a render_3d, and wire that in"
             ]
         );
     }
@@ -367,7 +386,7 @@ mod tests {
         assert_eq!(
             errors(&scene),
             [
-                "connection.wrong_kind: node 1 outputs a raster, but input `children` of node 4 takes a scene: show the raster in the scene through an image_plane_3d"
+                "connection.wrong_kind: node 4: input `children` takes a scene, but node 1 outputs a raster: show the raster in the scene through an image_plane_3d"
             ]
         );
         assert_eq!(

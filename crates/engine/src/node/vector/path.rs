@@ -7,7 +7,7 @@ use super::repeat::{Drawn, GpuCopies, Repeat, RepeatedTransform};
 use crate::error::RenderError;
 use crate::gpu::params;
 use crate::node::motion::Shutter;
-use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 pub(crate) const PATH_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -134,34 +134,23 @@ fn path_frame(
     );
     let mut points =
         parse_path_points(&evaluated.data, flattening_tolerance(peak), MAX_PATH_POINTS).map_err(
-            |details| RenderError::NodeEvaluation {
-                node_id,
-                node_kind: <Path as JsonNode>::KIND,
-                details: format!("`data` {details}"),
-            },
+            |details| RenderError::evaluating::<Path>(node_id, format!("`data` {details}")),
         )?;
     let (x, y) = evaluated.placement.position;
     let style = &evaluated.style;
     let (trim_start, trim_end) = normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
-    let dash =
-        GpuDash::new(&evaluated.stroke_dash, evaluated.stroke_dash_offset).map_err(|details| {
-            RenderError::NodeEvaluation {
-                node_id,
-                node_kind: <Path as JsonNode>::KIND,
-                details,
-            }
-        })?;
+    let dash = GpuDash::new(&evaluated.stroke_dash, evaluated.stroke_dash_offset)
+        .map_err(|details| RenderError::evaluating::<Path>(node_id, details))?;
     if style.fill_enabled {
         hide_cancelled_edges(&mut points, MAX_PATH_POINTS);
     }
     set_dash_phases(&mut points, &dash);
     let fill_length = |name: &str, value: f64, min: f64| {
         if value.is_nan() {
-            return Err(RenderError::NodeEvaluation {
+            return Err(RenderError::evaluating::<Path>(
                 node_id,
-                node_kind: <Path as JsonNode>::KIND,
-                details: format!("`{name}` is not a number"),
-            });
+                format!("`{name}` is not a number"),
+            ));
         }
         Ok(value.clamp(min, MAX_PATH_COORDINATE) as f32)
     };

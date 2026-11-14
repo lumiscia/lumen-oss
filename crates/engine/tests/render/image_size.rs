@@ -84,6 +84,7 @@ fn an_image_past_the_size_limit_renders_reduced_with_a_warning() {
     assert_eq!(warning.code, "media.image_reduced");
     assert_eq!(warning.severity, Severity::Warning);
     assert_eq!(warning.node, Some(NodeId::new(1)));
+    assert_eq!(warning.path, "/nodes/0");
     assert!(
         warning.message.contains("32x16") && warning.message.contains("16x8"),
         "{}",

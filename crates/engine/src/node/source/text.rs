@@ -15,8 +15,7 @@ use crate::node::vector::{
     paint::Paint,
 };
 use crate::node::{
-    Deferred, DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeParams, Override,
-    ParamValue,
+    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, Override, ParamValue,
 };
 
 use super::text_content::{
@@ -417,16 +416,15 @@ impl TextInstance {
         if drawn <= max {
             return Ok(());
         }
-        Err(RenderError::NodeEvaluation {
-            node_id: self.node_id,
-            node_kind: <Text as JsonNode>::KIND,
-            details: format!(
+        Err(RenderError::evaluating::<Text>(
+            self.node_id,
+            format!(
                 "text draws {drawn} glyphs, strokes and decorations, more than the limit of \
                  {max} a text node can draw; split it across nodes, shorten it, or raise the \
                  host's text glyph limit (`--max-text-glyphs` of the lumen CLI and lumen-server, \
                  `set_max_text_glyphs` of the renderer)"
             ),
-        }
+        )
         .into())
     }
 

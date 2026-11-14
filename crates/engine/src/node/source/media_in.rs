@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use crate::error::{MediaError, RenderError};
 use crate::media::{AssetKind, ImageResolver, VideoFrameResolver, resolve_as};
-use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 use crate::scope::FrameTime;
 
 use crate::gpu::MediaTextureKey;
@@ -235,10 +235,11 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
         &self,
         cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
-        let media = cx.media().ok_or_else(|| RenderError::NodeEvaluation {
-            node_id: self.id,
-            node_kind: <MediaIn as JsonNode>::KIND,
-            details: "media store is required for media input nodes".to_string(),
+        let media = cx.media().ok_or_else(|| {
+            RenderError::evaluating::<MediaIn>(
+                self.id,
+                "media store is required for media input nodes",
+            )
         })?;
         let (kind, fps, mut size) = {
             let expr = cx.expr();
@@ -250,7 +251,14 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
                 let (identity, resolver) = resolve_as::<dyn ImageResolver>(media, &image_id)?;
                 cx.read_source(AssetKind::Image, &image_id, Some(&identity));
                 if let Some(details) = resolver.color_warning() {
-                    cx.note_media_color(self.id, AssetKind::Image, &image_id, details);
+                    cx.warn(
+                        self.id,
+                        crate::error::WarningKind::UnsupportedColor {
+                            kind: AssetKind::Image,
+                            media: image_id.to_string(),
+                            details: details.to_string(),
+                        },
+                    );
                 }
                 size = cx.image_size(self.id, &image_id, size)?;
                 let key = MediaTextureKey {
@@ -270,7 +278,14 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
                 let (identity, resolver) = resolve_as::<dyn VideoFrameResolver>(media, &stream_id)?;
                 cx.ensure_media_fits(&stream_id, size)?;
                 if let Some(details) = resolver.color_warning() {
-                    cx.note_media_color(self.id, AssetKind::Video, &stream_id, details);
+                    cx.warn(
+                        self.id,
+                        crate::error::WarningKind::UnsupportedColor {
+                            kind: AssetKind::Video,
+                            media: stream_id.to_string(),
+                            details: details.to_string(),
+                        },
+                    );
                 }
                 let metadata = resolver.metadata();
                 let source_frame = map_to_source_frame(

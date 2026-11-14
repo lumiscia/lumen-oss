@@ -45,7 +45,7 @@ pub(crate) fn required_input(
 ) -> crate::Result<NodeId> {
     input.ok_or_else(|| {
         GraphValidationError::MissingRequiredInput {
-            node_id,
+            at: crate::error::At::node(node_id),
             port: port.to_string(),
         }
         .into()

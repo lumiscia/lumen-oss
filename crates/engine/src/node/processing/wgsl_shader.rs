@@ -31,8 +31,8 @@ use crate::{
     error::RenderError,
     expr::{ExpressionContext, ExpressionValue},
     node::{
-        Deferred, DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeParams,
-        ShaderUniformValue, ShaderUniforms,
+        Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, ShaderUniformValue,
+        ShaderUniforms,
     },
 };
 
@@ -133,12 +133,7 @@ fn input_binding(index: usize) -> u32 {
 }
 
 fn shader_error(node_id: NodeId, details: impl Into<String>) -> crate::error::LumenError {
-    RenderError::NodeEvaluation {
-        node_id,
-        node_kind: <WgslShader as JsonNode>::KIND,
-        details: details.into(),
-    }
-    .into()
+    RenderError::evaluating::<WgslShader>(node_id, details.into()).into()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -7,8 +7,106 @@ use thiserror::Error;
 
 use crate::{
     media::{AssetKind, MediaLocation},
-    node::{NodeId, PortKind},
+    node::{JsonNode, NodeId, NodeKind, PortKind},
 };
+
+/// Where in a composition something is: a scene, the root or a template, and in it, maybe a node
+/// and a param of that node.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct At {
+    /// The template, or `None` for the root.
+    pub template: Option<String>,
+    pub node: Option<NodeId>,
+    /// A param path in the node's `params`, such as `content[1].font_size`, or empty for the
+    /// whole of `params`.
+    pub param: Option<String>,
+}
+
+impl At {
+    /// Node `node` of the root.
+    pub fn node(node: NodeId) -> Self {
+        Self {
+            node: Some(node),
+            ..Self::default()
+        }
+    }
+
+    /// The param at `path` of node `node` of the root.
+    pub fn param(node: NodeId, path: impl Into<String>) -> Self {
+        Self {
+            param: Some(path.into()),
+            ..Self::node(node)
+        }
+    }
+
+    /// The same place in template `template`, or in the root for `None`.
+    pub fn in_template(self, template: Option<&str>) -> Self {
+        Self {
+            template: template.map(str::to_string),
+            ..self
+        }
+    }
+
+    /// The node this is in, without its param.
+    pub(crate) fn node_only(&self) -> Self {
+        Self {
+            param: None,
+            ..self.clone()
+        }
+    }
+
+    /// The scene this is in, without its node.
+    pub(crate) fn scene(&self) -> Self {
+        Self {
+            template: self.template.clone(),
+            ..Self::default()
+        }
+    }
+
+    /// The place followed by `: `, or nothing for the whole root.
+    pub(crate) fn prefix(&self) -> String {
+        if self.template.is_none() && self.node.is_none() {
+            String::new()
+        } else {
+            format!("{self}: ")
+        }
+    }
+
+    /// The place, naming its node as a `kind` node, such as `text node 3`.
+    pub(crate) fn of_kind(&self, kind: &'static str) -> impl fmt::Display + '_ {
+        OfKind(self, Some(kind))
+    }
+}
+
+impl fmt::Display for At {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        OfKind(self, None).fmt(f)
+    }
+}
+
+struct OfKind<'a>(&'a At, Option<&'static str>);
+
+impl fmt::Display for OfKind<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self(at, kind) = self;
+        let mut separator = "";
+        if let Some(template) = &at.template {
+            write!(f, "composition `{template}`")?;
+            separator = ": ";
+        }
+        if let Some(node) = at.node {
+            f.write_str(separator)?;
+            if let Some(kind) = kind {
+                write!(f, "{kind} ")?;
+            }
+            write!(f, "node {node}")?;
+            if let Some(param) = at.param.as_deref().filter(|param| !param.is_empty()) {
+                write!(f, " `{param}`")?;
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Error, Clone, lumen_macros::DiagnosticCode)]
 pub enum LumenError {
@@ -51,11 +149,29 @@ impl LumenError {
     pub fn located(self, node_id: NodeId, path: &str) -> Self {
         match self {
             Self::Expression(failure) => Self::Expression(ExpressionError::Located {
-                node_id,
-                path: path.to_string(),
+                at: At::param(node_id, path),
                 failure: Box::new(failure),
             }),
             error => error,
+        }
+    }
+
+    /// The error found in template `name`, rather than the root.
+    pub(crate) fn in_template(mut self, name: &str) -> Self {
+        if let Some(at) = self.at_mut() {
+            at.template = Some(name.to_string());
+        }
+        self
+    }
+
+    fn at_mut(&mut self) -> Option<&mut At> {
+        match self {
+            Self::Document(error) => error.at_mut(),
+            Self::GraphValidation(error) => error.at_mut(),
+            Self::Property(PropertyError::InvalidType { at, .. })
+            | Self::Expression(ExpressionError::Located { at, .. }) => Some(at),
+            Self::Render(error) => error.at_mut(),
+            Self::Expression(_) | Self::Media(_) => None,
         }
     }
 
@@ -98,19 +214,11 @@ impl LumenError {
         })
     }
 
-    fn with_located_path(self, prefixed: impl FnOnce(&str) -> String) -> Self {
-        match self {
-            Self::Expression(ExpressionError::Located {
-                node_id,
-                path,
-                failure,
-            }) => Self::Expression(ExpressionError::Located {
-                node_id,
-                path: prefixed(&path),
-                failure,
-            }),
-            error => error,
+    fn with_located_path(mut self, prefixed: impl FnOnce(&str) -> String) -> Self {
+        if let Self::Expression(ExpressionError::Located { at, .. }) = &mut self {
+            at.param = Some(prefixed(at.param.as_deref().unwrap_or_default()));
         }
+        self
     }
 }
 
@@ -125,9 +233,11 @@ pub enum DocumentError {
     SchemaVersion { details: String },
     /// A key or value the document's shape doesn't allow, outside node params.
     #[code("document.invalid")]
-    #[error("{details}")]
+    #[error("{}{details}", .at.prefix())]
     Invalid {
-        /// A JSON pointer to the value.
+        /// The scene the value is in.
+        at: At,
+        /// A JSON pointer to the value, from the scene.
         pointer: String,
         details: String,
     },
@@ -135,76 +245,95 @@ pub enum DocumentError {
     #[error("functions: {error}")]
     Function { error: ExpressionError },
     #[code("node.unknown_type")]
-    #[error("node {node_id}: unknown or unsupported node type `{kind}`")]
-    UnknownNodeType { node_id: NodeId, kind: String },
+    #[error("{at}: unknown or unsupported node type `{kind}`")]
+    UnknownNodeType { at: At, kind: String },
+    /// `at` is the node's whole `params`.
     #[code("node.invalid_params")]
-    #[error("node {node_id} (`{kind}`): `params` must be an object, got {got}")]
+    #[error("{at} (`{kind}`): `params` must be an object, got {got}")]
     ParamsNotObject {
-        node_id: NodeId,
+        at: At,
         kind: String,
         got: &'static str,
     },
+    /// `at` is the key in `params` the node doesn't have.
     #[code("node.unknown_param")]
-    #[error("unknown param `{param}` on node {node_id}")]
-    UnknownParam { node_id: NodeId, param: String },
+    #[error("{}: unknown param `{}`", .at.node_only(), .at.param.as_deref().unwrap_or_default())]
+    UnknownParam { at: At },
+    /// `at` is the key in `params` whose value is wrong, which `details` names.
     #[code("node.invalid_param")]
-    #[error("node {node_id}: {details}")]
-    InvalidParam {
-        node_id: NodeId,
-        /// The key in `params` whose value is wrong.
-        param: String,
-        details: String,
-    },
+    #[error("{}: {details}", .at.node_only())]
+    InvalidParam { at: At, details: String },
     #[code("graph.duplicate_node_id")]
-    #[error("duplicate node id {node_id}")]
+    #[error("{at}: duplicate node id")]
     DuplicateNodeId {
-        node_id: NodeId,
+        at: At,
         /// The node's index in `nodes`.
         index: usize,
     },
     #[code("connection.invalid_from_port")]
-    #[error("connection {index}: `from_port` must be `output`, got {port:?}")]
-    InvalidFromPort { index: usize, port: String },
+    #[error("{}connection {index}: `from_port` must be `output`, got {port:?}", .at.prefix())]
+    InvalidFromPort { at: At, index: usize, port: String },
     /// A connection that could not be made, at its index in `connections`.
     #[code(transparent = error)]
-    #[error("connecting {from_node} -> {to_node}:{to_port}: {error}")]
+    #[error("{}connecting {from_node} -> {to_node}:{to_port}: {error}", .at.prefix())]
     Connection {
+        /// The scene the connection is in.
+        at: At,
         index: usize,
         from_node: NodeId,
         to_node: NodeId,
         to_port: String,
-        error: GraphValidationError,
+        error: Box<GraphValidationError>,
     },
+}
+
+impl DocumentError {
+    fn at_mut(&mut self) -> Option<&mut At> {
+        match self {
+            Self::Invalid { at, .. }
+            | Self::UnknownNodeType { at, .. }
+            | Self::ParamsNotObject { at, .. }
+            | Self::UnknownParam { at }
+            | Self::InvalidParam { at, .. }
+            | Self::DuplicateNodeId { at, .. }
+            | Self::InvalidFromPort { at, .. }
+            | Self::Connection { at, .. } => Some(at),
+            Self::Syntax { .. } | Self::SchemaVersion { .. } | Self::Function { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Error, Clone, lumen_macros::DiagnosticCode)]
 pub enum GraphValidationError {
     #[code("graph.cycle")]
-    #[error("graph contains a cycle: {}", .path.iter().map(ToString::to_string).collect::<Vec<_>>().join(" -> "))]
+    #[error("{}graph contains a cycle: {}", .at.prefix(), .path.iter().map(ToString::to_string).collect::<Vec<_>>().join(" -> "))]
     Cycle {
+        /// The scene the graph is.
+        at: At,
         /// The nodes along the cycle, ending with the one it returns to.
         path: Vec<NodeId>,
     },
+    /// `at` is the id the graph stores the node under.
     #[code("graph.node_id_mismatch")]
-    #[error("node {node_id} is stored under id {key}")]
-    NodeIdMismatch { key: NodeId, node_id: NodeId },
+    #[error("{at} holds node {node_id}")]
+    NodeIdMismatch { at: At, node_id: NodeId },
     #[code("connection.missing_target_node")]
-    #[error("connection target node {node_id} is missing")]
-    MissingTargetNode { node_id: NodeId },
+    #[error("{at} is missing as a connection target")]
+    MissingTargetNode { at: At },
     #[code("connection.missing_source_node")]
-    #[error("connection source node {node_id} is missing")]
-    MissingSourceNode { node_id: NodeId },
+    #[error("{at} is missing as a connection source")]
+    MissingSourceNode { at: At },
     #[code("connection.unknown_port")]
-    #[error("connection target port `{port}` is missing on node {node_id}")]
-    MissingTargetPort { node_id: NodeId, port: String },
+    #[error("connection target port `{port}` is missing on {at}")]
+    MissingTargetPort { at: At, port: String },
     #[code("connection.input_already_connected")]
-    #[error("input `{port}` of node {node_id} is already connected")]
-    InputAlreadyConnected { node_id: NodeId, port: String },
+    #[error("input `{port}` of {at} is already connected")]
+    InputAlreadyConnected { at: At, port: String },
     /// A connection whose source outputs another kind than the input takes.
     #[code("connection.wrong_kind")]
-    #[error("node {source_node} outputs {actual}, but input `{port}` of node {node_id} takes {expected}: {}", wrong_kind_hint(*.expected))]
+    #[error("{at}: input `{port}` takes {expected}, but node {source_node} outputs {actual}: {}", wrong_kind_hint(*.expected))]
     WrongInputKind {
-        node_id: NodeId,
+        at: At,
         port: String,
         source_node: NodeId,
         expected: PortKind,
@@ -212,57 +341,70 @@ pub enum GraphValidationError {
     },
     /// A 3D node, in a build of the engine without the `3d` feature.
     #[code("node.unsupported")]
-    #[error("node {node_id} (`{kind}`): {NO_3D_SUPPORT}")]
-    No3dSupport { node_id: NodeId, kind: &'static str },
+    #[error("{at} (`{kind}`): {NO_3D_SUPPORT}")]
+    No3dSupport { at: At, kind: &'static str },
     #[code("graph.missing_required_input")]
-    #[error("node {node_id} is missing required input `{port}`")]
-    MissingRequiredInput { node_id: NodeId, port: String },
+    #[error("{at} is missing required input `{port}`")]
+    MissingRequiredInput { at: At, port: String },
     #[code("graph.missing_media_output")]
-    #[error("exactly one media output node is required, found none")]
-    MissingMediaOutput,
+    #[error("{}exactly one media output node is required, found none", .at.prefix())]
+    MissingMediaOutput { at: At },
     #[code("graph.multiple_media_outputs")]
-    #[error("exactly one media output node is required, found {count}")]
-    MultipleMediaOutputs { count: usize },
+    #[error("{}exactly one media output node is required, found {count}", .at.prefix())]
+    MultipleMediaOutputs { at: At, count: usize },
+    /// `at` is the clip's whole `params`.
     #[code("clip.invalid")]
-    #[error("{}node {node_id}: {details}", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
-    InvalidClip {
-        /// The template the clip is in, or `None` at the root.
-        template: Option<String>,
-        node_id: NodeId,
-        details: String,
-    },
+    #[error("{at}: {details}")]
+    InvalidClip { at: At, details: String },
+    /// `at` is the node's whole `params`.
     #[code("expression.invalid_prop_read")]
-    #[error("{}node {node_id}: {details}", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
-    InvalidPropRead {
-        /// The template the node is in, or `None` at the root.
-        template: Option<String>,
-        node_id: NodeId,
-        details: String,
-    },
+    #[error("{at}: {details}")]
+    InvalidPropRead { at: At, details: String },
     #[code("settings.invalid")]
-    #[error("{}{details}", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
+    #[error("{}{details}", .at.prefix())]
     InvalidSettings {
-        /// The template the settings are in, or `None` at the root.
-        template: Option<String>,
-        /// A JSON pointer to the setting, from the root or the template.
+        /// The scene the settings are in.
+        at: At,
+        /// A JSON pointer to the setting, from the scene.
         field: String,
         details: String,
     },
     #[code("audio.invalid")]
-    #[error("audio: {details}")]
-    InvalidAudio { details: String },
+    #[error("{}audio: {details}", .at.prefix())]
+    InvalidAudio {
+        /// The scene the audio is in.
+        at: At,
+        details: String,
+    },
     #[code("composition.cycle")]
     #[error("compositions instantiate themselves: {}", .templates.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(" -> "))]
     TemplateCycle {
         /// The templates along the cycle, ending with the one it returns to.
         templates: Vec<String>,
     },
-    #[code(transparent = error)]
-    #[error("composition `{template}`: {error}")]
-    InTemplate {
-        template: String,
-        error: Box<LumenError>,
-    },
+}
+
+impl GraphValidationError {
+    fn at_mut(&mut self) -> Option<&mut At> {
+        match self {
+            Self::Cycle { at, .. }
+            | Self::NodeIdMismatch { at, .. }
+            | Self::MissingTargetNode { at }
+            | Self::MissingSourceNode { at }
+            | Self::MissingTargetPort { at, .. }
+            | Self::InputAlreadyConnected { at, .. }
+            | Self::WrongInputKind { at, .. }
+            | Self::No3dSupport { at, .. }
+            | Self::MissingRequiredInput { at, .. }
+            | Self::MissingMediaOutput { at }
+            | Self::MultipleMediaOutputs { at, .. }
+            | Self::InvalidClip { at, .. }
+            | Self::InvalidPropRead { at, .. }
+            | Self::InvalidSettings { at, .. }
+            | Self::InvalidAudio { at, .. } => Some(at),
+            Self::TemplateCycle { .. } => None,
+        }
+    }
 }
 
 pub(crate) const NO_3D_SUPPORT: &str =
@@ -279,12 +421,10 @@ fn wrong_kind_hint(expected: PortKind) -> &'static str {
 #[derive(Debug, Error, Clone, lumen_macros::DiagnosticCode)]
 pub enum PropertyError {
     #[code("property.invalid_type")]
-    #[error(
-        "property `{property_path}` on node {node_id} has invalid type: expected {expected}, got {actual}"
-    )]
+    /// `at` is the param with the value.
+    #[error("{at}: invalid type: expected {expected}, got {actual}")]
     InvalidType {
-        node_id: NodeId,
-        property_path: String,
+        at: At,
         expected: &'static str,
         actual: &'static str,
     },
@@ -299,11 +439,10 @@ pub enum ExpressionError {
     #[error("{details}")]
     Evaluate { details: String },
     #[code(transparent = failure)]
-    #[error("node {node_id}{}: {failure}", if .path.is_empty() { String::new() } else { format!(" `{path}`") })]
+    /// `at` is the param the expression is in.
+    #[error("{at}: {failure}")]
     Located {
-        node_id: NodeId,
-        /// The param within the node, such as `content[1].font_size`.
-        path: String,
+        at: At,
         failure: Box<ExpressionError>,
     },
 }
@@ -760,19 +899,20 @@ pub enum RenderError {
     #[error("frame {frame} is out of range for a composition of {duration_frames} frames")]
     FrameOutOfRange { frame: u32, duration_frames: u32 },
     #[code("render.node_evaluation")]
-    #[error("{node_kind} node {node_id} evaluation failed: {details}")]
+    #[error("{} evaluation failed: {details}", .at.of_kind(.node_kind))]
     NodeEvaluation {
-        node_id: NodeId,
+        at: At,
+        /// The node's `type`, as the document writes it.
         node_kind: &'static str,
         details: String,
     },
     #[code("render.missing_node")]
-    #[error("node {node_id} is referenced but missing from the graph")]
-    MissingNode { node_id: NodeId },
+    #[error("{at} is referenced but missing from the graph")]
+    MissingNode { at: At },
     #[code("render.invalid_output_type")]
-    #[error("output of node {node_id} has invalid type: expected {expected}, got {actual}")]
+    #[error("output of {at} has invalid type: expected {expected}, got {actual}")]
     InvalidNodeOutputType {
-        node_id: NodeId,
+        at: At,
         expected: &'static str,
         actual: &'static str,
     },
@@ -790,44 +930,95 @@ pub enum RenderError {
     #[error("internal render error: {details}")]
     Internal { details: String },
     #[code("render.too_deeply_nested")]
-    #[error("{}node {node_id} is more than {limit} nodes deep, counting from the output through clips and the compositions they play, so the composition is nested too deeply to render. Flatten it: put many layers in one `raster_multimerge` instead of chaining `merge`s, and combine consecutive transforms or adjustments into one node", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
-    TooDeeplyNested {
-        /// The template the node is in, or `None` at the root.
-        template: Option<String>,
+    #[error(
+        "{at} is more than {limit} nodes deep, counting from the output through clips and the compositions they play, so the composition is nested too deeply to render. Flatten it: put many layers in one `raster_multimerge` instead of chaining `merge`s, and combine consecutive transforms or adjustments into one node"
+    )]
+    TooDeeplyNested { at: At, limit: u32 },
+}
+
+impl RenderError {
+    /// Node `node_id`, an `N`, failing to evaluate.
+    pub(crate) fn evaluating<N: JsonNode>(node_id: NodeId, details: impl Into<String>) -> Self {
+        Self::evaluating_kind(node_id, N::KIND, details)
+    }
+
+    /// `node` failing to evaluate.
+    pub(crate) fn evaluating_node(node: &NodeKind, details: impl Into<String>) -> Self {
+        Self::evaluating_kind(crate::node::Node::id(node), node.kind_name(), details)
+    }
+
+    fn evaluating_kind(
         node_id: NodeId,
-        limit: u32,
-    },
+        node_kind: &'static str,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::NodeEvaluation {
+            at: At::node(node_id),
+            node_kind,
+            details: details.into(),
+        }
+    }
+
+    fn at_mut(&mut self) -> Option<&mut At> {
+        match self {
+            Self::NodeEvaluation { at, .. }
+            | Self::MissingNode { at }
+            | Self::InvalidNodeOutputType { at, .. }
+            | Self::TooDeeplyNested { at, .. } => Some(at),
+            Self::FrameOutOfRange { .. }
+            | Self::Gpu { .. }
+            | Self::Limit { .. }
+            | Self::Internal { .. } => None,
+        }
+    }
 }
 
 /// Something that renders, but not as the composition asks. Warnings never fail a render.
-#[derive(Debug, Error, Clone, lumen_macros::DiagnosticCode)]
-pub enum Warning {
+#[derive(Debug, Clone, PartialEq)]
+pub struct Warning {
+    /// The node the warning is about.
+    pub at: At,
+    pub kind: WarningKind,
+}
+
+impl Warning {
+    pub fn code(&self) -> &'static str {
+        self.kind.code()
+    }
+}
+
+impl fmt::Display for Warning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: {}",
+            self.at.of_kind(self.kind.node_kind()),
+            self.kind
+        )
+    }
+}
+
+/// What a [`Warning`] is about.
+#[derive(Debug, Error, Clone, PartialEq, lumen_macros::DiagnosticCode)]
+pub enum WarningKind {
     /// A text node's family resolved to no font, so its text is shaped in the default family.
     #[code("font.fallback")]
-    #[error("{}text node {node_id}: font family `{family}` is not available, so its text falls back to `{}`", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default(), lumen_text::DEFAULT_FONT_FAMILY)]
-    FontFallback {
-        /// The template the node is in, or `None` at the root.
-        template: Option<String>,
-        node_id: NodeId,
-        family: String,
-    },
+    #[error(
+        "font family `{family}` is not available, so its text falls back to `{}`",
+        lumen_text::DEFAULT_FONT_FAMILY
+    )]
+    FontFallback { family: String },
     /// Glyphs of a `text_3d` node have no outlines to extrude, as a font that draws them from
     /// colour or bitmap tables, such as emoji, has none, so they are left out.
     #[code("font.no_outlines")]
-    #[error("{}text_3d node {node_id}: {glyphs} glyphs have no outlines to extrude, such as colour emoji, so they are left out", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
-    NoOutlines {
-        /// The template the node is in, or `None` at the root.
-        template: Option<String>,
-        node_id: NodeId,
-        glyphs: usize,
-    },
+    #[error(
+        "{glyphs} glyphs have no outlines to extrude, such as colour emoji, so they are left out"
+    )]
+    NoOutlines { glyphs: usize },
     /// A `render_3d` scene has more lights casting shadows than it draws shadows for.
     #[code("scene.shadow_limit")]
-    #[error("{}render_3d node {node_id}: light nodes {} cast no shadows, past the first 8 lights casting them", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default(), .lights.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))]
+    #[error("light nodes {} cast no shadows, past the first 8 lights casting them", .lights.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))]
     ShadowLimit {
-        /// The template the node is in, or `None` at the root.
-        template: Option<String>,
-        node_id: NodeId,
         /// The lights left without shadows, in scene order.
         lights: Vec<NodeId>,
     },
@@ -835,11 +1026,8 @@ pub enum Warning {
     /// as SDR or BT.709 in their place, or an image's embedded ICC profile can't be honoured, so it
     /// reads as sRGB.
     #[code("media.color_unsupported")]
-    #[error("{}media_in node {node_id}: {} `{media}`: {details}", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default(), .kind.name())]
+    #[error("{} `{media}`: {details}", .kind.name())]
     UnsupportedColor {
-        /// The template the node is in, or `None` at the root.
-        template: Option<String>,
-        node_id: NodeId,
         /// `Image` or `Video`.
         kind: crate::media::AssetKind,
         media: String,
@@ -847,11 +1035,10 @@ pub enum Warning {
     },
     /// A `model_3d`'s model has primitives that aren't triangle lists, which aren't drawn.
     #[code("scene.model_primitives_skipped")]
-    #[error("{}model_3d node {node_id}: model `{model}` has primitives of points, lines, or triangle strips or fans, which aren't drawn ({count} left out)", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
+    #[error(
+        "model `{model}` has primitives of points, lines, or triangle strips or fans, which aren't drawn ({count} left out)"
+    )]
     ModelPrimitivesSkipped {
-        /// The template the node is in, or `None` at the root.
-        template: Option<String>,
-        node_id: NodeId,
         /// The model's source.
         model: String,
         count: usize,
@@ -859,11 +1046,10 @@ pub enum Warning {
     /// An image is larger on a side than the textures the device makes, or than the host lets
     /// images be decoded at, so it is shown from a copy reduced to fit.
     #[code("media.image_reduced")]
-    #[error("{}media_in node {node_id}: image `{image}` is {width}x{height}, past the {limit}-pixel limit on a side, so it is shown reduced to {reduced_width}x{reduced_height}", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
+    #[error(
+        "image `{image}` is {width}x{height}, past the {limit}-pixel limit on a side, so it is shown reduced to {reduced_width}x{reduced_height}"
+    )]
     ImageReduced {
-        /// The template the node is in, or `None` at the root.
-        template: Option<String>,
-        node_id: NodeId,
         /// The image's source.
         image: String,
         width: u32,
@@ -872,6 +1058,31 @@ pub enum Warning {
         reduced_height: u32,
         limit: u32,
     },
+}
+
+impl WarningKind {
+    /// The kind of node that raises this warning, as its message names it.
+    fn node_kind(&self) -> &'static str {
+        match self {
+            Self::FontFallback { .. } => "text",
+            Self::NoOutlines { .. } => "text_3d",
+            Self::ShadowLimit { .. } => "render_3d",
+            Self::UnsupportedColor { .. } | Self::ImageReduced { .. } => "media_in",
+            Self::ModelPrimitivesSkipped { .. } => "model_3d",
+        }
+    }
+
+    /// What tells two warnings of this kind about one node apart.
+    pub(crate) fn identity(&self) -> Option<&str> {
+        match self {
+            Self::FontFallback { family } => Some(family),
+            Self::UnsupportedColor { media, .. } => Some(media),
+            Self::ImageReduced { image, .. } => Some(image),
+            Self::NoOutlines { .. }
+            | Self::ShadowLimit { .. }
+            | Self::ModelPrimitivesSkipped { .. } => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -895,7 +1106,7 @@ mod tests {
                 });
         assert_eq!(
             failure.to_string(),
-            "image `big.png` (composition `card`, node 3 `source`) is too large: wider than the device allows"
+            "image `big.png` (composition `card`: node 3 `source`) is too large: wider than the device allows"
         );
         assert_eq!(
             serde_json::to_value(&failure).unwrap(),

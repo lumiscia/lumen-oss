@@ -92,7 +92,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             quote!(#name => {
                 if self.#field.is_some() {
                     return Err(::lumen_engine::error::GraphValidationError::InputAlreadyConnected {
-                        node_id: self.id,
+                        at: ::lumen_engine::error::At::node(self.id),
                         port: #name.to_string(),
                     });
                 }
@@ -163,8 +163,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                         match key.as_str() {
                             _ if false #(|| #json_metas_known)* => (),
                             _ => errors.push(::lumen_engine::error::DocumentError::UnknownParam {
-                                node_id: id,
-                                param: key.clone(),
+                                at: ::lumen_engine::error::At::param(id, key.as_str()),
                             }),
                         };
                     }
@@ -186,7 +185,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                 match port {
                     #(#json_input_matches,)*
                     _ => Err(::lumen_engine::error::GraphValidationError::MissingTargetPort {
-                        node_id: self.id,
+                        at: ::lumen_engine::error::At::node(self.id),
                         port: port.to_string(),
                     }),
                 }

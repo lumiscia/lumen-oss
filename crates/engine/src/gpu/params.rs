@@ -1,9 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::{
-    error::RenderError,
-    node::{JsonNode, NodeId},
-};
+use crate::{error::RenderError, node::NodeId};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -200,8 +197,7 @@ pub(crate) struct ResizeParams {
 pub(crate) fn pixel_origin(node_id: NodeId, property_path: &str, value: i64) -> crate::Result<i32> {
     i32::try_from(value).map_err(|_| {
         crate::error::PropertyError::InvalidType {
-            node_id,
-            property_path: property_path.to_string(),
+            at: crate::error::At::param(node_id, property_path),
             expected: "an integer between -2147483648 and 2147483647",
             actual: "out-of-range integer",
         }
@@ -218,8 +214,7 @@ pub(crate) fn pixel_extent(
 ) -> crate::Result<u32> {
     u32::try_from(value.max(i64::from(min))).map_err(|_| {
         crate::error::PropertyError::InvalidType {
-            node_id,
-            property_path: property_path.to_string(),
+            at: crate::error::At::param(node_id, property_path),
             expected: "an integer between 0 and 4294967295",
             actual: "out-of-range integer",
         }
@@ -303,11 +298,10 @@ pub(crate) fn lut_stops(source: &str) -> Result<Vec<[f32; 3]>, String> {
 }
 
 pub(crate) fn lut_error(node_id: NodeId, details: impl Into<String>) -> crate::error::LumenError {
-    RenderError::NodeEvaluation {
+    RenderError::evaluating::<crate::node::processing::color_grade::ColorGrade>(
         node_id,
-        node_kind: <crate::node::processing::color_grade::ColorGrade as JsonNode>::KIND,
-        details: details.into(),
-    }
+        details.into(),
+    )
     .into()
 }
 

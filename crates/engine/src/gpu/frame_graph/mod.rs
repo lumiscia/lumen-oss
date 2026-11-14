@@ -19,7 +19,7 @@ use lumen_gpu::{
 
 use crate::{
     composition::{Composition, SceneId},
-    error::{LumenError, RenderError},
+    error::{LumenError, RenderError, Warning, WarningKind},
     expr::{ExpressionContext, ExpressionValue},
     media::{AssetKind, MediaIdentity, MediaStore},
     node::{
@@ -48,6 +48,10 @@ mod ingest;
 mod state;
 
 /// Copies the visible part of a clip's raster into a texture of the parent canvas.
+/// The most warnings one composition raises, so that a composition of many nodes that warn
+/// doesn't fill the diagnostics.
+const MAX_WARNINGS: usize = 32;
+
 const CLIP_CROP_SHADER: &str = "
 struct Params {
     offset: vec2<i32>,
@@ -195,11 +199,10 @@ fn dynamic_program(
         &shader.layout,
     )
     .map_err(|error| {
-        RenderError::NodeEvaluation {
-            node_id: node,
-            node_kind: "wgsl_shader",
-            details: error.to_string(),
-        }
+        RenderError::evaluating::<crate::node::processing::wgsl_shader::WgslShader>(
+            node,
+            error.to_string(),
+        )
         .into()
     })
 }
@@ -878,133 +881,39 @@ impl<'a> FrameCx<'a> {
             self.max_text_glyphs,
         )?;
         for family in fallbacks {
-            self.note_font_fallback(text.node_id, family);
+            self.warn(text.node_id, WarningKind::FontFallback { family });
         }
         Ok(draw)
     }
 
-    /// Warns once per composition and `render_3d` node `node_id` that `lights` cast no shadows.
-    #[cfg(feature = "3d")]
-    pub(crate) fn note_shadow_limit(&mut self, node_id: NodeId, lights: Vec<NodeId>) {
-        let key = (self.scope.template_name().map(str::to_string), node_id);
-        if self.st.scene.shadow_limits.contains(&key) {
+    /// Warns, once per composition, node and what `kind` is about, that node `node_id` renders
+    /// but not as the composition asks. A composition raises at most [`MAX_WARNINGS`].
+    pub(crate) fn warn(&mut self, node_id: NodeId, kind: WarningKind) {
+        let warning = Warning {
+            at: self.scope.at(node_id),
+            kind,
+        };
+        let key = (
+            warning.at.clone(),
+            std::mem::discriminant(&warning.kind),
+            warning.kind.identity().map(str::to_string),
+        );
+        if self.st.warned.len() >= MAX_WARNINGS || !self.st.warned.insert(key) {
             return;
         }
-        let warning = crate::error::Warning::ShadowLimit {
-            template: key.0.clone(),
-            node_id,
-            lights,
-        };
-        tracing::warn!(target: "lumen_3d", "{warning}");
-        let path = crate::diagnostic::scene_pointer(key.0.as_deref());
+        tracing::warn!(target: "lumen_render", code = warning.code(), "{warning}");
+        let graph = &self.scope.scene.graph;
+        let path =
+            crate::diagnostic::pointer(&warning.at, "", |id| Some((graph.position(id)?, None)));
         self.st
             .diagnostics
             .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
-        self.st.scene.shadow_limits.insert(key);
-    }
-
-    /// Warns once per composition and `text_3d` node `node_id` that `glyphs` of its glyphs have
-    /// no outlines.
-    #[cfg(feature = "3d")]
-    pub(crate) fn note_missing_outlines(&mut self, node_id: NodeId, glyphs: usize) {
-        let key = (self.scope.template_name().map(str::to_string), node_id);
-        if self.st.scene.outline_gaps.contains(&key) {
-            return;
-        }
-        let warning = crate::error::Warning::NoOutlines {
-            template: key.0.clone(),
-            node_id,
-            glyphs,
-        };
-        tracing::warn!(target: "lumen_text", "{warning}");
-        let path = crate::diagnostic::scene_pointer(key.0.as_deref());
-        self.st
-            .diagnostics
-            .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
-        self.st.scene.outline_gaps.insert(key);
-    }
-
-    /// Warns once per composition and `model_3d` node `node_id` that its model `source` has
-    /// `count` primitives that aren't drawn.
-    #[cfg(feature = "3d")]
-    pub(crate) fn note_skipped_primitives(&mut self, node_id: NodeId, source: &str, count: usize) {
-        let key = (self.scope.template_name().map(str::to_string), node_id);
-        if self.st.scene.skipped_primitives.contains(&key) {
-            return;
-        }
-        let warning = crate::error::Warning::ModelPrimitivesSkipped {
-            template: key.0.clone(),
-            node_id,
-            model: source.to_string(),
-            count,
-        };
-        tracing::warn!(target: "lumen_3d", "{warning}");
-        let path = crate::diagnostic::scene_pointer(key.0.as_deref());
-        self.st
-            .diagnostics
-            .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
-        self.st.scene.skipped_primitives.insert(key);
     }
 
     /// The most glyphs a text node may draw.
     #[cfg(feature = "3d")]
     pub(crate) fn max_text_glyphs(&self) -> usize {
         self.max_text_glyphs
-    }
-
-    /// Warns once per composition that `family` fell back for text node `node_id`.
-    pub(crate) fn note_font_fallback(&mut self, node_id: NodeId, family: String) {
-        let key = (
-            self.scope.template_name().map(str::to_string),
-            node_id,
-            family,
-        );
-        if self.st.text.font_fallbacks.contains(&key) {
-            return;
-        }
-        let warning = crate::error::Warning::FontFallback {
-            template: key.0.clone(),
-            node_id,
-            family: key.2.clone(),
-        };
-        tracing::warn!(target: "lumen_text", "{warning}");
-        let path = crate::diagnostic::scene_pointer(key.0.as_deref());
-        self.st
-            .diagnostics
-            .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
-        self.st.text.font_fallbacks.insert(key);
-    }
-
-    /// Warns once per composition, `media_in` node `node_id` and `media`, a `kind` source, that
-    /// `details` of its colour aren't converted.
-    pub(crate) fn note_media_color(
-        &mut self,
-        node_id: NodeId,
-        kind: AssetKind,
-        media: &str,
-        details: &str,
-    ) {
-        let key = (
-            self.scope.template_name().map(str::to_string),
-            node_id,
-            media.to_string(),
-        );
-        if self.st.media.colors.contains(&key) {
-            return;
-        }
-        let warning = crate::error::Warning::UnsupportedColor {
-            template: key.0.clone(),
-            node_id,
-            kind,
-            media: key.2.clone(),
-            details: details.to_string(),
-        };
-        tracing::warn!(target: "lumen_media", "{warning}");
-        let path = crate::diagnostic::scene_pointer(key.0.as_deref());
-        self.st
-            .diagnostics
-            .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
-        self.st.media.colors.insert(key);
     }
 
     pub(crate) fn media(&self) -> Option<&'a dyn MediaStore> {
@@ -1172,10 +1081,9 @@ impl<'a> FrameCx<'a> {
 
     /// Records `node_id` as is, for readers that read a raster through its domain.
     pub(crate) fn input(&mut self, node_id: NodeId) -> crate::Result<Raster> {
-        let node = self
-            .scope
-            .node(node_id)
-            .ok_or(RenderError::MissingNode { node_id })?;
+        let node = self.scope.node(node_id).ok_or(RenderError::MissingNode {
+            at: crate::error::At::node(node_id),
+        })?;
         let graph = self.scope.id;
         let staticness = if self.retain_static {
             self.staticness(node)
@@ -1447,15 +1355,16 @@ impl<'a> FrameCx<'a> {
             let canvas = clip.content_canvas(&self.scope)?;
             let max = self.rec.device().limits().max_texture_dimension_2d;
             if canvas.width > max || canvas.height > max {
-                return Err(RenderError::NodeEvaluation {
-                    node_id,
-                    node_kind: "Clip",
-                    details: format!(
-                        "a {}x{} canvas is larger than this device's {max}-pixel texture limit",
-                        canvas.width, canvas.height
-                    ),
-                }
-                .into());
+                return Err(
+                    RenderError::evaluating::<crate::node::compositing::clip::Clip>(
+                        node_id,
+                        format!(
+                            "a {}x{} canvas is larger than this device's {max}-pixel texture limit",
+                            canvas.width, canvas.height
+                        ),
+                    )
+                    .into(),
+                );
             }
             return match clip.route(&self.scope, self.frame, self.media)? {
                 Some(routed) => {
@@ -1864,14 +1773,6 @@ impl<'a> FrameCx<'a> {
     }
 
     fn warn_image_reduced(&mut self, node_id: NodeId, source: &str, native: Size, size: Size) {
-        // Warnings stop at a fixed number of sources, so a composition of many large images
-        // doesn't fill the diagnostics.
-        const WARNED_SOURCES: usize = 32;
-        if self.st.media.reduced_images.len() >= WARNED_SOURCES
-            || !self.st.media.reduced_images.insert(source.to_string())
-        {
-            return;
-        }
         let limit = self
             .rec
             .device()
@@ -1879,21 +1780,17 @@ impl<'a> FrameCx<'a> {
             .max_texture_dimension_2d
             .min(self.max_image_side)
             .max(1);
-        let warning = crate::error::Warning::ImageReduced {
-            template: self.scope.template_name().map(str::to_string),
+        self.warn(
             node_id,
-            image: source.to_string(),
-            width: native.width,
-            height: native.height,
-            reduced_width: size.width,
-            reduced_height: size.height,
-            limit,
-        };
-        tracing::warn!(target: "lumen_render", "{warning}");
-        let path = crate::diagnostic::scene_pointer(self.scope.template_name());
-        self.st
-            .diagnostics
-            .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
+            WarningKind::ImageReduced {
+                image: source.to_string(),
+                width: native.width,
+                height: native.height,
+                reduced_width: size.width,
+                reduced_height: size.height,
+                limit,
+            },
+        );
     }
 
     /// Whether analytic motion blur applies. It is off inside a `motion_blur` that samples, whose
@@ -2247,14 +2144,13 @@ pub(crate) fn ensure_texture_fits(
         return Ok(());
     }
     let what = if size == canvas { "canvas" } else { "texture" };
-    Err(RenderError::NodeEvaluation {
-        node_id: node.id(),
-        node_kind: node.kind_name(),
-        details: format!(
+    Err(RenderError::evaluating_node(
+        node,
+        format!(
             "a {}x{} {what} is larger than this device's {max}-pixel texture limit",
             size.width, size.height
         ),
-    }
+    )
     .into())
 }
 

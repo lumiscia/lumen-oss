@@ -13,13 +13,11 @@ use crate::{
     node::NodeId,
 };
 
-fn not_a_raster(node_id: NodeId) -> LumenError {
-    RenderError::NodeEvaluation {
+fn not_a_raster<N: crate::node::JsonNode>(node_id: NodeId) -> LumenError {
+    RenderError::evaluating::<N>(
         node_id,
-        node_kind: "Scene",
-        details: "a scene node outputs a scene, not a raster; draw it through a render_3d"
-            .to_string(),
-    }
+        "a scene node outputs a scene, not a raster; draw it through a render_3d",
+    )
     .into()
 }
 
@@ -41,7 +39,7 @@ impl RecordNode for Shape3d {
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
-        Err(not_a_raster(self.id))
+        Err(not_a_raster::<Shape3d>(self.id))
     }
 }
 
@@ -51,7 +49,7 @@ impl RecordNode for ImagePlane3d {
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
-        Err(not_a_raster(self.id))
+        Err(not_a_raster::<ImagePlane3d>(self.id))
     }
 }
 
@@ -61,7 +59,7 @@ impl RecordNode for Text3d {
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
-        Err(not_a_raster(self.id))
+        Err(not_a_raster::<Text3d>(self.id))
     }
 }
 
@@ -71,7 +69,7 @@ impl RecordNode for Light3d {
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
-        Err(not_a_raster(self.id))
+        Err(not_a_raster::<Light3d>(self.id))
     }
 }
 
@@ -81,7 +79,7 @@ impl RecordNode for Model3d {
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
-        Err(not_a_raster(self.id))
+        Err(not_a_raster::<Model3d>(self.id))
     }
 }
 
@@ -91,7 +89,7 @@ impl RecordNode for Camera3d {
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
-        Err(not_a_raster(self.id))
+        Err(not_a_raster::<Camera3d>(self.id))
     }
 }
 
@@ -101,7 +99,7 @@ impl RecordNode for Merge3d {
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
-        Err(not_a_raster(self.id))
+        Err(not_a_raster::<Merge3d>(self.id))
     }
 }
 
@@ -111,7 +109,7 @@ impl RecordNode for Instance3d {
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
-        Err(not_a_raster(self.id))
+        Err(not_a_raster::<Instance3d>(self.id))
     }
 }
 
@@ -123,11 +121,9 @@ impl RecordNode for Render3d {
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
-        Err(RenderError::NodeEvaluation {
-            node_id: self.id,
-            node_kind: "Render3d",
-            details: crate::error::NO_3D_SUPPORT.to_string(),
-        }
-        .into())
+        Err(
+            RenderError::evaluating::<Render3d>(self.id, crate::error::NO_3D_SUPPORT.to_string())
+                .into(),
+        )
     }
 }

@@ -109,8 +109,7 @@ impl crate::gpu::frame_graph::RecordNode for Shadow {
         )?;
         let Paint::SolidColor(r, g, b, a) = evaluated.color else {
             return Err(PropertyError::InvalidType {
-                node_id: self.id,
-                property_path: "color".to_string(),
+                at: crate::error::At::param(self.id, "color"),
                 expected: "a solid color",
                 actual: "a gradient",
             }

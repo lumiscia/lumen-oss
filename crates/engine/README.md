@@ -131,7 +131,7 @@ texels as its pixels, so an image is reduced only where that can't change the pi
 `mode`, in the root composition, and it is reduced only to sizes with its aspect ratio exactly
 (a 4000×3000 photo to multiples of 4×3, a 1000×9 one not at all). Such an image is reduced to
 fit the device's texture limit, or `GpuCompositionRenderer::set_max_image_side`, with a
-`media.image_reduced` warning (for the first 32 sources per composition), and when the
+`media.image_reduced` warning for each node that shows it, and when the
 composition shows it at under half its size it is kept at twice the size it is shown. For the
 second, what follows each resize to the output may only scale by a literal `transform` scale or
 keep pixels as they are (merges, colour and alpha nodes, crops, blurs, glows and shadows). Any
@@ -327,8 +327,9 @@ diagnostics are reported.
 Passing a `known_font` lookup also checks fonts: each family a `text` or `text_3d` node names as a literal
 that the host can't resolve, other than the bundled `Roboto`, is a `font.fallback` warning. Renderers
 raise the same warning when shaping falls back, which
-`GpuCompositionRenderer::take_diagnostics` returns once per node and family; its path points at
-the root or template, not the param.
+`GpuCompositionRenderer::take_diagnostics` returns once per node and family. A warning a render
+raises points at its node, such as `/nodes/3` or `/compositions/card/nodes/0`, not the param, and
+a render raises at most 32 warnings per composition.
 
 ### Compatibility
 

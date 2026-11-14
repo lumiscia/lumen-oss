@@ -6,7 +6,7 @@ use lumen_gpu::{LayoutEntry, LayoutKind};
 
 use crate::error::RenderError;
 use crate::expr::ExpressionContext;
-use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeParams, motion};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, motion};
 
 /// Most sub-frames a `motion_blur` node renders.
 pub(crate) const MAX_MOTION_BLUR_SAMPLES: i64 = 64;
@@ -91,14 +91,8 @@ impl MotionBlur {
             node_id: self.id,
             expr,
         })?;
-        let invalid = |details: String| {
-            Err(RenderError::NodeEvaluation {
-                node_id: self.id,
-                node_kind: <MotionBlur as JsonNode>::KIND,
-                details,
-            }
-            .into())
-        };
+        let invalid =
+            |details: String| Err(RenderError::evaluating::<MotionBlur>(self.id, details).into());
         if !(1..=MAX_MOTION_BLUR_SAMPLES).contains(&params.samples) {
             return invalid(format!(
                 "`samples` is {}; it must be from 1 to {MAX_MOTION_BLUR_SAMPLES}",

@@ -97,7 +97,7 @@ Progress and the render summary go to stdout. Warnings and errors go to stderr, 
 It takes none of the render's other flags. Fonts resolve as a render would resolve them, from `--font-dir`, the media root and the system, so a family none of them has is a `font.fallback` warning. Each problem has a stable code and a JSON pointer into the composition:
 
 ```text
-error node.unknown_param at /nodes/0/params/opacityy: unknown param `opacityy` on node 1
+error node.unknown_param at /nodes/0/params/opacityy: node 1: unknown param `opacityy`
 warning font.fallback at /nodes/2/params/font_family: text node 3: font family `Brand` is not available, so its text falls back to `Roboto`
 composition.json: 1 errors, 1 warnings
 ```

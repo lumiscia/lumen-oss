@@ -191,8 +191,8 @@ fn a_missing_input_node_is_not_reported_as_a_cycle() {
     assert!(matches!(
         build_errors(graph).as_slice(),
         [LumenError::GraphValidation(
-            GraphValidationError::MissingSourceNode { node_id }
-        )] if *node_id == NodeId::new(999)
+            GraphValidationError::MissingSourceNode { at }
+        )] if at.node == Some(NodeId::new(999))
     ));
 }
 
