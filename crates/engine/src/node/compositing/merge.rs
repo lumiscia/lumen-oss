@@ -103,7 +103,8 @@ const MERGE: ComputeProgram = ComputeProgram {
 };
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "MergeParams", source = SHADER)]
 struct MergeUniforms {
     opacity: f32,
     blend_mode: u32,
@@ -112,7 +113,10 @@ struct MergeUniforms {
     invert: u32,
     _pad0: u32,
     /// Canvas pixels of the first texels of the output, base, overlay and raw mask.
-    origins: [[i32; 2]; 4],
+    origin: [i32; 2],
+    base_origin: [i32; 2],
+    overlay_origin: [i32; 2],
+    mask_origin: [i32; 2],
 }
 
 impl crate::gpu::frame_graph::RecordNode for Merge {
@@ -178,12 +182,10 @@ impl crate::gpu::frame_graph::RecordNode for Merge {
             },
             mask_mode: evaluated.mask_mode as u32,
             invert: u32::from(evaluated.invert),
-            origins: [
-                [domain.data_rect.x, domain.data_rect.y],
-                base.origin(),
-                overlay.origin(),
-                mask.map_or(base.origin(), |mask| mask.origin()),
-            ],
+            origin: [domain.data_rect.x, domain.data_rect.y],
+            base_origin: base.origin(),
+            overlay_origin: overlay.origin(),
+            mask_origin: mask.map_or(base.origin(), |mask| mask.origin()),
             _pad0: 0,
         };
         let tex = cx.storage_target(domain.storage_size);
