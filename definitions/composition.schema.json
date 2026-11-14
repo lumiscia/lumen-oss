@@ -8521,11 +8521,11 @@
       {
         "args": [
           {
-            "kind": "any",
+            "kind": "same",
             "name": "from"
           },
           {
-            "kind": "any",
+            "kind": "same",
             "name": "to"
           },
           {
@@ -8537,7 +8537,7 @@
         "maxArgs": 3,
         "minArgs": 3,
         "name": "lerp",
-        "returns": "any"
+        "returns": "same"
       },
       {
         "args": [
@@ -8922,11 +8922,11 @@
       {
         "args": [
           {
-            "kind": "any",
+            "kind": "same",
             "name": "from"
           },
           {
-            "kind": "any",
+            "kind": "same",
             "name": "to"
           },
           {
@@ -8946,7 +8946,7 @@
         "maxArgs": 5,
         "minArgs": 4,
         "name": "tween",
-        "returns": "any"
+        "returns": "same"
       },
       {
         "args": [
@@ -8989,7 +8989,7 @@
             "name": "at"
           },
           {
-            "kind": "any",
+            "kind": "same",
             "name": "value"
           },
           {

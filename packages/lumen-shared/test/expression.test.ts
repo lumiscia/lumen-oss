@@ -448,7 +448,6 @@ describe("expression helpers", () => {
   test("drop trailing undefined arguments", () => {
     expect(String(tween(0, 1, 0, 12, undefined))).toBe("=tween(0, 1, 0, 12)");
     expect(String(spring(0, undefined, undefined))).toBe("=spring(0)");
-    // @ts-expect-error interior holes are rejected at compile time too
     expect(() => spring(0, undefined, 20)).toThrow(
       "`spring` cannot skip an optional argument before a later one.",
     );

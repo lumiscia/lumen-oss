@@ -14,6 +14,9 @@ pub enum ValueKind {
     Key,
     /// Any value but an easing or a key.
     Any,
+    /// A number, vec2, vec3, colour or string: within one function, every `Same` argument and a
+    /// `Same` return have one type. In a `Key` return it is the key's value type.
+    Same,
 }
 
 impl ValueKind {
@@ -28,6 +31,7 @@ impl ValueKind {
             Self::Easing => "easing",
             Self::Key => "key",
             Self::Any => "any",
+            Self::Same => "same",
         }
     }
 }
@@ -150,7 +154,7 @@ builtins! {
     Cos "cos" (1, Some(1)) [radians: Number] -> Number, "Cosine of an angle in radians.";
     Clamp "clamp" (3, Some(3)) [value: Number, min: Number, max: Number] -> Number,
         "Limits a value to `min..=max`.";
-    Lerp "lerp" (3, Some(3)) [from: Any, to: Any, t: Number] -> Any,
+    Lerp "lerp" (3, Some(3)) [from: Same, to: Same, t: Number] -> Same,
         "Interpolates two numbers, vec2 or vec3 values, colours or path data strings by `t`. Colours mix premultiplied. Path data strings must have the same commands in the same order, and interpolate point by point.";
     Pow "pow" (2, Some(2)) [base: Number, exponent: Number] -> Number, "Raises `base` to `exponent`.";
     Mod "mod" (2, Some(2)) [value: Number, divisor: Number] -> Number,
@@ -189,13 +193,13 @@ builtins! {
     Progress "progress" (2, Some(2)) [start: Number, end: Number] -> Number,
         "0 before frame `start`, 1 after frame `end`, linear in between.";
     Tween "tween" (4, Some(5))
-        [from: Any, to: Any, start: Number, duration: Number, ease: Easing] -> Any,
+        [from: Same, to: Same, start: Number, duration: Number, ease: Easing] -> Same,
         "Eases from `from` to `to` over `duration` frames from frame `start`. `ease` defaults to `'linear'`.";
     Ease "ease" (2, Some(2)) [easing: Easing, t: Number] -> Number,
         "Applies an easing to progress `t`, e.g. `ease('out_expo', progress(0, 18))`.";
     CubicBezier "cubic_bezier" (2, Some(2)) [out: Vec2, in: Vec2] -> Easing,
         "The easing CSS writes `cubic-bezier(out.x, out.y, in.x, in.y)`. Both x components must be in `0..=1`.";
-    Key "key" (2, Some(3)) [at: Number, value: Any, ease: Easing] -> Key,
+    Key "key" (2, Some(3)) [at: Number, value: Same, ease: Easing] -> Key,
         "A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour, path data or text. `ease` is how the curve leaves this key toward the next. Text that isn't path data can't interpolate, so a key holding it needs the `'hold'` easing.";
     Keyframes "keyframes" (2, None) [t: Number, ease: Easing, keys: Key] -> Any,
         "The value of keys ordered by `at` at time `t`, usually `frame`. `ease` may be left out; it is the easing of keys without one and defaults to `'linear'`. Before the first key and after the last, the value holds. Keys at the same `at` jump.";
