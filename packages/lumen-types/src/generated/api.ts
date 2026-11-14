@@ -102,6 +102,7 @@ export type ErrorCode =
   | "media_upload_limit"
   | "media_size_mismatch"
   | "upload_not_found"
+  | "upload_part_in_progress"
   | "invalid_upload_parts"
   | "media_not_validated"
   | "media_store_failed"
@@ -144,6 +145,7 @@ export const errorCodes = [
   { code: "media_upload_limit", description: "`503`: as many uploads as the server allows are waiting for their content." },
   { code: "media_size_mismatch", description: "`400`: the bytes received are not `sizeBytes` long." },
   { code: "upload_not_found", description: "`404`: no multipart upload has this id." },
+  { code: "upload_part_in_progress", description: "`409`: another request is already sending this part. Send it again once that ends." },
   { code: "invalid_upload_parts", description: "`400`: the listed parts are not the parts uploaded." },
   { code: "media_not_validated", description: "`409`: the media has no validated content." },
   { code: "media_store_failed", description: "`500`: the server failed to store the media." },

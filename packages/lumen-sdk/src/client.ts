@@ -5,7 +5,7 @@ import type {
   Media,
 } from "@lumiscia/lumen-types";
 
-import { LumenError, errorFromResponse, isRecord, readBody, readDiagnostics } from "./errors.js";
+import { LumenError, errorFromResponse, isRecord, readDiagnostics } from "./errors.js";
 import { parseMedia, parsePart, parseUploadId, parseUploadTarget } from "./media.js";
 import { isTerminal, parseRender, renderError, resolveUrl } from "./render.js";
 import { watchRender, type SocketUpdate } from "./socket.js";
@@ -34,6 +34,9 @@ const maxSocketGapMs = 30_000;
 const giveUpAfterMs = 10 * 60_000;
 const maxBackoffMs = 30_000;
 const maxRateLimitBackoffMs = 60_000;
+/** A multipart upload sends each part this many times before giving up on it. */
+const maxPartAttempts = 3;
+const partRetryBaseMs = 500;
 /** Spreads waits that started together: a delay grows by up to this fraction. */
 const jitter = 0.25;
 
@@ -318,12 +321,9 @@ export class Lumen {
 
     const parts: { etag: string; partNumber: number }[] = [];
     for await (const part of partsOf(body, sizeBytes, signal)) {
-      const response = await this.#send(this.#apiUrl(`${uploadPath}/parts/${parts.length + 1}`), {
-        body: part,
-        method: "PUT",
-        signal,
-      });
-      parts.push(parsePart(await readJson(response, signal)));
+      parts.push(
+        await this.#putPart(this.#apiUrl(`${uploadPath}/parts/${parts.length + 1}`), part, signal),
+      );
     }
 
     const done = await this.#request("POST", `${uploadPath}/complete`, {
@@ -331,6 +331,28 @@ export class Lumen {
       signal,
     });
     return parseMedia(done.media);
+  }
+
+  /**
+   * Sends one part, again after a network error, a response that dropped while it was read, a
+   * server error, a rate limit or while an earlier attempt at it is still being received.
+   */
+  async #putPart(
+    url: URL,
+    part: Blob | Uint8Array<ArrayBuffer>,
+    signal: AbortSignal | undefined,
+  ): Promise<{ readonly etag: string; readonly partNumber: number }> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const response = await this.#send(url, { body: part, method: "PUT", signal });
+        return parsePart(await readJson(response, signal));
+      } catch (error) {
+        if (attempt >= maxPartAttempts || !isRetryablePartError(error)) {
+          throw error;
+        }
+        await sleep(jittered(error.retryAfterMs ?? partRetryBaseMs * 2 ** (attempt - 1)), signal);
+      }
+    }
   }
 
   /**
@@ -473,7 +495,21 @@ async function readJson<T extends object = Record<string, unknown>>(
   response: Response,
   signal: AbortSignal | undefined,
 ): Promise<T> {
-  const body = await readBody(response, signal);
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (cause) {
+    if (signal?.aborted) {
+      throw signal.reason;
+    }
+    if (!(cause instanceof SyntaxError)) {
+      throw new LumenError(
+        "network_error",
+        cause instanceof Error ? cause.message : "Lumen API response could not be read.",
+        { cause },
+      );
+    }
+  }
   if (!isRecord(body)) {
     throw new LumenError("invalid_response", "Lumen API returned a malformed response body.", {
       status: response.status,
@@ -488,6 +524,12 @@ function isTransient(error: unknown): error is LumenError {
     (error.code === "network_error" ||
       error.status === 429 ||
       (error.status !== undefined && error.status >= 500))
+  );
+}
+
+function isRetryablePartError(error: unknown): error is LumenError {
+  return (
+    isTransient(error) || (error instanceof LumenError && error.code === "upload_part_in_progress")
   );
 }
 

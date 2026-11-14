@@ -134,6 +134,8 @@ error_codes! {
     MediaSizeMismatch = "media_size_mismatch",
     /// `404`: no multipart upload has this id.
     UploadNotFound = "upload_not_found",
+    /// `409`: another request is already sending this part. Send it again once that ends.
+    UploadPartInProgress = "upload_part_in_progress",
     /// `400`: the listed parts are not the parts uploaded.
     InvalidUploadParts = "invalid_upload_parts",
     /// `409`: the media has no validated content.

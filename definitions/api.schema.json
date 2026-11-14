@@ -269,6 +269,10 @@
           "description": "`404`: no multipart upload has this id."
         },
         {
+          "code": "upload_part_in_progress",
+          "description": "`409`: another request is already sending this part. Send it again once that ends."
+        },
+        {
           "code": "invalid_upload_parts",
           "description": "`400`: the listed parts are not the parts uploaded."
         },
