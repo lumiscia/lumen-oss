@@ -842,12 +842,12 @@ pub(crate) struct FrameCx<'a> {
 
 /// The error for a failure of the recorder: `render.limit` when the frame's data doesn't fit the
 /// device, `render.internal` when the recorder was misused, and `render.gpu` otherwise.
-pub(crate) fn gpu_error(error: anyhow::Error) -> crate::error::LumenError {
+pub(crate) fn gpu_error(error: lumen_gpu::FrameError) -> crate::error::LumenError {
     let details = error.to_string();
-    match error.downcast_ref::<lumen_gpu::FrameError>() {
-        Some(lumen_gpu::FrameError::TooLarge(_)) => RenderError::Limit { details },
-        Some(lumen_gpu::FrameError::Misuse(_)) => RenderError::Internal { details },
-        None => RenderError::Gpu { details },
+    match error {
+        lumen_gpu::FrameError::TooLarge(_) => RenderError::Limit { details },
+        lumen_gpu::FrameError::Misuse(_) => RenderError::Internal { details },
+        lumen_gpu::FrameError::Device(_) => RenderError::Gpu { details },
     }
     .into()
 }
