@@ -66,13 +66,17 @@ const RASTER_MULTIMERGE: ComputeProgram = ComputeProgram {
 };
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "RasterMultiMergeParams", source = SHADER)]
 struct RasterMultiMergeUniforms {
     opacity: f32,
     blend_mode: u32,
     /// Output texel of the pass's first invocation, then canvas pixels of the first texels
     /// of the output, base and overlay.
-    origins: [[i32; 2]; 4],
+    start: [i32; 2],
+    origin: [i32; 2],
+    base_origin: [i32; 2],
+    overlay_origin: [i32; 2],
 }
 
 impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
@@ -132,15 +136,13 @@ impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
             let params = RasterMultiMergeUniforms {
                 opacity: evaluated.opacity as f32,
                 blend_mode: evaluated.blend_mode as u32,
-                origins: [
-                    [
-                        changed.x - domain.data_rect.x,
-                        changed.y - domain.data_rect.y,
-                    ],
-                    [domain.data_rect.x, domain.data_rect.y],
-                    current.origin(),
-                    overlay.origin(),
+                start: [
+                    changed.x - domain.data_rect.x,
+                    changed.y - domain.data_rect.y,
                 ],
+                origin: [domain.data_rect.x, domain.data_rect.y],
+                base_origin: current.origin(),
+                overlay_origin: overlay.origin(),
             };
             let uniform = cx.rec.uniform(&params);
             cx.dispatch(

@@ -305,7 +305,8 @@ pub(crate) struct GpuRun {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Params", source = RESOLVE_SHADER)]
 struct ResolveParams {
     supersample: u32,
     _pad: [u32; 3],
