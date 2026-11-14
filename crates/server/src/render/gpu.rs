@@ -272,7 +272,7 @@ impl<'a> Mp4Render<'a> {
                 choice.alpha(),
             )
             .map_err(|message| ServerRenderError::new(ErrorCode::InvalidOutput, message, false))?;
-        tracing::info!(encoder = choice.first().encoder, codec = ?info.codec, "selected video encoder");
+        tracing::info!(encoder = %choice.first().encoder, codec = ?info.codec, "selected video encoder");
 
         let OpenedTarget {
             renderer,

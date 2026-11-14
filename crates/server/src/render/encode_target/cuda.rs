@@ -6,7 +6,7 @@ use lumen_engine::{
     gpu::{CudaNvencTarget, CudaNvencTargetPool, GpuCompositionRenderer, RenderTarget},
 };
 use lumen_ffmpeg::{
-    AudioEncoderConfig, EncodeMode, EncoderQuality, GpuBackend, MuxedEncoder, Rational,
+    AudioEncoderConfig, EncodeMode, Encoder, EncoderQuality, GpuBackend, MuxedEncoder, Rational,
     VideoEncoderConfig,
 };
 
@@ -27,7 +27,7 @@ impl CudaTarget {
         composition: &Composition,
         media_store: &mut LocalMediaStore,
         output: &Path,
-        encoder: &str,
+        encoder: &Encoder,
         quality: &EncoderQuality,
         depth: lumen_ffmpeg::BitDepth,
     ) -> Result<(GpuCompositionRenderer, Self), ServerRenderError> {

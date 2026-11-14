@@ -7,8 +7,8 @@ use lumen_engine::{
     gpu::{GpuCompositionRenderer, RenderedFrame, VulkanVideoTarget},
 };
 use lumen_ffmpeg::{
-    AudioEncoderConfig, EncodeMode, EncoderQuality, GpuBackend, GpuVideoInput, MuxedEncoder,
-    Rational, VideoEncoderConfig,
+    AudioEncoderConfig, EncodeMode, Encoder, EncoderQuality, GpuBackend, GpuVideoInput,
+    MuxedEncoder, Rational, VideoEncoderConfig,
 };
 use lumen_gpu::wgpu::SubmissionIndex;
 
@@ -31,7 +31,7 @@ impl VulkanTarget {
         composition: &Composition,
         media_store: &mut LocalMediaStore,
         output: &Path,
-        encoder: &str,
+        encoder: &Encoder,
         quality: &EncoderQuality,
         depth: lumen_ffmpeg::BitDepth,
     ) -> anyhow::Result<(GpuCompositionRenderer, Self)> {

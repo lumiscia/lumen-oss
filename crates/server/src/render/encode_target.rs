@@ -83,7 +83,7 @@ impl EncodeTarget {
                 |candidate| {
                     Self::open_encoder(
                         candidate,
-                        EncoderFamily::of(&candidate.encoder),
+                        candidate.encoder.family(),
                         choice.bit_depth(),
                         choice.alpha(),
                         composition,
@@ -117,11 +117,12 @@ impl EncodeTarget {
         if cancel.is_cancelled() {
             return Err(ServerRenderError::cancelled());
         }
-        let (name, quality) = (candidate.encoder.as_str(), &candidate.quality);
-        check_bit_depth(name, bit_depth)
+        let (encoder, quality) = (&candidate.encoder, &candidate.quality);
+        let name = encoder.name();
+        check_bit_depth(encoder, bit_depth)
             .and_then(|()| {
                 if alpha {
-                    check_alpha(name, bit_depth)
+                    check_alpha(encoder, bit_depth)
                 } else {
                     Ok(())
                 }
@@ -137,7 +138,7 @@ impl EncodeTarget {
                     composition,
                     media_store,
                     output,
-                    name,
+                    encoder,
                     quality,
                     bit_depth,
                 ) {
@@ -160,7 +161,7 @@ impl EncodeTarget {
                     composition,
                     media_store,
                     output,
-                    name,
+                    encoder,
                     quality,
                     bit_depth,
                 ) {
@@ -186,8 +187,13 @@ impl EncodeTarget {
             #[cfg(all(target_os = "macos", feature = "metal"))]
             EncoderFamily::VideoToolbox => {
                 let devices = reserve_devices(family, hardware_decode, cancel)?;
-                match metal::MetalTarget::open(composition, &media_store.gpu, output, name, quality)
-                {
+                match metal::MetalTarget::open(
+                    composition,
+                    &media_store.gpu,
+                    output,
+                    encoder,
+                    quality,
+                ) {
                     Ok((renderer, target)) => {
                         return Ok(OpenedTarget {
                             renderer,
@@ -211,7 +217,7 @@ impl EncodeTarget {
             settings.width,
             settings.height,
             composition.timeline().fps,
-            name,
+            encoder,
             quality,
             bit_depth,
             alpha,
@@ -592,7 +598,7 @@ pub(super) fn poll(
 
 #[cfg(test)]
 mod start_failure_tests {
-    use lumen_ffmpeg::{EncoderQuality, FfmpegErrorKind};
+    use lumen_ffmpeg::{Encoder, EncoderQuality, FfmpegErrorKind};
 
     use super::*;
 
@@ -662,7 +668,7 @@ mod start_failure_tests {
             16,
             16,
             30.0,
-            "libx264",
+            &Encoder::parse("libx264"),
             &EncoderQuality::default(),
             BitDepth::Eight,
             false,
@@ -677,7 +683,7 @@ mod start_failure_tests {
 #[cfg(all(test, target_os = "linux", feature = "cuda", feature = "vulkan"))]
 mod tests {
     use lumen_ffmpeg::{
-        DecodeMode, DecodedVideoFrame, EncoderQuality, InputContext, VideoDecoder,
+        DecodeMode, DecodedVideoFrame, Encoder, EncoderQuality, InputContext, VideoDecoder,
         VideoDecoderConfig, YuvVideoFrame,
     };
 
@@ -735,7 +741,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let output = directory.path().join("output.mp4");
         let candidate = EncoderCandidate {
-            encoder: "libx264".to_string(),
+            encoder: Encoder::parse("libx264"),
             quality: EncoderQuality::default(),
         };
         let mut media_store = LocalMediaStore::new(

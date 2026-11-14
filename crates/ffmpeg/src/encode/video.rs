@@ -15,11 +15,13 @@ use sys::{
 };
 
 use super::codec::{
-    BitDepth, EncoderFamily, check_alpha, check_bit_depth, cpu_input_format, video_encoder_by_name,
+    BitDepth, Encoder, EncoderFamily, check_alpha, check_bit_depth, cpu_input_format,
+    video_encoder_by_name,
 };
 use super::common::{refresh_stream_time_base, send_frame_and_write_packets};
 use super::hw::{AvBufferRef, EncoderHwContexts, create_encoder_hw_contexts};
 use super::output::OutputContext;
+use super::preset::EncodeCodec;
 use super::quality::{EncoderQuality, apply_quality_options, quality_options};
 
 // swscale range flags: 1 is full (JPEG) range, 0 is limited (MPEG) range.
@@ -32,8 +34,8 @@ pub struct VideoEncoderConfig {
     pub height: u32,
     /// Exact frames per second; use `Rational::from_fps` to convert a floating-point rate.
     pub fps: Rational,
-    /// FFmpeg encoder name, such as `libx264` or `h264_vulkan`.
-    pub encoder: String,
+    /// The encoder, such as `libx264` or `h264_vulkan`.
+    pub encoder: Encoder,
     pub mode: EncodeMode,
     pub quality: EncoderQuality,
     /// The stream's bits per sample. A 10-bit encoder takes YUV frames of that depth, never RGBA.
@@ -54,7 +56,7 @@ impl VideoEncoderConfig {
         width: u32,
         height: u32,
         fps: impl Into<Rational>,
-        encoder: impl Into<String>,
+        encoder: impl Into<Encoder>,
     ) -> Self {
         Self {
             width,
@@ -181,7 +183,7 @@ impl VideoEncoder {
             }
         }
         if let EncodeMode::GpuTexture(backend) = config.mode
-            && !EncoderFamily::of(&config.encoder).takes_textures_from(backend)
+            && !config.encoder.family().takes_textures_from(backend)
         {
             return Err(FfmpegError::new(
                 "VideoEncoder::create",
@@ -193,16 +195,16 @@ impl VideoEncoder {
             .with_backend(backend));
         }
         let codec = video_encoder_by_name(&config.encoder)?;
-        let encoder_name = config.encoder.as_str();
-        check_bit_depth(encoder_name, config.bit_depth)
+        let encoder = &config.encoder;
+        check_bit_depth(encoder, config.bit_depth)
             .map_err(|message| FfmpegError::new("VideoEncoder::create", message))?;
         if config.alpha {
-            check_alpha(encoder_name, config.bit_depth)
+            check_alpha(encoder, config.bit_depth)
                 .map_err(|message| FfmpegError::new("VideoEncoder::create", message))?;
         }
         let codec_id = crate::video::VideoCodec::from_av_codec_id(unsafe { (*codec).id });
-        let quality = quality_options(encoder_name, &config.quality, config.mode)?;
-        check_container_holds(output, codec, encoder_name)?;
+        let quality = quality_options(encoder, &config.quality, config.mode)?;
+        check_container_holds(output, codec, encoder.name())?;
         let stream = unsafe { sys::avformat_new_stream(output.ptr, ptr::null()) };
         if stream.is_null() {
             return Err(FfmpegError::new(
@@ -266,7 +268,7 @@ impl VideoEncoder {
             if ((*(*output.ptr).oformat).flags & sys::AVFMT_GLOBALHEADER) != 0 {
                 (*context).flags |= sys::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
             }
-            apply_quality_options(context, &quality, encoder_name)?;
+            apply_quality_options(context, &quality, encoder)?;
             // An encoder option can name another pixel format, and with it another bit depth.
             if (*context).pix_fmt != pixel_format
                 || sw_pixel_format.is_some_and(|format| (*context).sw_pix_fmt != format)
@@ -274,13 +276,13 @@ impl VideoEncoder {
                 return Err(FfmpegError::new(
                     "VideoEncoder::new",
                     format!(
-                        "encoder `{encoder_name}`: its options change the pixel format, which the output's bit depth ({}) sets",
+                        "encoder `{encoder}`: its options change the pixel format, which the output's bit depth ({}) sets",
                         config.bit_depth
                     ),
                 ));
             }
             if codec_id == crate::video::VideoCodec::ProRes {
-                check_prores_options(context, config.alpha, encoder_name)?;
+                check_prores_options(context, config.alpha, encoder.name())?;
             }
             ffi::check(
                 sys::avcodec_open2(context, codec, ptr::null_mut()),
@@ -288,15 +290,15 @@ impl VideoEncoder {
             )
             .map_err(|mut error| {
                 // FFmpeg's Vulkan encoders only say why in their log, and return ENOSYS.
-                error.message = if encoder_name.ends_with("_vulkan")
+                error.message = if encoder.family() == EncoderFamily::Vulkan
                     && error.code == Some(sys::AVERROR(libc::ENOSYS))
                 {
                     format!(
-                        "the Vulkan device can't run `{encoder_name}`: it has no video encode queue or doesn't support encoding this codec at {}",
+                        "the Vulkan device can't run `{encoder}`: it has no video encode queue or doesn't support encoding this codec at {}",
                         config.bit_depth
                     )
                 } else {
-                    format!("encoder `{encoder_name}`: {}", error.message)
+                    format!("encoder `{encoder}`: {}", error.message)
                 };
                 error
             })?;
@@ -304,7 +306,7 @@ impl VideoEncoder {
                 sys::avcodec_parameters_from_context((*stream).codecpar, context),
                 "avcodec_parameters_from_context",
             )?;
-            if encoder_name == "av1_vulkan" {
+            if encoder.is(EncoderFamily::Vulkan, EncodeCodec::Av1) {
                 container_crop = crop_coded_padding(context, (*stream).codecpar)?;
             }
             // WebM signals the VP9 alpha layer, which libvpx sends as block additions, with this.

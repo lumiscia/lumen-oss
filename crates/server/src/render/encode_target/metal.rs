@@ -10,7 +10,7 @@ use lumen_engine::{
     },
 };
 use lumen_ffmpeg::{
-    AudioEncoderConfig, EncodeMode, EncoderQuality, GpuBackend, MuxedEncoder, Rational,
+    AudioEncoderConfig, EncodeMode, Encoder, EncoderQuality, GpuBackend, MuxedEncoder, Rational,
     VideoEncoderConfig,
 };
 
@@ -38,7 +38,7 @@ impl MetalTarget {
         composition: &Composition,
         gpu: &lumen_gpu::GpuSettings,
         output: &Path,
-        encoder: &str,
+        encoder: &Encoder,
         quality: &EncoderQuality,
     ) -> anyhow::Result<(GpuCompositionRenderer, Self)> {
         let renderer = pollster::block_on(GpuCompositionRenderer::new_with_settings(gpu))

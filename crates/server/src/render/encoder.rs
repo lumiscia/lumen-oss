@@ -11,7 +11,7 @@ use lumen_engine::{
     composition::Composition,
 };
 use lumen_ffmpeg::{
-    AudioEncoderConfig, AudioFrame, BitDepth, CpuVideoFrame, EncoderQuality, FfmpegError,
+    AudioEncoderConfig, AudioFrame, BitDepth, CpuVideoFrame, Encoder, EncoderQuality, FfmpegError,
     MuxedEncoder, PixelFormat, Rational, VideoEncoderConfig,
 };
 
@@ -40,7 +40,7 @@ impl EncoderSink {
         width: u32,
         height: u32,
         fps: f32,
-        encoder: &str,
+        encoder: &Encoder,
         quality: &EncoderQuality,
         bit_depth: BitDepth,
         alpha: bool,
@@ -309,7 +309,7 @@ mod tests {
             64,
             64,
             30.0,
-            "libx264",
+            &Encoder::parse("libx264"),
             &EncoderQuality::default(),
             BitDepth::Eight,
             false,
