@@ -138,6 +138,9 @@ struct Inner {
     max_bytes: u64,
     max_pending: usize,
     entries: Mutex<HashMap<String, Entry>>,
+    /// Whether every finished check waits before its result is applied.
+    #[cfg(test)]
+    checks_held: tokio::sync::watch::Sender<bool>,
 }
 
 impl fmt::Debug for AssetStore {
@@ -193,6 +196,8 @@ impl AssetStore {
                 max_bytes,
                 max_pending,
                 entries: Mutex::new(entries),
+                #[cfg(test)]
+                checks_held: tokio::sync::watch::Sender::new(false),
             }),
         })
     }
@@ -582,6 +587,8 @@ impl AssetStore {
         // Not awaited, so a cancel can't leave it running after the guard has cleaned up.
         fs::rename(&temp, &finishing.content)?;
         let probed = probe_blocking(finishing.content.clone()).await;
+        #[cfg(test)]
+        self.checks_released().await;
 
         // Recorded and then published under the lock a delete takes, so nothing can lease the
         // checked media or delete its record before the record is written, and a media deleted
@@ -683,6 +690,28 @@ impl AssetStore {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+impl AssetStore {
+    /// Makes every check that finishes from now on wait, with its bytes in place and its result
+    /// not yet applied, until [`Self::release_checks`].
+    fn hold_checks(&self) {
+        self.inner.checks_held.send_replace(true);
+    }
+
+    fn release_checks(&self) {
+        self.inner.checks_held.send_replace(false);
+    }
+
+    async fn checks_released(&self) {
+        let _ = self
+            .inner
+            .checks_held
+            .subscribe()
+            .wait_for(|held| !*held)
+            .await;
     }
 }
 
@@ -956,13 +985,13 @@ mod tests {
     use super::*;
 
     /// Polls `upload` until its bytes are being checked, then drops it there, as a dropped
-    /// request is. Returns whether it was dropped: a check can finish before it is seen running.
-    async fn cancel_once_checking<F: Future>(store: &AssetStore, id: &str, upload: F) -> bool {
+    /// request is. The store's checks must be held, or the check could finish unseen.
+    async fn cancel_once_checking<F: Future>(store: &AssetStore, id: &str, upload: F) {
         let mut upload = Box::pin(upload);
         loop {
             match std::future::poll_fn(|cx| Poll::Ready(upload.as_mut().poll(cx))).await {
-                Poll::Ready(_) => return false,
-                Poll::Pending if store.entries()[id].finishing => return true,
+                Poll::Ready(_) => panic!("the upload finished while checks were held"),
+                Poll::Pending if store.entries()[id].finishing => return,
                 Poll::Pending => tokio::task::yield_now().await,
             }
         }
@@ -973,18 +1002,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store =
             AssetStore::open(dir.path(), Duration::from_secs(60), 1024, usize::MAX).unwrap();
-        let body = || stream_of(b"not media");
-        let mut cancelled = 0;
-        for _ in 0..20 {
-            let id = store.create(new_upload(9)).unwrap().id;
-            if !cancel_once_checking(&store, &id, store.put_content(&id, body())).await {
-                continue;
-            }
-            cancelled += 1;
-            let retried = store.put_content(&id, body()).await.unwrap();
-            assert_eq!(retried.status, MediaStatus::Rejected);
-        }
-        assert!(cancelled > 0, "no upload was cancelled while being checked");
+        let id = store.create(new_upload(9)).unwrap().id;
+        store.hold_checks();
+        cancel_once_checking(&store, &id, store.put_content(&id, stream_of(b"not media"))).await;
+        store.release_checks();
+        let retried = store
+            .put_content(&id, stream_of(b"not media"))
+            .await
+            .unwrap();
+        assert_eq!(retried.status, MediaStatus::Rejected);
     }
 
     #[tokio::test]
@@ -997,21 +1023,16 @@ mod tests {
         };
         let dir = tempfile::tempdir().unwrap();
         let store = AssetStore::open(dir.path(), Duration::from_secs(60), 1024, 1).unwrap();
-        // Each round's create needs the last round's media to have been checked.
-        let mut cancelled = 0;
-        for _ in 0..20 {
-            let id = store.create(new_upload(9)).unwrap().id;
-            let upload = store.put_content(&id, stream_of(b"not media"));
-            if cancel_once_checking(&store, &id, upload).await {
-                cancelled += 1;
-                assert!(full(&store), "a cancelled check left its media pending");
-                store
-                    .put_content(&id, stream_of(b"not media"))
-                    .await
-                    .unwrap();
-            }
-        }
-        assert!(cancelled > 0, "no upload was cancelled while being checked");
+        let id = store.create(new_upload(9)).unwrap().id;
+        store.hold_checks();
+        let upload = store.put_content(&id, stream_of(b"not media"));
+        cancel_once_checking(&store, &id, upload).await;
+        store.release_checks();
+        assert!(full(&store), "a cancelled check left its media pending");
+        store
+            .put_content(&id, stream_of(b"not media"))
+            .await
+            .unwrap();
 
         let id = store.create(new_upload(9)).unwrap().id;
         assert!(full(&store));
@@ -1031,31 +1052,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store =
             AssetStore::open(dir.path(), Duration::from_secs(60), 1024, usize::MAX).unwrap();
-        // A file operation left running by the cancel may land before or after its cleanup, so
-        // each round gives it another chance to land after.
-        let mut cancelled = 0;
-        for round in 0..20 {
-            let id = store.create(new_upload(9)).unwrap().id;
-            let upload = store.put_content(&id, stream_of(b"not media"));
-            if !cancel_once_checking(&store, &id, upload).await {
-                continue;
-            }
-            cancelled += 1;
-            tokio::time::sleep(Duration::from_millis(50)).await;
+        let id = store.create(new_upload(9)).unwrap().id;
+        store.hold_checks();
+        let upload = store.put_content(&id, stream_of(b"not media"));
+        cancel_once_checking(&store, &id, upload).await;
+        store.release_checks();
 
-            let upload_id = store.start_multipart(&id).unwrap();
-            store
-                .put_part(&id, &upload_id, 1, stream_of(b"not media"))
-                .await
-                .unwrap();
-            let entry = dir.path().canonicalize().unwrap().join(&id);
-            let held = bytes_under(&entry) - bytes_under(&entry.join(RECORD_FILE));
-            assert!(
-                held <= 9,
-                "round {round}: {held} bytes held against a size of 9"
-            );
-        }
-        assert!(cancelled > 0, "no upload was cancelled while being checked");
+        let upload_id = store.start_multipart(&id).unwrap();
+        store
+            .put_part(&id, &upload_id, 1, stream_of(b"not media"))
+            .await
+            .unwrap();
+        let entry = dir.path().canonicalize().unwrap().join(&id);
+        let held = bytes_under(&entry) - bytes_under(&entry.join(RECORD_FILE));
+        assert!(held <= 9, "{held} bytes held against a size of 9");
     }
 
     const TINY_PNG: &[u8] = &[
