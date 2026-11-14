@@ -1,6 +1,7 @@
 import type { MediaInventory, MediaSourceKind } from "@lumiscia/lumen-types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { FileMediaKind } from "../src/media/types.js";
 import type { LumenPreviewBindings } from "../src/runtime.js";
 import {
   createLumenPreviewWorkerHost,
@@ -93,17 +94,11 @@ class FakeController {
     }));
     return JSON.stringify({ images: [], videos });
   }
-  hasEnvironment(id: string) {
-    return stored.environment.has(id);
+  hasFile(kind: FileMediaKind, id: string) {
+    return stored[kind].has(id);
   }
   hasImage(id: string) {
     return stored.image.has(id);
-  }
-  hasLut(id: string) {
-    return stored.lut.has(id);
-  }
-  hasModel(id: string) {
-    return stored.model.has(id);
   }
   hasVideoFrame() {
     return false;
@@ -111,24 +106,25 @@ class FakeController {
   height() {
     return this.#composition === "B" ? 2 : 1;
   }
-  removeEnvironmentSource(id: string) {
-    stored.environment.delete(id);
+  removeFile(kind: FileMediaKind, id: string) {
+    stored[kind].delete(id);
   }
+  removeFontFamily() {}
   removeImageSource(id: string) {
     stored.image.delete(id);
-  }
-  removeLutSource(id: string) {
-    stored.lut.delete(id);
-  }
-  removeModelSource(id: string) {
-    stored.model.delete(id);
   }
   removeVideoSource(id: string) {
     stored.video.delete(id);
   }
-  setEnvironment(id: string) {
-    calls.push(`environment ${id}`);
-    stored.environment.add(id);
+  setFile(kind: FileMediaKind, id: string) {
+    if (corruptFiles.has(id)) {
+      const what = { environment: "an environment map", lut: "a LUT", model: "a model" }[kind];
+      throw Object.assign(new Error(`${id}: not ${what}`), {
+        media: { code: "media.decode", details: `not ${what}`, source: id, wanted: [kind] },
+      });
+    }
+    calls.push(`${kind} ${id}`);
+    stored[kind].add(id);
   }
   setFrame(frame: number) {
     this.#frame = frame;
@@ -138,24 +134,7 @@ class FakeController {
     stored.image.add(id);
   }
   setLogLevel() {}
-  setLut(id: string) {
-    if (corruptFiles.has(id)) {
-      throw Object.assign(new Error(`${id}: not a LUT`), {
-        media: { code: "media.decode", details: "not a LUT", source: id, wanted: ["lut"] },
-      });
-    }
-    calls.push(`lut ${id}`);
-    stored.lut.add(id);
-  }
-  setModel(id: string) {
-    if (corruptFiles.has(id)) {
-      throw Object.assign(new Error(`${id}: not a model`), {
-        media: { code: "media.decode", details: "not a model", source: id, wanted: ["model"] },
-      });
-    }
-    calls.push(`model ${id}`);
-    stored.model.add(id);
-  }
+  setVideoFrameCacheBytes() {}
   setVideoMetadata(id: string) {
     calls.push(`video ${id}`);
     stored.video.add(id);

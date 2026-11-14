@@ -1,3 +1,4 @@
+import type { MediaSourceKind } from "@lumiscia/lumen-types";
 import type { BlobSourceOptions, InputFormat, UrlSourceOptions } from "mediabunny";
 
 export interface FrameRequirementsPayload {
@@ -83,28 +84,26 @@ export interface VideoFrameMetadata {
   codec: string | null;
 }
 
+/**
+ * A file the engine reads itself, when a render first uses it: a binary glTF model, an `.hdr` or
+ * `.exr` environment map, or a `.cube` LUT.
+ */
+export type FileMediaKind = Extract<MediaSourceKind, "environment" | "lut" | "model">;
+
 export interface LumenMediaTarget {
   clear(): void;
-  removeEnvironmentSource?(sourceId: string): void;
-  removeFontFamily?(fontFamily: string): void;
-  removeImageSource?(imageId: string): void;
-  removeLutSource?(sourceId: string): void;
-  removeModelSource?(modelId: string): void;
-  removeVideoSource?(streamId: string): void;
-  hasEnvironment?(sourceId: string): boolean;
+  hasFile(kind: FileMediaKind, source: string): boolean;
   hasImage(imageId: string): boolean;
-  hasLut?(sourceId: string): boolean;
-  hasModel?(modelId: string): boolean;
   hasVideoFrame(streamId: string, frame: number): boolean;
-  /** Takes an `.hdr` or `.exr` file's bytes, which the engine reads when a scene first lights with it. */
-  setEnvironment?(sourceId: string, bytes: Uint8Array): void;
-  setFont?(fontFamily: string, bytes: Uint8Array): void;
+  removeFile(kind: FileMediaKind, source: string): void;
+  removeFontFamily(fontFamily: string): void;
+  removeImageSource(imageId: string): void;
+  removeVideoSource(streamId: string): void;
+  /** Takes a file's bytes, which throw here if the engine cannot read them as a `kind`. */
+  setFile(kind: FileMediaKind, source: string, bytes: Uint8Array): void;
+  setFont(fontFamily: string, bytes: Uint8Array): void;
   setImage(imageId: string, width: number, height: number, rgba: Uint8Array): void;
-  /** Takes a `.cube` file's bytes, which the engine reads when a `color_grade` first grades with it. */
-  setLut?(sourceId: string, bytes: Uint8Array): void;
-  /** Takes a `.glb` file's bytes, which the engine reads when a render first draws the model. */
-  setModel?(modelId: string, bytes: Uint8Array): void;
-  setVideoFrameCacheBytes?(bytes: number): void;
+  setVideoFrameCacheBytes(bytes: number): void;
   setVideoMetadata(
     streamId: string,
     width: number,

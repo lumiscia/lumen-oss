@@ -40,6 +40,21 @@ impl AssetKind {
             Self::Lut => "lut",
         }
     }
+
+    /// The kind [`name`](Self::name) gives `name` for.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            Self::Image,
+            Self::Video,
+            Self::Audio,
+            Self::Font,
+            Self::Model,
+            Self::Environment,
+            Self::Lut,
+        ]
+        .into_iter()
+        .find(|kind| kind.name() == name)
+    }
 }
 
 impl fmt::Display for AssetKind {

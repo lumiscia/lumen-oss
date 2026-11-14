@@ -21,6 +21,7 @@ function controllerFailingWith(error: unknown) {
     frameRequirements(): string {
       return JSON.stringify({ images: [], videos: [] });
     }
+    setVideoFrameCacheBytes() {}
     renderNow(canvas: unknown): Promise<void> {
       renders.push(canvas);
       return renders.length === 1 ? Promise.reject(error) : Promise.resolve();

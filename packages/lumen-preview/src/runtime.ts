@@ -1,36 +1,28 @@
 import type { Diagnostic, ModelInfo, MediaInventory } from "@lumiscia/lumen-types";
 
 import { LumenMediaBridge, toUint8Array } from "./media/index.js";
-import type { LumenMediaTarget, MediaSourceInput, VideoSourceRegistration } from "./media/index.js";
+import type {
+  FileMediaKind,
+  LumenMediaTarget,
+  MediaSourceInput,
+  VideoSourceRegistration,
+} from "./media/index.js";
 import type { PlaybackRange } from "./playback-range.js";
 import { FrameRequirementLoader } from "./requirements-loader.js";
 
 export type LumenLogLevel = "off" | "error" | "warn" | "info" | "debug" | "trace";
 
+/** The wasm controller, whose media comes from the bridge. */
 export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   audioTimeline(): string | undefined;
-  clear(): void;
   currentFrame(): number;
   durationFrames(): number;
   frameRequirements(frame: number): string;
   fps(): number;
   height(): number;
-  hasEnvironment(sourceId: string): boolean;
-  hasLut(sourceId: string): boolean;
-  hasModel(modelId: string): boolean;
   loadComposition(compositionJson: string): void;
-  removeEnvironmentSource(sourceId: string): void;
-  removeFontFamily(fontFamily: string): void;
-  removeImageSource(imageId: string): void;
-  removeLutSource(sourceId: string): void;
-  removeModelSource(modelId: string): void;
-  removeVideoSource(streamId: string): void;
   renderNow(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
-  setEnvironment(sourceId: string, bytes: Uint8Array): void;
   setFrame(frame: number): void;
-  setFont(fontFamily: string, bytes: Uint8Array): void;
-  setLut(sourceId: string, bytes: Uint8Array): void;
-  setModel(modelId: string, bytes: Uint8Array): void;
   setLogLevel(level: LumenLogLevel): void;
   width(): number;
 }
@@ -60,26 +52,36 @@ export interface LumenBindings {
   preview: () => Promise<LumenPreviewBindings>;
 }
 
-/** The binding with each kind's browser-side decode in front of it. */
-export interface LumenPreviewController extends LumenPreviewControllerBinding {
-  registerEnvironmentSource(sourceId: string, source: MediaSourceInput): Promise<void>;
+/** The wasm controller with each kind's browser-side decode in front of it. */
+export interface LumenPreviewController {
+  audioTimeline(): string | undefined;
+  clear(): void;
+  durationFrames(): number;
+  fps(): number;
+  height(): number;
+  loadComposition(compositionJson: string): void;
+  /** Loads what the playhead's frame needs, then starts decoding the frames after it. */
+  prepareFrame(): Promise<void>;
+  registerFile(kind: FileMediaKind, sourceId: string, source: MediaSourceInput): Promise<void>;
   registerFontFamily(fontFamily: string, bytes: BufferSource): void;
   registerImageSource(imageId: string, source: MediaSourceInput): Promise<void>;
-  registerLutSource(sourceId: string, source: MediaSourceInput): Promise<void>;
-  registerModelSource(modelId: string, source: MediaSourceInput): Promise<void>;
   registerVideoSource(
     streamId: string,
     source: MediaSourceInput,
     options: Omit<VideoSourceRegistration, "source">,
   ): Promise<void>;
-  /** Limits lookahead to the range being played. It wraps round the range only if it loops. */
-  setPlaybackRange(range: PlaybackRange | null): void;
-  /** Loads what the playhead's frame needs, then starts decoding the frames after it. */
-  prepareFrame(): Promise<void>;
+  removeFile(kind: FileMediaKind, sourceId: string): void;
+  removeFontFamily(fontFamily: string): void;
+  removeImageSource(imageId: string): void;
+  removeVideoSource(streamId: string): void;
   /** Renders a frame `prepareFrame` loaded. */
   renderPrepared(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
-  setLookaheadCount(lookaheadCount: number): void;
+  setFrame(frame: number): void;
   setLogLevel(level: LumenLogLevel): void;
+  setLookaheadCount(lookaheadCount: number): void;
+  /** Limits lookahead to the range being played. It wraps round the range only if it loops. */
+  setPlaybackRange(range: PlaybackRange | null): void;
+  width(): number;
 }
 
 export interface LumenPreviewRuntime {
@@ -87,85 +89,64 @@ export interface LumenPreviewRuntime {
 }
 
 export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): LumenPreviewRuntime {
-  class RuntimeLumenPreviewController
-    extends bindings.LumenPreviewController
-    implements LumenPreviewController
-  {
-    private readonly bridge = new LumenMediaBridge(this);
-    private readonly requirements: FrameRequirementLoader;
+  class RuntimeLumenPreviewController implements LumenPreviewController {
+    private readonly controller = new bindings.LumenPreviewController();
+    private readonly bridge = new LumenMediaBridge(this.controller);
+    private readonly requirements = new FrameRequirementLoader({
+      durationFrames: () => this.controller.durationFrames(),
+      load: (requirementsJson) => this.bridge.loadFrameRequirements(requirementsJson),
+      requirements: (frame) => this.controller.frameRequirements(frame),
+    });
 
-    constructor() {
-      super();
-      this.requirements = new FrameRequirementLoader({
-        durationFrames: () => super.durationFrames(),
-        load: (requirementsJson) => this.bridge.loadFrameRequirements(requirementsJson),
-        requirements: (frame) => super.frameRequirements(frame),
-      });
+    audioTimeline(): string | undefined {
+      return this.controller.audioTimeline();
     }
 
     clear(): void {
-      super.clear();
+      this.controller.clear();
       this.bridge.clear();
       this.requirements.reset();
     }
 
+    durationFrames(): number {
+      return this.controller.durationFrames();
+    }
+
+    fps(): number {
+      return this.controller.fps();
+    }
+
+    height(): number {
+      return this.controller.height();
+    }
+
     loadComposition(compositionJson: string): void {
-      super.loadComposition(compositionJson);
+      this.controller.loadComposition(compositionJson);
       this.requirements.reset();
     }
 
-    removeImageSource(imageId: string): void {
-      super.removeImageSource(imageId);
-      this.bridge.removeImageSource(imageId, false);
-      this.requirements.reset();
+    async prepareFrame(): Promise<void> {
+      const frame = this.controller.currentFrame();
+      await this.requirements.loadFrame(frame);
+      this.requirements.prefetchWindow(frame + 1);
     }
 
-    removeModelSource(modelId: string): void {
-      super.removeModelSource(modelId);
-      this.bridge.removeModelSource(modelId, false);
-    }
-
-    removeEnvironmentSource(sourceId: string): void {
-      super.removeEnvironmentSource(sourceId);
-      this.bridge.removeEnvironmentSource(sourceId, false);
-    }
-
-    removeLutSource(sourceId: string): void {
-      super.removeLutSource(sourceId);
-      this.bridge.removeLutSource(sourceId, false);
-    }
-
-    removeFontFamily(fontFamily: string): void {
-      super.removeFontFamily(fontFamily);
-      this.requirements.reset();
-    }
-
-    removeVideoSource(streamId: string): void {
-      super.removeVideoSource(streamId);
-      this.bridge.removeVideoSource(streamId, false);
-      this.requirements.reset();
+    async registerFile(
+      kind: FileMediaKind,
+      sourceId: string,
+      source: MediaSourceInput,
+    ): Promise<void> {
+      await this.bridge.registerFile(kind, sourceId, source);
     }
 
     registerFontFamily(fontFamily: string, bytes: BufferSource): void {
       this.requirements.reset();
-      super.setFont(fontFamily, toUint8Array(bytes));
+      this.controller.setFont(fontFamily, toUint8Array(bytes));
     }
 
     async registerImageSource(imageId: string, source: MediaSourceInput): Promise<void> {
       this.requirements.reset();
       await this.bridge.registerImageSource(imageId, source);
-    }
-
-    async registerModelSource(modelId: string, source: MediaSourceInput): Promise<void> {
-      await this.bridge.registerModelSource(modelId, source);
-    }
-
-    async registerEnvironmentSource(sourceId: string, source: MediaSourceInput): Promise<void> {
-      await this.bridge.registerEnvironmentSource(sourceId, source);
-    }
-
-    async registerLutSource(sourceId: string, source: MediaSourceInput): Promise<void> {
-      await this.bridge.registerLutSource(sourceId, source);
     }
 
     async registerVideoSource(
@@ -177,6 +158,45 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       await this.bridge.registerVideoSource(streamId, source, options);
     }
 
+    removeFile(kind: FileMediaKind, sourceId: string): void {
+      this.bridge.removeFile(kind, sourceId);
+    }
+
+    removeFontFamily(fontFamily: string): void {
+      this.controller.removeFontFamily(fontFamily);
+      this.requirements.reset();
+    }
+
+    removeImageSource(imageId: string): void {
+      this.bridge.removeImageSource(imageId);
+      this.requirements.reset();
+    }
+
+    removeVideoSource(streamId: string): void {
+      this.bridge.removeVideoSource(streamId);
+      this.requirements.reset();
+    }
+
+    async renderPrepared(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void> {
+      try {
+        await this.controller.renderNow(canvas);
+      } catch (error) {
+        if (!this.isRecoverableFrameMiss(error)) {
+          throw error;
+        }
+        await this.requirements.loadFrame(this.controller.currentFrame());
+        await this.controller.renderNow(canvas);
+      }
+    }
+
+    setFrame(frame: number): void {
+      this.controller.setFrame(frame);
+    }
+
+    setLogLevel(level: LumenLogLevel): void {
+      this.controller.setLogLevel(level);
+    }
+
     setLookaheadCount(lookaheadCount: number): void {
       this.requirements.setLookaheadCount(lookaheadCount);
     }
@@ -185,22 +205,8 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       this.requirements.setRange(range);
     }
 
-    async prepareFrame(): Promise<void> {
-      const frame = super.currentFrame();
-      await this.requirements.loadFrame(frame);
-      this.requirements.prefetchWindow(frame + 1);
-    }
-
-    async renderPrepared(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void> {
-      try {
-        await super.renderNow(canvas);
-      } catch (error) {
-        if (!this.isRecoverableFrameMiss(error)) {
-          throw error;
-        }
-        await this.requirements.loadFrame(super.currentFrame());
-        await super.renderNow(canvas);
-      }
+    width(): number {
+      return this.controller.width();
     }
 
     private isRecoverableFrameMiss(error: unknown): boolean {
