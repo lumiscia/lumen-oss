@@ -24,7 +24,7 @@ impl From<lumen_ffmpeg::BitDepth> for BitDepth {
 
 /// A YUV format [`YuvConverter`] writes. Samples above 8 bits are two little-endian bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum YuvFormat {
+pub enum EncodeYuvFormat {
     /// 8-bit luma, then interleaved Cb, Cr pairs.
     Nv12,
     /// [`Self::Nv12`] at 10 bits, each value in the high bits of its two bytes.
@@ -41,7 +41,7 @@ pub enum YuvFormat {
     Yuva444p10,
 }
 
-impl YuvFormat {
+impl EncodeYuvFormat {
     /// The two-plane format hardware encoders read at `depth`.
     pub fn semi_planar(depth: BitDepth) -> Self {
         match depth {
@@ -93,14 +93,14 @@ impl YuvFormat {
 /// apart; 4:4:4 chroma is a Cb and a Cr plane laid out as luma is. The two-plane layouts match
 /// `lumen_ffmpeg::VulkanFrameLayout`'s for even sizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct YuvLayout {
+pub struct EncodeYuvLayout {
     pub width: u32,
     pub height: u32,
-    pub format: YuvFormat,
+    pub format: EncodeYuvFormat,
 }
 
-impl YuvLayout {
-    pub fn new(width: u32, height: u32, format: YuvFormat) -> Self {
+impl EncodeYuvLayout {
+    pub fn new(width: u32, height: u32, format: EncodeYuvFormat) -> Self {
         Self {
             width,
             height,
@@ -152,7 +152,7 @@ impl YuvLayout {
 }
 
 /// Converts the working space, linear and premultiplied, to BT.709 limited-range YUV in a buffer
-/// laid out as its [`YuvLayout`] says. Without alpha the colour is the frame over black; with it,
+/// laid out as its [`EncodeYuvLayout`] says. Without alpha the colour is the frame over black; with it,
 /// the colour is straight, unpremultiplied in linear light and black where alpha is 0, and alpha
 /// is stored full range. sRGB-encoded colour is converted to Y'CbCr. 4:2:0 chroma is the average
 /// of each 2x2 block, weighted by alpha when there is any. Each code is quantised once, straight
@@ -162,12 +162,12 @@ pub struct YuvConverter {
     pipeline: wgpu::ComputePipeline,
     params: wgpu::Buffer,
     buffer: Arc<wgpu::Buffer>,
-    layout: YuvLayout,
+    layout: EncodeYuvLayout,
 }
 
 impl YuvConverter {
     /// A converter writing a buffer of its own, which can be copied from.
-    pub fn new(renderer: &lumen_gpu::Renderer, layout: YuvLayout, dither: bool) -> Self {
+    pub fn new(renderer: &lumen_gpu::Renderer, layout: EncodeYuvLayout, dither: bool) -> Self {
         let buffer = renderer.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("lumen YUV frame"),
             size: layout.size(),
@@ -181,7 +181,7 @@ impl YuvConverter {
     /// bytes.
     pub fn with_buffer(
         renderer: &lumen_gpu::Renderer,
-        layout: YuvLayout,
+        layout: EncodeYuvLayout,
         buffer: Arc<wgpu::Buffer>,
         dither: bool,
     ) -> Self {
@@ -237,7 +237,7 @@ impl YuvConverter {
         }
     }
 
-    pub fn layout(&self) -> YuvLayout {
+    pub fn layout(&self) -> EncodeYuvLayout {
         self.layout
     }
 
@@ -354,10 +354,10 @@ mod tests {
     fn convert(
         gpu: &lumen_gpu::Renderer,
         texture: &wgpu::Texture,
-        format: YuvFormat,
-    ) -> (YuvLayout, Vec<u8>) {
+        format: EncodeYuvFormat,
+    ) -> (EncodeYuvLayout, Vec<u8>) {
         let size = texture.size();
-        let layout = YuvLayout::new(size.width, size.height, format);
+        let layout = EncodeYuvLayout::new(size.width, size.height, format);
         let converter = YuvConverter::new(gpu, layout, false);
         converter.submit(gpu, texture);
         let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -382,7 +382,7 @@ mod tests {
     /// The samples of row `row` of the plane starting at `offset`, `count` of them.
     fn samples(
         bytes: &[u8],
-        layout: YuvLayout,
+        layout: EncodeYuvLayout,
         offset: u64,
         pitch: u32,
         row: u32,
@@ -417,7 +417,7 @@ mod tests {
         // Black, sRGB 128 grey and white, two columns each.
         let columns = [0.0, 128.0 / 255.0, 1.0];
         let texture = texture(&gpu, 6, 2, |x| columns[x as usize / 2]);
-        for format in [YuvFormat::Yuv420p10, YuvFormat::P010] {
+        for format in [EncodeYuvFormat::Yuv420p10, EncodeYuvFormat::P010] {
             let (layout, bytes) = convert(&gpu, &texture, format);
             let shift = if format.is_planar() { 0 } else { 6 };
             let luma = samples(&bytes, layout, 0, layout.pitch(), 1, 6);
@@ -442,7 +442,7 @@ mod tests {
             );
         }
         // The 8-bit planar codes of the same colours.
-        let (layout, bytes) = convert(&gpu, &texture, YuvFormat::Yuv420p);
+        let (layout, bytes) = convert(&gpu, &texture, EncodeYuvFormat::Yuv420p);
         assert_eq!(
             samples(&bytes, layout, 0, layout.pitch(), 0, 6),
             [16, 16, 126, 126, 235, 235]
@@ -530,7 +530,7 @@ mod tests {
 
         // 10-bit 4:4:4: every pixel keeps its own chroma.
         let texture = premultiplied(&gpu, 4, &pixels);
-        let (layout, bytes) = convert(&gpu, &texture, YuvFormat::Yuva444p10);
+        let (layout, bytes) = convert(&gpu, &texture, EncodeYuvFormat::Yuva444p10);
         let plane = |offset: u64| samples(&bytes, layout, offset, layout.pitch(), 0, 4);
         let (luma, cb, cr, alpha) = (
             plane(0),
@@ -552,7 +552,7 @@ mod tests {
         assert_eq!((cb[3], cr[3]), (512, 512));
 
         // The opaque 4:4:4 format is the same colour over black, with no alpha plane.
-        let (opaque_layout, opaque) = convert(&gpu, &texture, YuvFormat::Yuv444p10);
+        let (opaque_layout, opaque) = convert(&gpu, &texture, EncodeYuvFormat::Yuv444p10);
         assert_eq!(opaque_layout.size(), opaque_layout.alpha_offset());
         assert_eq!(
             samples(&opaque, opaque_layout, 0, layout.pitch(), 0, 1),
@@ -569,7 +569,7 @@ mod tests {
             [QUARTER_BLUE, CLEAR_GARBAGE, CLEAR_GARBAGE, CLEAR_GARBAGE],
         ];
         let texture = premultiplied(&gpu, 4, rows.as_flattened());
-        let (layout, bytes) = convert(&gpu, &texture, YuvFormat::Yuva420p);
+        let (layout, bytes) = convert(&gpu, &texture, EncodeYuvFormat::Yuva420p);
         let half = layout.chroma_pitch();
         let chroma_size = u64::from(half) * u64::from(layout.chroma_rows());
         let cb = samples(&bytes, layout, layout.chroma_offset(), half, 0, 2);
@@ -626,8 +626,8 @@ mod tests {
                 .into_iter()
                 .collect::<BTreeSet<_>>()
         };
-        let eight = levels(YuvFormat::Yuv420p);
-        let ten = levels(YuvFormat::Yuv420p10);
+        let eight = levels(EncodeYuvFormat::Yuv420p);
+        let ten = levels(EncodeYuvFormat::Yuv420p10);
         assert_eq!(eight.len(), 67, "{eight:?}");
         assert!(ten.len() > 256, "{} levels", ten.len());
         assert_eq!((ten.first(), ten.last()), (Some(&64), Some(&327)));

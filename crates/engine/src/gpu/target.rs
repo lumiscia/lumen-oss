@@ -12,7 +12,9 @@ use lumen_ffmpeg::{
 
 use crate::error::RenderError;
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
-use crate::gpu::{BitDepth, GpuCompositionRenderer, YuvConverter, YuvFormat, YuvLayout};
+use crate::gpu::{
+    BitDepth, EncodeYuvFormat, EncodeYuvLayout, GpuCompositionRenderer, YuvConverter,
+};
 
 /// Converts rendered frames to NV12 or P010 for a Vulkan Video encoder sharing the renderer's
 /// device. Frames render to `Rgba16Float`, so colour is quantised once, in the conversion.
@@ -120,7 +122,8 @@ impl VulkanVideoTarget {
         depth: BitDepth,
         dither: bool,
     ) -> Self {
-        let layout = YuvLayout::new(size.width, size.height, YuvFormat::semi_planar(depth));
+        let layout =
+            EncodeYuvLayout::new(size.width, size.height, EncodeYuvFormat::semi_planar(depth));
         Self {
             converter: YuvConverter::new(renderer, layout, dither),
         }
@@ -143,7 +146,7 @@ impl VulkanVideoTarget {
         let buffer = lumen_gpu::raw_vulkan_buffer(yuv).map_err(|error| RenderError::Gpu {
             details: error.to_string(),
         })?;
-        let YuvLayout {
+        let EncodeYuvLayout {
             width,
             height,
             format,
@@ -249,10 +252,10 @@ impl CudaNvencTargetPool {
             usage: cuda_nvenc_usage(),
             view_formats: &[],
         });
-        let layout = YuvLayout::new(
+        let layout = EncodeYuvLayout::new(
             self.size.width,
             self.size.height,
-            YuvFormat::semi_planar(self.depth),
+            EncodeYuvFormat::semi_planar(self.depth),
         );
         let exportable = renderer
             .create_exportable_vulkan_buffer(
