@@ -26,7 +26,7 @@ Add `?scene=3d` to the URL for a 3D scene.
 LUMISCIA_API_KEY=... pnpm --filter @lumiscia/example-node start
 ```
 
-`start` builds the packages and the example, and exits with an error without `LUMISCIA_API_KEY`. `LUMISCIA_BASE_URL` points it at another API. `lumen-server` has no media upload, so it needs a different `media` than the one in `src/index.ts`.
+`start` builds the packages and the example, and exits with an error without `LUMISCIA_API_KEY`. `LUMISCIA_BASE_URL` points it at another API. `lumen-server` serves the same upload routes, so `LUMISCIA_BASE_URL=http://127.0.0.1:8080` and its `--token` as the key run it against a local server.
 
 ## 3D
 

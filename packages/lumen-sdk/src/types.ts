@@ -25,7 +25,7 @@ export interface RenderOptions {
   readonly signal?: AbortSignal;
   /** Only the hosted API honours it; `lumen-server` ignores the header and runs every request. */
   readonly idempotencyKey?: string;
-  /** Media by the alias the composition uses: a URL, or an upload to reference. */
+  /** Remote media by the alias the composition uses, as an `http` or `https` URL. */
   readonly media?: RenderMediaManifest;
   readonly webhookUrl?: string;
   /** Unset, the host's default applies. */
@@ -79,9 +79,11 @@ export interface Render {
   readonly outputExpiresAt?: string;
 }
 
-export type RenderMediaManifest = Record<string, string | TemporaryMedia>;
+/** Remote media by alias: the alias is what a node's source says, the value an `http` or `https` URL. */
+export type RenderMediaManifest = Record<string, string>;
 
-export type LumenMediaReference = `lumen:${string}`;
+/** What a node's source says to use an uploaded file: `asset:<id>`. */
+export type AssetSource = `asset:${string}`;
 
 /** What `onProgress` receives while a render is waited on. */
 export interface RenderProgress {
