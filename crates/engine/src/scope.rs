@@ -7,7 +7,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
-    composition::{Composition, CompositionTemplate, Scene},
+    composition::{Composition, Scene, SceneId, TemplateRef},
     error::{LumenError, RenderError},
     expr::{ExpressionContext, ExpressionValue},
     media::MediaStore,
@@ -88,6 +88,7 @@ pub type PropValues = BTreeMap<String, ExpressionValue>;
 pub struct Scope<'a> {
     pub root: &'a Composition,
     pub scene: &'a Scene,
+    pub id: SceneId,
     /// The graph's `media_output` node.
     pub output: NodeId,
     /// `None` at the root.
@@ -99,21 +100,22 @@ impl<'a> Scope<'a> {
         Self {
             root: composition,
             scene: composition.scene(),
+            id: SceneId::Root,
             output: composition.output(),
             props: None,
         }
     }
 
-    pub fn template(
+    pub(crate) fn template(
         root: &'a Composition,
-        template: &'a CompositionTemplate,
-        output: NodeId,
+        template: TemplateRef<'a>,
         props: PropValues,
     ) -> Self {
         Self {
             root,
-            scene: &template.scene,
-            output,
+            scene: &template.template.scene,
+            id: template.id,
+            output: template.output,
             props: Some(Arc::new(props)),
         }
     }
@@ -124,11 +126,7 @@ impl<'a> Scope<'a> {
 
     /// The name of the template this scope instances, or `None` at the root.
     pub(crate) fn template_name(&self) -> Option<&'a str> {
-        self.root
-            .compositions()
-            .iter()
-            .find(|(_, template)| std::ptr::eq(&template.scene, self.scene))
-            .map(|(name, _)| name.as_str())
+        self.root.template_name(self.id)
     }
 
     /// The error for a walk reaching node `node_id` of this scope inside [`MAX_GRAPH_DEPTH`] nodes.
