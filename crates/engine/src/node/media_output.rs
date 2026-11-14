@@ -1,3 +1,4 @@
+use crate::gpu::frame_graph::RenderProgram;
 use crate::node::NodeId;
 
 const SHADER: &str = concat!(
@@ -29,6 +30,13 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
         lumen_gpu::LayoutKind::Uniform,
     ),
 ];
+const MEDIA_OUTPUT: RenderProgram = RenderProgram {
+    label: "media-output",
+    shader: SHADER,
+    vertex: "vs_main",
+    fragment: "fs_main",
+    layout: RECORD_LAYOUT,
+};
 
 /// `media_output.wgsl`'s `Output`.
 #[repr(C)]
@@ -63,15 +71,7 @@ fn target(format: lumen_gpu::wgpu::TextureFormat) -> lumen_gpu::RenderTargetSpec
 impl crate::gpu::frame_graph::RecordNode for MediaOutput {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         let format = programs.output_format();
-        programs.render(
-            "media-output",
-            SHADER,
-            "vs_main",
-            "fs_main",
-            RECORD_LAYOUT,
-            target(format),
-            0,
-        )
+        programs.render(&MEDIA_OUTPUT, target(format), 0)
     }
 
     fn record(
@@ -96,15 +96,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaOutput {
             return Ok(source);
         }
         let tex = cx.output_target(size, format);
-        let program = cx.render_program(
-            "media-output",
-            SHADER,
-            "vs_main",
-            "fs_main",
-            RECORD_LAYOUT,
-            target(format),
-            0,
-        )?;
+        let program = cx.render_program(&MEDIA_OUTPUT, target(format), 0)?;
         let output = cx.rec.uniform(&OutputParams {
             origin: source.origin(),
             alpha: match encoding.alpha {

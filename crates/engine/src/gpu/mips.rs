@@ -7,7 +7,7 @@ use lumen_gpu::{
     LayoutEntry, LayoutKind, MipChain, RenderTargetSpec, Res, Size, TargetLoad, TexRef, wgpu,
 };
 
-use crate::gpu::frame_graph::{FrameCx, Raster};
+use crate::gpu::frame_graph::{FrameCx, Raster, RenderProgram};
 use crate::gpu::params::CropParams;
 use crate::node::NodeId;
 
@@ -21,19 +21,25 @@ const HALVE_LAYOUT: &[LayoutEntry] = &[LayoutEntry::staged(
     wgpu::ShaderStages::FRAGMENT,
     LayoutKind::Texture,
 )];
+const COPY: RenderProgram = RenderProgram {
+    label: "mips",
+    shader: SHADER,
+    vertex: "vs_main",
+    fragment: "fs_copy",
+    layout: COPY_LAYOUT,
+};
+const HALVE: RenderProgram = RenderProgram {
+    label: "mips",
+    shader: SHADER,
+    vertex: "vs_main",
+    fragment: "fs_halve",
+    layout: HALVE_LAYOUT,
+};
 
 /// The programs that fill chains of working-space rasters, built ahead of the frames that use them.
 pub(crate) fn programs(programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-    for (fragment, layout) in [("fs_copy", COPY_LAYOUT), ("fs_halve", HALVE_LAYOUT)] {
-        programs.render(
-            "mips",
-            SHADER,
-            "vs_main",
-            fragment,
-            layout,
-            target_spec(super::color::WORKING_COLOR_FORMAT),
-            0,
-        )?;
+    for program in [&COPY, &HALVE] {
+        programs.render(program, target_spec(super::color::WORKING_COLOR_FORMAT), 0)?;
     }
     Ok(())
 }
@@ -289,17 +295,13 @@ fn fill(
     let format = rec.format(source);
     let mut from = source;
     for (level, &target) in chain.levels.iter().take(levels as usize).enumerate() {
-        let (fragment, layout) = if level == 0 {
-            ("fs_copy", COPY_LAYOUT)
-        } else {
-            ("fs_halve", HALVE_LAYOUT)
-        };
+        let program = if level == 0 { &COPY } else { &HALVE };
         let program = rec.render_program(
-            "mips",
-            SHADER,
-            "vs_main",
-            fragment,
-            layout,
+            program.label,
+            program.shader,
+            program.vertex,
+            program.fragment,
+            program.layout,
             target_spec(format),
             0,
         )?;

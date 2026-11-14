@@ -1,5 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, processing::RasterSampling,
@@ -112,6 +113,12 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
     lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
+const DISPLACEMENT_MAP: ComputeProgram = ComputeProgram {
+    label: "displacement-map",
+    shader: SHADER,
+    entry: "cs_main",
+    layout: RECORD_LAYOUT,
+};
 
 /// The smallest displacement a map can ask for, a luma a few f32 ulps from 128, moves this far
 /// past any canvas, so clamping to it changes nothing visible while keeping the math finite.
@@ -139,7 +146,7 @@ fn grown(rect: lumen_gpu::RectI, reach: [f64; 2]) -> [f32; 4] {
 
 impl crate::gpu::frame_graph::RecordNode for DisplacementMap {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.compute("displacement-map", SHADER, "cs_main", RECORD_LAYOUT)
+        programs.compute(&DISPLACEMENT_MAP)
     }
 
     fn record(
@@ -185,7 +192,7 @@ impl crate::gpu::frame_graph::RecordNode for DisplacementMap {
         };
         let size = domain.storage_size;
         let tex = cx.storage_target(size);
-        let program = cx.program("displacement-map", SHADER, "cs_main", RECORD_LAYOUT)?;
+        let program = cx.program(&DISPLACEMENT_MAP)?;
         let uniform = cx.rec.uniform(&gpu_params);
         cx.dispatch(
             program,

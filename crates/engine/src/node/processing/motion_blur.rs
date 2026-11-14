@@ -6,6 +6,7 @@ use lumen_gpu::{LayoutEntry, LayoutKind};
 
 use crate::error::RenderError;
 use crate::expr::ExpressionContext;
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, motion};
 
 /// Most sub-frames a `motion_blur` node renders.
@@ -19,19 +20,31 @@ pub(crate) const SHADER: &str = include_str!("motion_blur.wgsl");
 pub(crate) const SUM_FORMAT: lumen_gpu::wgpu::TextureFormat =
     lumen_gpu::wgpu::TextureFormat::Rgba32Float;
 
-pub(crate) const ACCUMULATE_LAYOUT: &[LayoutEntry] = &[
-    LayoutEntry::compute(0, LayoutKind::UnfilterableTexture),
-    LayoutEntry::compute(1, LayoutKind::Texture),
-    LayoutEntry::compute(2, LayoutKind::Uniform),
-    LayoutEntry::compute(3, LayoutKind::StorageTexture(SUM_FORMAT)),
-];
+/// Adds a sample to the running sum.
+pub(crate) const ACCUMULATE: ComputeProgram = ComputeProgram {
+    label: "motion-blur",
+    shader: SHADER,
+    entry: "accumulate_main",
+    layout: &[
+        LayoutEntry::compute(0, LayoutKind::UnfilterableTexture),
+        LayoutEntry::compute(1, LayoutKind::Texture),
+        LayoutEntry::compute(2, LayoutKind::Uniform),
+        LayoutEntry::compute(3, LayoutKind::StorageTexture(SUM_FORMAT)),
+    ],
+};
 
-pub(crate) const RESOLVE_LAYOUT: &[LayoutEntry] = &[
-    LayoutEntry::compute(0, LayoutKind::UnfilterableTexture),
-    LayoutEntry::compute(1, LayoutKind::Texture),
-    LayoutEntry::compute(2, LayoutKind::Uniform),
-    LayoutEntry::compute(4, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
-];
+/// Adds the last sample and divides the sum by the number of samples.
+pub(crate) const RESOLVE: ComputeProgram = ComputeProgram {
+    label: "motion-blur",
+    shader: SHADER,
+    entry: "resolve_main",
+    layout: &[
+        LayoutEntry::compute(0, LayoutKind::UnfilterableTexture),
+        LayoutEntry::compute(1, LayoutKind::Texture),
+        LayoutEntry::compute(2, LayoutKind::Uniform),
+        LayoutEntry::compute(4, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
+    ],
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -123,8 +136,8 @@ impl MotionBlur {
 
 impl crate::gpu::frame_graph::RecordNode for MotionBlur {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.compute("motion-blur", SHADER, "accumulate_main", ACCUMULATE_LAYOUT)?;
-        programs.compute("motion-blur", SHADER, "resolve_main", RESOLVE_LAYOUT)
+        programs.compute(&ACCUMULATE)?;
+        programs.compute(&RESOLVE)
     }
 
     fn record(

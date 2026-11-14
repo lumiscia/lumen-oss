@@ -8,6 +8,7 @@ use crate::node::{
     },
 };
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
@@ -15,6 +16,7 @@ pub(crate) const SHADER: &str = concat!(
     include_str!("transform.wgsl"),
     include_str!("../../gpu/shaders/minify.wgsl")
 );
+const TRANSFORM: ComputeProgram = ComputeProgram::spatial("transform", SHADER);
 
 /// Transforms a raster into the composition canvas bounds.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -330,7 +332,7 @@ fn resolve_pivot(custom_pivot: bool, pivot: [f32; 2], source_size: lumen_gpu::Si
 impl crate::gpu::frame_graph::RecordNode for Transform {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         crate::gpu::mips::programs(programs)?;
-        programs.spatial("transform", SHADER)
+        programs.compute(&TRANSFORM)
     }
 
     fn record(
@@ -403,7 +405,7 @@ impl crate::gpu::frame_graph::RecordNode for Transform {
         }
         let levels = filters.iter().flatten().map(|filter| filter.levels()).max();
         let input = minify::source(cx, self.source, source, None, levels.unwrap_or(1))?;
-        cx.spatial_pass("transform", SHADER, input, &params, tex, size)?;
+        cx.spatial_pass(&TRANSFORM, input, &params, tex, size)?;
         Ok(crate::gpu::frame_graph::Raster {
             tex,
             domain,

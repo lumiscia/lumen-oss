@@ -2,6 +2,7 @@ use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, compositing::BlendMode,
 };
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
@@ -56,10 +57,16 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
     lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
+const RASTER_MULTIMERGE: ComputeProgram = ComputeProgram {
+    label: "raster-multimerge",
+    shader: SHADER,
+    entry: "cs_main",
+    layout: RECORD_LAYOUT,
+};
 
 impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.compute("raster-multimerge", SHADER, "cs_main", RECORD_LAYOUT)
+        programs.compute(&RASTER_MULTIMERGE)
     }
 
     fn record(
@@ -87,7 +94,7 @@ impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
                 union.union(layer.domain.data_rect)
             })),
         );
-        let program = cx.program("raster-multimerge", SHADER, "cs_main", RECORD_LAYOUT)?;
+        let program = cx.program(&RASTER_MULTIMERGE)?;
         // Passes alternate between two textures. Each of the first two writes its whole
         // texture; after that a texture still holds the stack from two passes before, which
         // differs from the stack now only within this overlay's texels and the last one's.

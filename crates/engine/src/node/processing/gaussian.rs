@@ -1,3 +1,4 @@
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 use crate::node::motion::MAX_BOUNDED_MAGNITUDE;
 
@@ -190,12 +191,31 @@ fn record_shader(shifted: bool) -> &'static str {
         .get_or_init(|| format!("{}{SHADER_BODY}", Padding::new(shifted).shader_header()))
 }
 
+/// The program of the pass `entry`, over levels of the blur's working format.
+fn level_program(shifted: bool, entry: &'static str) -> ComputeProgram {
+    ComputeProgram {
+        label: "gaussian",
+        shader: record_shader(shifted),
+        entry,
+        layout: RECORD_LEVEL_LAYOUT,
+    }
+}
+
+/// The program of the pass that mixes the levels into the blur.
+fn resolve_program(shifted: bool) -> ComputeProgram {
+    ComputeProgram {
+        label: "gaussian",
+        shader: record_shader(shifted),
+        entry: "resolve_main",
+        layout: RECORD_RESOLVE_LAYOUT,
+    }
+}
+
 /// Builds every pass a blur may schedule, whatever its radius.
 pub(crate) fn programs(
     programs: &mut crate::gpu::frame_graph::Programs<'_>,
     shifted: bool,
 ) -> crate::Result<()> {
-    let shader = record_shader(shifted);
     for entry in [
         "horizontal_main",
         "quarter_down_main",
@@ -205,9 +225,9 @@ pub(crate) fn programs(
         "sixteenth_horizontal_main",
         "sixteenth_vertical_main",
     ] {
-        programs.compute("gaussian", shader, entry, RECORD_LEVEL_LAYOUT)?;
+        programs.compute(&level_program(shifted, entry))?;
     }
-    programs.compute("gaussian", shader, "resolve_main", RECORD_RESOLVE_LAYOUT)
+    programs.compute(&resolve_program(shifted))
 }
 
 /// Records the blur of `source` into a texture of `output`'s size, scheduling only the levels
@@ -234,7 +254,6 @@ pub(crate) fn record_passes(
     let size = output.storage_size;
     let sigma = sigma_for_radius(settings.radius);
     let padding = Padding::new(shifted);
-    let shader = record_shader(shifted);
     let flag = |value: bool| if value { 1.0 } else { 0.0 };
     let params = params::BlurParams {
         values: [sigma, flag(settings.transparent_edge), 0.0, 0.0],
@@ -266,7 +285,7 @@ pub(crate) fn record_passes(
                  target: lumen_gpu::TexRef,
                  target_size: lumen_gpu::Size|
      -> crate::Result<()> {
-        let program = cx.program("gaussian", shader, entry, RECORD_LEVEL_LAYOUT)?;
+        let program = cx.program(&level_program(shifted, entry))?;
         cx.dispatch(
             program,
             &[
@@ -327,7 +346,7 @@ pub(crate) fn record_passes(
         ],
     )?;
     let target = cx.storage_target(size);
-    let program = cx.program("gaussian", shader, "resolve_main", RECORD_RESOLVE_LAYOUT)?;
+    let program = cx.program(&resolve_program(shifted))?;
     cx.dispatch(
         program,
         &[

@@ -1,9 +1,11 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 
 pub(crate) const SHADER: &str = include_str!("opacity.wgsl");
+const OPACITY: ComputeProgram = ComputeProgram::spatial("opacity", SHADER);
 
 /// Parameters for uniformly adjusting raster opacity.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -32,7 +34,7 @@ pub struct Opacity {
 
 impl crate::gpu::frame_graph::RecordNode for Opacity {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.spatial("opacity", SHADER)
+        programs.compute(&OPACITY)
     }
 
     fn record(
@@ -47,6 +49,6 @@ impl crate::gpu::frame_graph::RecordNode for Opacity {
         let params = params::OpacityParams {
             opacity: evaluated.opacity.clamp(0.0, 1.0) as f32,
         };
-        cx.filter("opacity", SHADER, source, &params)
+        cx.filter(&OPACITY, source, &params)
     }
 }

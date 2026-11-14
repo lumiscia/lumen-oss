@@ -6,7 +6,7 @@ use std::sync::Arc;
 use lumen_gpu::{LayoutEntry, LayoutKind, Res, Size, TexRef, TextureDesc, wgpu};
 
 use super::{
-    FrameCx, InstanceKey, Programs, internal,
+    ComputeProgram, FrameCx, InstanceKey, Programs, internal,
     state::{VideoUpload, YuvUpload},
 };
 use crate::{
@@ -110,20 +110,23 @@ const YUV_TO_RGBA_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::compute(5, LayoutKind::StorageTexture(WORKING)),
 ];
 
+const INGEST: ComputeProgram = ComputeProgram::spatial("ingest", INGEST_SHADER);
+const YUV_TO_RGBA: ComputeProgram = ComputeProgram {
+    label: "yuv-to-rgba",
+    shader: YUV_TO_RGBA_SHADER,
+    entry: "cs_main",
+    layout: YUV_TO_RGBA_LAYOUT,
+};
+
 impl Programs<'_> {
     /// The program that brings CPU images and video frames into the working space.
     pub(crate) fn ingest(&mut self) -> crate::Result<()> {
-        self.spatial("ingest", INGEST_SHADER)
+        self.compute(&INGEST)
     }
 
     /// The program `FrameCx::yuv_to_rgba` records with.
     pub(crate) fn yuv_to_rgba(&mut self) -> crate::Result<()> {
-        self.compute(
-            "yuv-to-rgba",
-            YUV_TO_RGBA_SHADER,
-            "cs_main",
-            YUV_TO_RGBA_LAYOUT,
-        )
+        self.compute(&YUV_TO_RGBA)
     }
 }
 
@@ -223,7 +226,7 @@ impl FrameCx<'_> {
     /// `tex` of `size` in the working space, as `params` says it is stored.
     fn ingest(&mut self, tex: TexRef, size: Size, params: &IngestParams) -> crate::Result<TexRef> {
         let target = self.storage_target(size);
-        self.spatial_pass("ingest", INGEST_SHADER, tex, params, target, size)?;
+        self.spatial_pass(&INGEST, tex, params, target, size)?;
         Ok(target)
     }
 
@@ -346,12 +349,7 @@ impl FrameCx<'_> {
         size: Size,
         alpha: AlphaMode,
     ) -> crate::Result<TexRef> {
-        let program = self.program(
-            "yuv-to-rgba",
-            YUV_TO_RGBA_SHADER,
-            "cs_main",
-            YUV_TO_RGBA_LAYOUT,
-        )?;
+        let program = self.program(&YUV_TO_RGBA)?;
         let (u, v, interleaved) = match planes.chroma {
             YuvChroma::Interleaved(chroma) => (chroma, chroma, true),
             YuvChroma::Planar { u, v } => (u, v, false),

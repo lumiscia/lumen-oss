@@ -8,6 +8,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::{frame_graph, params};
 use crate::node::motion::MAX_BOUNDED_MAGNITUDE;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
@@ -354,10 +355,22 @@ const COMB_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(4, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
     lumen_gpu::LayoutEntry::compute(5, lumen_gpu::LayoutKind::Texture),
 ];
+const BOXES: ComputeProgram = ComputeProgram {
+    label: "directional-blur",
+    shader: SHADER,
+    entry: "boxes_main",
+    layout: BOXES_LAYOUT,
+};
+const COMB: ComputeProgram = ComputeProgram {
+    label: "directional-blur",
+    shader: SHADER,
+    entry: "comb_main",
+    layout: COMB_LAYOUT,
+};
 
 fn programs(programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-    programs.compute("directional-blur", SHADER, "boxes_main", BOXES_LAYOUT)?;
-    programs.compute("directional-blur", SHADER, "comb_main", COMB_LAYOUT)
+    programs.compute(&BOXES)?;
+    programs.compute(&COMB)
 }
 
 /// How much of a blur the comb of stored short boxes takes, against every tap at once: none for
@@ -493,7 +506,7 @@ fn record(
     let mut boxes_tex = source.tex;
     if let Some((_, size)) = boxes {
         boxes_tex = cx.float_target(size);
-        let program = cx.program("directional-blur", SHADER, "boxes_main", BOXES_LAYOUT)?;
+        let program = cx.program(&BOXES)?;
         cx.dispatch(
             program,
             &[
@@ -506,7 +519,7 @@ fn record(
         );
     }
     let tex = cx.storage_target(domain.storage_size);
-    let program = cx.program("directional-blur", SHADER, "comb_main", COMB_LAYOUT)?;
+    let program = cx.program(&COMB)?;
     cx.dispatch(
         program,
         &[

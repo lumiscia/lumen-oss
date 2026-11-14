@@ -5,6 +5,7 @@ use super::drawable::{
 use super::renderer::{MAX_PATH_POINTS, PathPoint, PathUniforms, domain_origin, style_flags};
 use super::repeat::{Drawn, GpuCopies, Repeat, RepeatedTransform};
 use crate::error::RenderError;
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 use crate::node::motion::Shutter;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
@@ -733,14 +734,9 @@ fn precise_distance(from: [f32; 2], to: [f32; 2]) -> f64 {
 
 impl crate::gpu::frame_graph::RecordNode for Path {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.compute("path", PATH_SHADER, "cs_main", RECORD_PATH_LAYOUT)?;
+        programs.compute(&PATH)?;
         if self.params.repeat.is_some() {
-            programs.compute(
-                "path_repeat",
-                PATH_SHADER,
-                "cs_repeat",
-                RECORD_PATH_REPEAT_LAYOUT,
-            )?;
+            programs.compute(&PATH_REPEAT)?;
         }
         Ok(())
     }
@@ -776,6 +772,18 @@ const RECORD_PATH_REPEAT_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(5, lumen_gpu::LayoutKind::Storage),
     lumen_gpu::LayoutEntry::compute(6, lumen_gpu::LayoutKind::Storage),
 ];
+const PATH: ComputeProgram = ComputeProgram {
+    label: "path",
+    shader: PATH_SHADER,
+    entry: "cs_main",
+    layout: RECORD_PATH_LAYOUT,
+};
+const PATH_REPEAT: ComputeProgram = ComputeProgram {
+    label: "path_repeat",
+    shader: PATH_SHADER,
+    entry: "cs_repeat",
+    layout: RECORD_PATH_REPEAT_LAYOUT,
+};
 
 /// Records a vector path, or its copies, sized to what it draws this frame.
 fn record_path_source(
@@ -798,12 +806,7 @@ fn record_path_source(
         (3, lumen_gpu::Res::Tex(tex)),
     ];
     if let Some(copies) = &frame.copies {
-        let program = cx.program(
-            "path_repeat",
-            PATH_SHADER,
-            "cs_repeat",
-            RECORD_PATH_REPEAT_LAYOUT,
-        )?;
+        let program = cx.program(&PATH_REPEAT)?;
         let [copy_list, taps, tiles] = copies.storage(cx, domain);
         cx.dispatch(
             program,
@@ -811,7 +814,7 @@ fn record_path_source(
             params::dispatch_for(size),
         );
     } else {
-        let program = cx.program("path", PATH_SHADER, "cs_main", RECORD_PATH_LAYOUT)?;
+        let program = cx.program(&PATH)?;
         cx.dispatch(program, &bindings, params::dispatch_for(size));
     }
     Ok(crate::gpu::frame_graph::Raster {

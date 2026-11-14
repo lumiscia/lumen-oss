@@ -8,6 +8,7 @@ use crate::node::{
 
 use lumen_gpu::Size;
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
@@ -81,6 +82,12 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(2, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
     lumen_gpu::LayoutEntry::compute(3, lumen_gpu::LayoutKind::Uniform),
 ];
+const RESIZE: ComputeProgram = ComputeProgram {
+    label: "resize",
+    shader: SHADER,
+    entry: "cs_main",
+    layout: RECORD_LAYOUT,
+};
 
 /// Texels of a source of `source` size that one pixel of the `output` size covers along the
 /// source's axes.
@@ -97,7 +104,7 @@ fn footprint(mode: ResizeMode, source: [u32; 2], output: [u32; 2]) -> [f32; 2] {
 impl crate::gpu::frame_graph::RecordNode for Resize {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         crate::gpu::mips::programs(programs)?;
-        programs.compute("resize", SHADER, "cs_main", RECORD_LAYOUT)
+        programs.compute(&RESIZE)
     }
 
     fn record(
@@ -148,7 +155,7 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
                 }
             }
         }
-        let program = cx.program("resize", SHADER, "cs_main", RECORD_LAYOUT)?;
+        let program = cx.program(&RESIZE)?;
         let uniform = cx.rec.uniform(&params);
         let bounds = cx.rec.uniform(&bounds);
         cx.dispatch(

@@ -1,5 +1,6 @@
 use crate::node::{DelegateEvaluable, NodeId, NodeParams};
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
@@ -62,10 +63,16 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
     lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
+const BOOLEAN: ComputeProgram = ComputeProgram {
+    label: "boolean",
+    shader: SHADER,
+    entry: "cs_main",
+    layout: RECORD_LAYOUT,
+};
 
 impl crate::gpu::frame_graph::RecordNode for Boolean {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.compute("boolean", SHADER, "cs_main", RECORD_LAYOUT)
+        programs.compute(&BOOLEAN)
     }
 
     fn record(
@@ -83,7 +90,7 @@ impl crate::gpu::frame_graph::RecordNode for Boolean {
         };
         let size = a.domain.storage_size;
         let tex = cx.storage_target(size);
-        let program = cx.program("boolean", SHADER, "cs_main", RECORD_LAYOUT)?;
+        let program = cx.program(&BOOLEAN)?;
         let uniform = cx.rec.uniform(&gpu_params);
         cx.dispatch(
             program,

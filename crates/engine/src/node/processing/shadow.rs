@@ -3,6 +3,7 @@ use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
 };
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 
 use super::gaussian;
@@ -63,16 +64,17 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
     lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
+const SHADOW_COMPOSITE: ComputeProgram = ComputeProgram {
+    label: "shadow-composite",
+    shader: COMPOSITE_SHADER,
+    entry: "composite_main",
+    layout: RECORD_LAYOUT,
+};
 
 impl crate::gpu::frame_graph::RecordNode for Shadow {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         gaussian::programs(programs, true)?;
-        programs.compute(
-            "shadow-composite",
-            COMPOSITE_SHADER,
-            "composite_main",
-            RECORD_LAYOUT,
-        )
+        programs.compute(&SHADOW_COMPOSITE)
     }
 
     fn record(
@@ -130,12 +132,7 @@ impl crate::gpu::frame_graph::RecordNode for Shadow {
         };
         let size = domain.storage_size;
         let tex = cx.storage_target(size);
-        let program = cx.program(
-            "shadow-composite",
-            COMPOSITE_SHADER,
-            "composite_main",
-            RECORD_LAYOUT,
-        )?;
+        let program = cx.program(&SHADOW_COMPOSITE)?;
         let uniform = cx.rec.uniform(&params);
         cx.dispatch(
             program,

@@ -16,7 +16,9 @@ use lumen_gpu::{
 use super::collect::{Collected, GpuMesh, solid_linear};
 use super::{Light3d, Render3d, Render3dOutput, Render3dOutputDelegate};
 use crate::error::{LumenError, RenderError};
-use crate::gpu::frame_graph::{FrameCx, Programs, Raster, RecordNode};
+use crate::gpu::frame_graph::{
+    ComputeProgram, FrameCx, Programs, Raster, RecordNode, RenderProgram,
+};
 use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, required_input};
 
 pub(crate) const SHADER: &str = include_str!("scene.wgsl");
@@ -105,6 +107,45 @@ const SHADOW_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(28, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
     LayoutEntry::staged(29, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
 ];
+
+const SCENE_3D: RenderProgram = RenderProgram {
+    label: "scene-3d",
+    shader: SHADER,
+    vertex: "vs_main",
+    fragment: "fs_main",
+    layout: LAYOUT,
+};
+const SCENE_3D_SHADOW: RenderProgram = RenderProgram {
+    label: "scene-3d-shadow",
+    shader: SHADER,
+    vertex: "vs_shadow",
+    fragment: "fs_shadow",
+    layout: SHADOW_LAYOUT,
+};
+const SCENE_3D_BACKGROUND: RenderProgram = RenderProgram {
+    label: "scene-3d-background",
+    shader: SHADER,
+    vertex: "vs_background",
+    fragment: "fs_background",
+    layout: BACKGROUND_LAYOUT,
+};
+const SCENE_3D_DEPTH: RenderProgram = RenderProgram {
+    label: "scene-3d-depth",
+    shader: SHADER,
+    vertex: "vs_main",
+    fragment: "fs_depth",
+    layout: DATA_LAYOUT,
+};
+const SCENE_3D_NORMAL: RenderProgram = RenderProgram {
+    label: "scene-3d-normal",
+    shader: SHADER,
+    vertex: "vs_main",
+    fragment: "fs_normal",
+    layout: DATA_LAYOUT,
+};
+const SCENE_3D_DATA: ComputeProgram = ComputeProgram::spatial("scene-3d-data", DATA_SHADER);
+const SCENE_3D_RESOLVE: ComputeProgram =
+    ComputeProgram::spatial("scene-3d-resolve", RESOLVE_SHADER);
 
 const CLAMP_SAMPLER: u64 = 0x3d00_0001;
 const SHADOW_SAMPLER: u64 = 0x3d00_0002;
@@ -298,16 +339,15 @@ fn background_spec() -> RenderTargetSpec {
     )
 }
 
-/// The label and fragment entry point of the programs drawing depth or normal output, and what
-/// the raster holds where nothing is drawn.
-type DataProgram = (&'static str, &'static str, [f32; 4]);
+/// The program drawing depth or normal output, and what the raster holds where nothing is drawn.
+type DataProgram = (&'static RenderProgram, [f32; 4]);
 
 /// How `output` is drawn, unless it is colour.
 fn data_program(output: Render3dOutput) -> Option<DataProgram> {
     match output {
         Render3dOutput::Color => None,
-        Render3dOutput::Depth => Some(("scene-3d-depth", "fs_depth", [1.0; 4])),
-        Render3dOutput::Normal => Some(("scene-3d-normal", "fs_normal", [0.0; 4])),
+        Render3dOutput::Depth => Some((&SCENE_3D_DEPTH, [1.0; 4])),
+        Render3dOutput::Normal => Some((&SCENE_3D_NORMAL, [0.0; 4])),
     }
 }
 
@@ -570,11 +610,7 @@ fn may(flag: &Deferred<bool>) -> bool {
 pub(crate) fn light_programs(light: &Light3d, programs: &mut Programs<'_>) -> crate::Result<()> {
     if may(&light.params.cast_shadows) {
         programs.render(
-            "scene-3d-shadow",
-            SHADER,
-            "vs_shadow",
-            "fs_shadow",
-            SHADOW_LAYOUT,
+            &SCENE_3D_SHADOW,
             RenderTargetSpec::depth_only(DepthTest::Write, None),
             0,
         )?;
@@ -590,15 +626,7 @@ pub(crate) fn catcher_programs(
 ) -> crate::Result<()> {
     if may(shadow_catcher) {
         for cull in [Some(wgpu::Face::Back), Some(wgpu::Face::Front), None] {
-            programs.render(
-                "scene-3d",
-                SHADER,
-                "vs_main",
-                "fs_main",
-                LAYOUT,
-                catcher_spec(cull),
-                CATCHER_VARIANT,
-            )?;
+            programs.render(&SCENE_3D, catcher_spec(cull), CATCHER_VARIANT)?;
         }
     }
     Ok(())
@@ -613,7 +641,7 @@ impl Render3d {
         params: &super::Render3dParams,
         collected: &Collected,
         size: Size,
-        (label, fragment, background): DataProgram,
+        (data_program, background): DataProgram,
     ) -> crate::Result<Raster> {
         let scene = &collected.scene;
         let camera = scene.camera.unwrap_or_default();
@@ -640,7 +668,7 @@ impl Render3d {
             if params.output == Render3dOutput::Normal {
                 return Ok(cx.transparent(size));
             }
-            cx.spatial_pass("scene-3d-data", DATA_SHADER, unread, &data, output, size)?;
+            cx.spatial_pass(&SCENE_3D_DATA, unread, &data, output, size)?;
             return Ok(Raster {
                 tex: output,
                 domain: TextureDomain::full_frame(size),
@@ -666,15 +694,7 @@ impl Render3d {
             .acquire(size, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
         let clamp = clamp_sampler(cx);
         for (drawn, (run, &rows)) in draws.runs.iter().zip(&tables.runs).enumerate() {
-            let program = cx.render_program(
-                label,
-                SHADER,
-                "vs_main",
-                fragment,
-                DATA_LAYOUT,
-                data_spec(cull(&run.key)),
-                0,
-            )?;
+            let program = cx.render_program(data_program, data_spec(cull(&run.key)), 0)?;
             let mut bindings = vec![
                 (0, globals),
                 (1, tables.objects),
@@ -722,7 +742,7 @@ impl Render3d {
                 1,
             );
         }
-        cx.spatial_pass("scene-3d-data", DATA_SHADER, target, &data, output, size)?;
+        cx.spatial_pass(&SCENE_3D_DATA, target, &data, output, size)?;
         Ok(Raster {
             tex: output,
             domain: TextureDomain::full_frame(size),
@@ -748,43 +768,20 @@ impl RecordNode for Render3d {
             Render3dOutputDelegate::Normal => Render3dOutput::Normal,
             _ => Render3dOutput::Color,
         };
-        if let Some((label, fragment, _)) = data_program(output) {
+        if let Some((data_program, _)) = data_program(output) {
             for cull in [Some(wgpu::Face::Back), Some(wgpu::Face::Front), None] {
-                programs.render(
-                    label,
-                    SHADER,
-                    "vs_main",
-                    fragment,
-                    DATA_LAYOUT,
-                    data_spec(cull),
-                    0,
-                )?;
+                programs.render(data_program, data_spec(cull), 0)?;
             }
-            return programs.spatial("scene-3d-data", DATA_SHADER);
+            return programs.compute(&SCENE_3D_DATA);
         }
         for (depth, cull) in VARIANTS {
-            programs.render(
-                "scene-3d",
-                SHADER,
-                "vs_main",
-                "fs_main",
-                LAYOUT,
-                spec(depth, cull),
-                0,
-            )?;
+            programs.render(&SCENE_3D, spec(depth, cull), 0)?;
         }
+        crate::gpu::mips::programs(programs)?;
         if self.may_show_background() {
-            programs.render(
-                "scene-3d-background",
-                SHADER,
-                "vs_background",
-                "fs_background",
-                BACKGROUND_LAYOUT,
-                background_spec(),
-                0,
-            )?;
+            programs.render(&SCENE_3D_BACKGROUND, background_spec(), 0)?;
         }
-        programs.spatial("scene-3d-resolve", RESOLVE_SHADER)
+        programs.compute(&SCENE_3D_RESOLVE)
     }
 
     fn record(&self, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
@@ -956,11 +953,7 @@ impl RecordNode for Render3d {
                     wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                 );
                 let program = cx.render_program(
-                    "scene-3d-shadow",
-                    SHADER,
-                    "vs_shadow",
-                    "fs_shadow",
-                    SHADOW_LAYOUT,
+                    &SCENE_3D_SHADOW,
                     RenderTargetSpec::depth_only(DepthTest::Write, None),
                     0,
                 )?;
@@ -1061,9 +1054,7 @@ impl RecordNode for Render3d {
             } else {
                 (spec(depth_test, cull), 0)
             };
-            let program = cx.render_program(
-                "scene-3d", SHADER, "vs_main", "fs_main", LAYOUT, target, variant,
-            )?;
+            let program = cx.render_program(&SCENE_3D, target, variant)?;
             let maps = &run.key.maps;
             let maps = [
                 maps.base_color,
@@ -1132,15 +1123,7 @@ impl RecordNode for Render3d {
         }
 
         if let Some(loaded) = environment.filter(|_| background) {
-            let program = cx.render_program(
-                "scene-3d-background",
-                SHADER,
-                "vs_background",
-                "fs_background",
-                BACKGROUND_LAYOUT,
-                background_spec(),
-                0,
-            )?;
+            let program = cx.render_program(&SCENE_3D_BACKGROUND, background_spec(), 0)?;
             let bindings = [
                 (0, globals),
                 (23, environment_uniform),
@@ -1161,8 +1144,7 @@ impl RecordNode for Render3d {
 
         let output = cx.storage_target(size);
         cx.spatial_pass(
-            "scene-3d-resolve",
-            RESOLVE_SHADER,
+            &SCENE_3D_RESOLVE,
             color,
             &ResolveParams {
                 supersample,

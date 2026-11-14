@@ -1,6 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
@@ -8,6 +9,7 @@ pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/color.wgsl"),
     include_str!("levels.wgsl")
 );
+const LEVELS: ComputeProgram = ComputeProgram::spatial("levels", SHADER);
 
 /// Remaps raster black, white, gamma, and output range of the sRGB-encoded colour.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -55,7 +57,7 @@ pub struct Levels {
 
 impl crate::gpu::frame_graph::RecordNode for Levels {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.spatial("levels", SHADER)
+        programs.compute(&LEVELS)
     }
 
     fn record(
@@ -74,6 +76,6 @@ impl crate::gpu::frame_graph::RecordNode for Levels {
             output_black: params.output_black as f32,
             output_white: params.output_white as f32,
         };
-        cx.filter("levels", SHADER, source, &gpu_params)
+        cx.filter(&LEVELS, source, &gpu_params)
     }
 }

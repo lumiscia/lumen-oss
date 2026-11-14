@@ -1,6 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::error::RenderError;
+use crate::gpu::frame_graph::RenderProgram;
 use crate::node::motion::shutter_offset;
 use crate::node::vector::{
     drawable::{DRAWABLE_SHADER, GpuDrawableMotion, GpuDrawableTransform},
@@ -168,39 +169,66 @@ fn opacity_blend() -> lumen_gpu::wgpu::BlendState {
     }
 }
 
+/// A pass of text: its program, and the target and variant it draws with.
+struct TextPass {
+    program: RenderProgram,
+    target: lumen_gpu::RenderTargetSpec,
+    variant: u64,
+}
+
+/// Draws the glyphs, and the decorations.
+fn glyph_pass() -> TextPass {
+    TextPass {
+        program: RenderProgram {
+            label: "text",
+            shader: shared_text_shader(),
+            vertex: "vs_main",
+            fragment: "fs_main",
+            layout: RECORD_TEXT_LAYOUT,
+        },
+        target: text_blend(lumen_gpu::wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+        variant: 0,
+    }
+}
+
+/// Smears the layer of motion-blurred text into the target.
+fn smear_pass() -> TextPass {
+    TextPass {
+        program: RenderProgram {
+            label: "text smear",
+            shader: shared_text_shader(),
+            vertex: "vs_fullscreen",
+            fragment: "fs_smear",
+            layout: RECORD_SMEAR_LAYOUT,
+        },
+        target: text_blend(lumen_gpu::wgpu::BlendState::REPLACE),
+        variant: 1,
+    }
+}
+
+/// Fades the drawn text by its opacity.
+fn opacity_pass() -> TextPass {
+    TextPass {
+        program: RenderProgram {
+            label: "text opacity",
+            shader: shared_text_shader(),
+            vertex: "vs_fullscreen",
+            fragment: "fs_opacity",
+            layout: RECORD_TEXT_LAYOUT,
+        },
+        target: text_blend(opacity_blend()),
+        variant: 2,
+    }
+}
+
 /// Builds the programs text draws with.
 pub(crate) fn text_programs(
     programs: &mut crate::gpu::frame_graph::Programs<'_>,
 ) -> crate::Result<()> {
-    use lumen_gpu::wgpu::BlendState;
-    let shader = shared_text_shader();
-    programs.render(
-        "text",
-        shader,
-        "vs_main",
-        "fs_main",
-        RECORD_TEXT_LAYOUT,
-        text_blend(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-        0,
-    )?;
-    programs.render(
-        "text smear",
-        shader,
-        "vs_fullscreen",
-        "fs_smear",
-        RECORD_SMEAR_LAYOUT,
-        text_blend(BlendState::REPLACE),
-        1,
-    )?;
-    programs.render(
-        "text opacity",
-        shader,
-        "vs_fullscreen",
-        "fs_opacity",
-        RECORD_TEXT_LAYOUT,
-        text_blend(opacity_blend()),
-        2,
-    )
+    for pass in [glyph_pass(), smear_pass(), opacity_pass()] {
+        programs.render(&pass.program, pass.target, pass.variant)?;
+    }
+    Ok(())
 }
 
 /// Records a text, drawing what it placed this frame.
@@ -285,16 +313,8 @@ pub(crate) fn record_text(
         (4, drawn.style),
         (6, drawn.paints),
     ];
-    let shader = shared_text_shader();
-    let program = cx.render_program(
-        "text",
-        shader,
-        "vs_main",
-        "fs_main",
-        RECORD_TEXT_LAYOUT,
-        text_blend(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-        0,
-    )?;
+    let pass = glyph_pass();
+    let program = cx.render_program(&pass.program, pass.target, pass.variant)?;
     let layer = blurred.then(|| cx.render_target(layer_size));
     cx.rec.draw(
         program,
@@ -306,15 +326,8 @@ pub(crate) fn record_text(
         viewport,
     );
     if let Some(layer) = layer {
-        let program = cx.render_program(
-            "text smear",
-            shader,
-            "vs_fullscreen",
-            "fs_smear",
-            RECORD_SMEAR_LAYOUT,
-            text_blend(wgpu::BlendState::REPLACE),
-            1,
-        )?;
+        let pass = smear_pass();
+        let program = cx.render_program(&pass.program, pass.target, pass.variant)?;
         let mut bindings = shared.to_vec();
         bindings.push((5, Res::Tex(layer)));
         cx.rec
@@ -322,15 +335,8 @@ pub(crate) fn record_text(
     }
     // Fading the composited layer keeps overlapping glyphs from doubling up.
     if drawn.opacity < 1.0 {
-        let program = cx.render_program(
-            "text opacity",
-            shader,
-            "vs_fullscreen",
-            "fs_opacity",
-            RECORD_TEXT_LAYOUT,
-            text_blend(opacity_blend()),
-            2,
-        )?;
+        let pass = opacity_pass();
+        let program = cx.render_program(&pass.program, pass.target, pass.variant)?;
         cx.rec
             .draw(program, &shared, target, TargetLoad::Load, 3, 1, None);
     }

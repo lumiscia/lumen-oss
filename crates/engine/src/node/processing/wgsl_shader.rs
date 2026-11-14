@@ -36,6 +36,7 @@ use crate::{
     },
 };
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 
 /// WebGPU's default `maxSampledTexturesPerShaderStage`, guaranteed on every adapter.
@@ -85,6 +86,12 @@ const SANITISE_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
     lumen_gpu::LayoutEntry::compute(1, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
+const SANITISE: ComputeProgram = ComputeProgram {
+    label: "wgsl-shader-sanitise",
+    shader: SANITISE_SHADER,
+    entry: "cs_main",
+    layout: SANITISE_LAYOUT,
+};
 
 const DEFAULT_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -699,12 +706,7 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         let inputs = self.sources.len();
         self.check_input_count()?;
-        programs.compute(
-            "wgsl-shader-sanitise",
-            SANITISE_SHADER,
-            "cs_main",
-            SANITISE_LAYOUT,
-        )?;
+        programs.compute(&SANITISE)?;
         let Deferred::Value(source) = &self.params.shader else {
             return Ok(());
         };
@@ -795,12 +797,7 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
             bindings.push((input_binding(index), Res::Tex(input.tex)));
         }
         cx.dispatch(program, &bindings, params::dispatch_for(size));
-        let sanitise = cx.program(
-            "wgsl-shader-sanitise",
-            SANITISE_SHADER,
-            "cs_main",
-            SANITISE_LAYOUT,
-        )?;
+        let sanitise = cx.program(&SANITISE)?;
         let sanitised = cx.storage_target(size);
         cx.dispatch(
             sanitise,
