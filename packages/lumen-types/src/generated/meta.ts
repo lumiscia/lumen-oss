@@ -1502,17 +1502,9 @@ export type RasterSampling = "nearest" | "linear";
 export type Region = readonly [ExpressionValue<number>, ExpressionValue<number>, ExpressionValue<number>, ExpressionValue<number>];
 export type Render3dOutput = "color" | "depth" | "normal";
 export type Render3dToneMapping = ToneMapping;
-/** The canvas, and how the host that renders the video encodes it. Previews ignore `codec`, `quality`, `bit_depth` and `alpha`. */
+/** The canvas size in pixels. */
 export type RenderSettings = {
-  /** Keeps the frame's transparency in the video as an alpha channel, which `prores` in a MOV and `vp9` in a WebM hold; the default renders over black. Asking for alpha in a format that can't hold it is an error, never an opaque render. A render request's `alpha` wins over it. */
-  readonly alpha?: boolean;
-  /** Bits per sample of the rendered video: 8, the default, or 10 for `hevc` and `av1`. H.264 and VP9 with alpha are always 8-bit and ProRes always 10, and a host whose encoders can't write the depth asked for rejects the render rather than writing another. A render request's `bit_depth` wins over it. */
-  readonly bit_depth?: VideoBitDepth;
-  /** Video codec of the rendered file: `h264`, `hevc` or `av1` in an MP4, `prores` (ProRes 4444) in a MOV, or `vp9` in a WebM. A render request's `codec` wins over it. */
-  readonly codec?: VideoCodec;
   readonly height: number;
-  /** Quality preset name. Every host defines `draft`, `standard`, `high` and `lossless`; operators can add others. A render request's `quality` wins over it. */
-  readonly quality?: string;
   readonly width: number;
 };
 export type Repeat = {
@@ -1668,8 +1660,6 @@ export type Timeline = {
 };
 export type ToneMapping = "none" | "aces" | "agx";
 export type TransformSampling = RasterSampling;
-export type VideoBitDepth = 8 | 10;
-export type VideoCodec = "h264" | "hevc" | "av1" | "prores" | "vp9";
 export type ZoomBlurEdge = EdgeMode;
 
 export interface CompositionNodeBase<TKind extends NodeKind> {
