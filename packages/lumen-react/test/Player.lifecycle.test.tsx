@@ -51,4 +51,35 @@ describe("Player with a real session", () => {
     expect(second?.terminated).toBe(true);
     expect(container.querySelectorAll("canvas")).toHaveLength(0);
   });
+
+  it("sends the worker nothing when it renders again with the same inputs", async () => {
+    const root = createRoot(document.createElement("div"));
+    const preview = createLumenPreview();
+    const composition = { metadata: { name: "first" } } as never;
+    const onError = vi.fn();
+    const render = () =>
+      root.render(
+        <Player
+          preview={preview}
+          composition={composition}
+          onError={onError}
+          range={{ in: 10, out: 40 }}
+          rate={2}
+        />,
+      );
+
+    await act(async () => render());
+    const worker = FakeWorker.instances[0];
+    await act(async () => {
+      worker?.onmessage?.({ data: { type: "ready" } });
+    });
+    const posted = worker?.posted.length ?? 0;
+    expect(worker?.posted.map((message) => (message as { type: string }).type)).toContain("load");
+
+    await act(async () => render());
+    expect(FakeWorker.instances).toHaveLength(1);
+    expect(worker?.posted).toHaveLength(posted);
+
+    await act(async () => root.unmount());
+  });
 });

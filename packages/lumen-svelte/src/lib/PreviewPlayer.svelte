@@ -9,40 +9,10 @@
         runtimeUrl,
         wasmUrl,
         workerUrl,
-        composition,
-        fonts,
-        loop,
-        lookaheadCount,
-        logLevel,
-        media,
-        muted,
-        onEnded,
-        onError,
-        onStats,
-        onTimeUpdate,
-        range,
-        rate,
-        volume,
         class: className,
         style,
+        ...inputs
     }: PlayerProps & { defaults: PlayerDefaults } = $props();
-
-    const inputs = () => ({
-        composition,
-        fonts,
-        loop,
-        lookaheadCount,
-        logLevel,
-        media,
-        muted,
-        onEnded,
-        onError,
-        onStats,
-        onTimeUpdate,
-        range,
-        rate,
-        volume,
-    });
 
     // A URL passed wins, then the file in `runtimeUrl`, then the package's own copy.
     const runtime = $derived(runtimeUrl === undefined ? undefined : String(runtimeUrl));
@@ -69,7 +39,7 @@
             return;
         }
         const mounted = mountPreview(host, {
-            ...untrack(inputs),
+            ...untrack(() => ({ ...inputs })),
             preview,
             runtimeUrl: runtime,
             wasmUrl: wasm,
@@ -79,8 +49,9 @@
         return () => mounted.dispose();
     });
 
+    // The session ignores inputs that haven't changed, so every change can pass them all on.
     $effect(() => {
-        session?.update(inputs());
+        session?.setInputs({ ...inputs });
     });
 </script>
 

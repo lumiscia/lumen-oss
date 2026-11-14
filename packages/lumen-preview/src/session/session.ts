@@ -268,11 +268,12 @@ export class LumenPreviewSession {
   }
 
   /**
-   * Replaces every input; one left out returns to its default. Playback options that can't be used
-   * reject the whole update, also while the worker is starting: it is reported through the
-   * callbacks in effect, and everything in effect stays as it was.
+   * Replaces every input: one left out returns to its default, so pass the whole set each time.
+   * Inputs that are unchanged do nothing, so it is safe to call with them on every render.
+   * Playback options that can't be used reject the whole call, also while the worker is starting:
+   * it is reported through the callbacks in effect, and everything in effect stays as it was.
    */
-  update(inputs: LumenPreviewSessionInputs): void {
+  setInputs(inputs: LumenPreviewSessionInputs): void {
     const playback = this.#readPlayback(inputs);
     if (!playback) {
       return;
@@ -454,7 +455,12 @@ export class LumenPreviewSession {
   #syncInputs(): void {
     let next: ResolvedPreviewInputs;
     try {
-      next = resolvePreviewInputs(this.#inputs.composition, this.#inputs.media, this.#inputs.fonts);
+      next = resolvePreviewInputs(
+        this.#inputs.composition,
+        this.#inputs.media,
+        this.#inputs.fonts,
+        this.#loaded,
+      );
     } catch (error) {
       const message = describeError(error);
       if (message !== this.#resolveFailure) {
