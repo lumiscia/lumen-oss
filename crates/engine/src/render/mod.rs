@@ -8,6 +8,7 @@ mod gpu;
 mod image_render;
 mod media;
 mod output;
+mod plan;
 mod readback;
 
 use std::{
@@ -35,6 +36,7 @@ pub use output::{
     DEFAULT_JPEG_QUALITY, FrameRange, MAX_ARCHIVE_FRAMES, OutputFormat, RenderOutput,
     SequenceLimits, check_video, frame_number_width, video_codecs,
 };
+pub use plan::{CheckReport, RenderPlan, RenderRequest, plan};
 
 /// What renders take from their host. The library reads no environment variables: a binary reads
 /// [`FONT_DIR_ENV`], [`HARDWARE_DECODE_ENV`] and [`GpuSettings::from_env`], or its flags, and builds
@@ -164,10 +166,14 @@ pub fn check_composition(
     staged: &dyn Fn(&str) -> bool,
     assets: &dyn AssetResolver,
     config: &RenderConfig,
-) -> Vec<crate::diagnostic::Diagnostic> {
+) -> CheckReport {
     let fonts = FontCatalog::without_media(config.font_dir());
     let known_font = |family: &str| staged(family) || fonts.resolve(family, || None).is_some();
-    crate::json::check_value(payload, Some(&known_font), Some(assets))
+    CheckReport::new(crate::json::check_value(
+        payload,
+        Some(&known_font),
+        Some(assets),
+    ))
 }
 
 /// The composition `payload` describes. A payload that isn't one fails with

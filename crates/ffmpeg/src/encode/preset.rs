@@ -275,7 +275,8 @@ impl QualityRequest {
         self.with_encoder_fallback(env::var(ENCODER_ENV).ok().as_deref())
     }
 
-    fn with_encoder_fallback(mut self, fallback: Option<&str>) -> Self {
+    /// Pins `fallback` unless the request already pins an encoder. A blank name pins nothing.
+    pub fn with_encoder_fallback(mut self, fallback: Option<&str>) -> Self {
         let pinned = [self.encoder.as_deref(), fallback]
             .into_iter()
             .flatten()
