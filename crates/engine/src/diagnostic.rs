@@ -99,7 +99,9 @@ pub fn code_list() -> impl Iterator<Item = (&'static str, Severity)> {
     .into_iter()
     .flatten()
     .map(|code| (*code, Severity::Error));
-    let warnings = WarningKind::CODES.iter().map(|code| (*code, Severity::Warning));
+    let warnings = WarningKind::CODES
+        .iter()
+        .map(|code| (*code, Severity::Warning));
     errors.chain(warnings)
 }
 
