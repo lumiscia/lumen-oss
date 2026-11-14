@@ -1,10 +1,11 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
+import { readFile } from "node:fs/promises";
 import net from "node:net";
 
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { Composition, Lumen } from "../src/index.js";
+import { Composition, Lumen, assetSource } from "../src/index.js";
 import type { RenderProgress } from "../src/types.js";
 
 const shouldRun = process.env.LUMEN_SDK_INTEGRATION === "1";
@@ -88,6 +89,33 @@ describeIntegration("Lumen SDK with lumen-server", () => {
       const artifact = await (await lumen.download(done)).blob();
       expect(artifact.type).toBe("video/mp4");
       expect(artifact.size).toBeGreaterThan(0);
+    },
+    renderTimeoutMs,
+  );
+
+  test(
+    "renders an uploaded file referenced as asset:<id>",
+    async () => {
+      const lumen = new Lumen({ apiKey: serverToken, baseUrl });
+      const upload = await lumen.uploadMedia({
+        body: await readFile(new URL("../../../examples/assets/clip.mp4", import.meta.url)),
+        fileName: "clip.mp4",
+      });
+
+      const composition = new Composition({
+        renderSettings: { width: 64, height: 64 },
+        timeline: { fps: 24, duration_frames: 1 },
+      });
+      const clip = composition.addNode({
+        type: "media_in",
+        params: { kind: "video", source: assetSource(upload) },
+      });
+      composition.addNode({ type: "media_output", inputs: { source: clip } });
+
+      const created = await lumen.render(composition);
+      const done = await lumen.waitForRender(created.id);
+
+      expect(done.status).toBe("succeeded");
     },
     renderTimeoutMs,
   );

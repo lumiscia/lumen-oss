@@ -6,11 +6,10 @@ import { parseMedia, parsePart, parseUploadId, parseUploadTarget } from "./media
 import { isTerminal, parseProgress, parseRender, renderError, resolveUrl } from "./render.js";
 import { watchRender, type SocketUpdate } from "./socket.js";
 import type {
+  AssetSource,
   CreateUrlMediaOptions,
-  LumenMediaReference,
   LumenOptions,
   Render,
-  RenderMediaManifest,
   RenderOptions,
   RenderStatus,
   TemporaryMedia,
@@ -74,7 +73,7 @@ export class Lumen {
     const body = await this.#request("POST", "/renders", {
       body: {
         composition: composition instanceof Composition ? composition.toJSON() : composition,
-        media: mediaManifest(options.media ?? {}),
+        media: options.media ?? {},
         ...(options.webhookUrl !== undefined ? { webhookUrl: options.webhookUrl } : {}),
         ...(options.quality !== undefined ? { quality: options.quality } : {}),
         ...(options.codec !== undefined ? { codec: options.codec } : {}),
@@ -215,7 +214,7 @@ export class Lumen {
 
   /**
    * Uploads a file for renders to use. A body over 64 MiB, and any stream, goes up in 8 MiB parts;
-   * anything smaller in one request. Pass the result as a `media` value, or to `mediaReference`.
+   * anything smaller in one request. Write `assetSource(upload)` in a node's source to use it.
    */
   async uploadMedia(options: UploadMediaOptions): Promise<TemporaryMedia> {
     const { body, signal } = options;
@@ -410,18 +409,10 @@ export class Lumen {
   }
 }
 
-export function mediaReference(media: TemporaryMedia | string): LumenMediaReference {
+/** The value to write in a node's source field for an uploaded file: `asset:<id>`. */
+export function assetSource(media: TemporaryMedia | string): AssetSource {
   const id = typeof media === "string" ? media : media.id;
-  return id.startsWith("lumen:") ? (id as LumenMediaReference) : `lumen:${id}`;
-}
-
-function mediaManifest(media: RenderMediaManifest): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(media).map(([alias, value]) => [
-      alias,
-      typeof value === "string" ? value : mediaReference(value),
-    ]),
-  );
+  return id.startsWith("asset:") ? (id as AssetSource) : `asset:${id}`;
 }
 
 async function readJson<T extends object = Record<string, unknown>>(

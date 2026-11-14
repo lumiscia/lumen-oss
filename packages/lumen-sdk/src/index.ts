@@ -1,5 +1,5 @@
 export * from "@lumiscia/lumen-shared";
-export { Lumen, mediaReference } from "./client.js";
+export { Lumen, assetSource } from "./client.js";
 export { LumenError } from "./errors.js";
 export type { LumenErrorFields } from "./errors.js";
 export { outputFile } from "./output.js";
@@ -12,8 +12,8 @@ export type {
   WebhookHeaders,
 } from "./webhooks.js";
 export type {
+  AssetSource,
   CreateUrlMediaOptions,
-  LumenMediaReference,
   LumenOptions,
   MediaKind,
   MediaMetadata,

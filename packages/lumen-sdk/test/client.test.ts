@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import { Lumen } from "../src/client.js";
+import { Lumen, assetSource } from "../src/client.js";
 import { LumenError } from "../src/errors.js";
 import { outputFile } from "../src/output.js";
 
@@ -546,17 +546,9 @@ describe("Lumen media uploads", () => {
     ).rejects.toMatchObject({ code: "invalid_response" });
   });
 
-  test("an upload can be passed where a render takes media", async () => {
-    const { requests, stub } = recordingFetch(() => ({ render: { id: "r", status: "queued" } }));
-    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
-
-    await lumen.render({} as never, {
-      media: { hero: media as never, logo: "https://example.com/logo.png" },
-    });
-
-    expect(JSON.parse(String(requests[0]?.init.body)).media).toEqual({
-      hero: "lumen:media 1",
-      logo: "https://example.com/logo.png",
-    });
+  test("assetSource names an upload or an id as asset:<id>", () => {
+    expect(assetSource(media as never)).toBe("asset:media 1");
+    expect(assetSource("m_1")).toBe("asset:m_1");
+    expect(assetSource("asset:m_1")).toBe("asset:m_1");
   });
 });

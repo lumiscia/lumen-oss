@@ -80,7 +80,14 @@ try {
 }
 ```
 
-`examples/node` also uploads a clip with `lumen.uploadMedia` and passes it to `render` as `media`.
+Upload a file with `lumen.uploadMedia` and write `assetSource(upload)`, which is `asset:<id>`, in the source of the node or audio clip that uses it. The `media` option of `render` only maps an alias used in the composition to a remote `http` or `https` URL. `examples/node` uploads a clip this way.
+
+```ts
+import { assetSource } from "@lumiscia/lumen-sdk";
+
+const clip = await lumen.uploadMedia({ body: file, fileName: "clip.mp4" });
+composition.addNode({ type: "media_in", params: { kind: "video", source: assetSource(clip) } });
+```
 
 Failed requests throw a `LumenError` with a `code` and `status`. When a render is rejected because the composition is invalid, its `diagnostics` say what is wrong and where:
 
