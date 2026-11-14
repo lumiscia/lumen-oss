@@ -13,8 +13,13 @@ concurrency:
 
 # Pull requests read the caches main saves instead of each saving their own, which kept the
 # repository over its cache limit. Line tables keep backtraces and make the caches smaller.
+#
+# lavapipe compiles shaders for the runner's CPU, and what it compiles with AVX-512 on Intel CPUs
+# before Sapphire Rapids draws offset paths under non-uniform scale wrongly and can hang. Runners
+# are a mix of CPUs, so the tests failed on the few with one. This keeps lavapipe to AVX2.
 env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  GALLIUM_OVERRIDE_CPU_CAPS: avx
 
 jobs:
   typescript:

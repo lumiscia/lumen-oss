@@ -1144,6 +1144,8 @@ fn run_matching<N: AsRef<str>, T>(
     let failures: Vec<_> = rows
         .into_iter()
         .filter_map(|(name, row)| {
+            // Names the row in the test's output, so one that hangs or crashes can be told.
+            eprintln!("row: {}", name.as_ref());
             let error = catch_unwind(AssertUnwindSafe(|| run(row))).err()?;
             Some(format!("  {}: {}", name.as_ref(), panic_message(&*error)))
         })
