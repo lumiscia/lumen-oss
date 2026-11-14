@@ -462,7 +462,8 @@ export class LumenPreviewSession {
   /** Settles `whenReady` once a frame of the composition is shown and nothing it needs is pending. */
   #checkReady(load: Load): void {
     const media = load.media;
-    if (this.#ready || !load.isShown || !media || load.mediaPending) {
+    // A subscriber may have replaced the load while this one's event was being handled.
+    if (this.#live?.load !== load || this.#ready || !load.isShown || !media || load.mediaPending) {
       return;
     }
     const failure = media.find((entry) => entry.failure)?.failure ?? null;
