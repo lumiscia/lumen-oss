@@ -465,18 +465,27 @@ describe("Lumen media uploads", () => {
     expect(sent).toEqual(["audio/ogg", "image/png", "video/quicktime"]);
   });
 
-  test("an unknown content type fails before any request", async () => {
-    const { requests, stub } = recordingFetch(upload);
+  test("a content type no source gives is application/octet-stream, and fonts and HDRIs are named", async () => {
+    const sent: string[] = [];
+    const { stub } = recordingFetch((request) => {
+      if (new URL(request.url).pathname === "/v1/media") {
+        sent.push(JSON.parse(String(request.init.body)).contentType);
+      }
+      return upload(request);
+    });
     const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
 
-    await expect(lumen.uploadMedia({ body: new Uint8Array(3) })).rejects.toMatchObject({
-      code: "invalid_upload",
-      message: expect.stringContaining("contentType"),
-    });
-    await expect(
-      lumen.uploadMedia({ body: new Uint8Array(3), fileName: "notes.txt" }),
-    ).rejects.toMatchObject({ code: "invalid_upload" });
-    expect(requests).toHaveLength(0);
+    await lumen.uploadMedia({ body: new Uint8Array(3) });
+    await lumen.uploadMedia({ body: new Uint8Array(3), fileName: "notes.txt" });
+    await lumen.uploadMedia({ body: new Uint8Array(3), fileName: "Inter.TTF" });
+    await lumen.uploadMedia({ body: new Uint8Array(3), fileName: "sky.hdr" });
+
+    expect(sent).toEqual([
+      "application/octet-stream",
+      "application/octet-stream",
+      "font/ttf",
+      "image/vnd.radiance",
+    ]);
   });
 
   test("aborting a stalled stream rejects at once and cancels the producer", async () => {

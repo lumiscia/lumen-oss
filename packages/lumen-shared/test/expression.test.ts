@@ -417,6 +417,15 @@ describe("expression helpers", () => {
     expect(() => fn("rise(start, end)", (start: Num) => start as Expr<number>)).toThrow(
       "`rise` declares 2 parameters, but its implementation takes 1.",
     );
+    expect(() => fn("1bad(x)" as never, (x: Num) => x as Expr<number>)).toThrow(
+      "Invalid function signature `1bad(x)`",
+    );
+    expect(() => fn("f(x + y)" as never, (x: Num) => x as Expr<number>)).toThrow(
+      "Invalid function signature `f(x + y)`",
+    );
+    expect(fn("  _f1 ( a_1 ,b )", (a: Num, _b: Num) => a as Expr<number>).signature).toBe(
+      "_f1(a_1, b)",
+    );
     expect(() =>
       new Composition().addFunction(rise).addFunction(fn("rise()", () => frame)),
     ).toThrow("Function `rise` already exists.");
