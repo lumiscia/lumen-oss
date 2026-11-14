@@ -382,7 +382,7 @@ impl GpuCopies {
         let tiles = self.tiles(
             [domain.data_rect.x, domain.data_rect.y],
             size,
-            cx.single_tile_repeats,
+            cx.single_tile_repeats(),
         );
         [
             bytemuck::cast_slice(&self.copies),

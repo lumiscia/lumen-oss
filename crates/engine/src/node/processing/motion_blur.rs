@@ -2,11 +2,13 @@
 //! averaged.
 
 use bytemuck::{Pod, Zeroable};
-use lumen_gpu::{LayoutEntry, LayoutKind};
+use lumen_gpu::{LayoutEntry, LayoutKind, Res, Size, TextureDesc, TextureDomain};
 
 use crate::error::RenderError;
 use crate::expr::ExpressionContext;
-use crate::gpu::frame_graph::{ComputeProgram, Staticness, held};
+use crate::gpu::frame_graph::{
+    ComputeProgram, CropParams, FrameCx, Raster, Staticness, dispatch_for, held, quantized_domain,
+};
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, motion};
 
 /// Most sub-frames a `motion_blur` node renders.
@@ -153,7 +155,7 @@ impl crate::gpu::frame_graph::RecordNode for MotionBlur {
             None
         };
         match offsets {
-            Some(offsets) => cx.record_motion_blur(self.id, source, &offsets),
+            Some(offsets) => record_motion_blur(cx, self.id, source, &offsets),
             None => cx.input(source),
         }
     }
@@ -170,6 +172,125 @@ impl crate::gpu::frame_graph::RecordNode for MotionBlur {
             held(reads_frame)
         }
     }
+}
+
+/// Records `source` at each of `offsets` frames from this one and averages the samples in
+/// linear, premultiplied colour. Each sample is summed into a running target as soon as it is recorded,
+/// so its textures go back to the pool for the next. The samples share a path of their own,
+/// keeping their text and video state apart from the source's outside the blur.
+fn record_motion_blur(
+    cx: &mut FrameCx<'_>,
+    node_id: NodeId,
+    source: NodeId,
+    offsets: &[f64],
+) -> crate::Result<Raster> {
+    cx.record_samples(node_id, |cx| accumulate(cx, source, offsets))
+}
+
+fn accumulate(cx: &mut FrameCx<'_>, source: NodeId, offsets: &[f64]) -> crate::Result<Raster> {
+    let frame = cx.frame_time();
+    let mut sum: Option<Raster> = None;
+    // The domain and bounds every sample had, which the average keeps when they all agree.
+    let mut shared: Option<Option<(TextureDomain, Option<CropParams>)>> = None;
+    for (index, offset) in offsets.iter().enumerate() {
+        let sample = cx.input_sample(source, index as u32, frame.offset(*offset))?;
+        let this = (sample.domain, sample.bounds);
+        shared = Some(match shared {
+            None => Some(this),
+            Some(kept) => kept.filter(|kept| *kept == this),
+        });
+        let last = index + 1 == offsets.len();
+        // A blank sample adds nothing, so the sum starts at the first sample that draws, and
+        // later blank samples count only towards the divisor.
+        let blank = cx.is_transparent(&sample);
+        if blank && !last {
+            continue;
+        }
+        if blank && sum.is_none() {
+            return Ok(cx.transparent(sample.domain.display_size()));
+        }
+        sum = Some(add_sample(
+            cx,
+            sum,
+            sample,
+            blank,
+            last,
+            offsets.len() as u32,
+        )?);
+    }
+    let mut average = sum.expect("motion blur takes at least two samples");
+    if let Some(Some((domain, bounds))) = shared
+        && domain == average.domain
+    {
+        average.bounds = bounds;
+    }
+    Ok(average)
+}
+
+/// `sample` added to `sum`, over the union of their domains or over the sum's alone when the
+/// sample is `blank`. The sum is `SUM_FORMAT` until the `last` sample, which writes the average of
+/// all `samples` to the working space.
+fn add_sample(
+    cx: &mut FrameCx<'_>,
+    sum: Option<Raster>,
+    sample: Raster,
+    blank: bool,
+    last: bool,
+    samples: u32,
+) -> crate::Result<Raster> {
+    let (display, data) = match sum {
+        Some(sum) if blank => (sum.domain.display_size(), sum.domain.data_rect),
+        Some(sum) => {
+            let [held, shown] = [sum, sample].map(|raster| raster.domain.display_size());
+            (
+                Size::new(held.width.max(shown.width), held.height.max(shown.height)),
+                sum.domain.data_rect.union(sample.domain.data_rect),
+            )
+        }
+        None => (sample.domain.display_size(), sample.domain.data_rect),
+    };
+    let domain = quantized_domain(display, data);
+    let origin = [domain.data_rect.x, domain.data_rect.y];
+    let from = |raster: &Raster| {
+        let at = raster.origin();
+        [origin[0] - at[0], origin[1] - at[1]]
+    };
+    let params = AccumulateParams {
+        sum_offset: sum.as_ref().map_or([0, 0], from),
+        sample_offset: from(&sample),
+        has_sum: u32::from(sum.is_some()),
+        samples,
+        _pad: [0; 2],
+    };
+    let sum_tex = match sum {
+        Some(sum) => sum.tex,
+        None => cx.unused_float(),
+    };
+    let size = domain.storage_size;
+    let (program, binding, tex) = if last {
+        (&RESOLVE, 4, cx.storage_target(size))
+    } else {
+        let usage = TextureDesc::storage(size, SUM_FORMAT).usage;
+        let tex = cx.rec.acquire(size, SUM_FORMAT, usage);
+        (&ACCUMULATE, 3, tex)
+    };
+    let program = cx.program(program)?;
+    let uniform = cx.rec.uniform(&params);
+    cx.rec.compute(
+        program,
+        &[
+            (0, Res::Tex(sum_tex)),
+            (1, Res::Tex(sample.tex)),
+            (2, uniform),
+            (binding, Res::Tex(tex)),
+        ],
+        dispatch_for(size),
+    );
+    Ok(Raster {
+        tex,
+        domain,
+        bounds: None,
+    })
 }
 
 #[cfg(test)]

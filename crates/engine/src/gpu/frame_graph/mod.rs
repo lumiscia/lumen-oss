@@ -14,22 +14,20 @@ use std::sync::{Arc, Mutex};
 use bytemuck::{Pod, Zeroable};
 use foldhash::HashSet;
 use lumen_gpu::{
-    Dispatch, LayoutEntry, LayoutKind, ProgramRef, Recorder, Res, SamplerRef, Size, TexRef,
-    TextureDesc, TextureDomain, wgpu,
+    LayoutEntry, LayoutKind, ProgramRef, Recorder, Size, TexRef, TextureDesc, TextureDomain, wgpu,
 };
 
 use crate::{
     composition::{Composition, SceneId},
     error::{LumenError, RenderError, Warning, WarningKind},
-    expr::{ExpressionContext, ExpressionValue},
-    media::{AssetKind, MediaIdentity, MediaStore},
+    expr::ExpressionContext,
+    media::{MediaIdentity, MediaStore},
     node::{
         Deferred, MediaValue, Node, NodeId, NodeKind,
         compositing::clip::Clip,
-        required_input,
         source::text::{TextDraw, TextInstance},
     },
-    scope::{FrameTime, MAX_GRAPH_DEPTH, Routed, Scope},
+    scope::{FrameTime, Routed, Scope},
 };
 
 #[cfg(feature = "ffmpeg")]
@@ -39,12 +37,16 @@ use super::{
     color::WORKING_COLOR_FORMAT as WORKING,
     renderer::{MediaTextureCache, OutputEncoding, fit_frame_to_rgba8},
 };
-use state::{RecordState, Slot, VideoUpload};
+use retention::Retention;
+use state::{RecordState, VideoUpload};
+pub(crate) use targets::{quantized_domain, size_class};
 
 mod ingest;
 #[cfg(test)]
 pub(crate) use ingest::YUV_TO_RGBA_SHADER;
+mod retention;
 mod state;
+mod targets;
 
 /// Copies the visible part of a clip's raster into a texture of the parent canvas.
 /// The most warnings one composition raises, so that a composition of many nodes that warn
@@ -82,18 +84,6 @@ pub(crate) fn dispatch_for(size: lumen_gpu::Size) -> lumen_gpu::Dispatch {
         x: size.width.div_ceil(8),
         y: size.height.div_ceil(8),
         z: 1,
-    }
-}
-
-fn copyable_texture_desc(size: lumen_gpu::Size) -> lumen_gpu::TextureDesc {
-    lumen_gpu::TextureDesc {
-        domain: lumen_gpu::TextureDomain::full_frame(size),
-        format: WORKING,
-        usage: lumen_gpu::wgpu::TextureUsages::COPY_DST
-            | lumen_gpu::wgpu::TextureUsages::COPY_SRC
-            | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
-            | lumen_gpu::wgpu::TextureUsages::STORAGE_BINDING
-            | lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT,
     }
 }
 
@@ -338,56 +328,6 @@ impl Staticness {
     }
 }
 
-/// The frames a kept output stays correct for, and what it drew.
-#[derive(Debug, Clone)]
-struct HoldTrack {
-    /// Both ends included.
-    frames: (f64, f64),
-    models: Vec<String>,
-}
-
-impl HoldTrack {
-    fn new() -> Self {
-        Self {
-            frames: (f64::NEG_INFINITY, f64::INFINITY),
-            models: Vec::new(),
-        }
-    }
-
-    fn narrow(&mut self, frames: (f64, f64)) {
-        self.frames = (self.frames.0.max(frames.0), self.frames.1.min(frames.1));
-    }
-
-    fn contains(&self, frame: f64) -> bool {
-        self.frames.0 <= frame && frame <= self.frames.1
-    }
-}
-
-/// Whether `a` and `b` are the same values to every param, which tells `0` from `-0` and holds for
-/// two NaNs of the same bits, as the same inputs give the same output.
-fn same_values(a: &[ExpressionValue], b: &[ExpressionValue]) -> bool {
-    fn same_bits(a: &[f64], b: &[f64]) -> bool {
-        a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
-    }
-    a.len() == b.len()
-        && a.iter().zip(b).all(|pair| match pair {
-            (ExpressionValue::Number(a), ExpressionValue::Number(b)) => a.to_bits() == b.to_bits(),
-            (ExpressionValue::Vec2((ax, ay)), ExpressionValue::Vec2((bx, by))) => {
-                same_bits(&[*ax, *ay], &[*bx, *by])
-            }
-            (ExpressionValue::Vec3(a), ExpressionValue::Vec3(b)) => same_bits(a, b),
-            (ExpressionValue::Color(a), ExpressionValue::Color(b)) => same_bits(a, b),
-            (a, b) => a == b,
-        })
-}
-
-/// The frames either side of `frame` among those a composition has.
-fn neighbouring_frames(frame: f64) -> impl Iterator<Item = f64> {
-    [frame.floor() + 1.0, frame.ceil() - 1.0]
-        .into_iter()
-        .filter(|other| *other >= 0.0)
-}
-
 /// What a recorded shader needs, cached by its source.
 #[derive(Clone)]
 pub(crate) struct CachedShader {
@@ -408,22 +348,30 @@ pub(crate) struct FrameGraph {
     imports: GpuMediaImports,
 }
 
-pub(crate) struct RecordInput<'a> {
-    pub(crate) composition: &'a Composition,
-    pub(crate) frame: f64,
-    pub(crate) media: Option<&'a dyn MediaStore>,
+/// How a frame is recorded, the same for every node of it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RecordSettings {
     pub(crate) output_format: wgpu::TextureFormat,
     pub(crate) output_encoding: OutputEncoding,
     pub(crate) full_frame_sources: bool,
+    /// Whether repeats draw from one tile, as `set_single_tile_repeats` sets.
     pub(crate) single_tile_repeats: bool,
     pub(crate) retain_static: bool,
-    pub(crate) media_cache: &'a mut MediaTextureCache,
-    pub(crate) text_atlas: &'a Arc<Mutex<lumen_text::GlyphAtlas>>,
-    pub(crate) atlas_texture: &'a mut Option<Arc<wgpu::Texture>>,
+    /// How many times a frame is recorded again while fonts its walk loads change its text.
     pub(crate) max_rebinds: usize,
     pub(crate) max_text_glyphs: usize,
     /// The longest side an image is decoded at, below the device's own limit.
     pub(crate) max_image_side: u32,
+}
+
+pub(crate) struct RecordInput<'a> {
+    pub(crate) composition: &'a Composition,
+    pub(crate) frame: f64,
+    pub(crate) media: Option<&'a dyn MediaStore>,
+    pub(crate) settings: RecordSettings,
+    pub(crate) media_cache: &'a mut MediaTextureCache,
+    pub(crate) text_atlas: &'a Arc<Mutex<lumen_text::GlyphAtlas>>,
+    pub(crate) atlas_texture: &'a mut Option<Arc<wgpu::Texture>>,
     /// The renderer whose device GPU video frames were decoded on.
     #[cfg(feature = "ffmpeg")]
     pub(crate) renderer: &'a lumen_gpu::Renderer,
@@ -449,17 +397,10 @@ impl FrameGraph {
             composition,
             frame,
             media,
-            output_format,
-            output_encoding,
-            full_frame_sources,
-            single_tile_repeats,
-            retain_static,
+            settings,
             media_cache,
             text_atlas,
             atlas_texture,
-            max_rebinds,
-            max_text_glyphs,
-            max_image_side,
             #[cfg(feature = "ffmpeg")]
             renderer,
             #[cfg(feature = "ffmpeg")]
@@ -493,17 +434,10 @@ impl FrameGraph {
                 sample: 0,
                 sampling: false,
                 media,
-                output_format,
-                output_encoding,
-                full_frame_sources,
-                single_tile_repeats,
-                retain_static,
-                static_depth: 0,
-                holds: Vec::new(),
+                settings,
+                retention: Retention::default(),
                 depth: 0,
                 bound: BoundFrame::new(),
-                max_text_glyphs,
-                max_image_side,
                 text_atlas,
                 atlas_texture: &mut *atlas_texture,
                 #[cfg(feature = "ffmpeg")]
@@ -526,7 +460,7 @@ impl FrameGraph {
                 self.state.trim(&mut self.recorder, &self.budgets);
                 return Ok(bound);
             }
-            if rebinds == max_rebinds {
+            if rebinds == settings.max_rebinds {
                 return Err(internal(&format!(
                     "fonts kept loading while frame {frame} was recorded; its text bounds could not settle"
                 )));
@@ -830,69 +764,10 @@ impl FrameGraph {
     }
 }
 
-/// The identity of what `media` serves for `source` as `kind`, if it serves anything.
-fn source_identity(
-    media: Option<&dyn MediaStore>,
-    kind: AssetKind,
-    source: &str,
-) -> Option<MediaIdentity> {
-    Some(media?.resolve(source, kind).ok()?.identity)
-}
-
-/// Whether what `media` serves for `source` as `kind` is no longer what was `seen`: another
-/// identity, or there where it was missing or the other way round. A source that fails for any
-/// other reason than being missing counts as changed, so that reading it again reports why.
-fn source_changed(
-    media: Option<&dyn MediaStore>,
-    kind: AssetKind,
-    source: &str,
-    seen: Option<&MediaIdentity>,
-) -> bool {
-    let Some(media) = media else {
-        return seen.is_some();
-    };
-    match media.resolve(source, kind) {
-        Ok(resolved) => Some(&resolved.identity) != seen,
-        Err(error) => {
-            let missing = error.failure().is_some_and(|failure| {
-                matches!(failure.reason, crate::error::MediaReason::NotFound { .. })
-            });
-            !missing || seen.is_some()
-        }
-    }
-}
-
 fn font_generation(media: Option<&dyn MediaStore>) -> Option<u64> {
     crate::node::source::text::text_system(media)
         .ok()
         .map(|text_system| text_system.font_generation())
-}
-
-/// `extent` rounded up to the next size class that textures are pooled by.
-pub(crate) fn size_class(extent: u32) -> u32 {
-    let step = match extent {
-        0..256 => 16,
-        256..512 => 32,
-        512..1024 => 64,
-        _ => 128,
-    };
-    extent.next_multiple_of(step)
-}
-
-/// A raster's domain within `display`, rounded out to a size class so that bounds moving from
-/// frame to frame keep finding the same textures, and the bind groups cached on them.
-pub(crate) fn quantized_domain(display: Size, data: lumen_gpu::RectI) -> TextureDomain {
-    let domain = TextureDomain::bounded(display, data);
-    let rect = domain.data_rect;
-    if data.is_empty() {
-        return domain;
-    }
-    let class = |extent: u32, limit: u32| size_class(extent).min(limit.max(1));
-    let width = class(rect.width, display.width);
-    let height = class(rect.height, display.height);
-    let x = rect.x.min(display.width.saturating_sub(width) as i32);
-    let y = rect.y.min(display.height.saturating_sub(height) as i32);
-    TextureDomain::bounded(display, lumen_gpu::RectI::new(x, y, width, height))
 }
 
 /// One walk of the graph for one frame.
@@ -909,22 +784,11 @@ pub(crate) struct FrameCx<'a> {
     /// Whether the walk is inside a `motion_blur` that samples, where analytic motion blur is off.
     sampling: bool,
     media: Option<&'a dyn MediaStore>,
-    output_format: wgpu::TextureFormat,
-    output_encoding: OutputEncoding,
-    full_frame_sources: bool,
-    /// Whether repeats draw from one tile, as `set_single_tile_repeats` sets.
-    pub(crate) single_tile_repeats: bool,
-    retain_static: bool,
-    /// How many static nodes the walk is inside, whose readers retain them rather than this.
-    static_depth: u32,
-    /// What the nodes that are static while their models hold a pose or their params' values hold,
-    /// which the walk is inside, have found out so far, innermost last.
-    holds: Vec<HoldTrack>,
+    settings: RecordSettings,
+    retention: Retention,
     /// How many nodes the walk is recording inside.
     depth: u32,
     pub(crate) bound: BoundFrame,
-    max_text_glyphs: usize,
-    max_image_side: u32,
     text_atlas: &'a Arc<Mutex<lumen_text::GlyphAtlas>>,
     atlas_texture: &'a mut Option<Arc<wgpu::Texture>>,
     #[cfg(feature = "ffmpeg")]
@@ -970,7 +834,7 @@ impl<'a> FrameCx<'a> {
             &mut self.bound,
             self.rec,
             &mut fallbacks,
-            self.max_text_glyphs,
+            self.settings.max_text_glyphs,
         )?;
         for family in fallbacks {
             self.warn(text.node_id, WarningKind::FontFallback { family });
@@ -1005,7 +869,7 @@ impl<'a> FrameCx<'a> {
     /// The most glyphs a text node may draw.
     #[cfg(feature = "3d")]
     pub(crate) fn max_text_glyphs(&self) -> usize {
-        self.max_text_glyphs
+        self.settings.max_text_glyphs
     }
 
     pub(crate) fn media(&self) -> Option<&'a dyn MediaStore> {
@@ -1017,11 +881,16 @@ impl<'a> FrameCx<'a> {
     }
 
     pub(crate) fn output_format(&self) -> wgpu::TextureFormat {
-        self.output_format
+        self.settings.output_format
     }
 
     pub(crate) fn output_encoding(&self) -> OutputEncoding {
-        self.output_encoding
+        self.settings.output_encoding
+    }
+
+    /// Whether repeats draw from one tile, as `set_single_tile_repeats` sets.
+    pub(crate) fn single_tile_repeats(&self) -> bool {
+        self.settings.single_tile_repeats
     }
 
     pub(crate) fn frame_number(&self) -> u32 {
@@ -1040,53 +909,6 @@ impl<'a> FrameCx<'a> {
     /// Counts frames recorded, for caches that keep what recent frames used.
     pub(crate) fn tick(&self) -> u64 {
         self.st.tick
-    }
-
-    /// Notes that the model, environment map or text mesh `id` was drawn, so that a kept output
-    /// recording now keeps it.
-    #[cfg(feature = "3d")]
-    pub(crate) fn drew_model(&mut self, id: &str) {
-        if self.static_depth > 0 {
-            self.st.retained.static_models.push(id.to_string());
-        }
-        if let Some(track) = self.holds.last_mut() {
-            track.models.push(id.to_string());
-        }
-    }
-
-    /// Notes that the model being drawn holds one pose on `frames`, both ends included, which a
-    /// kept output recording now can only be read on.
-    #[cfg(feature = "3d")]
-    pub(crate) fn held_on(&mut self, frames: (f64, f64)) {
-        if let Some(track) = self.holds.last_mut() {
-            track.narrow(frames);
-        }
-    }
-
-    /// What keeps `raster`, the output of `node`, the same from frame to frame, if anything.
-    pub(crate) fn stable_raster(
-        &self,
-        node: NodeId,
-        raster: Raster,
-    ) -> Option<crate::gpu::mips::Stable> {
-        use crate::gpu::mips::Stable;
-        let graph = self.scope.id;
-        if let Some(slot) = self.st.retained.slots.get(&(graph, node))
-            && (slot.raster.tex == raster.tex || slot.full == Some(raster.tex))
-        {
-            return Some(Stable::Slot {
-                graph,
-                node,
-                generation: slot.generation,
-            });
-        }
-        self.st
-            .media
-            .textures
-            .values()
-            .find(|(tex, ..)| *tex == raster.tex)
-            .and_then(|(.., key)| key.clone())
-            .map(Stable::Image)
     }
 
     pub(crate) fn lut_cache(
@@ -1151,292 +973,6 @@ impl<'a> FrameCx<'a> {
         Size::new(settings.width.max(1), settings.height.max(1))
     }
 
-    /// Records the required input `port` of `node_id` as is.
-    pub(crate) fn required(
-        &mut self,
-        node_id: NodeId,
-        port: &str,
-        input: Option<NodeId>,
-    ) -> crate::Result<Raster> {
-        self.input(required_input(node_id, port, input)?)
-    }
-
-    /// Records the required input `port` of `node_id` at its full display size.
-    pub(crate) fn required_full(
-        &mut self,
-        node_id: NodeId,
-        port: &str,
-        input: Option<NodeId>,
-    ) -> crate::Result<Raster> {
-        self.input_full(required_input(node_id, port, input)?)
-    }
-
-    /// Records `node_id` as is, for readers that read a raster through its domain.
-    pub(crate) fn input(&mut self, node_id: NodeId) -> crate::Result<Raster> {
-        let node = self.scope.node(node_id).ok_or(RenderError::MissingNode {
-            at: crate::error::At::node(node_id),
-        })?;
-        let graph = self.scope.id;
-        let staticness = if self.retain_static {
-            self.staticness(node)
-        } else {
-            Staticness::Never
-        };
-        // A value that fails to evaluate fails recording, which reports it.
-        let values = match staticness {
-            Staticness::WhileEqual => self.frame_values(node_id, self.frame),
-            _ => Some(Vec::new()),
-        };
-        let (staticness, values) = match values {
-            Some(values) => (staticness, values),
-            None => (Staticness::Never, Vec::new()),
-        };
-        let is_static = staticness == Staticness::Always;
-        let tracked = matches!(staticness, Staticness::WhileHeld | Staticness::WhileEqual);
-        let frame = self.frame.value();
-        if staticness != Staticness::Never
-            && let Some(slot) = self.st.retained.slots.get_mut(&(graph, node_id))
-            && slot.frames.0 <= frame
-            && frame <= slot.frames.1
-            && same_values(&slot.values, &values)
-        {
-            slot.last_used = self.st.tick;
-            self.st.retained.skipped_passes += slot.passes;
-            let raster = slot.raster;
-            self.hold_slot(graph, node_id);
-            return Ok(raster);
-        }
-        let key = ((graph, self.path, node_id), self.sample);
-        let raster = match self.st.memo.get(&key) {
-            Some(raster) => {
-                let raster = *raster;
-                if let Some(read) = self.st.retained.held_memo.get(&key)
-                    && let Some(track) = self.holds.last_mut()
-                {
-                    track.narrow(read.frames);
-                    track.models.extend(read.models.iter().cloned());
-                }
-                raster
-            }
-            None => {
-                if self.depth == MAX_GRAPH_DEPTH {
-                    return Err(self.scope.too_deep(node_id));
-                }
-                let passes = self.rec.pass_count();
-                self.static_depth += u32::from(is_static);
-                if tracked {
-                    self.holds.push(HoldTrack::new());
-                }
-                self.depth += 1;
-                let raster = record_node(node, self);
-                self.depth -= 1;
-                self.static_depth -= u32::from(is_static);
-                let track = tracked.then(|| self.holds.pop()).flatten();
-                let raster = raster?;
-                self.st.memo.insert(key, raster);
-                let passes = (self.rec.pass_count() - passes) as u64;
-                if is_static && self.static_depth == 0 {
-                    let frames = (f64::NEG_INFINITY, f64::INFINITY);
-                    let models = std::mem::take(&mut self.st.retained.static_models);
-                    self.retain(graph, node_id, raster, passes, frames, models, Vec::new());
-                }
-                if let Some(track) = track {
-                    self.finish_hold(key, raster, passes, track, values);
-                }
-                raster
-            }
-        };
-        Ok(raster)
-    }
-
-    /// Keeps `raster`, the output of `node`, for the `frames` it stays correct on while the params
-    /// reading the frame take `values`, along with the `models` it drew.
-    #[expect(clippy::too_many_arguments, reason = "the parts of a slot")]
-    fn retain(
-        &mut self,
-        graph: SceneId,
-        node: NodeId,
-        raster: Raster,
-        passes: u64,
-        frames: (f64, f64),
-        models: Vec<String>,
-        values: Vec<ExpressionValue>,
-    ) {
-        // A slot kept for other frames makes way.
-        self.st.retained.release(self.rec, (graph, node));
-        self.rec.retain(raster.tex);
-        let bytes = self.rec.texture_bytes(raster.tex);
-        self.st.retained.bytes += bytes;
-        self.st.retained.generation += 1;
-        self.st.retained.slots.insert(
-            (graph, node),
-            Slot {
-                raster,
-                passes,
-                full: None,
-                last_used: self.st.tick,
-                bytes,
-                generation: self.st.retained.generation,
-                frames,
-                models,
-                values,
-            },
-        );
-        self.st.retained.pending.push((graph, node));
-    }
-
-    /// Notes in the output being recorded that it reads the kept output of `node`, which holds
-    /// only on the frames the slot is correct on.
-    fn hold_slot(&mut self, graph: SceneId, node: NodeId) {
-        let Some(track) = self.holds.last_mut() else {
-            return;
-        };
-        if let Some(slot) = self.st.retained.slots.get(&(graph, node)) {
-            track.narrow(slot.frames);
-            track.models.extend(slot.models.iter().cloned());
-        }
-    }
-
-    /// Keeps `raster`, the output of `node` just recorded with the params reading the frame at
-    /// `values`, if it stays correct on this frame and on one either side of it too, and tells the
-    /// output being recorded around it what it found.
-    fn finish_hold(
-        &mut self,
-        key: MemoKey,
-        raster: Raster,
-        passes: u64,
-        track: HoldTrack,
-        values: Vec<ExpressionValue>,
-    ) {
-        let ((graph, _, node), _) = key;
-        if let Some(outer) = self.holds.last_mut() {
-            outer.narrow(track.frames);
-            outer.models.extend(track.models.iter().cloned());
-        }
-        self.st.retained.held_memo.insert(key, track.clone());
-        let frame = self.frame.value();
-        let at_root = self.static_depth == 0;
-        let mut kept_elsewhere = |other: f64| {
-            track.contains(other)
-                && self
-                    .frame_values(node, other.into())
-                    .is_some_and(|elsewhere| same_values(&elsewhere, &values))
-        };
-        if at_root && track.contains(frame) && neighbouring_frames(frame).any(&mut kept_elsewhere) {
-            self.retain(
-                graph,
-                node,
-                raster,
-                passes,
-                track.frames,
-                track.models,
-                values,
-            );
-        }
-    }
-
-    /// The values that the params reading the frame take at `frame`: those of `node` and of each
-    /// node it reads that is kept while they hold, in the same order on every frame. A node that
-    /// blurs its own motion adds their values at either end of its shutter, where it evaluates
-    /// them too. `None` when one fails to evaluate.
-    fn frame_values(&mut self, node: NodeId, frame: FrameTime) -> Option<Vec<ExpressionValue>> {
-        let graph = self.scope.id;
-        let mut values = Vec::new();
-        let mut pending = vec![node];
-        let mut seen = HashSet::default();
-        while let Some(id) = pending.pop() {
-            if !seen.insert(id) {
-                continue;
-            }
-            values.extend_from_slice(&self.own_values(id, frame)?);
-            let held = |input: &NodeId| {
-                self.st.statics.get(&(graph, *input)) == Some(&Staticness::WhileEqual)
-            };
-            let inputs = self.scope.node(id)?.input_ports();
-            pending.extend(inputs.into_iter().flatten().filter(held));
-        }
-        Some(values)
-    }
-
-    /// The values the params of `id` itself that read the frame take at `frame`, evaluated once
-    /// per frame for every node that reads it with the same props, which can differ between two
-    /// reads of one frame.
-    fn own_values(&mut self, id: NodeId, frame: FrameTime) -> Option<Arc<[ExpressionValue]>> {
-        let props = self.scope.props.as_ref();
-        let key = (
-            (self.scope.id, self.path, id),
-            frame.value().to_bits(),
-            props.map_or(0, |props| Arc::as_ptr(props) as usize),
-        );
-        if let Some((_, values)) = self.st.frame_values.get(&key) {
-            return values.clone();
-        }
-        let values = self.evaluate_own_values(id, frame);
-        let entry = (self.scope.props.clone(), values.clone());
-        self.st.frame_values.insert(key, entry);
-        values
-    }
-
-    fn evaluate_own_values(&self, id: NodeId, frame: FrameTime) -> Option<Arc<[ExpressionValue]>> {
-        let expr = self.scope.expr_context(frame, self.media);
-        let node = self.scope.node(id)?;
-        let mut contexts = vec![expr];
-        if self.analytic_motion_blur()
-            && let Some(shutter) = node.analytic_shutter()
-            && let Some(offset) =
-                crate::node::motion::shutter_offset(shutter.eval(id, "motion_blur", &expr).ok()?)
-        {
-            contexts.extend([expr.at_subframe(-offset), expr.at_subframe(offset)]);
-        }
-        let mut values = Vec::new();
-        let mut failed = false;
-        for expr in &contexts {
-            node.for_each_expression(&mut |expression| {
-                if !expression.is_frame_dependent() {
-                    return;
-                }
-                match expression.evaluate(expr) {
-                    Ok(value) => values.push(value),
-                    Err(_) => failed = true,
-                }
-            });
-        }
-        (!failed).then(|| values.into())
-    }
-
-    /// Records `node_id` stored at its full display size, for readers that read texel for texel.
-    pub(crate) fn input_full(&mut self, node_id: NodeId) -> crate::Result<Raster> {
-        let raster = self.input(node_id)?;
-        if raster.domain.is_full_frame() {
-            return Ok(raster);
-        }
-        let slot_key = (self.scope.id, node_id);
-        let kept = |slot: &Slot| slot.raster.tex == raster.tex;
-        if let Some(slot) = self.st.retained.slots.get(&slot_key)
-            && kept(slot)
-            && let Some(full) = slot.full
-        {
-            return Ok(Raster {
-                tex: full,
-                domain: TextureDomain::full_frame(raster.domain.display_size()),
-                bounds: None,
-            });
-        }
-        let full = self.full_frame(raster);
-        if self.st.retained.slots.get(&slot_key).is_some_and(kept) {
-            self.rec.retain(full.tex);
-            let bytes = self.rec.texture_bytes(full.tex);
-            self.st.retained.bytes += bytes;
-            let slot = self.st.retained.slots.get_mut(&slot_key).expect("slot");
-            slot.full = Some(full.tex);
-            slot.bytes += bytes;
-            if !self.st.retained.pending.contains(&slot_key) {
-                self.st.retained.pending.push(slot_key);
-            }
-        }
-        Ok(full)
-    }
-
     /// `node_id` stored at its full display size, where a clip keeps the canvas its content is
     /// drawn on rather than being cropped to this one, for readers that place it anywhere, such
     /// as 3D. Content that draws less than its canvas is padded with transparency to it, and
@@ -1469,222 +1005,6 @@ impl<'a> FrameCx<'a> {
         self.input_full(node_id)
     }
 
-    /// `raster` stored at its full display size, copied there when it is bounded.
-    pub(crate) fn full_frame(&mut self, raster: Raster) -> Raster {
-        if raster.domain.is_full_frame() {
-            return raster;
-        }
-        let size = raster.domain.display_size();
-        let key = (raster.tex, size.width, size.height);
-        if let Some(full) = self.st.full_frames.get(&key) {
-            return *full;
-        }
-        let tex = self
-            .rec
-            .acquire(size, WORKING, copyable_texture_desc(size).usage);
-        // A reused texture still holds an earlier frame, and the copy only writes the data.
-        self.rec.clear(tex);
-        let data = raster.domain.data_rect;
-        self.rec.copy(
-            raster.tex,
-            tex,
-            [data.x as u32, data.y as u32],
-            raster.domain.storage_size,
-        );
-        let full = Raster {
-            tex,
-            domain: TextureDomain::full_frame(size),
-            bounds: None,
-        };
-        self.st.full_frames.insert(key, full);
-        full
-    }
-
-    /// The pixels of a box a source draws in this frame, or `None` when it should fill the canvas.
-    pub(crate) fn bounds_of(&self, bounds: Option<[f32; 4]>) -> Option<lumen_gpu::RectI> {
-        if self.full_frame_sources {
-            return None;
-        }
-        bounds.and_then(lumen_gpu::RectI::covering)
-    }
-
-    pub(crate) fn source_domain(&self, bounds: Option<lumen_gpu::RectI>) -> TextureDomain {
-        self.domain_within(self.canvas_size(), bounds)
-    }
-
-    pub(crate) fn domain_within(
-        &self,
-        display: Size,
-        bounds: Option<lumen_gpu::RectI>,
-    ) -> TextureDomain {
-        match bounds {
-            Some(bounds) => quantized_domain(display, bounds),
-            None => TextureDomain::full_frame(display),
-        }
-    }
-
-    /// A storage target that starts transparent, for a writer that may not cover all of it.
-    pub(crate) fn cleared_storage_target(&mut self, size: Size) -> TexRef {
-        let tex = self
-            .rec
-            .acquire(size, WORKING, copyable_texture_desc(size).usage);
-        self.rec.clear(tex);
-        tex
-    }
-
-    pub(crate) fn storage_target(&mut self, size: Size) -> TexRef {
-        self.rec
-            .acquire(size, WORKING, TextureDesc::storage(size, WORKING).usage)
-    }
-
-    pub(crate) fn float_target(&mut self, size: Size) -> TexRef {
-        let format = wgpu::TextureFormat::Rgba16Float;
-        self.rec
-            .acquire(size, format, TextureDesc::storage(size, format).usage)
-    }
-
-    pub(crate) fn render_target(&mut self, size: Size) -> TexRef {
-        self.rec.acquire(
-            size,
-            WORKING,
-            TextureDesc::render_target(size, WORKING).usage,
-        )
-    }
-
-    /// The frame's output. An output kept from an earlier frame is copied into an external target,
-    /// so targets made from its usage take copies.
-    pub(crate) fn output_target(&mut self, size: Size, format: wgpu::TextureFormat) -> TexRef {
-        let usage = wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::RENDER_ATTACHMENT;
-        self.rec.acquire(size, format, usage)
-    }
-
-    pub(crate) fn program(&mut self, program: &ComputeProgram) -> crate::Result<ProgramRef> {
-        self.rec
-            .compute_program(program.label, program.shader, program.entry, program.layout)
-            .map_err(gpu_error)
-    }
-
-    pub(crate) fn render_program(
-        &mut self,
-        program: &RenderProgram,
-        target: lumen_gpu::RenderTargetSpec,
-        variant: u64,
-    ) -> crate::Result<ProgramRef> {
-        self.rec
-            .render_program(
-                program.label,
-                program.shader,
-                program.vertex,
-                program.fragment,
-                program.layout,
-                target,
-                variant,
-            )
-            .map_err(gpu_error)
-    }
-
-    /// Runs `program` from `source` into `target` over `size`.
-    pub(crate) fn spatial_pass<T: bytemuck::Pod>(
-        &mut self,
-        program: &ComputeProgram,
-        source: TexRef,
-        params: &T,
-        target: TexRef,
-        size: Size,
-    ) -> crate::Result<()> {
-        let program = self.program(program)?;
-        let uniform = self.rec.uniform(params);
-        self.rec.compute(
-            program,
-            &[(0, Res::Tex(source)), (1, uniform), (2, Res::Tex(target))],
-            dispatch_for(size),
-        );
-        Ok(())
-    }
-
-    /// A filter over `source`, writing a raster of the same domain, metadata and bounds.
-    pub(crate) fn filter<T: bytemuck::Pod>(
-        &mut self,
-        program: &ComputeProgram,
-        source: Raster,
-        params: &T,
-    ) -> crate::Result<Raster> {
-        let size = source.domain.storage_size;
-        let tex = self.storage_target(size);
-        self.spatial_pass(program, source.tex, params, tex, size)?;
-        Ok(Raster { tex, ..source })
-    }
-
-    pub(crate) fn dispatch(
-        &mut self,
-        program: ProgramRef,
-        bindings: &[(u32, Res)],
-        dispatch: Dispatch,
-    ) {
-        self.rec.compute(program, bindings, dispatch);
-    }
-
-    /// A transparent raster of `display` size, which stores a texel nothing writes.
-    pub(crate) fn transparent(&mut self, display: Size) -> Raster {
-        let tex = match self.st.transparent {
-            Some(tex) => tex,
-            None => {
-                let texture = self.rec.device().create_texture(&wgpu::TextureDescriptor {
-                    label: Some("lumen frame graph transparent"),
-                    size: Size::new(1, 1).as_extent(),
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: WORKING,
-                    usage: copyable_texture_desc(Size::new(1, 1)).usage,
-                    view_formats: &[],
-                });
-                let tex = self.rec.adopt(Arc::new(texture));
-                self.st.transparent = Some(tex);
-                tex
-            }
-        };
-        Raster {
-            tex,
-            domain: TextureDomain::bounded(display, lumen_gpu::RectI::new(0, 0, 0, 0)),
-            bounds: None,
-        }
-    }
-
-    /// A one-texel float texture for gaussian levels, or a running sum, a pass binds but does not
-    /// read.
-    pub(crate) fn unused_float(&mut self) -> TexRef {
-        match self.st.dummy_float {
-            Some(tex) => tex,
-            None => {
-                let texture = self.rec.device().create_texture(&wgpu::TextureDescriptor {
-                    label: Some("lumen frame graph unused level"),
-                    size: Size::new(1, 1).as_extent(),
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba16Float,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                });
-                let tex = self.rec.adopt(Arc::new(texture));
-                self.st.dummy_float = Some(tex);
-                tex
-            }
-        }
-    }
-
-    pub(crate) fn sampler(
-        &mut self,
-        key: u64,
-        desc: impl FnOnce() -> wgpu::SamplerDescriptor<'static>,
-    ) -> SamplerRef {
-        self.rec.sampler(key, desc)
-    }
-
     /// The shared text atlas, begun for this frame.
     pub(crate) fn atlas(&mut self) -> crate::Result<TexRef> {
         if self.bound.text_atlas.is_none() {
@@ -1711,44 +1031,6 @@ impl<'a> FrameCx<'a> {
         Ok(atlas)
     }
 
-    /// Notes that `source` was read as `kind` and had `identity`, so that what is kept of this
-    /// frame is dropped once it has another. It counts while a kept output records, including one
-    /// kept while its models hold a pose or its params' values hold; font families count whenever
-    /// text names them, as text instances are kept across frames whatever reads them.
-    pub(crate) fn read_source(
-        &mut self,
-        kind: AssetKind,
-        source: &str,
-        identity: Option<&MediaIdentity>,
-    ) {
-        let kept = self.static_depth > 0 || !self.holds.is_empty() || kind == AssetKind::Font;
-        if kept
-            && !self
-                .st
-                .retained
-                .sources
-                .contains_key(&(kind, source.to_string()))
-        {
-            self.st
-                .retained
-                .sources
-                .insert((kind, source.to_string()), identity.cloned());
-        }
-    }
-
-    /// Notes the font family text names, as [`Self::read_source`] does.
-    pub(crate) fn note_font(&mut self, family: &str) {
-        if !self
-            .st
-            .retained
-            .sources
-            .contains_key(&(AssetKind::Font, family.to_string()))
-        {
-            let identity = source_identity(self.media, AssetKind::Font, family);
-            self.read_source(AssetKind::Font, family, identity.as_ref());
-        }
-    }
-
     /// The text instance's state across frames, built once.
     pub(crate) fn text_instance(
         &mut self,
@@ -1764,143 +1046,24 @@ impl<'a> FrameCx<'a> {
         Ok(text)
     }
 
-    /// The parsed and assembled form of a runtime shader source, built once per source.
-    pub(crate) fn cached_shader(
-        &mut self,
-        source: &str,
-        inputs: usize,
-        build: impl FnOnce() -> crate::Result<ShaderParts>,
-    ) -> crate::Result<CachedShader> {
-        self.st
-            .shaders
-            .cached_shader(self.st.tick, source, inputs, build)
-    }
-
-    pub(crate) fn dynamic_program(
-        &mut self,
-        node: NodeId,
-        label: &str,
-        shader: &CachedShader,
-    ) -> crate::Result<ProgramRef> {
-        dynamic_program(self.rec, node, label, shader)
-    }
-
-    /// The param `param` of node `node` in the graph being recorded.
-    pub(crate) fn node_param(&self, node: NodeId, param: &str) -> crate::media::MediaLocation {
-        crate::media::MediaLocation::Node(crate::media::NodeParamAt {
-            template: self.scope.template_name().map(str::to_string),
-            node,
-            param: param.to_string(),
-        })
-    }
-
-    /// Fails as `media.too_large` when `size`, a media source's native size, is more than this
-    /// device makes a texture.
-    pub(crate) fn ensure_media_fits(&self, source: &str, size: Size) -> crate::Result<()> {
-        let max = self.rec.device().limits().max_texture_dimension_2d;
-        let side = size.width.max(size.height);
-        if side <= max {
-            return Ok(());
-        }
-        Err(crate::error::MediaFailure::too_large(
-            source,
-            format!(
-                "it is {}x{} pixels, over the {max}-pixel texture limit of this device",
-                size.width, size.height
-            ),
-            u64::from(max),
-            Some(u64::from(side)),
-        )
-        .into())
-    }
-
-    /// The size image `source`, of `native` size, is decoded at for `node_id` to show it (see
-    /// [`super::image_size::decoded_size`]), with a warning once per composition when it is
-    /// reduced to fit the size limit. Fails as `media.too_large` when it is past the device's
-    /// limit and can't be reduced.
-    pub(crate) fn image_size(
-        &mut self,
-        node_id: NodeId,
-        source: &str,
-        native: Size,
-    ) -> crate::Result<Size> {
-        use super::image_size::{Decoded, decoded_size};
-        let shown = Arc::clone(
-            self.st
-                .media
-                .shown_sizes
-                .get_or_insert_with(|| super::image_size::ShownSizes::of(self.composition)),
-        );
-        let device_max = self.rec.device().limits().max_texture_dimension_2d.max(1);
-        let size = match decoded_size(&shown, source, native, self.max_image_side, device_max) {
-            Decoded::Native => native,
-            Decoded::Reduced { size, limited } => {
-                if limited {
-                    self.warn_image_reduced(node_id, source, native, size);
-                }
-                size
-            }
-            Decoded::TooLarge => {
-                let side = native.width.max(native.height);
-                return Err(crate::error::MediaFailure::too_large(
-                    source,
-                    format!(
-                        "it is {}x{} pixels, over the {device_max}-pixel texture limit of this \
-                         device, and only an image every use of which is a `resize` to a literal \
-                         size, in the root composition, is shown reduced to its aspect ratio",
-                        native.width, native.height
-                    ),
-                    u64::from(device_max),
-                    Some(u64::from(side)),
-                )
-                .into());
-            }
-        };
-        Ok(size)
-    }
-
-    fn warn_image_reduced(&mut self, node_id: NodeId, source: &str, native: Size, size: Size) {
-        let limit = self
-            .rec
-            .device()
-            .limits()
-            .max_texture_dimension_2d
-            .min(self.max_image_side)
-            .max(1);
-        self.warn(
-            node_id,
-            WarningKind::ImageReduced {
-                image: source.to_string(),
-                width: native.width,
-                height: native.height,
-                reduced_width: size.width,
-                reduced_height: size.height,
-                limit,
-            },
-        );
-    }
-
     /// Whether analytic motion blur applies. It is off inside a `motion_blur` that samples, whose
     /// samples already spread motion over the shutter.
     pub(crate) fn analytic_motion_blur(&self) -> bool {
         !self.sampling
     }
 
-    /// Records `source` at each of `offsets` frames from this one and averages the samples in
-    /// linear, premultiplied colour. Each sample is summed into a running target as soon as it is recorded,
-    /// so its textures go back to the pool for the next. The samples share a path of their own,
-    /// keeping their text and video state apart from the source's outside the blur.
-    pub(crate) fn record_motion_blur(
+    /// Runs `record` over the samples of `motion_blur` node `node_id`, on a path of their own and
+    /// with analytic motion blur off, and returns to this frame after.
+    pub(crate) fn record_samples(
         &mut self,
         node_id: NodeId,
-        source: NodeId,
-        offsets: &[f64],
+        record: impl FnOnce(&mut Self) -> crate::Result<Raster>,
     ) -> crate::Result<Raster> {
         let (frame, path) = (self.frame, self.path);
         let next = PathId(self.st.paths.len() as u32 + 1);
         self.path = *self.st.paths.entry((path, node_id)).or_insert(next);
         self.sampling = true;
-        let result = self.accumulate(source, frame, offsets);
+        let result = record(self);
         self.sampling = false;
         self.sample = 0;
         self.path = path;
@@ -1908,171 +1071,16 @@ impl<'a> FrameCx<'a> {
         result
     }
 
-    fn accumulate(
+    /// Records `node_id` as sample `index` of the `motion_blur` being recorded, at `frame`.
+    pub(crate) fn input_sample(
         &mut self,
-        source: NodeId,
+        node_id: NodeId,
+        index: u32,
         frame: FrameTime,
-        offsets: &[f64],
     ) -> crate::Result<Raster> {
-        let mut sum: Option<Raster> = None;
-        // The domain and bounds every sample had, which the average keeps when they all agree.
-        let mut shared: Option<Option<(TextureDomain, Option<CropParams>)>> = None;
-        for (index, offset) in offsets.iter().enumerate() {
-            self.sample = index as u32;
-            self.frame = frame.offset(*offset);
-            let sample = self.input(source)?;
-            let this = (sample.domain, sample.bounds);
-            shared = Some(match shared {
-                None => Some(this),
-                Some(kept) => kept.filter(|kept| *kept == this),
-            });
-            let last = index + 1 == offsets.len();
-            // A blank sample adds nothing, so the sum starts at the first sample that draws, and
-            // later blank samples count only towards the divisor.
-            let blank = Some(sample.tex) == self.st.transparent;
-            if blank && !last {
-                continue;
-            }
-            if blank && sum.is_none() {
-                return Ok(self.transparent(sample.domain.display_size()));
-            }
-            sum = Some(self.add_sample(sum, sample, blank, last, offsets.len() as u32)?);
-        }
-        let mut average = sum.expect("motion blur takes at least two samples");
-        if let Some(Some((domain, bounds))) = shared
-            && domain == average.domain
-        {
-            average.bounds = bounds;
-        }
-        Ok(average)
-    }
-
-    /// `sample` added to `sum`, over the union of their domains or over the sum's alone when the
-    /// sample is `blank`. The sum is `motion_blur::SUM_FORMAT` until the `last` sample, which
-    /// writes the average of all `samples` to the working space.
-    fn add_sample(
-        &mut self,
-        sum: Option<Raster>,
-        sample: Raster,
-        blank: bool,
-        last: bool,
-        samples: u32,
-    ) -> crate::Result<Raster> {
-        use crate::node::processing::motion_blur as blur;
-
-        let (display, data) = match sum {
-            Some(sum) if blank => (sum.domain.display_size(), sum.domain.data_rect),
-            Some(sum) => {
-                let [held, shown] = [sum, sample].map(|raster| raster.domain.display_size());
-                (
-                    Size::new(held.width.max(shown.width), held.height.max(shown.height)),
-                    sum.domain.data_rect.union(sample.domain.data_rect),
-                )
-            }
-            None => (sample.domain.display_size(), sample.domain.data_rect),
-        };
-        let domain = quantized_domain(display, data);
-        let origin = [domain.data_rect.x, domain.data_rect.y];
-        let from = |raster: &Raster| {
-            let at = raster.origin();
-            [origin[0] - at[0], origin[1] - at[1]]
-        };
-        let params = blur::AccumulateParams {
-            sum_offset: sum.as_ref().map_or([0, 0], from),
-            sample_offset: from(&sample),
-            has_sum: u32::from(sum.is_some()),
-            samples,
-            _pad: [0; 2],
-        };
-        let sum_tex = match sum {
-            Some(sum) => sum.tex,
-            None => self.unused_float(),
-        };
-        let size = domain.storage_size;
-        let (program, binding, tex) = if last {
-            (&blur::RESOLVE, 4, self.storage_target(size))
-        } else {
-            let usage = TextureDesc::storage(size, blur::SUM_FORMAT).usage;
-            let tex = self.rec.acquire(size, blur::SUM_FORMAT, usage);
-            (&blur::ACCUMULATE, 3, tex)
-        };
-        let program = self.program(program)?;
-        let uniform = self.rec.uniform(&params);
-        self.rec.compute(
-            program,
-            &[
-                (0, Res::Tex(sum_tex)),
-                (1, Res::Tex(sample.tex)),
-                (2, uniform),
-                (binding, Res::Tex(tex)),
-            ],
-            dispatch_for(size),
-        );
-        Ok(Raster {
-            tex,
-            domain,
-            bounds: None,
-        })
-    }
-
-    /// How far `node` and everything it reads are static candidates. Walks its inputs depth first
-    /// with a stack of its own, so a long chain of nodes can't run out of call stack.
-    fn staticness(&mut self, node: &NodeKind) -> Staticness {
-        let graph = self.scope.id;
-        let mut pending = vec![node.id()];
-        // Nodes whose inputs have been put on `pending`, which are decided when next reached.
-        let mut entered = HashSet::default();
-        while let Some(&id) = pending.last() {
-            if self.st.statics.contains_key(&(graph, id)) {
-                pending.pop();
-                continue;
-            }
-            let candidate = self
-                .scope
-                .node(id)
-                .filter(|node| !matches!(node, NodeKind::Clip(_) | NodeKind::TimeRemap(_)))
-                .map(|node| (node, node.staticness(node.is_frame_dependent())))
-                .filter(|(_, own)| *own != Staticness::Never);
-            let Some((node, own)) = candidate else {
-                self.st.statics.insert((graph, id), Staticness::Never);
-                pending.pop();
-                continue;
-            };
-            let inputs = node.input_ports().into_iter().flatten();
-            if entered.insert(id) {
-                let undecided = inputs
-                    .clone()
-                    .filter(|input| !self.st.statics.contains_key(&(graph, *input)));
-                let before = pending.len();
-                pending.extend(undecided);
-                if pending.len() > before {
-                    continue;
-                }
-            }
-            // An input still undecided here is part of a cycle, which validation rejects.
-            let result = inputs.into_iter().fold(own, |all, input| {
-                all.and(
-                    self.st
-                        .statics
-                        .get(&(graph, input))
-                        .copied()
-                        .unwrap_or(Staticness::Never),
-                )
-            });
-            // A `motion_blur` mixes its source at frames other than this one, where the values
-            // its source is kept by aren't read.
-            let result = match (node, result) {
-                (NodeKind::MotionBlur(_), Staticness::WhileEqual) => Staticness::Never,
-                _ => result,
-            };
-            self.st.statics.insert((graph, id), result);
-            pending.pop();
-        }
-        self.st
-            .statics
-            .get(&(graph, node.id()))
-            .copied()
-            .unwrap_or(Staticness::Never)
+        self.sample = index;
+        self.frame = frame;
+        self.input(node_id)
     }
 
     fn record_routed(&mut self, routed: Routed<'a>) -> crate::Result<Raster> {
@@ -2226,35 +1234,4 @@ pub(crate) fn locate_media_failure(
         param,
     };
     error.media_used_as(&kinds, || crate::media::MediaLocation::Node(at))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::error::MediaError;
-    use crate::media::ResolvedMedia;
-
-    /// Fails every source the way `failure` says.
-    #[derive(Debug)]
-    struct Failing(fn(&str) -> MediaError);
-
-    impl MediaStore for Failing {
-        fn resolve(&self, source: &str, _kind: AssetKind) -> Result<ResolvedMedia, MediaError> {
-            Err(self.0(source))
-        }
-    }
-
-    #[test]
-    fn a_missing_source_that_starts_failing_another_way_counts_as_changed() {
-        let changed = |store: &Failing, seen: Option<&MediaIdentity>| {
-            source_changed(Some(store), AssetKind::Font, "Brand", seen)
-        };
-        let missing = Failing(|source| MediaError::source_not_found(source, "not served"));
-        let unreadable = Failing(|source| MediaError::decode(source, "permission denied"));
-        assert!(!changed(&missing, None));
-        assert!(changed(&unreadable, None));
-        let seen = MediaIdentity::of_key("brand");
-        assert!(changed(&missing, Some(&seen)) && changed(&unreadable, Some(&seen)));
-        assert!(!source_changed(None, AssetKind::Font, "Brand", None));
-    }
 }
