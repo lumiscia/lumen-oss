@@ -1,0 +1,20 @@
+[package]
+name = "lumen-server-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The HTTP API of lumen-server: its request, response, event and error types."
+
+[lib]
+name = "lumen_server_api"
+path = "src/lib.rs"
+
+[features]
+# Derives the JSON Schema that `definitions/api.schema.json` is generated from.
+metadata = ["dep:schemars"]
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+schemars = { version = "1.2.3", optional = true }

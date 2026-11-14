@@ -66,6 +66,27 @@ impl ErrorCode {
     }
 }
 
+/// The HTTP API's code for a render that failed with `code`. An engine code has no variant of its
+/// own there.
+impl From<ErrorCode> for lumen_server_api::ErrorCode {
+    fn from(code: ErrorCode) -> Self {
+        use lumen_server_api::ErrorCode as Api;
+        match code {
+            ErrorCode::Engine(code) => Api::Other(code.to_string()),
+            ErrorCode::InvalidProjectPayload => Api::InvalidProjectPayload,
+            ErrorCode::InvalidQuality => Api::InvalidQuality,
+            ErrorCode::InvalidRenderProfile => Api::InvalidRenderProfile,
+            ErrorCode::InvalidConfig => Api::InvalidConfig,
+            ErrorCode::InvalidOutput => Api::InvalidOutput,
+            ErrorCode::OutputTooLarge => Api::OutputTooLarge,
+            ErrorCode::RenderFailed => Api::RenderFailed,
+            ErrorCode::EncodeFailed => Api::EncodeFailed,
+            ErrorCode::OutputIo => Api::OutputIo,
+            ErrorCode::Cancelled => Api::RenderCancelled,
+        }
+    }
+}
+
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -164,6 +185,7 @@ mod tests {
         ];
         for (code, name) in codes {
             assert_eq!(code.as_str(), name);
+            assert_eq!(lumen_server_api::ErrorCode::from(code).as_str(), name);
             assert!(
                 lumen_engine::diagnostic::codes().all(|engine| engine != name),
                 "{name} is an engine code"

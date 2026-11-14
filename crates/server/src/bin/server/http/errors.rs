@@ -11,51 +11,52 @@ use axum::{
 };
 
 use lumen_engine::{diagnostic::Diagnostic, json::ParseError};
+use lumen_server_api::{ErrorBody, ErrorCode};
+use serde_json::Value;
 
 use crate::server::{RenderJobError, sanitized_diagnostics};
 
 use super::MAX_REQUEST_BODY_BYTES;
 
-/// A request that failed, answered with the status and a `{ "code", "error" }` body, which holds
-/// `diagnostics` too when the composition was invalid.
+/// A request that failed, answered with the status and an [`ErrorBody`], which holds
+/// `diagnostics` too when the composition was invalid and `media` when a media source failed.
 #[derive(Debug)]
 pub(super) struct ApiError {
     status: StatusCode,
-    code: String,
-    message: String,
-    diagnostics: Vec<Diagnostic>,
-}
-
-#[derive(serde::Serialize)]
-struct ApiErrorBody {
-    code: String,
-    error: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    diagnostics: Vec<Diagnostic>,
+    body: ErrorBody,
 }
 
 impl ApiError {
-    pub fn new(status: StatusCode, code: &str, message: impl Into<String>) -> Self {
+    pub fn new(status: StatusCode, code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             status,
-            code: code.to_string(),
-            message: message.into(),
-            diagnostics: Vec::new(),
+            body: ErrorBody {
+                code,
+                error: message.into(),
+                diagnostics: Vec::new(),
+                media: None,
+            },
         }
     }
 
     pub fn rejected(status: StatusCode, error: RenderJobError) -> Self {
-        Self::new(status, &error.code, error.message)
+        let mut rejected = Self::new(status, error.code, error.message);
+        rejected.body.media = error.media;
+        rejected
+    }
+
+    fn with_diagnostics(mut self, diagnostics: Vec<Value>) -> Self {
+        self.body.diagnostics = diagnostics;
+        self
     }
 
     /// A `422` for a composition that doesn't parse, listing what is wrong with it.
     pub fn invalid_composition(error: &ParseError) -> Self {
-        let mut rejected = Self::rejected(
+        Self::rejected(
             StatusCode::UNPROCESSABLE_ENTITY,
             RenderJobError::invalid_composition(&error.to_string()),
-        );
-        rejected.diagnostics = sanitized_diagnostics(error.diagnostics());
-        rejected
+        )
+        .with_diagnostics(sanitized_diagnostics(error.diagnostics()))
     }
 
     /// A `422` for a composition that parses but can't render here, such as one naming an asset
@@ -71,12 +72,11 @@ impl ApiError {
             .map(|diagnostic| diagnostic.message.as_str())
             .collect::<Vec<_>>()
             .join("; ");
-        let mut rejected = Self::rejected(
+        Self::rejected(
             StatusCode::UNPROCESSABLE_ENTITY,
             RenderJobError::invalid_composition(&message),
-        );
-        rejected.diagnostics = sanitized_diagnostics(&errors);
-        rejected
+        )
+        .with_diagnostics(sanitized_diagnostics(&errors))
     }
 
     /// A `503` for a render that would wait behind more than `--max-queued-renders` others. No
@@ -84,7 +84,7 @@ impl ApiError {
     pub fn queue_full(max_queued: usize) -> Self {
         Self::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            "render_queue_full",
+            ErrorCode::RenderQueueFull,
             format!(
                 "every render slot is busy and {max_queued} renders are already waiting; try again later"
             ),
@@ -94,7 +94,7 @@ impl ApiError {
     pub fn not_found() -> Self {
         Self::new(
             StatusCode::NOT_FOUND,
-            "render_not_found",
+            ErrorCode::RenderNotFound,
             "render was not found",
         )
     }
@@ -106,26 +106,18 @@ impl From<JsonRejection> for ApiError {
         if status == StatusCode::PAYLOAD_TOO_LARGE {
             Self::new(
                 status,
-                "request_too_large",
+                ErrorCode::RequestTooLarge,
                 format!("request body exceeds the {MAX_REQUEST_BODY_BYTES} byte limit"),
             )
         } else {
-            Self::new(status, "invalid_request_body", rejection.body_text())
+            Self::new(status, ErrorCode::InvalidRequestBody, rejection.body_text())
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(ApiErrorBody {
-                code: self.code,
-                error: self.message,
-                diagnostics: self.diagnostics,
-            }),
-        )
-            .into_response()
+        (self.status, Json(self.body)).into_response()
     }
 }
 
@@ -149,9 +141,9 @@ pub(super) async fn json_errors(request: Request, next: Next) -> Response {
         text => text,
     };
     let code = match status {
-        StatusCode::NOT_FOUND => "route_not_found",
-        StatusCode::METHOD_NOT_ALLOWED => "method_not_allowed",
-        _ => "invalid_request",
+        StatusCode::NOT_FOUND => ErrorCode::RouteNotFound,
+        StatusCode::METHOD_NOT_ALLOWED => ErrorCode::MethodNotAllowed,
+        _ => ErrorCode::InvalidRequest,
     };
     let mut json = ApiError::new(status, code, message).into_response();
     if let Some(allow) = parts.headers.get(ALLOW) {

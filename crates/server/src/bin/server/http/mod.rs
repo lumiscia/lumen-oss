@@ -27,8 +27,8 @@ use self::{
         put_content, put_part, start_multipart,
     },
     routes::{
-        cancel_render, check_render, create_render, get_render, get_render_artifact,
-        get_render_progress, health, render_socket,
+        cancel_render, check_render, create_render, get_render, get_render_artifact, health,
+        render_socket,
     },
     state::AppState,
 };
@@ -253,7 +253,7 @@ fn router(state: AppState) -> Router {
         .route("/renders/check", post(check_render))
         .route("/renders/{id}", get(get_render))
         .route("/renders/{id}/cancel", post(cancel_render))
-        .route("/renders/{id}/progress", get(get_render_progress))
+        .route("/renders/{id}/progress", get(get_render))
         .route("/renders/{id}/socket", get(render_socket))
         .route("/renders/{id}/artifact", get(get_render_artifact))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token))

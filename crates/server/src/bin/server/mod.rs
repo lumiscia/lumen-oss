@@ -7,9 +7,8 @@ mod util;
 use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
 
 pub use types::{
-    ApiRenderJob, Artifact, Cancellation, CheckInput, CheckResponse, CreateRenderResponse,
-    GetRenderResponse, QueueSpot, RenderJobError, RenderJobInput, RenderProgressResponse,
-    RenderQueueState, RenderRecord, RenderStatus, sanitized_diagnostics,
+    Artifact, Cancellation, QueueSpot, RenderJobError, RenderRecord, RenderStatus,
+    sanitized_diagnostics,
 };
 
 use lumen_engine::composition::Composition;
@@ -18,6 +17,7 @@ use lumen_server::render::{
     ErrorCode, OutputFormat, RenderConfig, RenderOptions, RenderOutput, RenderProgress,
     SequenceLimits, ServerRenderError, render_project,
 };
+use lumen_server_api::ErrorCode as ApiErrorCode;
 
 pub(super) use media_staging::{MediaClient, validate_media_manifest};
 pub(super) use util::{current_timestamp, input_hash, new_render_id};
@@ -45,7 +45,7 @@ pub struct RenderJob {
 pub struct CompletedRender {
     pub bytes: Vec<u8>,
     pub format: OutputFormat,
-    pub render_ms: u128,
+    pub render_ms: u64,
 }
 
 pub async fn execute_render_job<F>(
@@ -128,10 +128,12 @@ where
         render_project(&composition, &options, &mut progress_callback)
     })
     .await
-    .map_err(|err| RenderJobError {
-        code: "render_worker_failed".to_string(),
-        message: format!("render worker join failed: {err}"),
-        retryable: true,
+    .map_err(|err| {
+        RenderJobError::new(
+            ApiErrorCode::RenderWorkerFailed,
+            &format!("render worker join failed: {err}"),
+            true,
+        )
     })?
     .map_err(|error| {
         let message = error_chain(&error);
@@ -141,12 +143,13 @@ where
             tracing::warn!(job_id, code = %error.code(), error = %message, "render failed");
         }
         RenderJobError {
-            code: error.code().to_string(),
+            code: error.code().into(),
             message: client_message(&error, &staged_path),
             retryable: error.retryable(),
+            media: client_media_failure(&error, &staged_path),
         }
     })?;
-    let render_ms = render_started.elapsed().as_millis();
+    let render_ms = render_started.elapsed().as_millis() as u64;
     tracing::info!(
         job_id,
         render_ms,
@@ -174,6 +177,25 @@ fn client_message(error: &ServerRenderError, staged_path: &Path) -> String {
         .and_then(|engine| engine.media_failure())
         .map(|failure| failure.source.as_str());
     client_text(&error_chain(error), written, staged_path)
+}
+
+/// The engine's media failure behind `error`, if any, with its details shown as
+/// [`client_text`] shows a message.
+fn client_media_failure(
+    error: &ServerRenderError,
+    staged_path: &Path,
+) -> Option<serde_json::Value> {
+    let failure = error.engine_error()?.media_failure()?;
+    let mut value = serde_json::to_value(failure).ok()?;
+    if let Some(details) = value.get_mut("details") {
+        let shown = client_text(
+            details.as_str().unwrap_or_default(),
+            Some(&failure.source),
+            staged_path,
+        );
+        *details = shown.into();
+    }
+    Some(value)
 }
 
 /// `message`, a render's error chain, as a client sees it. A media failure, which names `written`

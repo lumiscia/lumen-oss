@@ -165,6 +165,7 @@ jobs:
           - lumen-engine-gpu@$release_version
           - lumen-engine-macros@$release_version
           - lumen-engine-text@$release_version
+          - lumen-server-api@$release_version
           - lumen-server@$release_version
 
           EOF

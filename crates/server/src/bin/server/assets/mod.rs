@@ -14,53 +14,17 @@ use std::{
 use axum::body::Bytes;
 use futures_util::{Stream, StreamExt};
 use lumen_engine::media::{Asset, AssetResolver};
+use lumen_server_api::{Media, MediaKind, MediaMetadata, MediaSource, MediaStatus};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use super::util::rfc3339;
-
-pub use probe::{MediaKind, MediaMetadata};
 
 const RECORD_FILE: &str = "media.json";
 const CONTENT_FILE: &str = "content";
 const PARTS_DIR: &str = "parts";
 const TEMP_PREFIX: &str = ".tmp-";
 pub const MAX_PART_NUMBER: u32 = 10_000;
-
-/// A media object as the API returns it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Media {
-    pub id: String,
-    pub content_type: String,
-    pub created_at: String,
-    pub expires_at: String,
-    pub file_name: String,
-    pub object_key: Option<String>,
-    pub rejection_reason: Option<String>,
-    pub size_bytes: u64,
-    pub source_type: SourceType,
-    pub source_url: Option<String>,
-    pub status: MediaStatus,
-    pub uploaded_bytes: Option<u64>,
-    pub kind: Option<MediaKind>,
-    pub metadata: Option<MediaMetadata>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SourceType {
-    Upload,
-    Url,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MediaStatus {
-    Pending,
-    Validated,
-    Rejected,
-}
 
 /// What `media.json` holds.
 #[derive(Serialize, Deserialize)]
@@ -251,7 +215,7 @@ impl AssetStore {
 
     fn new_media(
         &self,
-        source_type: SourceType,
+        source_type: MediaSource,
         source_url: Option<String>,
         upload: NewUpload,
     ) -> (Media, u64) {
@@ -298,7 +262,7 @@ impl AssetStore {
         if upload.size_bytes > self.inner.max_bytes {
             return Err(StoreError::TooLarge(self.inner.max_bytes));
         }
-        let (media, expires_at_ms) = self.new_media(SourceType::Upload, None, upload);
+        let (media, expires_at_ms) = self.new_media(MediaSource::Upload, None, upload);
         // Counted from the entries and inserted under one lock, so no path can leave a slot taken
         // and concurrent creates can't pass the cap together.
         let now = now_ms();
@@ -612,7 +576,7 @@ impl AssetStore {
         source_url: String,
         upload: NewUpload,
     ) -> Result<Media, StoreError> {
-        let (mut media, expires_at_ms) = self.new_media(SourceType::Url, Some(source_url), upload);
+        let (mut media, expires_at_ms) = self.new_media(MediaSource::Url, Some(source_url), upload);
         media.id = target.id.clone();
         let content = target.dir.join(CONTENT_FILE);
         // Not awaited, so a cancel can't leave it running while the guard removes the directory.

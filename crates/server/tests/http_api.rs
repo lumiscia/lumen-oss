@@ -168,14 +168,14 @@ impl Server {
             .get(&format!("/renders/{id}/progress"))
             .json()
             .expect("progress response");
-        body["progress"].clone()
+        body["render"].clone()
     }
 
     fn wait_for_state(&self, id: &str, accept: &[&str]) -> Value {
         let started = Instant::now();
         loop {
             let progress = self.progress(id);
-            if accept.contains(&progress["state"].as_str().unwrap_or_default()) {
+            if accept.contains(&progress["status"].as_str().unwrap_or_default()) {
                 return progress;
             }
             assert!(
@@ -460,8 +460,8 @@ fn a_failed_render_keeps_its_code_on_every_read() {
         "media": { "hero": "http://127.0.0.1:1/image.png" },
     }));
     let progress = server.wait_for_state(&id, &["failed"]);
-    assert_eq!(progress["errorCode"], "media_download_forbidden_host");
-    assert_eq!(progress["retryable"], false);
+    assert_eq!(progress["error"]["code"], "media_download_forbidden_host");
+    assert_eq!(progress["error"]["retryable"], false);
 
     let read = |path: String| {
         server
@@ -476,7 +476,7 @@ fn a_failed_render_keeps_its_code_on_every_read() {
     let render = read(format!("/renders/{id}"));
     let expected = json!({
         "code": "media_download_forbidden_host",
-        "message": progress["error"],
+        "message": progress["error"]["message"],
         "retryable": false,
     });
     assert_eq!(render["render"]["error"], expected);
@@ -489,7 +489,7 @@ fn a_failed_render_keeps_its_code_on_every_read() {
     assert_eq!(artifact.status(), StatusCode::CONFLICT);
     assert_eq!(
         artifact.json::<Value>().expect("artifact error"),
-        json!({ "code": "media_download_forbidden_host", "error": progress["error"] })
+        json!({ "code": "media_download_forbidden_host", "error": progress["error"]["message"] })
     );
 }
 
@@ -516,7 +516,7 @@ fn a_render_has_no_artifact_before_it_succeeds() {
             .json()
             .expect("render body");
         assert_eq!(render["render"]["status"], status);
-        assert_eq!(render["render"]["outputUrl"], Value::Null, "{status}");
+        assert_eq!(render["render"]["url"], Value::Null, "{status}");
     }
 }
 
@@ -591,9 +591,9 @@ fn sockets_send_the_current_status_then_changes_and_close_when_the_render_ends()
     let progress = server.progress(&id);
     if last["type"] == "render.completed" {
         assert_eq!(last["url"], format!("/renders/{id}/artifact"));
-        assert_eq!(progress["artifactUrl"], last["url"]);
+        assert_eq!(progress["url"], last["url"]);
     } else {
-        assert_eq!(last["error"]["code"], progress["errorCode"]);
+        assert_eq!(last["error"]["code"], progress["error"]["code"]);
     }
 
     let late = socket_events(&mut open_socket(&server, &id));
@@ -760,6 +760,17 @@ fn invalid_quality_message(response: Response) -> String {
     body["error"].as_str().unwrap_or_default().to_string()
 }
 
+/// A codec or bit depth outside the API's vocabulary doesn't parse as a request.
+fn invalid_body_message(response: Response) -> (StatusCode, String) {
+    let status = response.status();
+    let body: Value = response.json().expect("error body");
+    assert_eq!(body["code"], "invalid_request_body", "{body}");
+    (
+        status,
+        body["error"].as_str().unwrap_or_default().to_string(),
+    )
+}
+
 #[test]
 fn rejects_quality_this_host_cannot_resolve() {
     let directory = tempfile::tempdir().unwrap();
@@ -789,7 +800,8 @@ fn rejects_quality_this_host_cannot_resolve() {
     );
     let no_encoder = invalid_quality_message(post(json!("lossless"), json!("av1")));
     assert!(no_encoder.contains("av1"), "{no_encoder}");
-    let bad_codec = invalid_quality_message(post(json!("high"), json!("vp8")));
+    let (status, bad_codec) = invalid_body_message(post(json!("high"), json!("vp8")));
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(bad_codec.contains("vp8"), "{bad_codec}");
     let wrong_container = post(json!("high"), json!("vp9"));
     assert_eq!(wrong_container.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -823,9 +835,10 @@ fn rejects_quality_the_pinned_encoder_cannot_serve() {
         post(json!({ "quality": "lossless", "codec": "h264" })).status(),
         StatusCode::ACCEPTED
     );
-    let ten_bit = invalid_quality_message(post(json!({ "bit_depth": 10 })));
+    let ten_bit = invalid_quality_message(post(json!({ "bitDepth": 10 })));
     assert!(ten_bit.contains("8-bit"), "{ten_bit}");
-    let twelve = invalid_quality_message(post(json!({ "bit_depth": 12 })));
+    let (status, twelve) = invalid_body_message(post(json!({ "bitDepth": 12 })));
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(twelve.contains("8 or 10"), "{twelve}");
 
     let vulkan = Server::start_with(&[], |command| {
@@ -892,7 +905,7 @@ fn renders_stay_queued_until_a_slot_frees() {
         "media": { "hero": "http://127.0.0.1/forbidden.png" },
     }));
     thread::sleep(Duration::from_millis(200));
-    assert_eq!(server.progress(&waiting)["state"], "queued");
+    assert_eq!(server.progress(&waiting)["status"], "queued");
 
     media.release.send(()).expect("release held download");
     server.wait_for_state(&waiting, &["failed"]);
@@ -949,10 +962,9 @@ fn a_cancelled_queued_render_never_starts() {
     server.wait_for_state(&held, &["failed", "succeeded"]);
     thread::sleep(Duration::from_millis(200));
     let progress = server.progress(&waiting);
-    assert_eq!(progress["state"], "cancelled", "{progress}");
-    assert_eq!(progress["stage"], "cancelled");
-    assert_eq!(progress["errorCode"], "render_cancelled");
-    assert_eq!(progress["retryable"], false);
+    assert_eq!(progress["status"], "cancelled", "{progress}");
+    assert_eq!(progress["error"]["code"], "render_cancelled");
+    assert_eq!(progress["error"]["retryable"], false);
 
     let events = socket_events(&mut socket);
     assert_eq!(
@@ -971,7 +983,7 @@ fn cancelling_a_running_render_frees_its_slot() {
     let held = submit_held(&server, &media);
     let waiting = server.submit(&failing_body());
     thread::sleep(Duration::from_millis(100));
-    assert_eq!(server.progress(&waiting)["state"], "queued");
+    assert_eq!(server.progress(&waiting)["status"], "queued");
 
     let response = cancel(&server, &held);
     assert!(
@@ -981,8 +993,8 @@ fn cancelling_a_running_render_frees_its_slot() {
     );
     // The held download is never released: the render stops without waiting for its media.
     let progress = server.wait_for_state(&held, &["cancelled"]);
-    assert_eq!(progress["errorCode"], "render_cancelled");
-    assert_eq!(progress["retryable"], false);
+    assert_eq!(progress["error"]["code"], "render_cancelled");
+    assert_eq!(progress["error"]["retryable"], false);
     server.wait_for_state(&waiting, &["failed"]);
 
     let again = cancel(&server, &held);
@@ -1001,7 +1013,7 @@ fn cancelling_a_finished_render_leaves_it_as_it_is() {
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value = response.json().expect("cancel body");
     assert_eq!(body["render"]["status"], "failed");
-    assert_eq!(body["render"]["error"]["code"], before["errorCode"]);
+    assert_eq!(body["render"]["error"]["code"], before["error"]["code"]);
     assert_eq!(server.progress(&id), before);
 
     let unknown = cancel(&server, "r_missing");
@@ -1031,7 +1043,7 @@ fn renders_past_the_queue_limit_are_refused_until_one_leaves() {
 
     cancel(&server, &waiting);
     let accepted = server.submit(&failing_body());
-    assert_eq!(server.progress(&accepted)["state"], "queued");
+    assert_eq!(server.progress(&accepted)["status"], "queued");
 
     media.release.send(()).expect("release held download");
     server.wait_for_state(&held, &["failed", "succeeded"]);
@@ -1107,7 +1119,10 @@ fn media_hosts_must_be_public_on_every_connection() {
             "media": { "hero": url },
         }));
         let progress = server.wait_for_state(&id, &["failed", "succeeded"]);
-        progress["error"].as_str().unwrap_or_default().to_string()
+        progress["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
     };
 
     let literal = failure(media.url("127.0.0.1", "/image.png?signature=secret"));
@@ -1140,7 +1155,7 @@ fn media_hosts_must_be_public_on_every_connection() {
         "media": { "hero": media.url("localhost", "/image.png") },
     }));
     let progress = unlisted.wait_for_state(&id, &["failed", "succeeded"]);
-    let resolved = progress["error"].as_str().unwrap_or_default();
+    let resolved = progress["error"]["message"].as_str().unwrap_or_default();
     assert!(
         resolved.contains("host has no public address"),
         "{resolved}"
@@ -1156,7 +1171,7 @@ fn media_hosts_must_be_public_on_every_connection() {
 fn render_outcome(server: &Server, body: &Value) -> Option<(String, Value)> {
     let id = server.submit(body);
     let progress = server.wait_for_state(&id, &["succeeded", "failed"]);
-    let error = progress["error"].as_str().unwrap_or_default();
+    let error = progress["error"]["message"].as_str().unwrap_or_default();
     if error.contains("failed to create GPU renderer") {
         eprintln!("skipping GPU-backed lumen-server test: {error}");
         return None;
@@ -1179,14 +1194,25 @@ fn corrupt_media_errors_do_not_reveal_where_it_is_staged_with_gpu() {
         ) else {
             return;
         };
-        assert_eq!(progress["state"], "failed", "{alias}: {progress}");
-        assert_eq!(progress["errorCode"], "media.decode", "{alias}: {progress}");
-        assert_eq!(progress["retryable"], false, "{alias}: {progress}");
-        let error = progress["error"].as_str().unwrap_or_default();
+        assert_eq!(progress["status"], "failed", "{alias}: {progress}");
+        assert_eq!(
+            progress["error"]["code"], "media.decode",
+            "{alias}: {progress}"
+        );
+        assert_eq!(progress["error"]["retryable"], false, "{alias}: {progress}");
+        let error = progress["error"]["message"].as_str().unwrap_or_default();
         assert!(error.contains(alias), "{alias}: {error}");
         assert!(
             !error.contains(&*temp.to_string_lossy()),
             "{alias}: {error}"
+        );
+        let failure = &progress["error"]["media"];
+        assert_eq!(failure["code"], "media.decode", "{alias}: {progress}");
+        assert_eq!(failure["source"], alias, "{alias}: {progress}");
+        let details = failure["details"].as_str().unwrap_or_default();
+        assert!(
+            !details.contains(&*temp.to_string_lossy()),
+            "{alias}: {details}"
         );
     }
 
@@ -1196,8 +1222,8 @@ fn corrupt_media_errors_do_not_reveal_where_it_is_staged_with_gpu() {
     ) else {
         return;
     };
-    assert_eq!(progress["state"], "failed", "{progress}");
-    let error = progress["error"].as_str().unwrap_or_default();
+    assert_eq!(progress["status"], "failed", "{progress}");
+    let error = progress["error"]["message"].as_str().unwrap_or_default();
     assert!(!error.contains(&*temp.to_string_lossy()), "{error}");
 }
 
@@ -1222,8 +1248,8 @@ fn renders_read_only_manifest_media_with_gpu() {
         ) else {
             return;
         };
-        assert_eq!(progress["state"], "failed", "{source} must not render");
-        let error = progress["error"].as_str().unwrap_or_default();
+        assert_eq!(progress["status"], "failed", "{source} must not render");
+        let error = progress["error"]["message"].as_str().unwrap_or_default();
         assert!(error.contains(&source), "{source}: {error}");
     }
 
@@ -1236,7 +1262,7 @@ fn renders_read_only_manifest_media_with_gpu() {
     ) else {
         return;
     };
-    assert_eq!(progress["state"], "succeeded", "{progress}");
+    assert_eq!(progress["status"], "succeeded", "{progress}");
     let artifact = server.get(&format!("/renders/{id}/artifact"));
     assert_eq!(artifact.status(), StatusCode::OK);
     assert!(!artifact.bytes().expect("artifact bytes").is_empty());
@@ -1254,7 +1280,7 @@ fn the_default_encoder_falls_back_to_a_correct_video_with_gpu() {
     else {
         return;
     };
-    assert_eq!(progress["state"], "succeeded", "{progress}");
+    assert_eq!(progress["status"], "succeeded", "{progress}");
     let artifact = server.get(&format!("/renders/{id}/artifact"));
     assert_eq!(artifact.status(), StatusCode::OK);
 
@@ -1350,7 +1376,7 @@ fn renders_stills_read_as_video_with_gpu() {
         ) else {
             return;
         };
-        assert_eq!(progress["state"], "succeeded", "{alias}: {progress}");
+        assert_eq!(progress["status"], "succeeded", "{alias}: {progress}");
     }
 }
 
@@ -1377,7 +1403,7 @@ fn staged_playlists_cannot_reach_files_outside_the_job_with_gpu() {
     ) else {
         return;
     };
-    assert_eq!(progress["state"], "failed", "{progress}");
+    assert_eq!(progress["status"], "failed", "{progress}");
     assert_eq!(
         server.get(&format!("/renders/{id}/artifact")).status(),
         StatusCode::CONFLICT
@@ -1976,9 +2002,9 @@ fn rejects_outputs_that_cannot_be_rendered_before_queueing_them() {
         json!({ "frames": { "start": 10 } }),
         json!({ "format": "png", "frames": { "start": 2, "end": 4 } }),
         json!({ "format": "png", "frames": { "start": 10 } }),
-        json!({ "format": "png", "jpeg_quality": 80 }),
-        json!({ "format": "jpeg", "jpeg_quality": 0 }),
-        json!({ "format": "jpeg_sequence", "jpeg_quality": 101 }),
+        json!({ "format": "png", "jpegQuality": 80 }),
+        json!({ "format": "jpeg", "jpegQuality": 0 }),
+        json!({ "format": "jpeg_sequence", "jpegQuality": 101 }),
     ] {
         assert_eq!(post(output.clone()), invalid, "{output}");
     }
@@ -2023,7 +2049,7 @@ fn rejects_outputs_that_cannot_be_rendered_before_queueing_them() {
     // Valid outputs are accepted, and a request without one still is.
     for output in [
         json!({ "frames": { "start": 2, "end": 9 } }),
-        json!({ "format": "jpeg", "frames": { "start": 9 }, "jpeg_quality": 70 }),
+        json!({ "format": "jpeg", "frames": { "start": 9 }, "jpegQuality": 70 }),
         json!({ "format": "png_sequence", "frames": { "end": 5 } }),
     ] {
         let response =
@@ -2085,14 +2111,14 @@ fn stills_and_sequences_download_as_their_own_files_with_gpu() {
     let Some((id, progress)) = render(json!({ "format": "png", "frames": { "start": 3 } })) else {
         return;
     };
-    assert_eq!(progress["state"], "succeeded", "{progress}");
+    assert_eq!(progress["status"], "succeeded", "{progress}");
     let (bytes, content_type, disposition) = artifact_headers(&server, &id);
     assert_eq!(content_type, "image/png");
     assert_eq!(disposition, format!("attachment; filename=\"{id}.png\""));
     let image = image::load_from_memory(&bytes).expect("png");
     assert_eq!((image.width(), image.height()), (16, 16));
 
-    let (id, _) = render(json!({ "format": "jpeg", "jpeg_quality": 60 })).unwrap();
+    let (id, _) = render(json!({ "format": "jpeg", "jpegQuality": 60 })).unwrap();
     server.wait_for_state(&id, &["succeeded"]);
     let (bytes, content_type, disposition) = artifact_headers(&server, &id);
     assert_eq!(content_type, "image/jpeg");
@@ -2104,7 +2130,7 @@ fn stills_and_sequences_download_as_their_own_files_with_gpu() {
         "frames": { "start": 2, "end": 5 }
     }))
     .unwrap();
-    assert_eq!(progress["state"], "succeeded", "{progress}");
+    assert_eq!(progress["status"], "succeeded", "{progress}");
     assert_eq!(progress["progress"], 1.0);
     let (bytes, content_type, disposition) = artifact_headers(&server, &id);
     assert_eq!(content_type, "application/zip");

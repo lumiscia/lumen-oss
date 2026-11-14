@@ -1,6 +1,7 @@
 // The composition schema is one large `json!` literal.
 #![recursion_limit = "256"]
 
+mod api;
 mod runtime;
 
 use std::{collections::BTreeMap, fs, path::Path};
@@ -18,16 +19,19 @@ use serde_json::{Map, Value, json};
 /// The version of the generated definitions' own format.
 const SCHEMA_VERSION: u32 = 1;
 
-/// Writes `composition.schema.json` and `runtime.schema.json` into `out_dir`.
+/// Writes `composition.schema.json`, `runtime.schema.json` and `api.schema.json` into `out_dir`.
 pub fn generate(out_dir: &Path) -> Result<()> {
     let schema_json = render_composition_schema_json()?;
     let runtime_json = render_runtime_schema_json()?;
+    let api_json = render_api_schema_json()?;
     fs::create_dir_all(out_dir)
         .with_context(|| format!("failed to create output directory `{}`", out_dir.display()))?;
     write_if_changed(&out_dir.join("composition.schema.json"), &schema_json)?;
-    write_if_changed(&out_dir.join("runtime.schema.json"), &runtime_json)
+    write_if_changed(&out_dir.join("runtime.schema.json"), &runtime_json)?;
+    write_if_changed(&out_dir.join("api.schema.json"), &api_json)
 }
 
+pub use api::render_api_schema_json;
 pub use runtime::render_runtime_schema_json;
 
 /// The composition schema, checked to be a valid JSON Schema.

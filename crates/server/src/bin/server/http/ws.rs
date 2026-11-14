@@ -1,5 +1,6 @@
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::SinkExt;
+use lumen_server_api::RenderEvent;
 use tokio::sync::watch;
 
 use crate::server::RenderStatus;
@@ -12,7 +13,8 @@ pub(super) async fn render_socket_session(
 ) {
     loop {
         let current = status.borrow_and_update().clone();
-        let text = render_event(&id, &current).to_string();
+        let text =
+            serde_json::to_string(&render_event(&id, &current)).expect("a render event serialises");
         if socket.send(Message::Text(text.into())).await.is_err() {
             return;
         }
@@ -38,44 +40,31 @@ pub(super) async fn render_socket_session(
     }
 }
 
-fn render_event(id: &str, status: &RenderStatus) -> serde_json::Value {
+fn render_event(id: &str, status: &RenderStatus) -> RenderEvent {
+    let render_id = id.to_string();
     match status {
-        RenderStatus::Queued => serde_json::json!({
-            "type": "render.queued",
-            "renderId": id,
-        }),
-        RenderStatus::Staging => serde_json::json!({
-            "type": "render.started",
-            "renderId": id,
-        }),
-        RenderStatus::Rendering { .. } => serde_json::json!({
-            "type": "render.progress",
-            "renderId": id,
-            "progress": status.progress(),
-        }),
-        RenderStatus::Succeeded { artifact } => serde_json::json!({
-            "type": "render.completed",
-            "renderId": id,
-            "url": artifact.url,
-        }),
-        RenderStatus::Failed { error, .. } => serde_json::json!({
-            "type": "render.failed",
-            "renderId": id,
-            "error": {
-                "code": error.code,
-                "message": error.message,
-                "retryable": error.retryable,
-            },
-        }),
-        RenderStatus::Cancelled { .. } => serde_json::json!({
-            "type": "render.cancelled",
-            "renderId": id,
-        }),
+        RenderStatus::Queued => RenderEvent::Queued { render_id },
+        RenderStatus::Staging => RenderEvent::Started { render_id },
+        RenderStatus::Rendering { .. } => RenderEvent::Progress {
+            render_id,
+            progress: status.progress(),
+        },
+        RenderStatus::Succeeded { artifact } => RenderEvent::Completed {
+            render_id,
+            url: artifact.url.clone(),
+        },
+        RenderStatus::Failed { error, .. } => RenderEvent::Failed {
+            render_id,
+            error: error.clone().into(),
+        },
+        RenderStatus::Cancelled { .. } => RenderEvent::Cancelled { render_id },
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use lumen_server_api::ErrorCode;
+
     use super::*;
     use crate::server::RenderJobError;
 
@@ -84,20 +73,24 @@ mod tests {
         let event = render_event(
             "r_1",
             &RenderStatus::Failed {
-                error: RenderJobError {
-                    code: "media_download_failed".to_string(),
-                    message: "media 'hero': not found".to_string(),
-                    retryable: true,
-                },
+                error: RenderJobError::new(
+                    ErrorCode::MediaDownloadFailed,
+                    "media 'hero': not found",
+                    true,
+                ),
                 progress: 0.01,
             },
         );
         assert_eq!(
-            event["error"],
+            serde_json::to_value(event).unwrap(),
             serde_json::json!({
-                "code": "media_download_failed",
-                "message": "media 'hero': not found",
-                "retryable": true,
+                "type": "render.failed",
+                "renderId": "r_1",
+                "error": {
+                    "code": "media_download_failed",
+                    "message": "media 'hero': not found",
+                    "retryable": true,
+                },
             })
         );
     }

@@ -31,135 +31,49 @@ pub struct RenderOutput {
     pub jpeg_quality: Option<u8>,
 }
 
-/// The file a render writes, or for a sequence the archive of them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum OutputFormat {
-    /// A video of the frames, with the composition's audio cut to the same span: H.264, HEVC or
-    /// AV1, and AAC.
-    #[default]
-    Mp4,
-    /// A QuickTime video of the frames in ProRes 4444, with alpha when asked for, and AAC.
-    Mov,
-    /// A WebM video of the frames in VP9, with alpha when asked for, and Opus.
-    Webm,
-    /// One frame as a PNG. Transparency is kept: the pixels are straight (not premultiplied)
-    /// RGBA, as the renderer's final image has it.
-    Png,
-    /// One frame as an opaque JPEG. Transparent pixels are composited onto black, as they are in a
-    /// video.
-    Jpeg,
-    /// One PNG per frame.
-    PngSequence,
-    /// One opaque JPEG per frame.
-    JpegSequence,
-}
+pub use lumen_server_api::{FrameRange, OutputFormat};
 
-impl OutputFormat {
-    /// The `Content-Type` of what a render of this format produces. A sequence is one ZIP.
-    pub fn content_type(self) -> &'static str {
-        match self {
-            Self::Mp4 => "video/mp4",
-            Self::Mov => "video/quicktime",
-            Self::Webm => "video/webm",
-            Self::Png => "image/png",
-            Self::Jpeg => "image/jpeg",
-            Self::PngSequence | Self::JpegSequence => "application/zip",
-        }
-    }
-
-    /// The file extension, without the dot, of what a render of this format produces.
-    pub fn extension(self) -> &'static str {
-        match self {
-            Self::Mp4 => "mp4",
-            Self::Mov => "mov",
-            Self::Webm => "webm",
-            Self::Png => "png",
-            Self::Jpeg => "jpg",
-            Self::PngSequence | Self::JpegSequence => "zip",
-        }
-    }
-
-    pub fn is_video(self) -> bool {
-        matches!(self, Self::Mp4 | Self::Mov | Self::Webm)
-    }
-
-    /// The codecs a video of this format holds, the first being the one it takes when nothing
-    /// asks for another; empty for images. An MP4's default is the quality config's.
-    pub fn video_codecs(self) -> &'static [EncodeCodec] {
-        match self {
-            Self::Mp4 => &[EncodeCodec::H264, EncodeCodec::Hevc, EncodeCodec::Av1],
-            Self::Mov => &[EncodeCodec::ProRes],
-            Self::Webm => &[EncodeCodec::Vp9],
-            _ => &[],
-        }
-    }
-
-    /// Errors with what this format holds when a video of `codec`, with or without alpha, can't go
-    /// in it. `None` is the quality config's default codec, which only an MP4 takes.
-    pub fn check_video(self, codec: Option<EncodeCodec>, alpha: bool) -> Result<(), String> {
-        let name = self.extension();
-        if alpha && !matches!(self, Self::Mov | Self::Webm) {
-            return Err(format!(
-                "a .{name} can't hold alpha; render alpha to mov (prores) or webm (vp9)"
-            ));
-        }
-        let codecs = self.video_codecs();
-        let Some(codec) = codec else {
-            return Ok(());
-        };
-        if codecs.contains(&codec) {
-            return Ok(());
-        }
-        let holds: Vec<_> = codecs.iter().map(|codec| codec.name()).collect();
-        let usual = match codec {
-            EncodeCodec::ProRes => " (prores goes in mov)",
-            EncodeCodec::Vp9 => " (vp9 goes in webm)",
-            _ => " (h264, hevc and av1 go in mp4)",
-        };
-        Err(format!(
-            "a .{name} holds {}, not {codec}{usual}",
-            holds.join(", ")
-        ))
-    }
-
-    /// One frame as one image.
-    pub fn is_still(self) -> bool {
-        matches!(self, Self::Png | Self::Jpeg)
-    }
-
-    pub fn is_sequence(self) -> bool {
-        matches!(self, Self::PngSequence | Self::JpegSequence)
-    }
-
-    pub fn is_jpeg(self) -> bool {
-        matches!(self, Self::Jpeg | Self::JpegSequence)
-    }
-
-    /// The extension of one frame of an image format, which is `None` for video.
-    pub fn image_extension(self) -> Option<&'static str> {
-        match self {
-            Self::Png | Self::PngSequence => Some("png"),
-            Self::Jpeg | Self::JpegSequence => Some("jpg"),
-            Self::Mp4 | Self::Mov | Self::Webm => None,
-        }
+/// The codecs a video of `format` holds, the first being the one it takes when nothing asks for
+/// another; empty for images. An MP4's default is the quality config's.
+pub fn video_codecs(format: OutputFormat) -> &'static [EncodeCodec] {
+    match format {
+        OutputFormat::Mp4 => &[EncodeCodec::H264, EncodeCodec::Hevc, EncodeCodec::Av1],
+        OutputFormat::Mov => &[EncodeCodec::ProRes],
+        OutputFormat::Webm => &[EncodeCodec::Vp9],
+        _ => &[],
     }
 }
 
-/// The frames of the timeline a render covers, as `start..end` with `end` not included, like the
-/// player's `range: { in, out }`. Frame numbers are the composition's, so a ranged render of frames
-/// 30 to 60 draws what a full render draws there; its output starts at time 0.
-///
-/// `start` defaults to 0 and `end` to the timeline's end, except for a still, whose `end` defaults
-/// to the frame after `start`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FrameRange {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub start: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub end: Option<u32>,
+/// Errors with what `format` holds when a video of `codec`, with or without alpha, can't go in
+/// it. `None` is the quality config's default codec, which only an MP4 takes.
+pub fn check_video(
+    format: OutputFormat,
+    codec: Option<EncodeCodec>,
+    alpha: bool,
+) -> Result<(), String> {
+    let name = format.extension();
+    if alpha && !matches!(format, OutputFormat::Mov | OutputFormat::Webm) {
+        return Err(format!(
+            "a .{name} can't hold alpha; render alpha to mov (prores) or webm (vp9)"
+        ));
+    }
+    let codecs = video_codecs(format);
+    let Some(codec) = codec else {
+        return Ok(());
+    };
+    if codecs.contains(&codec) {
+        return Ok(());
+    }
+    let holds: Vec<_> = codecs.iter().map(|codec| codec.name()).collect();
+    let usual = match codec {
+        EncodeCodec::ProRes => " (prores goes in mov)",
+        EncodeCodec::Vp9 => " (vp9 goes in webm)",
+        _ => " (h264, hevc and av1 go in mp4)",
+    };
+    Err(format!(
+        "a .{name} holds {}, not {codec}{usual}",
+        holds.join(", ")
+    ))
 }
 
 /// How much of a sequence a render is willing to produce. Each limit is also bounded by what a ZIP
@@ -426,9 +340,11 @@ mod tests {
     fn each_video_format_holds_its_codecs_and_only_mov_and_webm_hold_alpha() {
         use EncodeCodec::*;
         let check = |format: &str, codec, alpha| {
-            output(json!({ "format": format }))
-                .format
-                .check_video(Some(codec), alpha)
+            check_video(
+                output(json!({ "format": format })).format,
+                Some(codec),
+                alpha,
+            )
         };
         assert_eq!(check("mp4", Hevc, false), Ok(()));
         assert_eq!(check("mov", ProRes, true), Ok(()));
@@ -444,10 +360,10 @@ mod tests {
             let error = check(format, codec, alpha).unwrap_err();
             assert!(error.contains(expected), "{format} {codec}: {error}");
         }
-        assert_eq!(OutputFormat::Mp4.check_video(None, false), Ok(()));
-        assert!(OutputFormat::Mp4.check_video(None, true).is_err());
-        assert_eq!(OutputFormat::Mov.video_codecs()[0], ProRes);
-        assert!(OutputFormat::Png.video_codecs().is_empty());
+        assert_eq!(check_video(OutputFormat::Mp4, None, false), Ok(()));
+        assert!(check_video(OutputFormat::Mp4, None, true).is_err());
+        assert_eq!(video_codecs(OutputFormat::Mov)[0], ProRes);
+        assert!(video_codecs(OutputFormat::Png).is_empty());
     }
 
     #[test]

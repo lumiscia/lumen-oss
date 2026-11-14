@@ -168,9 +168,9 @@ describe("Lumen render and download", () => {
     const bodies = requests.map((request) => JSON.parse(String(request.init.body)));
     expect(bodies[0]).not.toHaveProperty("quality");
     expect(bodies[0]).not.toHaveProperty("codec");
-    expect(bodies[0]).not.toHaveProperty("bit_depth");
+    expect(bodies[0]).not.toHaveProperty("bitDepth");
     expect(bodies[0]).not.toHaveProperty("alpha");
-    expect(bodies[1]).toMatchObject({ codec: "hevc", quality: "high", bit_depth: 10 });
+    expect(bodies[1]).toMatchObject({ codec: "hevc", quality: "high", bitDepth: 10 });
     expect(bodies[2]).toMatchObject({ alpha: true, output: { format: "webm" } });
   });
 
@@ -191,7 +191,7 @@ describe("Lumen render and download", () => {
     expect(bodies[1].output).toEqual({
       format: "jpeg_sequence",
       frames: { start: 30, end: 60 },
-      jpeg_quality: 80,
+      jpegQuality: 80,
     });
     expect(bodies[2].output).toEqual({ frames: { end: 24 } });
   });
@@ -287,7 +287,7 @@ describe("Lumen render and download", () => {
         seen.push(String(url));
         return String(url).endsWith("/renders/r")
           ? Response.json({
-              render: { id: "r", status: "succeeded", outputUrl: "/renders/r/artifact" },
+              render: { id: "r", status: "succeeded", url: "/renders/r/artifact" },
             })
           : new Response("bytes");
       }) as unknown as typeof fetch;
@@ -304,7 +304,7 @@ describe("Lumen render and download", () => {
 
   test("an absolute output url is left alone", async () => {
     const { stub } = recordingFetch(() => ({
-      render: { id: "r", status: "succeeded", outputUrl: "https://cdn.example/r.mp4" },
+      render: { id: "r", status: "succeeded", url: "https://cdn.example/r.mp4" },
     }));
     const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
 

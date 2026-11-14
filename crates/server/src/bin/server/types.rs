@@ -1,78 +1,37 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc, Mutex, PoisonError,
-        atomic::{AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc, Mutex, PoisonError,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use axum::body::Bytes;
-use lumen_server::render::{CancelToken, ErrorCode, RenderOutput, ServerRenderError};
-use serde::{Deserialize, Serialize};
+use lumen_server::render::{CancelToken, ServerRenderError};
+use lumen_server_api::{self as api, ErrorCode as ApiErrorCode};
 use serde_json::Value;
 use tokio::sync::{Notify, watch};
 
 use super::util::{MAX_ERROR_MESSAGE_CHARS, sanitize_error_message};
 
-#[derive(Debug, Deserialize)]
-pub struct RenderJobInput {
-    pub composition: Value,
-    #[serde(default)]
-    pub media: HashMap<String, String>,
-    #[serde(default)]
-    #[serde(rename = "webhookUrl")]
-    pub webhook_url: Option<String>,
-    /// A quality preset name. Without one the host's default applies.
-    #[serde(default)]
-    pub quality: Option<String>,
-    /// `h264`, `hevc` or `av1` for an MP4, `prores` for a MOV or `vp9` for a WebM. Without one a MOV
-    /// or WebM gets its own codec and an MP4 the host's default.
-    #[serde(default)]
-    pub codec: Option<String>,
-    /// 8 or 10. Without one the codec's default applies.
-    #[serde(default)]
-    pub bit_depth: Option<u8>,
-    /// Keeps transparency as an alpha channel, in a MOV or WebM only.
-    #[serde(default)]
-    pub alpha: Option<bool>,
-    /// What to render: the format and the frames. Without it, an MP4 of the whole timeline.
-    #[serde(default)]
-    pub output: Option<RenderOutput>,
-}
-
 /// Why a render failed, kept with the render and returned by every read of it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct RenderJobError {
-    pub code: String,
+    pub code: ApiErrorCode,
     pub message: String,
     pub retryable: bool,
-}
-
-/// The body of `POST /renders/check`. A `POST /renders` body is one too.
-#[derive(Debug, Deserialize)]
-pub struct CheckInput {
-    pub composition: Value,
-    #[serde(default)]
-    pub media: HashMap<String, String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CheckResponse {
-    /// Whether the composition has no errors. Warnings don't count.
-    pub ok: bool,
-    pub diagnostics: Vec<lumen_engine::diagnostic::Diagnostic>,
+    /// The engine's `MediaFailure`, when a media source failed.
+    pub media: Option<Value>,
 }
 
 /// `diagnostics` with messages and paths bounded like every other error sent.
-pub fn sanitized_diagnostics(
-    diagnostics: &[lumen_engine::diagnostic::Diagnostic],
-) -> Vec<lumen_engine::diagnostic::Diagnostic> {
+pub fn sanitized_diagnostics(diagnostics: &[lumen_engine::diagnostic::Diagnostic]) -> Vec<Value> {
     diagnostics
         .iter()
-        .map(|diagnostic| lumen_engine::diagnostic::Diagnostic {
-            path: bounded_pointer(&diagnostic.path),
-            message: sanitize_error_message(&diagnostic.message),
-            ..diagnostic.clone()
+        .map(|diagnostic| {
+            let bounded = lumen_engine::diagnostic::Diagnostic {
+                path: bounded_pointer(&diagnostic.path),
+                message: sanitize_error_message(&diagnostic.message),
+                ..diagnostic.clone()
+            };
+            serde_json::to_value(bounded).expect("a diagnostic serialises")
         })
         .collect()
 }
@@ -96,48 +55,49 @@ fn bounded_pointer(pointer: &str) -> String {
 }
 
 impl RenderJobError {
-    pub fn invalid_composition(message: &str) -> Self {
+    /// A failure with no media failure, its message bounded.
+    pub fn new(code: ApiErrorCode, message: &str, retryable: bool) -> Self {
         Self {
-            code: "invalid_project_payload".to_string(),
+            code,
             message: sanitize_error_message(message),
-            retryable: false,
+            retryable,
+            media: None,
         }
+    }
+
+    pub fn invalid_composition(message: &str) -> Self {
+        Self::new(ApiErrorCode::InvalidProjectPayload, message, false)
     }
 
     pub fn cancelled() -> Self {
-        Self {
-            code: ErrorCode::Cancelled.as_str().to_string(),
-            message: "the render was cancelled".to_string(),
-            retryable: false,
-        }
+        Self::new(
+            ApiErrorCode::RenderCancelled,
+            "the render was cancelled",
+            false,
+        )
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.code == ErrorCode::Cancelled.as_str()
+        self.code == ApiErrorCode::RenderCancelled
     }
 
     /// A render library error that refused the request, such as an output that can't be rendered.
     pub fn refused(error: &ServerRenderError) -> Self {
-        Self {
-            code: error.code().to_string(),
-            message: sanitize_error_message(&error.to_string()),
-            retryable: false,
-        }
+        Self::new(error.code().into(), &error.to_string(), false)
     }
 
     pub fn invalid_output(message: &str) -> Self {
-        Self {
-            code: ErrorCode::InvalidOutput.as_str().to_string(),
-            message: sanitize_error_message(message),
-            retryable: false,
-        }
+        Self::new(ApiErrorCode::InvalidOutput, message, false)
     }
+}
 
-    pub fn invalid_quality(message: &str) -> Self {
+impl From<RenderJobError> for api::RenderFailure {
+    fn from(error: RenderJobError) -> Self {
         Self {
-            code: "invalid_quality".to_string(),
-            message: sanitize_error_message(message),
-            retryable: false,
+            code: error.code,
+            message: error.message,
+            retryable: error.retryable,
+            media: error.media,
         }
     }
 }
@@ -229,7 +189,7 @@ pub struct Artifact {
     pub content_type: &'static str,
     /// The file extension, without the dot, that the download is named with.
     pub extension: &'static str,
-    pub render_ms: u128,
+    pub render_ms: u64,
 }
 
 impl RenderStatus {
@@ -254,24 +214,13 @@ impl RenderStatus {
         }
     }
 
-    fn state(&self) -> &'static str {
+    pub fn status(&self) -> api::RenderStatus {
         match self {
-            Self::Queued => "queued",
-            Self::Staging | Self::Rendering { .. } => "processing",
-            Self::Succeeded { .. } => "succeeded",
-            Self::Failed { .. } => "failed",
-            Self::Cancelled { .. } => "cancelled",
-        }
-    }
-
-    fn stage(&self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Staging => "accepted",
-            Self::Rendering { .. } => "rendering",
-            Self::Succeeded { .. } => "completed",
-            Self::Failed { .. } => "failed",
-            Self::Cancelled { .. } => "cancelled",
+            Self::Queued => api::RenderStatus::Queued,
+            Self::Staging | Self::Rendering { .. } => api::RenderStatus::Processing,
+            Self::Succeeded { .. } => api::RenderStatus::Succeeded,
+            Self::Failed { .. } => api::RenderStatus::Failed,
+            Self::Cancelled { .. } => api::RenderStatus::Cancelled,
         }
     }
 
@@ -338,97 +287,24 @@ impl RenderRecord {
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct ApiRenderJob {
-    #[serde(rename = "costMicros")]
-    cost_micros: u64,
-    #[serde(rename = "createdAt")]
-    created_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<RenderJobError>,
-    id: String,
-    #[serde(rename = "inputHash")]
-    input_hash: String,
-    #[serde(rename = "organizationId")]
-    organization_id: &'static str,
-    #[serde(rename = "outputUrl", skip_serializing_if = "Option::is_none")]
-    output_url: Option<String>,
-    status: &'static str,
-}
-
-impl ApiRenderJob {
-    pub fn new(record: &RenderRecord, status: &RenderStatus) -> Self {
-        Self {
-            cost_micros: 0,
-            created_at: record.created_at.clone(),
-            error: status.error().cloned(),
-            id: record.id.clone(),
-            input_hash: record.input_hash.clone(),
-            organization_id: "self-hosted",
-            output_url: status.artifact().map(|artifact| artifact.url.clone()),
-            status: status.state(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreateRenderResponse {
-    pub cached: bool,
-    pub render: ApiRenderJob,
-}
-
-#[derive(Debug, Serialize)]
-pub struct GetRenderResponse {
-    pub render: ApiRenderJob,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RenderQueueState {
-    #[serde(rename = "artifactUrl", skip_serializing_if = "Option::is_none")]
-    artifact_url: Option<String>,
-    #[serde(rename = "durationMs", skip_serializing_if = "Option::is_none")]
-    duration_ms: Option<u128>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-    #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
-    error_code: Option<String>,
-    #[serde(rename = "organizationId")]
-    organization_id: &'static str,
-    #[serde(rename = "outputBytes", skip_serializing_if = "Option::is_none")]
-    output_bytes: Option<usize>,
-    progress: f32,
-    #[serde(rename = "renderId")]
-    render_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    retryable: Option<bool>,
-    stage: &'static str,
-    state: &'static str,
-}
-
-impl RenderQueueState {
-    pub fn new(id: &str, status: &RenderStatus) -> Self {
+impl RenderRecord {
+    /// The render as the API returns it, at `status`.
+    pub fn render(&self, status: &RenderStatus) -> api::Render {
         let artifact = status.artifact();
-        let error = status.error();
-        Self {
-            artifact_url: artifact.map(|artifact| artifact.url.clone()),
-            duration_ms: artifact.map(|artifact| artifact.render_ms),
-            error: error.map(|error| error.message.clone()),
-            error_code: error.map(|error| error.code.clone()),
-            organization_id: "self-hosted",
-            output_bytes: artifact.map(|artifact| artifact.bytes.len()),
+        api::Render {
+            id: self.id.clone(),
+            status: status.status(),
             progress: status.progress(),
-            render_id: id.to_string(),
-            retryable: error.map(|error| error.retryable),
-            stage: status.stage(),
-            state: status.state(),
+            url: artifact.map(|artifact| artifact.url.clone()),
+            error: status.error().cloned().map(api::RenderFailure::from),
+            created_at: self.created_at.clone(),
+            input_hash: self.input_hash.clone(),
+            organization_id: "self-hosted".to_string(),
+            cost_micros: 0,
+            output_bytes: artifact.map(|artifact| artifact.bytes.len() as u64),
+            duration_ms: artifact.map(|artifact| artifact.render_ms),
         }
     }
-}
-
-#[derive(Debug, Serialize)]
-pub struct RenderProgressResponse {
-    pub progress: RenderQueueState,
-    pub render: ApiRenderJob,
 }
 
 #[cfg(test)]

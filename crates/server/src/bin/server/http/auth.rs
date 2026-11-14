@@ -23,7 +23,7 @@ pub(super) async fn require_token(
         if !authorized {
             return ApiError::new(
                 StatusCode::UNAUTHORIZED,
-                "unauthorized",
+                lumen_server_api::ErrorCode::Unauthorized,
                 "invalid render API token",
             )
             .into_response();

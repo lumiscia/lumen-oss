@@ -13,14 +13,15 @@ import type { RenderProgress } from "../src/types.js";
 function progressBody(
   status: "queued" | "processing" | "succeeded" | "failed" | "cancelled",
   progress: number,
-  extra: Record<string, unknown> = {},
+  error?: { code: string; message: string; retryable: boolean },
 ) {
   return {
-    progress: { progress, state: status, ...extra },
     render: {
       id: "r1",
       status,
-      ...(status === "succeeded" ? { outputUrl: "/renders/r1/artifact" } : {}),
+      progress,
+      ...(status === "succeeded" ? { url: "/renders/r1/artifact" } : {}),
+      ...(error !== undefined ? { error } : {}),
     },
   };
 }
@@ -154,12 +155,12 @@ describe("Lumen.waitForRender", () => {
     ]);
   });
 
-  test("a failed render throws its code and message from progress", async () => {
+  test("a failed render throws its code and message", async () => {
     const { lumen } = scriptedApi(() =>
       Response.json(
         progressBody("failed", 0.4, {
-          error: "media 'hero': not found",
-          errorCode: "media_download_failed",
+          code: "media_download_failed",
+          message: "media 'hero': not found",
           retryable: true,
         }),
       ),
@@ -183,8 +184,8 @@ describe("Lumen.waitForRender", () => {
         read === 1
           ? progressBody("processing", 0.3)
           : progressBody("cancelled", 0.3, {
-              error: "the render was cancelled",
-              errorCode: "render_cancelled",
+              code: "render_cancelled",
+              message: "the render was cancelled",
               retryable: false,
             }),
       ),
@@ -217,39 +218,6 @@ describe("Lumen.waitForRender", () => {
     await expect(lumen.waitForRender("r1")).rejects.toMatchObject({
       code: "render_cancelled",
       message: "Render r1 was cancelled.",
-    });
-  });
-
-  test("a failed render's code is hosted's stage when there is no errorCode", async () => {
-    FakeSocket.plan = [false];
-    const { lumen } = scriptedApi((read) =>
-      Response.json(
-        read === 1
-          ? progressBody("processing", 0.2, { stage: "rendering" })
-          : progressBody("failed", 1, {
-              error: "media hero download failed",
-              stage: "media_download_failed",
-            }),
-      ),
-    );
-
-    const waiting = lumen.waitForRender("r1").catch((caught: unknown) => caught);
-    await vi.advanceTimersByTimeAsync(10_000);
-
-    expect(await waiting).toMatchObject({
-      code: "media_download_failed",
-      message: "media hero download failed",
-    });
-  });
-
-  test("a finished render is understood when hosted has no progress for it", async () => {
-    const { lumen } = scriptedApi(() =>
-      Response.json({ ...progressBody("succeeded", 1), progress: null }),
-    );
-
-    await expect(lumen.waitForRender("r1")).resolves.toMatchObject({
-      status: "succeeded",
-      url: "https://api.test/v1/renders/r1/artifact",
     });
   });
 

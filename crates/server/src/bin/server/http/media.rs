@@ -6,133 +6,85 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures_util::stream;
-use serde::{Deserialize, Serialize};
+use lumen_server_api::{
+    CompleteMultipartRequest, CreateMediaRequest, ErrorCode, MediaKind, MediaResponse,
+    MultipartUploadResponse, PartResponse, UploadTargetResponse, UrlMediaRequest,
+};
 use tokio::io::AsyncReadExt;
 
-use crate::server::assets::{Media, MediaKind, NewUpload, StoreError};
+use crate::server::assets::{NewUpload, StoreError};
 
 use super::{errors::ApiError, state::AppState};
 
 const MAX_FILE_NAME_CHARS: usize = 255;
 const MAX_CONTENT_TYPE_CHARS: usize = 255;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct CreateMediaInput {
-    content_type: String,
-    file_name: String,
-    size_bytes: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct UrlMediaInput {
-    url: String,
-    #[serde(default)]
-    file_name: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct CompleteInput {
-    parts: Vec<CompletedPart>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CompletedPart {
-    etag: String,
-    part_number: u32,
-}
-
-#[derive(Serialize)]
-pub(super) struct MediaResponse {
-    media: Media,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct UploadTargetResponse {
-    media: Media,
-    upload_url: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct MultipartResponse {
-    upload_id: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct PartResponse {
-    etag: String,
-    part_number: u32,
-}
-
 impl From<StoreError> for ApiError {
     fn from(error: StoreError) -> Self {
         match error {
             StoreError::NotFound => Self::new(
                 StatusCode::NOT_FOUND,
-                "media_not_found",
+                ErrorCode::MediaNotFound,
                 "media was not found",
             ),
             StoreError::NotPending => Self::new(
                 StatusCode::CONFLICT,
-                "media_already_uploaded",
+                ErrorCode::MediaAlreadyUploaded,
                 "media already has its content",
             ),
             StoreError::Busy => Self::new(
                 StatusCode::CONFLICT,
-                "media_upload_in_progress",
+                ErrorCode::MediaUploadInProgress,
                 "media content is already being checked",
             ),
             StoreError::TooLarge(limit) => Self::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "media_too_large",
+                ErrorCode::MediaTooLarge,
                 format!("media exceeds the {limit} byte limit"),
             ),
             // The whole server's limit, not this client's rate, which frees as other uploads end.
             StoreError::TooManyPending(limit) => Self::new(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "media_upload_limit",
+                ErrorCode::MediaUploadLimit,
                 format!(
                     "{limit} uploads are already waiting for their content; send, delete or let one expire first"
                 ),
             ),
             StoreError::ExceedsSize(size) => Self::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "media_too_large",
+                ErrorCode::MediaTooLarge,
                 format!("the bytes sent would hold more than sizeBytes, {size}"),
             ),
             StoreError::SizeMismatch { expected, received } => Self::new(
                 StatusCode::BAD_REQUEST,
-                "media_size_mismatch",
+                ErrorCode::MediaSizeMismatch,
                 format!("received {received} bytes, but sizeBytes is {expected}"),
             ),
             StoreError::UploadNotFound => Self::new(
                 StatusCode::NOT_FOUND,
-                "upload_not_found",
+                ErrorCode::UploadNotFound,
                 "multipart upload was not found",
             ),
-            StoreError::InvalidParts(message) => {
-                Self::new(StatusCode::BAD_REQUEST, "invalid_upload_parts", message)
-            }
+            StoreError::InvalidParts(message) => Self::new(
+                StatusCode::BAD_REQUEST,
+                ErrorCode::InvalidUploadParts,
+                message,
+            ),
             StoreError::NotValidated => Self::new(
                 StatusCode::CONFLICT,
-                "media_not_validated",
+                ErrorCode::MediaNotValidated,
                 "media has no validated content",
             ),
             StoreError::Body(message) => Self::new(
                 StatusCode::BAD_REQUEST,
-                "invalid_request_body",
+                ErrorCode::InvalidRequestBody,
                 format!("failed reading the request body: {message}"),
             ),
             StoreError::Io(error) => {
                 tracing::warn!(%error, "media store write failed");
                 Self::new(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "media_store_failed",
+                    ErrorCode::MediaStoreFailed,
                     "failed to store media",
                 )
             }
@@ -144,7 +96,7 @@ fn bounded(field: &str, value: String, max_chars: usize) -> Result<String, ApiEr
     if value.is_empty() || value.chars().count() > max_chars {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            "invalid_request_body",
+            ErrorCode::InvalidRequestBody,
             format!("{field} must be 1 to {max_chars} characters"),
         ));
     }
@@ -153,7 +105,7 @@ fn bounded(field: &str, value: String, max_chars: usize) -> Result<String, ApiEr
 
 pub(super) async fn create_media(
     State(state): State<AppState>,
-    input: Result<Json<CreateMediaInput>, JsonRejection>,
+    input: Result<Json<CreateMediaRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let Json(input) = input?;
     let media = state.assets.create(NewUpload {
@@ -186,7 +138,11 @@ pub(super) async fn start_multipart(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     let upload_id = state.assets.start_multipart(&id)?;
-    Ok((StatusCode::CREATED, Json(MultipartResponse { upload_id })).into_response())
+    Ok((
+        StatusCode::CREATED,
+        Json(MultipartUploadResponse { upload_id }),
+    )
+        .into_response())
 }
 
 pub(super) async fn put_part(
@@ -204,7 +160,7 @@ pub(super) async fn put_part(
 pub(super) async fn complete_multipart(
     State(state): State<AppState>,
     Path((id, upload_id)): Path<(String, String)>,
-    input: Result<Json<CompleteInput>, JsonRejection>,
+    input: Result<Json<CompleteMultipartRequest>, JsonRejection>,
 ) -> Result<Json<MediaResponse>, ApiError> {
     let Json(input) = input?;
     let parts: Vec<(u32, String)> = input
@@ -222,7 +178,7 @@ pub(super) async fn complete_multipart(
 /// Downloads `url` once, through the same address checks as manifest media, and keeps the file.
 pub(super) async fn create_url_media(
     State(state): State<AppState>,
-    input: Result<Json<UrlMediaInput>, JsonRejection>,
+    input: Result<Json<UrlMediaRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let Json(input) = input?;
     let file_name = match input.file_name {
@@ -245,8 +201,8 @@ pub(super) async fn create_url_media(
         Ok(downloaded) => downloaded,
         Err(failure) => {
             let error = failure.error;
-            let status = match error.code.as_str() {
-                "media_download_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
+            let status = match error.code {
+                ErrorCode::MediaDownloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
                 // A host this server won't fetch from isn't a transient failure.
                 _ if failure.non_public_host => StatusCode::UNPROCESSABLE_ENTITY,
                 _ if error.retryable => StatusCode::BAD_GATEWAY,

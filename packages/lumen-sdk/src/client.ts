@@ -1,9 +1,8 @@
 import { Composition, type LumenComposition } from "@lumiscia/lumen-shared";
 
 import { LumenError, errorFromResponse, isRecord, readBody } from "./errors.js";
-import { outputBody } from "./output.js";
 import { parseMedia, parsePart, parseUploadId, parseUploadTarget } from "./media.js";
-import { isTerminal, parseProgress, parseRender, renderError, resolveUrl } from "./render.js";
+import { isTerminal, parseRender, renderError, resolveUrl } from "./render.js";
 import { watchRender, type SocketUpdate } from "./socket.js";
 import type {
   AssetSource,
@@ -77,9 +76,9 @@ export class Lumen {
         ...(options.webhookUrl !== undefined ? { webhookUrl: options.webhookUrl } : {}),
         ...(options.quality !== undefined ? { quality: options.quality } : {}),
         ...(options.codec !== undefined ? { codec: options.codec } : {}),
-        ...(options.bitDepth !== undefined ? { bit_depth: options.bitDepth } : {}),
+        ...(options.bitDepth !== undefined ? { bitDepth: options.bitDepth } : {}),
         ...(options.alpha !== undefined ? { alpha: options.alpha } : {}),
-        ...(options.output !== undefined ? { output: outputBody(options.output) } : {}),
+        ...(options.output !== undefined ? { output: options.output } : {}),
       },
       idempotencyKey: options.idempotencyKey,
       signal: options.signal,
@@ -307,7 +306,7 @@ export class Lumen {
         const body = await this.#request("GET", `/renders/${encodeURIComponent(id)}/progress`, {
           signal,
         });
-        const render = parseProgress(body, this.#baseUrl);
+        const render = parseRender(body.render, this.#baseUrl);
         this.#rateLimitStreak = 0;
         reads.lastSucceededAt = Date.now();
         return render;

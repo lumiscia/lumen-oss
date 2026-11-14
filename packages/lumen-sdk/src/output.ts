@@ -54,9 +54,3 @@ export function outputFile(output: RenderOutput = {}): {
       return { contentType: "application/zip", extension: "zip" };
   }
 }
-
-/** The request body's `output`, whose JPEG quality is `jpeg_quality` on the wire. */
-export function outputBody(output: RenderOutput): Record<string, unknown> {
-  const { jpegQuality, ...rest } = output;
-  return { ...rest, ...(jpegQuality !== undefined ? { jpeg_quality: jpegQuality } : {}) };
-}
