@@ -38,15 +38,6 @@ impl CudaDriver {
         Ok(CudaContext { inner })
     }
 
-    pub fn driver_version(&self) -> Result<i32, String> {
-        result::init().map_err(|error| error.to_string())?;
-        let mut version = MaybeUninit::<i32>::uninit();
-        unsafe { sys::cuDriverGetVersion(version.as_mut_ptr()) }
-            .result()
-            .map_err(|error| error.to_string())?;
-        Ok(unsafe { version.assume_init() })
-    }
-
     pub fn devices(&self) -> Result<Vec<CudaDeviceInfo>, String> {
         result::init().map_err(|error| error.to_string())?;
         let count = result::device::get_count().map_err(|error| error.to_string())?;

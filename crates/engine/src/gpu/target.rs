@@ -527,7 +527,7 @@ mod tests {
 
         target.convert(gpu, &texture, None).expect("convert");
         let nv12 = read_nv12(gpu, &target);
-        let chroma = VulkanVideoFrame::nv12_chroma_offset(width, height) as usize;
+        let chroma = VulkanFrameLayout::nv12(width, height).chroma_offset() as usize;
         // Pure red in BT.709 limited range.
         assert!(nv12[..chroma].iter().all(|&luma| luma == 63));
         assert!(nv12[chroma..].chunks(2).all(|cbcr| cbcr == [102, 240]));
@@ -713,7 +713,7 @@ mod tests {
             view_formats: &[],
         });
         let target = VulkanVideoTarget::new(&gpu, size, BitDepth::Eight, true);
-        let pitch = VulkanVideoFrame::nv12_pitch(size.width) as usize;
+        let pitch = VulkanFrameLayout::nv12(size.width, 1).luma_pitch() as usize;
         for fraction in [0.2, 0.25, 0.4, 0.5, 0.6, 0.75, 0.8] {
             let grey = f16_bits(crate::gpu::color::srgb_to_linear(
                 (60.0 + fraction - 16.0) / 219.0,

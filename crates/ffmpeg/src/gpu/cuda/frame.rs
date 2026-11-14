@@ -15,7 +15,7 @@ pub struct CudaVideoFrame {
     depth: u8,
     pts: Option<i64>,
     // Keeps library-owned CUDA memory alive while FFmpeg retains a submitted frame.
-    retention: Option<Arc<dyn Send + Sync>>,
+    _retention: Arc<dyn Send + Sync>,
 }
 
 impl std::fmt::Debug for CudaVideoFrame {
@@ -28,40 +28,11 @@ impl std::fmt::Debug for CudaVideoFrame {
             .field("pitch", &self.pitch)
             .field("depth", &self.depth)
             .field("pts", &self.pts)
-            .field("retained", &self.retention.is_some())
             .finish()
     }
 }
 
 impl CudaVideoFrame {
-    /// Creates a frame view over externally owned CUDA device memory.
-    ///
-    /// Prefer [`CudaDeviceAllocation::as_video_frame`](super::CudaDeviceAllocation::as_video_frame)
-    /// for allocations created by this crate; those frames retain their allocation automatically.
-    ///
-    /// # Safety
-    ///
-    /// `device_ptr` must point to a CUDA allocation holding an NV12 frame laid out as the type
-    /// describes for `width`, `height`, and `pitch`. The allocation must remain valid and
-    /// unmodified until the call that submits the frame to an encoder returns.
-    pub unsafe fn from_device_ptr(
-        device_ptr: u64,
-        width: u32,
-        height: u32,
-        pitch: u64,
-        pts: Option<i64>,
-    ) -> Self {
-        Self {
-            device_ptr,
-            width,
-            height,
-            pitch,
-            depth: 8,
-            pts,
-            retention: None,
-        }
-    }
-
     pub(crate) fn from_retained_device_ptr(
         device_ptr: u64,
         width: u32,
@@ -78,7 +49,7 @@ impl CudaVideoFrame {
             pitch,
             depth,
             pts,
-            retention: Some(retention),
+            _retention: retention,
         }
     }
 

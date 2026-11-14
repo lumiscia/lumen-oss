@@ -341,9 +341,5 @@ pub fn ms_to_sample(ms: u64) -> u64 {
     ((ms as u128 * u128::from(AUDIO_SAMPLE_RATE)) / 1_000) as u64
 }
 
-pub fn duration_samples(duration_frames: u32, fps: f32) -> u64 {
-    ((duration_frames as f64 / fps as f64) * f64::from(AUDIO_SAMPLE_RATE)).round() as u64
-}
-
 #[cfg(test)]
 mod tests;
