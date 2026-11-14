@@ -1,12 +1,10 @@
 import type {
-  AnimationInfo,
-  CameraInfo,
-  MaterialInfo,
+  Render as WireRender,
+  RenderFailure,
+  RenderOutput,
   VideoBitDepth,
   VideoCodec,
 } from "@lumiscia/lumen-types";
-
-import type { RenderOutput } from "./output.js";
 
 export interface LumenOptions {
   readonly apiKey: string;
@@ -50,34 +48,41 @@ export interface RenderOptions {
   readonly output?: RenderOutput;
 }
 
-/** `cancelled` is a render stopped by `cancelRender`, which only lumen-server supports. */
-export type RenderStatus = "queued" | "processing" | "succeeded" | "failed" | "cancelled";
-
-export interface RenderFailure {
-  readonly code: string;
-  readonly message: string;
-  readonly retryable?: boolean;
-}
-
-/** A render as `render`, `getRender` and `waitForRender` return it. */
-export interface Render {
+/** What every render has, whatever its status. */
+interface RenderFields extends Partial<
+  Pick<
+    WireRender,
+    "costMicros" | "createdAt" | "durationMs" | "inputHash" | "organizationId" | "outputBytes"
+  >
+> {
   readonly id: string;
-  readonly status: RenderStatus;
-  /** From 0 to 1, when the API reports it. */
-  readonly progress?: number;
-  /** Absolute URL of the output, once the render has succeeded. Pass the render to `download`. */
-  readonly url?: string;
-  /** Why the render failed, when `status` is `failed`. */
-  readonly error?: RenderFailure;
-  /** Whether an earlier render with the same input answered this request. */
+  /** From 0 to 1. 0 when the API reports none. */
+  readonly progress: number;
+  /** Whether an earlier render with the same input answered this request. Only `render()` sets it. */
   readonly cached?: boolean;
-  /** Render cost in millionths of a US dollar. Self-hosted servers report 0. */
-  readonly costMicros?: number;
-  readonly createdAt?: string;
-  readonly inputHash?: string;
-  readonly organizationId?: string;
+  /** When the hosted API deletes the output. `lumen-server` sends none. */
   readonly outputExpiresAt?: string;
 }
+
+/** A render as `render`, `getRender` and `waitForRender` return it: its `status` says what else it has. */
+export type Render =
+  | (RenderFields & { readonly status: "queued" | "processing" })
+  | SucceededRender
+  | FailedRender;
+
+export interface SucceededRender extends RenderFields {
+  readonly status: "succeeded";
+  /** Absolute URL of the output. Pass the render to `download`. */
+  readonly url: string;
+}
+
+export interface FailedRender extends RenderFields {
+  readonly status: "failed" | "cancelled";
+  readonly error: RenderFailure;
+}
+
+/** The statuses a render can have. `cancelled` is a render stopped by `cancelRender`, which only lumen-server supports. */
+export type RenderStatus = Render["status"];
 
 /** Remote media by alias: the alias is what a node's source says, the value an `http` or `https` URL. */
 export type RenderMediaManifest = Record<string, string>;
@@ -97,57 +102,6 @@ export interface WaitForRenderOptions {
   /** Called when the status or progress changes, from the render's socket and from reads. */
   readonly onProgress?: (progress: RenderProgress) => void;
   readonly signal?: AbortSignal;
-}
-
-/** What the server decided an upload is by opening it, whatever its name and content type say. */
-export type MediaKind = "image" | "video" | "audio" | "font" | "model" | "environment";
-
-/** What opening an upload found. Each kind fills its own fields. */
-export interface MediaMetadata {
-  /** Images, video and environment maps. */
-  readonly width?: number;
-  readonly height?: number;
-  /** Video and audio. */
-  readonly durationMs?: number;
-  readonly fps?: number;
-  readonly frameCount?: number;
-  readonly codec?: string;
-  readonly hasAudio?: boolean;
-  readonly sampleRate?: number;
-  readonly channels?: number;
-  /** Fonts. */
-  readonly families?: readonly string[];
-  readonly faces?: readonly {
-    readonly family: string;
-    readonly weight: number;
-    readonly style: string;
-  }[];
-  /**
-   * Models: the clips `animation`, the materials `texture_material` and the cameras `camera` of a
-   * `model_3d` select.
-   */
-  readonly animations?: readonly AnimationInfo[];
-  readonly materials?: readonly MaterialInfo[];
-  readonly cameras?: readonly CameraInfo[];
-}
-
-export interface TemporaryMedia {
-  readonly contentType: string;
-  readonly createdAt: string;
-  readonly expiresAt: string;
-  readonly fileName: string;
-  readonly id: string;
-  readonly objectKey: string | null;
-  readonly rejectionReason: string | null;
-  readonly sizeBytes: number;
-  readonly sourceType: "upload" | "url";
-  readonly sourceUrl: string | null;
-  readonly status: "pending" | "uploaded" | "validated" | "rejected";
-  readonly uploadedBytes: number | null;
-  /** Set once the upload is complete and was readable. */
-  readonly kind?: MediaKind | null;
-  /** Set with `kind`. */
-  readonly metadata?: MediaMetadata | null;
 }
 
 export type UploadMediaBody = Blob | BufferSource | ReadableStream<Uint8Array>;

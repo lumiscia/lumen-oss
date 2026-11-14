@@ -1,5 +1,7 @@
-import { LumenError, isRecord } from "./errors.js";
-import type { Render, RenderFailure, RenderStatus } from "./types.js";
+import type { RenderFailure } from "@lumiscia/lumen-types";
+
+import { LumenError, isRecord, withMedia } from "./errors.js";
+import type { FailedRender, Render, RenderStatus } from "./types.js";
 
 const statuses: readonly RenderStatus[] = [
   "queued",
@@ -9,7 +11,13 @@ const statuses: readonly RenderStatus[] = [
   "cancelled",
 ];
 
-export function isTerminal(status: RenderStatus): boolean {
+export function isRenderStatus(value: unknown): value is RenderStatus {
+  return statuses.includes(value as RenderStatus);
+}
+
+export function isTerminal(
+  status: RenderStatus,
+): status is Exclude<RenderStatus, "queued" | "processing"> {
   return status === "succeeded" || status === "failed" || status === "cancelled";
 }
 
@@ -30,55 +38,67 @@ export function resolveUrl(url: string, baseUrl: URL): string {
 
 /** Reads the `render` object of an API response, resolving a relative output URL against the API. */
 export function parseRender(job: unknown, baseUrl: URL, extra: { cached?: boolean } = {}): Render {
-  if (!isRecord(job) || typeof job.id !== "string" || !isStatus(job.status)) {
+  if (!isRecord(job) || typeof job.id !== "string" || !isRenderStatus(job.status)) {
     throw new LumenError("invalid_response", "Lumen API returned a malformed render.");
   }
 
-  const error = parseFailure(job.error);
-  return {
+  const fields = {
     id: job.id,
-    status: job.status,
-    ...(typeof job.progress === "number" ? { progress: job.progress } : {}),
-    ...(typeof job.url === "string" && job.url !== "" ? { url: resolveUrl(job.url, baseUrl) } : {}),
-    ...(error !== undefined ? { error } : {}),
+    progress: typeof job.progress === "number" ? job.progress : 0,
     ...(extra.cached !== undefined ? { cached: extra.cached } : {}),
     ...(typeof job.costMicros === "number" ? { costMicros: job.costMicros } : {}),
     ...(typeof job.createdAt === "string" ? { createdAt: job.createdAt } : {}),
     ...(typeof job.inputHash === "string" ? { inputHash: job.inputHash } : {}),
     ...(typeof job.organizationId === "string" ? { organizationId: job.organizationId } : {}),
+    ...(typeof job.durationMs === "number" ? { durationMs: job.durationMs } : {}),
+    ...(typeof job.outputBytes === "number" ? { outputBytes: job.outputBytes } : {}),
     ...(typeof job.outputExpiresAt === "string" ? { outputExpiresAt: job.outputExpiresAt } : {}),
   };
+  switch (job.status) {
+    case "succeeded":
+      if (typeof job.url !== "string" || job.url === "") {
+        throw new LumenError(
+          "invalid_response",
+          "Lumen API returned a succeeded render without an output URL.",
+        );
+      }
+      return { ...fields, status: job.status, url: resolveUrl(job.url, baseUrl) };
+    case "failed":
+    case "cancelled":
+      return {
+        ...fields,
+        status: job.status,
+        error: parseFailure(job.error) ?? defaultFailure(job.id, job.status),
+      };
+    default:
+      return { ...fields, status: job.status };
+  }
 }
 
 /** The error a failed or cancelled render raises where a result was expected. */
-export function renderError(render: Render): LumenError {
-  const failure = render.error;
-  return new LumenError(
-    failure?.code ?? failureCode(render.status),
-    failure?.message ??
-      `Render ${render.id} ${render.status === "cancelled" ? "was cancelled" : "failed"}.`,
-    {
-      renderId: render.id,
-      ...(failure?.retryable !== undefined ? { retryable: failure.retryable } : {}),
-    },
-  );
+export function renderError(render: FailedRender): LumenError {
+  const { code, message, retryable, media } = render.error;
+  return new LumenError(code, message, {
+    renderId: render.id,
+    retryable,
+    ...(media !== undefined ? { media } : {}),
+  });
 }
 
-export function parseFailure(error: unknown): RenderFailure | undefined {
+function parseFailure(error: unknown): RenderFailure | undefined {
   if (!isRecord(error) || typeof error.message !== "string") {
     return undefined;
   }
   return {
     code: typeof error.code === "string" ? error.code : "render_failed",
     message: error.message,
-    ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
+    retryable: typeof error.retryable === "boolean" ? error.retryable : false,
+    ...withMedia(error.media),
   };
 }
 
-function failureCode(status: unknown): string {
-  return status === "cancelled" ? "render_cancelled" : "render_failed";
-}
-
-function isStatus(value: unknown): value is RenderStatus {
-  return statuses.includes(value as RenderStatus);
+function defaultFailure(id: string, status: "failed" | "cancelled"): RenderFailure {
+  return status === "cancelled"
+    ? { code: "render_cancelled", message: `Render ${id} was cancelled.`, retryable: false }
+    : { code: "render_failed", message: `Render ${id} failed.`, retryable: false };
 }

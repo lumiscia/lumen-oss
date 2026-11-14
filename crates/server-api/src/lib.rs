@@ -23,7 +23,7 @@ pub use media::{
 };
 pub use output::{FrameRange, OutputFormat, RenderOutput, VideoBitDepth, VideoCodec};
 pub use render::{
-    CheckRequest, CheckResponse, CreateRenderResponse, Render, RenderFailure, RenderRequest,
+    CheckReport, CheckRequest, CreateRenderResponse, Render, RenderFailure, RenderRequest,
     RenderResponse, RenderStatus,
 };
 

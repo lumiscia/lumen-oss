@@ -1,5 +1,23 @@
 {
   "$defs": {
+    "CheckReport": {
+      "description": "The answer to `POST /renders/check`.",
+      "properties": {
+        "diagnostics": {
+          "description": "Everything wrong with the composition, each a `Diagnostic` of the runtime schema.",
+          "items": {
+            "$ref": "runtime.schema.json#/$defs/Diagnostic"
+          },
+          "type": "array"
+        },
+        "ok": {
+          "description": "Whether the composition has no errors. Warnings don't count.",
+          "type": "boolean"
+        }
+      },
+      "required": ["ok", "diagnostics"],
+      "type": "object"
+    },
     "CheckRequest": {
       "description": "The body of `POST /renders/check`. A render request is one too.",
       "properties": {
@@ -16,24 +34,6 @@
         }
       },
       "required": ["composition"],
-      "type": "object"
-    },
-    "CheckResponse": {
-      "description": "The answer to `POST /renders/check`.",
-      "properties": {
-        "diagnostics": {
-          "description": "Everything wrong with the composition, each a `Diagnostic` of the runtime schema.",
-          "items": {
-            "$ref": "runtime.schema.json#/$defs/Diagnostic"
-          },
-          "type": "array"
-        },
-        "ok": {
-          "description": "Whether the composition has no errors. Warnings don't count.",
-          "type": "boolean"
-        }
-      },
-      "required": ["ok", "diagnostics"],
       "type": "object"
     },
     "CompleteMultipartRequest": {

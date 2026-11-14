@@ -4,20 +4,20 @@
 import type { LumenComposition } from "./schema.js";
 import type { AnimationInfo, CameraInfo, Diagnostic, MaterialInfo, MediaFailure } from "./runtime.js";
 
+/** The answer to `POST /renders/check`. */
+export interface CheckReport {
+  /** Everything wrong with the composition, each a `Diagnostic` of the runtime schema. */
+  readonly diagnostics: readonly Diagnostic[];
+  /** Whether the composition has no errors. Warnings don't count. */
+  readonly ok: boolean;
+}
+
 /** The body of `POST /renders/check`. A render request is one too. */
 export interface CheckRequest {
   /** The composition document, as `composition.schema.json` describes it. */
   readonly composition: LumenComposition;
   /** The media manifest a render would stage, whose aliases count as present. */
   readonly media?: Readonly<Record<string, string>>;
-}
-
-/** The answer to `POST /renders/check`. */
-export interface CheckResponse {
-  /** Everything wrong with the composition, each a `Diagnostic` of the runtime schema. */
-  readonly diagnostics: readonly Diagnostic[];
-  /** Whether the composition has no errors. Warnings don't count. */
-  readonly ok: boolean;
 }
 
 /** The body of `POST /media/{id}/multipart/{uploadId}/complete`: the parts to join, in order. */

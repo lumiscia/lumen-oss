@@ -89,6 +89,16 @@ const clip = await lumen.uploadMedia({ body: file, fileName: "clip.mp4" });
 composition.addNode({ type: "media_in", params: { kind: "video", source: assetSource(clip) } });
 ```
 
+`check` asks the server what is wrong with a composition without rendering it, and `getMedia` and `deleteMedia` read and remove uploaded media (an id with or without the `asset:` prefix, or the media itself). `render` and `check` take a `Composition` or any object with `toJSON()`:
+
+```ts
+const report = await lumen.check(composition); // { ok, diagnostics }
+const upload = await lumen.getMedia(clip);
+await lumen.deleteMedia(clip);
+```
+
+A `Render` is a union on `status`: a `queued` or `processing` render has neither `url` nor `error`, a `succeeded` one has `url` and a `failed` or `cancelled` one has `error`. `waitForRender` returns the succeeded one, so its `url` is always there; it throws the others.
+
 Failed requests throw a `LumenError` with a `code` and `status`. When a render is rejected because the composition is invalid, its `diagnostics` say what is wrong and where:
 
 ```ts

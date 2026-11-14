@@ -61,7 +61,7 @@ pub struct CheckRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
-pub struct CheckResponse {
+pub struct CheckReport {
     /// Whether the composition has no errors. Warnings don't count.
     pub ok: bool,
     /// Everything wrong with the composition, each a `Diagnostic` of the runtime schema.

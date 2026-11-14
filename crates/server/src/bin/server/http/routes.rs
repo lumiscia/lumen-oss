@@ -11,7 +11,7 @@ use lumen_engine::{composition::Composition, media::AssetResolver};
 use lumen_ffmpeg::{BitDepth, EncodeCodec, QualityRequest};
 use lumen_server::render::{RenderOutput, check_composition, resolve_encoder};
 use lumen_server_api::{
-    CheckRequest, CheckResponse, CreateRenderResponse, ErrorCode, Health, RenderRequest,
+    CheckReport, CheckRequest, CreateRenderResponse, ErrorCode, Health, RenderRequest,
     RenderResponse, VideoBitDepth, VideoCodec,
 };
 use tokio::sync::OwnedSemaphorePermit;
@@ -204,7 +204,7 @@ fn load_composition(
 pub(super) async fn check_render(
     State(state): State<AppState>,
     input: Result<Json<CheckRequest>, JsonRejection>,
-) -> Result<Json<CheckResponse>, ApiError> {
+) -> Result<Json<CheckReport>, ApiError> {
     let Json(input) = input?;
     validate_media_manifest(&input.media)
         .map_err(|error| ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, error))?;
@@ -225,7 +225,7 @@ pub(super) async fn check_render(
             format!("check worker join failed: {error}"),
         )
     })?;
-    Ok(Json(CheckResponse {
+    Ok(Json(CheckReport {
         ok: !diagnostics.iter().any(|diagnostic| diagnostic.is_error()),
         diagnostics: sanitized_diagnostics(&diagnostics),
     }))

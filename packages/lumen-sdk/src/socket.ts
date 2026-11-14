@@ -1,5 +1,7 @@
+import type { RenderEventType } from "@lumiscia/lumen-types";
+
 import { LumenError, errorFromResponse, isRecord } from "./errors.js";
-import { isTerminal } from "./render.js";
+import { isRenderStatus, isTerminal } from "./render.js";
 import type { RenderProgress, RenderStatus } from "./types.js";
 
 /** Present in Cloudflare Workers, where a socket comes from a `fetch` upgrade. */
@@ -28,7 +30,7 @@ export interface SocketResult {
   readonly rejection?: LumenError;
 }
 
-const eventStatuses = new Map<string, RenderStatus>([
+const eventStatuses = new Map<RenderEventType, RenderStatus>([
   ["render.queued", "queued"],
   ["render.started", "processing"],
   ["render.progress", "processing"],
@@ -36,7 +38,6 @@ const eventStatuses = new Map<string, RenderStatus>([
   ["render.failed", "failed"],
   ["render.cancelled", "cancelled"],
 ]);
-const statuses = new Set<unknown>(["queued", "processing", "succeeded", "failed", "cancelled"]);
 
 /**
  * Watches one render's socket until the render ends, the socket closes or fails, `timeoutMs` passes
@@ -154,7 +155,7 @@ function parseEvent(data: unknown): SocketUpdate | undefined {
   if (typeStatus === undefined || typeof fields.renderId !== "string") {
     return undefined;
   }
-  const status = statuses.has(fields.state) ? (fields.state as RenderStatus) : typeStatus;
+  const status = isRenderStatus(fields.state) ? fields.state : typeStatus;
   return {
     id: fields.renderId,
     status,
