@@ -1,8 +1,10 @@
 use std::{env, sync::Arc};
 
-use anyhow::{Context, Result};
+use crate::FrameError;
+
 #[cfg(not(target_arch = "wasm32"))]
-use anyhow::{anyhow, bail};
+use anyhow::anyhow;
+use anyhow::{Context, Result};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::Size;
@@ -282,7 +284,7 @@ impl ValidationScope {
         }
     }
 
-    pub(crate) fn finish(self) -> Result<()> {
+    pub(crate) fn finish(self) -> Result<(), FrameError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             use std::{
@@ -294,7 +296,9 @@ impl ValidationScope {
             if let Poll::Ready(Some(error)) =
                 pop.as_mut().poll(&mut Context::from_waker(Waker::noop()))
             {
-                bail!("GPU validation failed: {error}");
+                return Err(FrameError::Device(format!(
+                    "GPU validation failed: {error}"
+                )));
             }
         }
         Ok(())

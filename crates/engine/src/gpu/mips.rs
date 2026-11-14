@@ -285,7 +285,7 @@ fn fill(
     origin: [i32; 2],
     chain: &MipChain,
     levels: u32,
-) -> anyhow::Result<()> {
+) -> Result<(), lumen_gpu::FrameError> {
     let format = rec.format(source);
     let mut from = source;
     for (level, &target) in chain.levels.iter().take(levels as usize).enumerate() {

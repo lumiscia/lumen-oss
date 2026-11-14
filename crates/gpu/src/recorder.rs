@@ -13,9 +13,9 @@
 
 use std::{hash::Hash, sync::Arc};
 
-use anyhow::Result;
-
 use crate::{Size, renderer::ValidationScope};
+
+type Result<T, E = FrameError> = std::result::Result<T, E>;
 
 /// The workgroup counts of a compute pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,19 +25,20 @@ pub struct Dispatch {
     pub z: u32,
 }
 
-/// Why the recorder refused a frame for a reason other than the device failing. Errors the
-/// recorder returns that are neither of these come from the device.
+/// Why the recorder failed a frame.
 #[derive(Debug)]
 pub enum FrameError {
     /// The frame recorded more data than the device's buffers hold.
     TooLarge(String),
     /// The recorder was used against its contract, or has broken one of its own.
     Misuse(String),
+    /// The device refused what the recorder built or submitted.
+    Device(String),
 }
 
 impl std::fmt::Display for FrameError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (Self::TooLarge(details) | Self::Misuse(details)) = self;
+        let (Self::TooLarge(details) | Self::Misuse(details) | Self::Device(details)) = self;
         f.write_str(details)
     }
 }
@@ -731,15 +732,13 @@ impl Recorder {
                 return Err(FrameError::Misuse(format!(
                     "the external texture has size {}x{}, expected {}x{}",
                     target_key.width, target_key.height, output_key.width, output_key.height
-                ))
-                .into());
+                )));
             }
             if target_key.format != output_key.format {
                 return Err(FrameError::Misuse(format!(
                     "the external texture has format {:?}, expected {:?}",
                     target_key.format, output_key.format
-                ))
-                .into());
+                )));
             }
             let stands_in = output_frame.is_some_and(|index| {
                 let texture = &self.frame_textures[index];
@@ -756,8 +755,7 @@ impl Recorder {
                     if !target_usage.contains(wgpu::TextureUsages::COPY_DST) {
                         return Err(FrameError::Misuse(format!(
                             "the external texture can't take a kept output: it has usage {target_usage:?}, without COPY_DST"
-                        ))
-                        .into());
+                        )));
                     }
                     let size = Size::new(target_key.width, target_key.height);
                     self.copy(output, external, [0, 0], size);
@@ -1209,8 +1207,7 @@ impl Recorder {
         {
             return Err(FrameError::Misuse(format!(
                 "render program `{label}` binds a storage texture"
-            ))
-            .into());
+            )));
         }
         let contents = format!(
             "{vertex}{fragment}{variant}{:?}{:?}{:?}{:?}{layout:?}{shader}",
@@ -1604,8 +1601,7 @@ impl Recorder {
                     "the frame's data doesn't fit the GPU: {} can bind at most {} bytes at once \
                      and hold {} bytes in all",
                     arena.label, arena.max_binding, arena.max_buffer
-                ))
-                .into());
+                )));
             }
         }
         let uniforms_grew = self.uniforms.upload(&self.device, &self.queue);
@@ -1650,8 +1646,7 @@ impl Recorder {
                     else {
                         return Err(FrameError::Misuse(
                             "recorded a render program in a compute pass".to_string(),
-                        )
-                        .into());
+                        ));
                     };
                     let pass = compute.get_or_insert_with(|| {
                         encoder
@@ -1685,8 +1680,7 @@ impl Recorder {
                     else {
                         return Err(FrameError::Misuse(
                             "recorded a compute program in a render pass".to_string(),
-                        )
-                        .into());
+                        ));
                     };
                     let depth_tex = depth.map(|(texture, _)| texture);
                     let continues = matches!(load, TargetLoad::Load)
