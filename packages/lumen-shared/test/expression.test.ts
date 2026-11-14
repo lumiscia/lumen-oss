@@ -111,8 +111,8 @@ const bob = fn("bob(start, offset)", (start: Num, offset: Arg<Vec2>) => rise(sta
 
 interface Case {
   readonly expression: Expr;
-  /** Numbers, `[x, y]` for vec2 values, `#rrggbbaa` for colours, or strings. Omit to only evaluate. */
-  readonly expected?: number | Vec2 | string;
+  /** Numbers, arrays for vector values, `#rrggbbaa` for colours, or strings. Omit to only evaluate. */
+  readonly expected?: number | readonly number[] | string;
 }
 
 /** Evaluated at frame 45 of a 30 fps, 1920x1080 composition. */
