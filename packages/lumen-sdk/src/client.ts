@@ -1,6 +1,11 @@
-import { Composition, type LumenComposition } from "@lumiscia/lumen-shared";
+import type {
+  CheckReport,
+  CompositionSource,
+  LumenComposition,
+  Media,
+} from "@lumiscia/lumen-types";
 
-import { LumenError, errorFromResponse, isRecord, readBody } from "./errors.js";
+import { LumenError, errorFromResponse, isRecord, readBody, readDiagnostics } from "./errors.js";
 import { parseMedia, parsePart, parseUploadId, parseUploadTarget } from "./media.js";
 import { isTerminal, parseRender, renderError, resolveUrl } from "./render.js";
 import { watchRender, type SocketUpdate } from "./socket.js";
@@ -9,9 +14,10 @@ import type {
   CreateUrlMediaOptions,
   LumenOptions,
   Render,
+  RenderMediaManifest,
   RenderOptions,
   RenderStatus,
-  TemporaryMedia,
+  SucceededRender,
   UploadMediaOptions,
   WaitForRenderOptions,
 } from "./types.js";
@@ -31,13 +37,9 @@ const maxRateLimitBackoffMs = 60_000;
 /** Spreads waits that started together: a delay grows by up to this fraction. */
 const jitter = 0.25;
 
-const statusOrder: Record<RenderStatus, number> = {
-  queued: 0,
-  processing: 1,
-  succeeded: 2,
-  failed: 2,
-  cancelled: 2,
-};
+function statusOrder(status: RenderStatus): number {
+  return isTerminal(status) ? 2 : status === "processing" ? 1 : 0;
+}
 
 type SendInit = Omit<RequestInit, "signal"> & {
   readonly signal?: AbortSignal | undefined;
@@ -65,13 +67,10 @@ export class Lumen {
   }
 
   /** Submits a render and returns it queued. Pass it to `waitForRender`, then to `download`. */
-  async render(
-    composition: Composition | LumenComposition,
-    options: RenderOptions = {},
-  ): Promise<Render> {
+  async render(composition: CompositionSource, options: RenderOptions = {}): Promise<Render> {
     const body = await this.#request("POST", "/renders", {
       body: {
-        composition: composition instanceof Composition ? composition.toJSON() : composition,
+        composition: compositionJson(composition),
         media: options.media ?? {},
         ...(options.webhookUrl !== undefined ? { webhookUrl: options.webhookUrl } : {}),
         ...(options.quality !== undefined ? { quality: options.quality } : {}),
@@ -88,6 +87,21 @@ export class Lumen {
       this.#baseUrl,
       typeof body.cached === "boolean" ? { cached: body.cached } : {},
     );
+  }
+
+  /** Checks a composition without rendering it: what `render` would refuse, and warnings. */
+  async check(
+    composition: CompositionSource,
+    options: { media?: RenderMediaManifest; signal?: AbortSignal } = {},
+  ): Promise<CheckReport> {
+    const body = await this.#request("POST", "/renders/check", {
+      body: { composition: compositionJson(composition), media: options.media ?? {} },
+      signal: options.signal,
+    });
+    if (typeof body.ok !== "boolean" || !Array.isArray(body.diagnostics)) {
+      throw new LumenError("invalid_response", "Lumen API returned a malformed check report.");
+    }
+    return { ok: body.ok, diagnostics: readDiagnostics(body.diagnostics) };
   }
 
   async getRender(id: string, options: { signal?: AbortSignal } = {}): Promise<Render> {
@@ -127,14 +141,14 @@ export class Lumen {
   async waitForRender(
     render: string | Pick<Render, "id">,
     options: WaitForRenderOptions = {},
-  ): Promise<Render> {
+  ): Promise<SucceededRender> {
     const id = typeof render === "string" ? render : render.id;
     const { signal } = options;
     let status: RenderStatus = "queued";
     let progress = 0;
     let lastReported = "";
     const report = (update: SocketUpdate) => {
-      if (statusOrder[update.status] >= statusOrder[status]) {
+      if (statusOrder(update.status) >= statusOrder(status)) {
         status = update.status;
       }
       progress = Math.max(progress, update.progress ?? 0);
@@ -160,7 +174,7 @@ export class Lumen {
       if (current.status === "succeeded") {
         return current;
       }
-      if (isTerminal(current.status)) {
+      if (current.status === "failed" || current.status === "cancelled") {
         throw renderError(current);
       }
 
@@ -191,7 +205,7 @@ export class Lumen {
    * own origin. Rejects with a `LumenError` when the render has no output.
    */
   async download(
-    render: string | Pick<Render, "id" | "url">,
+    render: string | { id: string; url?: string },
     options: { signal?: AbortSignal } = {},
   ): Promise<Response> {
     const id = typeof render === "string" ? render : render.id;
@@ -201,12 +215,12 @@ export class Lumen {
       if (current.status === "failed" || current.status === "cancelled") {
         throw renderError(current);
       }
+      if (current.status !== "succeeded") {
+        throw new LumenError("render_not_ready", `Render ${id} has no output yet.`, {
+          renderId: id,
+        });
+      }
       url = current.url;
-    }
-    if (url === undefined) {
-      throw new LumenError("render_not_ready", `Render ${id} has no output yet.`, {
-        renderId: id,
-      });
     }
     return this.#send(new URL(resolveUrl(url, this.#baseUrl)), { method: "GET", ...options });
   }
@@ -215,7 +229,7 @@ export class Lumen {
    * Uploads a file for renders to use. A body over 64 MiB, and any stream, goes up in 8 MiB parts;
    * anything smaller in one request. Write `assetSource(upload)` in a node's source to use it.
    */
-  async uploadMedia(options: UploadMediaOptions): Promise<TemporaryMedia> {
+  async uploadMedia(options: UploadMediaOptions): Promise<Media> {
     const { body, signal } = options;
     const sizeBytes = body instanceof ReadableStream ? options.sizeBytes : sizeOf(body);
     if (sizeBytes === undefined) {
@@ -253,7 +267,7 @@ export class Lumen {
   }
 
   /** Has the API fetch a file from a public URL, for renders to use. */
-  async createUrlMedia(options: CreateUrlMediaOptions): Promise<TemporaryMedia> {
+  async createUrlMedia(options: CreateUrlMediaOptions): Promise<Media> {
     const body = await this.#request("POST", "/media/url", {
       body: {
         ...(options.fileName !== undefined ? { fileName: options.fileName } : {}),
@@ -264,12 +278,40 @@ export class Lumen {
     return parseMedia(body.media);
   }
 
+  /** Reads uploaded media by id (with or without the `asset:` prefix). */
+  async getMedia(
+    media: string | Pick<Media, "id">,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<Media> {
+    const body = await this.#request(
+      "GET",
+      `/media/${encodeURIComponent(mediaId(media))}`,
+      options,
+    );
+    return parseMedia(body.media);
+  }
+
+  /**
+   * Deletes uploaded media. A render that is using it keeps reading it until that render ends,
+   * and lumen-server removes the files then; a render queued afterwards finds none. Rejects with
+   * `media_not_found` when the media doesn't exist or has expired.
+   */
+  async deleteMedia(
+    media: string | Pick<Media, "id">,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<void> {
+    await this.#send(this.#apiUrl(`/media/${encodeURIComponent(mediaId(media))}`), {
+      method: "DELETE",
+      signal: options.signal,
+    });
+  }
+
   async #uploadParts(
     id: string,
     body: UploadMediaOptions["body"],
     sizeBytes: number,
     signal: AbortSignal | undefined,
-  ): Promise<TemporaryMedia> {
+  ): Promise<Media> {
     const base = `/media/${encodeURIComponent(id)}/multipart`;
     const uploadId = parseUploadId(await this.#request("POST", base, { signal }));
     const uploadPath = `${base}/${encodeURIComponent(uploadId)}`;
@@ -409,9 +451,22 @@ export class Lumen {
 }
 
 /** The value to write in a node's source field for an uploaded file: `asset:<id>`. */
-export function assetSource(media: TemporaryMedia | string): AssetSource {
+export function assetSource(media: string | Pick<Media, "id">): AssetSource {
+  return `asset:${mediaId(media)}`;
+}
+
+/** The id of media given as an id, with or without its `asset:` prefix, or as the media itself. */
+function mediaId(media: string | Pick<Media, "id">): string {
   const id = typeof media === "string" ? media : media.id;
-  return id.startsWith("asset:") ? (id as AssetSource) : `asset:${id}`;
+  return id.startsWith("asset:") ? id.slice("asset:".length) : id;
+}
+
+function compositionJson(source: CompositionSource): LumenComposition {
+  return hasToJSON(source) ? source.toJSON() : source;
+}
+
+function hasToJSON(source: CompositionSource): source is { toJSON(): LumenComposition } {
+  return "toJSON" in source && typeof source.toJSON === "function";
 }
 
 async function readJson<T extends object = Record<string, unknown>>(

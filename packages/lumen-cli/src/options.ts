@@ -1,18 +1,12 @@
 import type {
-  Diagnostic,
-  LumenComposition,
+  CheckReport,
+  CompositionSource,
+  FrameRange,
   VideoBitDepth,
   VideoCodec,
 } from "@lumiscia/lumen-types";
 
-/** A composition as JSON, or anything that turns into one with `toJSON()`, such as the SDK's `Composition`. */
-export type CompositionSource = LumenComposition | { toJSON(): LumenComposition };
-
-/** Frames `start` up to, not including, `end`. A missing side is the timeline's own start or end. */
-export interface FrameRange {
-  readonly start?: number;
-  readonly end?: number;
-}
+export type { CheckReport, CompositionSource, FrameRange };
 
 export interface CommandOptions {
   /** Directory media sources must stay inside. Defaults to the current directory. */
@@ -69,12 +63,6 @@ export interface PreviewOptions extends CommandOptions {
   /** The frames the sheet is taken from. Defaults to the whole timeline. */
   readonly frames?: FrameRange;
   readonly maxTextGlyphs?: number;
-}
-
-/** What `lumen check` found: `ok` is false when any diagnostic is an error. */
-export interface CheckReport {
-  readonly ok: boolean;
-  readonly diagnostics: readonly Diagnostic[];
 }
 
 /** What a finished `render()` or `preview()` wrote. */

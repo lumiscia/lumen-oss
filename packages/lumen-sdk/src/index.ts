@@ -4,6 +4,16 @@ export { LumenError } from "./errors.js";
 export type { LumenErrorFields } from "./errors.js";
 export { outputFile } from "./output.js";
 export type { FrameRange, OutputFormat, RenderOutput } from "./output.js";
+export type {
+  CheckReport,
+  CompositionSource,
+  Media,
+  MediaKind,
+  MediaMetadata,
+  MediaSource,
+  MediaStatus,
+  RenderFailure,
+} from "@lumiscia/lumen-types";
 export { LumenWebhookError, verifyWebhook } from "./webhooks.js";
 export type {
   LumenWebhookErrorCode,
@@ -14,17 +24,15 @@ export type {
 export type {
   AssetSource,
   CreateUrlMediaOptions,
+  FailedRender,
   LumenOptions,
-  MediaKind,
-  MediaMetadata,
   QualityPreset,
   Render,
-  RenderFailure,
   RenderMediaManifest,
   RenderOptions,
   RenderProgress,
   RenderStatus,
-  TemporaryMedia,
+  SucceededRender,
   UploadMediaBody,
   UploadMediaOptions,
   WaitForRenderOptions,

@@ -4,10 +4,9 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use lumen_server_api::{
-    CheckRequest, CheckResponse, CompleteMultipartRequest, CreateMediaRequest,
-    CreateRenderResponse, ErrorBody, Health, MediaResponse, MultipartUploadResponse, OutputFormat,
-    PartResponse, RenderEvent, RenderRequest, RenderResponse, UploadTargetResponse,
-    UrlMediaRequest,
+    CheckReport, CheckRequest, CompleteMultipartRequest, CreateMediaRequest, CreateRenderResponse,
+    ErrorBody, Health, MediaResponse, MultipartUploadResponse, OutputFormat, PartResponse,
+    RenderEvent, RenderRequest, RenderResponse, UploadTargetResponse, UrlMediaRequest,
 };
 use schemars::{SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value, json};
@@ -33,7 +32,7 @@ fn render_schema() -> Result<Value> {
         .for_serialize()
         .into_generator();
     responses.subschema_for::<Health>();
-    responses.subschema_for::<CheckResponse>();
+    responses.subschema_for::<CheckReport>();
     responses.subschema_for::<CreateRenderResponse>();
     responses.subschema_for::<RenderResponse>();
     responses.subschema_for::<RenderEvent>();

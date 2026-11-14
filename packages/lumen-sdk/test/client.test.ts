@@ -1,8 +1,31 @@
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, expectTypeOf, test, vi } from "vitest";
 
 import { Lumen, assetSource } from "../src/client.js";
 import { LumenError } from "../src/errors.js";
+import { parseMedia } from "../src/media.js";
 import { outputFile } from "../src/output.js";
+import { parseRender, renderError } from "../src/render.js";
+
+/** Media as lumen-server sends it. */
+function mediaBody(fields: Record<string, unknown> = {}) {
+  return {
+    id: "media 1",
+    status: "pending",
+    fileName: "a.mp4",
+    contentType: "video/mp4",
+    createdAt: "2026-11-14T00:00:00Z",
+    expiresAt: "2026-11-15T00:00:00Z",
+    sizeBytes: 3,
+    sourceType: "upload",
+    kind: null,
+    metadata: null,
+    objectKey: null,
+    rejectionReason: null,
+    sourceUrl: null,
+    uploadedBytes: null,
+    ...fields,
+  };
+}
 
 interface RecordedRequest {
   readonly init: RequestInit & { duplex?: string };
@@ -151,7 +174,7 @@ describe("Lumen render and download", () => {
 
     const render = await lumen.render({} as never, { idempotencyKey: "key-1" });
 
-    expect(render).toEqual({ id: "render-1", status: "queued", cached: true });
+    expect(render).toEqual({ id: "render-1", status: "queued", progress: 0, cached: true });
     expect(new Headers(requests[0]?.init.headers).get("idempotency-key")).toBe("key-1");
   });
 
@@ -249,6 +272,7 @@ describe("Lumen render and download", () => {
     expect(render).toEqual({
       id: "r 1",
       status: "cancelled",
+      progress: 0,
       error: { code: "render_cancelled", message: "the render was cancelled", retryable: false },
     });
   });
@@ -297,7 +321,7 @@ describe("Lumen render and download", () => {
       await lumen.download(render);
 
       const prefix = baseUrl.replace(/\/$/, "");
-      expect(render.url).toBe(`${prefix}/renders/r/artifact`);
+      expect(render).toMatchObject({ url: `${prefix}/renders/r/artifact` });
       expect(seen).toEqual([`${prefix}/renders/r`, `${prefix}/renders/r/artifact`]);
     }
   });
@@ -326,7 +350,7 @@ describe("Lumen render and download", () => {
 });
 
 describe("Lumen media uploads", () => {
-  const media = { id: "media 1" };
+  const media = mediaBody();
   const upload = (request: RecordedRequest) => {
     const path = new URL(request.url).pathname;
     if (path === "/v1/media") return { media, uploadUrl: "/v1/media/media%201/content" };
@@ -357,14 +381,13 @@ describe("Lumen media uploads", () => {
   });
 
   test("a model upload reports its kind, clips and materials", async () => {
-    const model = {
-      id: "media 1",
+    const model = mediaBody({
       kind: "model",
       metadata: {
         animations: [{ index: 0, name: "Walk", duration: 0.5 }],
         materials: [{ index: 0, hasBaseColorTexture: true }],
       },
-    };
+    });
     const { stub } = recordingFetch((request) =>
       new URL(request.url).pathname === "/v1/media"
         ? { media: model, uploadUrl: "/v1/media/media%201/content" }
@@ -550,5 +573,130 @@ describe("Lumen media uploads", () => {
     expect(assetSource(media as never)).toBe("asset:media 1");
     expect(assetSource("m_1")).toBe("asset:m_1");
     expect(assetSource("asset:m_1")).toBe("asset:m_1");
+  });
+});
+
+describe("Lumen render reading", () => {
+  const read = (render: unknown) => parseRender(render, new URL("https://api.test/v1"));
+
+  test("a succeeded render has its output url, and a failed or cancelled one its error", () => {
+    expect(() => read({ id: "r", status: "succeeded" })).toThrow(
+      expect.objectContaining({ code: "invalid_response" }),
+    );
+    expect(read({ id: "r", status: "failed" })).toEqual({
+      id: "r",
+      status: "failed",
+      progress: 0,
+      error: { code: "render_failed", message: "Render r failed.", retryable: false },
+    });
+    expect(read({ id: "r", status: "cancelled", progress: 0.5 })).toMatchObject({
+      progress: 0.5,
+      error: { code: "render_cancelled", message: "Render r was cancelled.", retryable: false },
+    });
+    expect(() => read({ id: "r", status: "paused" })).toThrow(
+      expect.objectContaining({ code: "invalid_response" }),
+    );
+  });
+
+  test("the media source that failed is on the LumenError, from a response or a failed render", async () => {
+    const media = { code: "media.decode", source: "hero.png", wanted: ["image"], details: "x" };
+    const stub = (async () =>
+      Response.json(
+        { code: "media_download_failed", error: "no", media },
+        { status: 422 },
+      )) as typeof fetch;
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+    const refused = (await lumen.getRender("r").catch((error: unknown) => error)) as LumenError;
+    expect(refused.media).toEqual(media);
+
+    const failed = read({
+      id: "r",
+      status: "failed",
+      error: { code: "media.decode", message: "x", media },
+    });
+    expect(failed.status === "failed" && renderError(failed).media).toEqual(media);
+  });
+
+  test("a succeeded render from waitForRender has a url", () => {
+    expectTypeOf<Awaited<ReturnType<Lumen["waitForRender"]>>["url"]>().toEqualTypeOf<string>();
+  });
+
+  test("media that lacks a required field is rejected, and unknown fields are dropped", () => {
+    expect(() => parseMedia({ ...mediaBody(), sizeBytes: "3" })).toThrow(
+      expect.objectContaining({ code: "invalid_response" }),
+    );
+    expect(() => parseMedia({ ...mediaBody(), sourceType: "ftp" })).toThrow(
+      expect.objectContaining({ code: "invalid_response" }),
+    );
+    const { kind: _kind, uploadedBytes: _uploaded, ...sparse } = mediaBody();
+    expect(parseMedia({ ...sparse, extra: true })).toEqual(mediaBody());
+  });
+});
+
+describe("Lumen check and media routes", () => {
+  const lumenWith = (stub: typeof fetch) =>
+    new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+  test("render and check take anything with toJSON, not only a Composition", async () => {
+    const composition = { nodes: [] };
+    const { requests, stub } = recordingFetch((request) =>
+      request.url.endsWith("/check")
+        ? { ok: true, diagnostics: [] }
+        : { render: { id: "r", status: "queued" } },
+    );
+    const lumen = lumenWith(stub);
+    const source = { toJSON: () => composition as never };
+
+    await lumen.render(source);
+    await lumen.check(source);
+
+    for (const request of requests) {
+      expect(JSON.parse(String(request.init.body)).composition).toEqual(composition);
+    }
+  });
+
+  test("check posts the composition and media and returns the report", async () => {
+    const warning = { severity: "warning", code: "font.fallback", path: "/nodes/1", message: "x" };
+    const { requests, stub } = recordingFetch(() => ({
+      ok: true,
+      diagnostics: [warning, { code: "malformed" }],
+    }));
+    const lumen = lumenWith(stub);
+
+    await expect(
+      lumen.check({} as never, { media: { hero: "https://a.test/h.png" } }),
+    ).resolves.toEqual({
+      ok: true,
+      diagnostics: [warning],
+    });
+    expect(requests[0]?.url).toBe("https://api.test/v1/renders/check");
+    expect(JSON.parse(String(requests[0]?.init.body)).media).toEqual({
+      hero: "https://a.test/h.png",
+    });
+
+    const malformed = lumenWith(recordingFetch(() => ({ diagnostics: [] })).stub);
+    await expect(malformed.check({} as never)).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
+  test("getMedia reads by id with or without asset:, and deleteMedia takes a 204 or the error", async () => {
+    const calls: string[] = [];
+    let deleted = false;
+    const lumen = lumenWith((async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      calls.push(`${init.method} ${new URL(String(input)).pathname}`);
+      if (init.method === "GET") return Response.json({ media: mediaBody({ id: "m_1" }) });
+      if (!deleted) {
+        deleted = true;
+        return new Response(null, { status: 204 });
+      }
+      return Response.json({ code: "media_not_found", error: "gone" }, { status: 404 });
+    }) as typeof fetch);
+
+    await expect(lumen.getMedia("asset:m_1")).resolves.toMatchObject({ id: "m_1" });
+    await expect(lumen.deleteMedia({ id: "m_1" })).resolves.toBeUndefined();
+    await expect(lumen.deleteMedia("m_1")).rejects.toMatchObject({
+      code: "media_not_found",
+      status: 404,
+    });
+    expect(calls).toEqual(["GET /v1/media/m_1", "DELETE /v1/media/m_1", "DELETE /v1/media/m_1"]);
   });
 });

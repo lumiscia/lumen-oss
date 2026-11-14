@@ -1,8 +1,9 @@
-import type { Diagnostic } from "@lumiscia/lumen-types";
+import type { Diagnostic, MediaFailure } from "@lumiscia/lumen-types";
 
 export interface LumenErrorFields {
   readonly cause?: unknown;
   readonly diagnostics?: readonly Diagnostic[];
+  readonly media?: MediaFailure;
   readonly renderId?: string;
   readonly requestId?: string;
   readonly retryAfterMs?: number;
@@ -32,6 +33,8 @@ export class LumenError extends Error {
    * Codes you don't know may appear; treat them by their severity.
    */
   readonly diagnostics: readonly Diagnostic[];
+  /** The media source that failed, when one did. */
+  readonly media?: MediaFailure;
 
   constructor(code: string, message: string, fields: LumenErrorFields = {}) {
     super(message, fields.cause === undefined ? undefined : { cause: fields.cause });
@@ -42,6 +45,7 @@ export class LumenError extends Error {
     if (fields.renderId !== undefined) this.renderId = fields.renderId;
     if (fields.retryable !== undefined) this.retryable = fields.retryable;
     if (fields.retryAfterMs !== undefined) this.retryAfterMs = fields.retryAfterMs;
+    if (fields.media !== undefined) this.media = fields.media;
     this.diagnostics = fields.diagnostics ?? [];
   }
 }
@@ -61,7 +65,7 @@ export async function readBody(
   }
 }
 
-/** Reads an error response, whose body is `{ code?, error, requestId?, diagnostics? }`. */
+/** Reads an error response, whose body is `{ code?, error, requestId?, diagnostics?, media? }`. */
 export async function errorFromResponse(
   response: Response,
   signal: AbortSignal | undefined,
@@ -78,13 +82,19 @@ export async function errorFromResponse(
       status: response.status,
       ...(typeof fields.requestId === "string" ? { requestId: fields.requestId } : {}),
       ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      ...withMedia(fields.media),
       diagnostics: readDiagnostics(fields.diagnostics),
     },
   );
 }
 
+/** `{ media }` when `value` is an object, passed through as the host sent it. */
+export function withMedia(value: unknown): { readonly media?: MediaFailure } {
+  return isRecord(value) ? { media: value as unknown as MediaFailure } : {};
+}
+
 /** The well-formed diagnostics in `value`, dropping anything else. */
-function readDiagnostics(value: unknown): Diagnostic[] {
+export function readDiagnostics(value: unknown): Diagnostic[] {
   if (!Array.isArray(value)) {
     return [];
   }
