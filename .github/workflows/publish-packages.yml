@@ -85,6 +85,29 @@ jobs:
       - name: Build packages
         run: pnpm release:build
 
+      # Artifacts drop the executable bit, and each platform package refuses to pack without it.
+      - name: Download lumen binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: lumen-cli-*
+          path: packages
+
+      - name: Mark lumen binaries executable
+        run: chmod +x packages/lumen-cli-*/bin/lumen
+
+      - name: Check lumen binaries
+        run: |
+          for package in packages/lumen-cli-*/; do
+            if [ ! -s "${package}bin/lumen" ]; then
+              echo "${package}bin/lumen is missing or empty."
+              exit 1
+            fi
+          done
+
+      # Everything npm publishes is checked before cargo publish, which cannot be undone.
+      - name: Check npm packages
+        run: pnpm release:pack-check
+
       # crates.io tokens from trusted publishing expire after 30 minutes, so fetch one after the build.
       - uses: rust-lang/crates-io-auth-action@v1
         id: crates_io_auth
@@ -99,16 +122,6 @@ jobs:
             excludes+=(--exclude "$crate")
           done
           cargo publish --workspace "${excludes[@]}"
-
-      # Artifacts drop the executable bit, and each platform package refuses to pack without it.
-      - name: Download lumen binaries
-        uses: actions/download-artifact@v8
-        with:
-          pattern: lumen-cli-*
-          path: packages
-
-      - name: Mark lumen binaries executable
-        run: chmod +x packages/lumen-cli-*/bin/lumen
 
       - name: Publish npm packages
         run: pnpm publish:packages
