@@ -40,7 +40,7 @@ pub struct ColorGradeParams {
     #[meta(min = 0, max = 1, step = 0.01)]
     pub strength: f64,
     /// Sampling filter used when reading LUT data.
-    #[meta(kind = "enum", enum_type = RasterSampling)]
+    #[meta()]
     pub interpolation: RasterSampling,
 }
 

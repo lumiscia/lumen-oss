@@ -59,7 +59,7 @@ pub struct ClipParams {
     #[meta(name = "Speed", step = 0.1)]
     pub speed: f64,
     /// What the clip shows after its window: nothing, its last frame, or the window again.
-    #[meta(name = "End", kind = "enum", enum_type = ClipEnd, constant)]
+    #[meta(name = "End", constant)]
     pub end: ClipEnd,
     /// Values for the template's props by name; expressions run in this composition's time.
     #[meta(name = "Props", constant)]

@@ -48,7 +48,7 @@ pub struct TransformParams {
     #[meta(name = "Motion blur", min = 0, max = 360, step = 1)]
     pub motion_blur: f64,
     /// Sampling filter used when transforming.
-    #[meta(kind = "enum", enum_type = RasterSampling)]
+    #[meta()]
     pub sampling: RasterSampling,
 }
 

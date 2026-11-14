@@ -61,7 +61,7 @@ pub struct DisplacementMapParams {
     #[meta()]
     pub edge: EdgeMode,
     /// Sampling filter used to read the displaced source.
-    #[meta(kind = "enum", enum_type = RasterSampling)]
+    #[meta()]
     pub sampling: RasterSampling,
 }
 

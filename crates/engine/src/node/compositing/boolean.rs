@@ -26,7 +26,7 @@ pub enum BooleanOperation {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct BooleanParams {
     /// Boolean operation used to combine the two input masks.
-    #[meta(kind = "enum", enum_type = BooleanOperation)]
+    #[meta()]
     pub operation: BooleanOperation,
     /// Alpha above this cutoff counts as opaque; 0 applies no cutoff and keeps antialiased edges.
     #[meta(min = 0, max = 1, step = 0.01)]

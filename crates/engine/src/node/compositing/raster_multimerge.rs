@@ -21,7 +21,7 @@ pub struct RasterMultiMergeParams {
     /// Blend mode used for each layer in the stack. `normal` composites in linear light; every
     /// other mode applies its formula to the sRGB-encoded colours and composites the result in
     /// linear light.
-    #[meta(kind = "enum", enum_type = BlendMode)]
+    #[meta()]
     pub blend_mode: BlendMode,
 }
 

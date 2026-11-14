@@ -162,7 +162,7 @@ pub enum Shape3dKind {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Shape3dParams {
     /// Primitive to build.
-    #[meta(kind = "enum", enum_type = Shape3dKind)]
+    #[meta()]
     pub shape: Shape3dKind,
     /// Width, height and depth in world units, along X, Y and Z before the rotation.
     #[meta(step = 0.1)]
@@ -395,7 +395,7 @@ pub enum Projection3d {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Camera3dParams {
     /// How the scene is projected onto the image.
-    #[meta(kind = "enum", enum_type = Projection3d)]
+    #[meta()]
     pub projection: Projection3d,
     /// Vertical field of view in degrees, with a perspective projection.
     #[meta(min = 1, max = 179, step = 1)]
@@ -472,7 +472,7 @@ pub enum Light3dKind {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Light3dParams {
     /// Kind of light.
-    #[meta(kind = "enum", enum_type = Light3dKind)]
+    #[meta()]
     pub light: Light3dKind,
     /// Light colour. Must be a solid color; a gradient fails `check`.
     #[meta(role = "color", solid)]
@@ -607,7 +607,7 @@ pub enum Render3dOutput {
 pub struct Render3dParams {
     /// What the raster holds: the lit scene, its depth or its normals. A composition that needs
     /// more than one draws the same scene with a `render_3d` for each.
-    #[meta(kind = "enum", enum_type = Render3dOutput, constant)]
+    #[meta(constant)]
     pub output: Render3dOutput,
     /// Distance from the camera, in world units, that `depth` output maps to 0. 0 uses the
     /// camera's `near`.
@@ -631,7 +631,7 @@ pub struct Render3dParams {
     #[meta(step = 0.1)]
     pub exposure: f64,
     /// How light brighter than white is brought into range.
-    #[meta(kind = "enum", enum_type = ToneMapping)]
+    #[meta()]
     pub tone_mapping: ToneMapping,
     /// Brightness of the light from all around that surfaces reflect and are lit by: the
     /// `environment_map` when one is set, and otherwise a built-in studio of softboxes. 0 turns it
