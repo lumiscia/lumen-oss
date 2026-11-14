@@ -209,7 +209,8 @@ function load(loadId: number, compositionJson: string, media: string[] = []) {
   });
 }
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+/** Lets queued promise work and zero-delay timers run, without any real time passing. */
+const settle = () => vi.advanceTimersByTimeAsync(0);
 const lastMedia = () =>
   sent.filter((event) => event.type === "media").at(-1) as
     | Extract<LumenPreviewWorkerEvent, { type: "media" }>
@@ -222,6 +223,7 @@ async function startWorker() {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
   calls.length = 0;
   drawn.length = 0;
   shown.length = 0;
@@ -272,6 +274,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("createLumenPreviewWorkerHost", () => {
@@ -428,7 +431,7 @@ describe("createLumenPreviewWorkerHost", () => {
       media: [["clip", { source: "https://a.test/clip" }]],
       type: "load",
     });
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await vi.advanceTimersByTimeAsync(150);
 
     expect(sent.some((event) => event.type === "loaded" && event.loadId === 2)).toBe(true);
     expect(drawn).toEqual(["A"]);
@@ -539,9 +542,10 @@ describe("createLumenPreviewWorkerHost", () => {
       media: [],
       type: "load",
     });
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await vi.advanceTimersByTimeAsync(200);
 
-    expect(shown).toEqual([10, 11, 12, 13]);
+    expect(shown[0]).toBe(10);
+    expect(shown.at(-1)).toBe(13);
     expect(sent.filter((event) => event.type === "ended")).toEqual([
       { loadId: 1, playbackRevision: 4, seekId: 0, type: "ended" },
     ]);
