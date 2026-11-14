@@ -1,12 +1,18 @@
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
+
 use lumen_engine_gpu::*;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const LAYOUT: &[LayoutEntry] = &[LayoutEntry::compute(0, LayoutKind::StorageTexture(FORMAT))];
 const WHOLE: Dispatch = Dispatch { x: 1, y: 1, z: 1 };
 
-fn setup() -> (Renderer, Recorder) {
-    let renderer =
-        pollster::block_on(Renderer::new()).expect("lumen-gpu tests need a wgpu adapter");
+// One device for the whole file. Holding its guard runs a test alone on it.
+static GPU: LazyLock<Mutex<Renderer>> = LazyLock::new(|| {
+    Mutex::new(pollster::block_on(Renderer::new()).expect("lumen-gpu tests need a wgpu adapter"))
+});
+
+fn setup() -> (MutexGuard<'static, Renderer>, Recorder) {
+    let renderer = GPU.lock().unwrap_or_else(PoisonError::into_inner);
     let recorder = Recorder::new(renderer.device.clone(), renderer.queue.clone());
     (renderer, recorder)
 }

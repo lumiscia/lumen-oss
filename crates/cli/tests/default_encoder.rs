@@ -4,6 +4,8 @@
 //! encoder and hardware decode both have to fall back. Skips like the engine's GPU tests when
 //! lavapipe isn't installed.
 
+mod support;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -15,6 +17,7 @@ use lumen_ffmpeg::{
     VideoDecoder, VideoDecoderConfig, VideoEncoderConfig, YuvVideoFrame,
 };
 use serde_json::{Value, json};
+use support::lavapipe_icd;
 
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
@@ -22,20 +25,6 @@ const FRAMES: u32 = 30;
 const ORANGE: [u8; 3] = [255, 128, 32];
 const BLUE: [u8; 3] = [32, 128, 255];
 const MAX_SAMPLE_ERROR: i32 = 3;
-
-fn lavapipe_icd() -> Option<PathBuf> {
-    let icd = fs::read_dir("/usr/share/vulkan/icd.d")
-        .ok()?
-        .filter_map(|entry| Some(entry.ok()?.path()))
-        .find(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("lvp_icd"))
-        });
-    if icd.is_none() {
-        eprintln!("lavapipe not installed; skipping lumen fallback test");
-    }
-    icd
-}
 
 fn lumen(icd: &Path, args: &[&str], configure: impl FnOnce(&mut Command)) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_lumen"));

@@ -2,7 +2,6 @@
 //! on pixels. Each table row says which glyph render mode it expects the engine to choose.
 
 use std::ops::Range;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::LazyLock;
 
 use lumen_engine::composition::Composition;
@@ -10,8 +9,8 @@ use lumen_engine::gpu::{BoundFrame, GpuCompositionRenderer};
 use serde_json::{Value, json};
 
 use crate::support::{
-    Case, Expect, Frame, Gpu, Scene, TestMedia, check, gpu, panic_message, render,
-    render_inspecting, scene,
+    Case, Expect, Frame, Gpu, Scene, TestMedia, check, check_each, gpu, render, render_inspecting,
+    scene,
 };
 
 const INTER: &[u8] = include_bytes!("../../../text/assets/inter/InterVariable-Latin.ttf");
@@ -45,29 +44,10 @@ pub fn frame_of(gpu: &Gpu, scene: Scene, media: &TestMedia) -> Frame {
     render(&mut gpu.renderer(), &scene.into(), 0.0, media)
 }
 
-/// Runs `run` on every row, then panics listing the rows that failed. `LUMEN_CASE=substring`
-/// selects rows by name.
+/// Runs `run` on every row with the device held; see `check_each`.
 pub fn check_rows<R>(rows: Vec<(String, R)>, run: impl Fn(&Gpu, &R)) {
-    let filter = std::env::var("LUMEN_CASE").ok();
     let gpu = gpu();
-    let rows: Vec<_> = rows
-        .iter()
-        .filter(|(name, _)| filter.as_ref().is_none_or(|filter| name.contains(filter)))
-        .collect();
-    let failures: Vec<_> = rows
-        .iter()
-        .filter_map(|(name, row)| {
-            let error = catch_unwind(AssertUnwindSafe(|| run(&gpu, row))).err()?;
-            Some(format!("  {name}: {}", panic_message(&*error)))
-        })
-        .collect();
-    assert!(
-        failures.is_empty(),
-        "{} of {} rows failed:\n{}",
-        failures.len(),
-        rows.len(),
-        failures.join("\n")
-    );
+    check_each(rows, |row| run(&gpu, &row));
 }
 
 /// How the engine draws the glyphs of a row.

@@ -402,13 +402,7 @@ mod tests {
     }
 
     fn gpu() -> Option<std::sync::MutexGuard<'static, lumen_gpu::Renderer>> {
-        match crate::gpu::test_device::shared() {
-            Ok(gpu) => Some(gpu),
-            Err(error) => {
-                eprintln!("no GPU ({error}); skipping YUV conversion test");
-                None
-            }
-        }
+        crate::gpu::test_device::shared_or_skip("YUV conversion test")
     }
 
     #[test]

@@ -1114,36 +1114,35 @@ pub fn check(cases: Vec<Case>) {
 
 pub fn check_matching(cases: Vec<Case>, filter: Option<&str>) {
     let gpu = gpu();
-    let cases: Vec<_> = cases
-        .iter()
-        .filter(|case| filter.is_none_or(|filter| case.name.contains(filter)))
-        .collect();
-    let failures: Vec<_> = cases
-        .iter()
-        .filter_map(|case| {
-            let result = catch_unwind(AssertUnwindSafe(|| case.run(&gpu)));
-            let error = result.err()?;
-            Some(format!("  {}: {}", case.name, panic_message(&*error)))
-        })
-        .collect();
-    assert!(
-        failures.is_empty(),
-        "{} of {} rows failed:\n{}",
-        failures.len(),
-        cases.len(),
-        failures.join("\n")
+    run_matching(
+        cases.iter().map(|case| (case.name.as_str(), case)),
+        filter,
+        |case| case.run(&gpu),
     );
 }
 
-/// Runs `run` on every named row, then panics listing the rows that failed and why. For rows that
-/// take the device themselves, so it must not be held.
-pub fn check_each<T>(rows: Vec<(&str, T)>, run: impl Fn(T)) {
+/// Runs `run` on every named row, then panics listing the rows that failed and why.
+/// `LUMEN_CASE=substring` runs only the rows whose names contain it. The device is not held, so
+/// a row may take it itself.
+pub fn check_each<N: AsRef<str>, T>(rows: impl IntoIterator<Item = (N, T)>, run: impl Fn(T)) {
+    run_matching(rows, std::env::var("LUMEN_CASE").ok().as_deref(), run);
+}
+
+fn run_matching<N: AsRef<str>, T>(
+    rows: impl IntoIterator<Item = (N, T)>,
+    filter: Option<&str>,
+    run: impl Fn(T),
+) {
+    let rows: Vec<_> = rows
+        .into_iter()
+        .filter(|(name, _)| filter.is_none_or(|filter| name.as_ref().contains(filter)))
+        .collect();
     let total = rows.len();
     let failures: Vec<_> = rows
         .into_iter()
         .filter_map(|(name, row)| {
             let error = catch_unwind(AssertUnwindSafe(|| run(row))).err()?;
-            Some(format!("  {name}: {}", panic_message(&*error)))
+            Some(format!("  {}: {}", name.as_ref(), panic_message(&*error)))
         })
         .collect();
     assert!(

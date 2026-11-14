@@ -694,12 +694,8 @@ mod tests {
 
     #[test]
     fn the_nv12_dither_keeps_the_mean_of_fractional_luma() {
-        let gpu = match crate::gpu::test_device::shared() {
-            Ok(gpu) => gpu,
-            Err(error) => {
-                eprintln!("no GPU ({error}); skipping NV12 dither test");
-                return;
-            }
+        let Some(gpu) = crate::gpu::test_device::shared_or_skip("NV12 dither test") else {
+            return;
         };
         let size = lumen_gpu::Size::new(16, 16);
         let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {

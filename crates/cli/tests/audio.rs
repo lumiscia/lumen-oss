@@ -3,33 +3,17 @@
 //! Renders template audio through the real `lumen` binary on lavapipe and checks the
 //! envelope of the encoded sound. Skips like the engine's GPU tests when lavapipe isn't installed.
 
-use std::{
-    f64::consts::PI,
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+mod support;
+
+use std::{f64::consts::PI, fs, path::Path, process::Command};
 
 use lumen_ffmpeg::AudioRangeReader;
 use serde_json::json;
+use support::lavapipe_icd;
 
 const RATE: usize = 48_000;
 const TONE_HZ: f64 = 440.0;
 const AMPLITUDE: f64 = 0.5;
-
-fn lavapipe_icd() -> Option<PathBuf> {
-    let icd = fs::read_dir("/usr/share/vulkan/icd.d")
-        .ok()?
-        .filter_map(|entry| Some(entry.ok()?.path()))
-        .find(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("lvp_icd"))
-        });
-    if icd.is_none() {
-        eprintln!("lavapipe not installed; skipping lumen audio test");
-    }
-    icd
-}
 
 /// One second of a stereo 16-bit sine, the same in both channels.
 fn write_tone(path: &Path) {
