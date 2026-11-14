@@ -52,13 +52,15 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install nasm pkg-config autoconf automake libtool
 
-      - name: Install cargo-about
-        run: cargo install cargo-about --version 0.9.3 --locked --features cli
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
 
       - uses: actions/cache@v6
         with:
           path: target/vcpkg-cache
           key: vcpkg-${{ matrix.package }}-${{ hashFiles('crates/cli/release/**') }}
+          restore-keys: vcpkg-${{ matrix.package }}-
 
       - name: Build lumen
         env:

@@ -22,7 +22,7 @@ Lumen is still a heavy-beta renderer. This matrix describes what is supported to
 
 Linux with Vulkan is the most visible open development path. The CI workflow installs FFmpeg development libraries, Vulkan loader/tools, Mesa Vulkan drivers, and runs TypeScript, Rust, generated-definition, and SDK/server integration checks.
 
-Known required packages on Debian/Ubuntu-style systems:
+Known required packages on Debian/Ubuntu-style systems (CI installs them from [`.github/actions/setup/action.yml`](../.github/actions/setup/action.yml)):
 
 - `libavcodec-dev`
 - `libavdevice-dev`
