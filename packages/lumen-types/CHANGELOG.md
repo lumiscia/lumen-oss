@@ -1,5 +1,280 @@
 # @lumiscia/lumen-types
 
+## 0.6.0-beta.3
+
+### Minor Changes
+
+- a822c9b: `lumen-server`'s HTTP API has one definition: the new `lumen-server-api` crate holds its request, response, socket-event and error types, the server (de)serialises with them, and `definitions/openapi.json` is generated from them for other implementations of the API. `@lumiscia/lumen-types` exports the generated types (`RenderRequest`, `Render`, `RenderEvent`, `ErrorBody`, `ErrorCode`, `Media`, …), with `errorCodes` (each code and what it means) and `outputFiles` (each output format's content type and extension). `VideoCodec` and `VideoBitDepth` keep their names and now come from that schema.
+
+  Every object on the wire is camelCase. The composition inside a request keeps its own format.
+
+  | Before                                      | Now                                                |
+  | ------------------------------------------- | -------------------------------------------------- |
+  | `bit_depth` (render request)                | `bitDepth`                                         |
+  | `output.jpeg_quality` (render request)      | `output.jpegQuality`                               |
+  | `render.outputUrl`                          | `render.url`                                       |
+  | `progress.artifactUrl`                      | `render.url`                                       |
+  | `progress.renderId`                         | `render.id`                                        |
+  | `progress.state`                            | `render.status`                                    |
+  | `progress.progress`                         | `render.progress`                                  |
+  | `progress.error`                            | `render.error.message`                             |
+  | `progress.errorCode`                        | `render.error.code`                                |
+  | `progress.retryable`                        | `render.error.retryable`                           |
+  | `progress.durationMs`                       | `render.durationMs`                                |
+  | `progress.outputBytes`                      | `render.outputBytes`                               |
+  | `progress.stage`, `progress.organizationId` | removed (`render.status`, `render.organizationId`) |
+
+  A render has one shape. `POST /renders`, `GET /renders/:id`, `POST /renders/:id/cancel` and `GET /renders/:id/progress` all return it as `render`, and `/progress` no longer adds a second `progress` object:
+
+  ```json
+  {
+    "render": {
+      "id": "r_…",
+      "status": "succeeded",
+      "progress": 1,
+      "url": "/renders/r_…/artifact",
+      "createdAt": "2026-11-14T00:00:00Z",
+      "inputHash": "…",
+      "organizationId": "self-hosted",
+      "costMicros": 0,
+      "outputBytes": 48213,
+      "durationMs": 912
+    }
+  }
+  ```
+
+  When a render fails on a media source, its `error` (and the body of a `409` from its artifact) carries `media`, the engine's `MediaFailure` from `definitions/runtime.schema.json`:
+
+  ```json
+  {
+    "code": "media.decode",
+    "message": "…",
+    "retryable": false,
+    "media": { "code": "media.decode", "source": "hero.png", "wanted": ["image"], "details": "…" }
+  }
+  ```
+
+  A `codec` or `bitDepth` that isn't one of the API's values is now refused with `422` and `invalid_request_body` instead of `invalid_quality`. Socket events keep their shape.
+
+  The SDK sends and reads the new names; its public types are unchanged.
+
+- 0b4d4bc: **An audio track's or clip's level is `gain` in the document, as it is in the builder.** The JSON key was `volume` while `addAudio({ gain })` wrote it, so a hand-written `"gain"` was ignored and the clip played at full level. Audio tracks, clips and the `audio` object now reject keys they do not list, like the rest of the document, so a leftover `volume` (or any other stray key) is an error naming its path, such as `audio.clips[0].volume: unknown field`. `name` stays accepted on tracks and clips. Error messages and JSON pointers say `gain` too: `audio.tracks[0].gain: must be at least 0`.
+
+  Before:
+
+  ```json
+  {
+    "audio": {
+      "tracks": [{ "id": "music", "volume": 0.5 }],
+      "clips": [
+        {
+          "id": "a",
+          "source_id": "music.mp3",
+          "track_id": "music",
+          "start_ms": 0,
+          "duration_ms": 4000,
+          "volume": "=tween(0, 1, 60, 15)"
+        }
+      ]
+    }
+  }
+  ```
+
+  After:
+
+  ```json
+  {
+    "audio": {
+      "tracks": [{ "id": "music", "gain": 0.5 }],
+      "clips": [
+        {
+          "id": "a",
+          "source_id": "music.mp3",
+          "track_id": "music",
+          "start_ms": 0,
+          "duration_ms": 4000,
+          "gain": "=tween(0, 1, 60, 15)"
+        }
+      ]
+    }
+  }
+  ```
+
+  `addAudio` and `addAudioTrack` keep taking `gain`; they now write `gain`. In a connection, `from_port` may be left out: it defaults to `output`, the only output any node has, and the schema no longer lists it as required.
+
+- b050d65: **Each entry of `diagnosticCodes` says where its code is found and what it means.** An entry is now `{ code, severity, foundBy, meaning }`: `foundBy` is `"check"`, `"render"` or `"check, render"`, and `meaning` is a sentence of Markdown. Each member of `DiagnosticCode` carries the same sentence as its doc comment, so an editor shows it on hover.
+
+  ```ts
+  import { diagnosticCodes } from "@lumiscia/lumen-types";
+
+  const entry = diagnosticCodes.find(({ code }) => code === "node.unknown_param");
+  // { code: "node.unknown_param", severity: "error", foundBy: "check",
+  //   meaning: "A node has a param its type doesn't." }
+  ```
+
+- dea8cf4: **A composition no longer holds encoding settings.** `codec`, `quality`, `bit_depth` and `alpha` are gone from `render_settings`, and a document that still has them is rejected as an unknown field. How a video is encoded is decided by the render request, then by the codec the output container holds (`prores` in a `.mov`, `vp9` in a `.webm`), then by the host's defaults. Every surface already took these options, so move them there; `lumen render comp.json -o out.mov` with no flags still picks ProRes.
+
+  Before:
+
+  ```json
+  {
+    "render_settings": {
+      "width": 1920,
+      "height": 1080,
+      "codec": "hevc",
+      "quality": "high",
+      "bit_depth": 10
+    }
+  }
+  ```
+
+  After, a composition with only the canvas, and the encoding on the render:
+
+  ```json
+  { "render_settings": { "width": 1920, "height": 1080 } }
+  ```
+
+  ```bash
+  lumen render comp.json -o out.mp4 --codec hevc --quality high --bit-depth 10
+  ```
+
+  ```ts
+  await lumen.render(composition, { codec: "hevc", quality: "high", bitDepth: 10 });
+  await render(composition, { output: "out.mp4", codec: "hevc", quality: "high", bitDepth: 10 });
+  ```
+
+  `new Composition({ renderSettings })` takes only `width` and `height`. `VideoCodec` and `VideoBitDepth` stay exported from `@lumiscia/lumen-types`, which the SDK and the `lumen` wrapper now import them from.
+
+  **Rust API:** `lumen_engine::composition::{OutputCodec, OutputSettings, BitDepth}` and `Composition::output_settings()` are removed; use `lumen_ffmpeg::{EncodeCodec, BitDepth}`. The engine's GPU encode targets take `lumen_engine::gpu::BitDepth`, which converts from `lumen_ffmpeg::BitDepth` with `From`. `lumen_server::render::resolve_encoder` reads only the request, the container and the host's config.
+
+- cf41f99: **Expression helpers show their documentation and argument names on hover.** `abs`, `clamp`, `tween`, `keyframes` and the rest are now generated as one documented function per builtin from the engine's table, instead of being derived from it with conditional types. Hovering a helper shows the table's description and its real parameter names; before, an editor showed `args_0`.
+
+  Before, hovering `smoothstep` showed `(args_0: Num, args_1: Num, args_2: Num) => Expr<number>` and no description. After:
+
+  ```ts
+  /** Hermite smoothing of `x` between two edges. */
+  function smoothstep(edge0: Num, edge1: Num, x: Num): Expr<number>;
+  ```
+
+  Every call that type-checked before still does, with the same result type, with one loss: an optional argument can be skipped with an explicit `undefined` before a later one, as in `spring(0, undefined, 20)`, without a type error. It still throws at run time, as it did.
+
+  The helper types `Builtins`, `CamelCase`, `Interpolate`, `Tween`, `MakeKey` and `Keyframes` are no longer exported; their overloads are part of the functions. `expressionBuiltins` in `@lumiscia/lumen-types` says `"same"` instead of `"any"` for the arguments of `lerp`, `tween` and `key` that must share one type, and for the return of `lerp` and `tween`. The engine accepts and evaluates the same expressions.
+
+- 28eea4f: **`nodeSpecs` and `nodeSpecByKind` are exported.** They are generated from the composition schema, so an editor reads each node kind's ports, params, defaults, enum options and limits instead of walking the schema itself. They have the shape of the `NodeSpec` types the package already declared.
+
+  ```ts
+  import { nodeSpecByKind, nodeSpecs } from "@lumiscia/lumen-types";
+
+  nodeSpecByKind.blur.params[0];
+  // { id: "radius", name: "Radius", kind: "float", description: "…", defaultValue: 4,
+  //   constraints: { min: 0, step: 0.5 } }
+  nodeSpecs.map((spec) => spec.kind); // every node kind, in the schema's order
+  ```
+
+- 2a50568: **A template's `render_settings` has the same type as the root's.** `TemplateRenderSettings` is gone from `@lumiscia/lumen-types`; use `RenderSettings`.
+
+  ```ts
+  // Before
+  import type { TemplateRenderSettings } from "@lumiscia/lumen-types";
+
+  // After
+  import type { RenderSettings } from "@lumiscia/lumen-types";
+  ```
+
+  A document that still carries the long-retired `background_color` in `render_settings`, or `start_frame`, `duration_frames` or `source_start_seconds` on an audio clip, now fails with the ordinary unknown-field error (`render_settings.background_color: unknown field`) instead of a message that says what to use instead. Remove the key; colour the canvas with a `background` node, and give audio clips `start_ms`, `duration_ms` and `source_start_ms`.
+
+- 3a7cd1a: The HTTP API is described by an OpenAPI 3.1 document, `definitions/openapi.json`, which replaces `definitions/api.schema.json`. It has what the schema had (the request, response, event and error types, now under `components/schemas`) and what it lacked: every route with its method, path and parameters, the body each takes, the status and body of each answer, and the error codes each status carries (`x-lumen-codes`). `@lumiscia/lumen-types` ships it with the two schemas it refers to:
+
+  ```ts
+  import openapi from "@lumiscia/lumen-types/openapi.json" with { type: "json" };
+  import { apiOperations, apiVersion, type ApiOperationTypes } from "@lumiscia/lumen-types";
+
+  apiOperations.getRender; // { method: "GET", path: "/renders/{id}", request: "none", response: "json" }
+  type Created = ApiOperationTypes["createRender"]["response"]; // CreateRenderResponse
+  ```
+
+  `lumen-server` builds its router from the same table of routes, so it serves the document's routes and no others, and `GET /health` answers `version`, the `info.version` of the document the server implements (`"0.6"`). The descriptions in `errorCodes` no longer start with a status: the document says which statuses carry which code.
+
+  A host of the API can be checked against the document with the SDK's suite, `LUMEN_API_URL=... LUMEN_API_TOKEN=... pnpm test:conformance` in this repository, with a profile file for what it does differently on purpose (`definitions/README.md`).
+
+  **Render webhooks** follow the Standard Webhooks payload as well as its signature. `verifyWebhook` returns the event with the render inside it, the same `Render` that `getRender` returns:
+
+  ```ts
+  // Before
+  const event = await verifyWebhook({ body, headers, secret });
+  event.event; // "render.succeeded"
+  event.id;
+  event.artifactUrl;
+  event.error; // string
+
+  // Now
+  const event = await verifyWebhook({ body, headers, secret });
+  event.type; // "render.succeeded" | "render.failed"
+  event.timestamp;
+  event.data.id;
+  if (event.type === "render.succeeded") event.data.url;
+  if (event.type === "render.failed") event.data.error.message;
+  ```
+
+  A host that sends webhooks posts `{ "type", "timestamp", "data": <render> }`; the flat body with `event`, `artifactUrl` and a string `error` is no longer accepted. `lumen-server` still delivers none.
+
+- edc2aa0: The types of what the engine returns while it runs (diagnostics, the media inventory, media failures, model info, the audio plan and frame requirements) are generated from the engine's own Rust types, so they can no longer drift from the JSON it writes. Their schema is `definitions/runtime.schema.json`.
+
+  Some exports have new names:
+
+  | Before                    | Now                             |
+  | ------------------------- | ------------------------------- |
+  | `LumenDiagnostic`         | `Diagnostic`                    |
+  | `LumenDiagnosticSeverity` | `Severity`                      |
+  | `LumenModelInfo`          | `ModelInfo`                     |
+  | `LumenModelAnimation`     | `AnimationInfo`                 |
+  | `LumenModelMaterial`      | `MaterialInfo`                  |
+  | `LumenModelCamera`        | `CameraInfo`                    |
+  | `NodeParamLocation`       | `NodeParamAt`                   |
+  | `MediaFailureKind`        | `AssetKind` (also names `font`) |
+
+  `Diagnostic.code` is now a `DiagnosticCode`, a union of every code the engine reports that still accepts any other string, because a newer engine can add codes. `diagnosticCodes` lists each code with its severity:
+
+  ```ts
+  import { diagnosticCodes, type Diagnostic } from "@lumiscia/lumen-types";
+
+  const warnings = new Set<string>(
+    diagnosticCodes.filter(({ severity }) => severity === "warning").map(({ code }) => code),
+  );
+  const isWarning = (diagnostic: Diagnostic) => warnings.has(diagnostic.code);
+  ```
+
+  The kinds in a `MediaInventory` are `AssetKind`s, which include `font`, where they were `MediaSourceKind`s. `MediaSourceKind` itself is unchanged.
+
+- 7573c49: The SDK's API types are the generated ones from `@lumiscia/lumen-types`, and the client gains the three routes it lacked.
+
+  `Render` is a union on `status`. `waitForRender` returns a `SucceededRender`, so its `url` is a `string`, and a `failed` or `cancelled` render has `error`. A render's `progress` is a number, 0 when the API sends none, and `durationMs` and `outputBytes` are new:
+
+  ```ts
+  // Before
+  const done = await lumen.waitForRender(render);
+  await fetch(done.url!);
+
+  // Now
+  const done = await lumen.waitForRender(render); // SucceededRender
+  await fetch(done.url);
+  if (render.status === "failed") console.error(render.error.code); // FailedRender
+  ```
+
+  `TemporaryMedia` is now `Media`, and `parseMedia` rejects a body that lacks one of its fields with `invalid_response`. `RenderFailure.retryable` is always set. `MediaKind`, `MediaMetadata`, `MediaStatus`, `MediaSource`, `OutputFormat`, `FrameRange` and `RenderOutput` are the generated types, re-exported. A media source that fails a render or a request is on `LumenError.media`.
+
+  `check`, `getMedia` and `deleteMedia` are new:
+
+  ```ts
+  const report = await lumen.check(composition, { media }); // CheckReport: { ok, diagnostics }
+  const upload = await lumen.getMedia("asset:m_…"); // the id may carry `asset:`
+  await lumen.deleteMedia(upload);
+  ```
+
+  `render` and `check` accept a `CompositionSource`: a `LumenComposition`, or any object with `toJSON()`. A `Composition` from another copy of the package works too. `CompositionSource` is exported from `@lumiscia/lumen-types`.
+
+  `CheckResponse` is now `CheckReport`, in the `lumen-server-api` crate and the generated types. `@lumiscia/lumen-cli` exports the generated `CheckReport`, `CompositionSource` and `FrameRange` instead of its own copies.
+
 ## 0.6.0-beta.2
 
 No changes in this release.

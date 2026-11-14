@@ -1,5 +1,157 @@
 # @lumiscia/lumen-shared
 
+## 0.6.0-beta.3
+
+### Minor Changes
+
+- 0b4d4bc: **An audio track's or clip's level is `gain` in the document, as it is in the builder.** The JSON key was `volume` while `addAudio({ gain })` wrote it, so a hand-written `"gain"` was ignored and the clip played at full level. Audio tracks, clips and the `audio` object now reject keys they do not list, like the rest of the document, so a leftover `volume` (or any other stray key) is an error naming its path, such as `audio.clips[0].volume: unknown field`. `name` stays accepted on tracks and clips. Error messages and JSON pointers say `gain` too: `audio.tracks[0].gain: must be at least 0`.
+
+  Before:
+
+  ```json
+  {
+    "audio": {
+      "tracks": [{ "id": "music", "volume": 0.5 }],
+      "clips": [
+        {
+          "id": "a",
+          "source_id": "music.mp3",
+          "track_id": "music",
+          "start_ms": 0,
+          "duration_ms": 4000,
+          "volume": "=tween(0, 1, 60, 15)"
+        }
+      ]
+    }
+  }
+  ```
+
+  After:
+
+  ```json
+  {
+    "audio": {
+      "tracks": [{ "id": "music", "gain": 0.5 }],
+      "clips": [
+        {
+          "id": "a",
+          "source_id": "music.mp3",
+          "track_id": "music",
+          "start_ms": 0,
+          "duration_ms": 4000,
+          "gain": "=tween(0, 1, 60, 15)"
+        }
+      ]
+    }
+  }
+  ```
+
+  `addAudio` and `addAudioTrack` keep taking `gain`; they now write `gain`. In a connection, `from_port` may be left out: it defaults to `output`, the only output any node has, and the schema no longer lists it as required.
+
+- 811741d: **`addAudio` names the unit of its times, and a timeline takes one length.** Audio clip options were `start`, `duration`, `offset`, `fadeIn` and `fadeOut`, in seconds, next to visual clip nodes whose `start` and `duration` are frames. They are now `startSeconds`, `durationSeconds`, `offsetSeconds`, `fadeInSeconds` and `fadeOutSeconds`. The JSON they write (`start_ms` and the rest) is unchanged.
+
+  Before:
+
+  ```ts
+  composition.addAudio({
+    source: "music.mp3",
+    start: 2,
+    duration: 10,
+    offset: 1.5,
+    fadeIn: 1,
+    fadeOut: 0.5,
+  });
+  ```
+
+  After:
+
+  ```ts
+  composition.addAudio({
+    source: "music.mp3",
+    startSeconds: 2,
+    durationSeconds: 10,
+    offsetSeconds: 1.5,
+    fadeInSeconds: 1,
+    fadeOutSeconds: 0.5,
+  });
+  ```
+
+  `timeline` takes `duration_frames` or `durationSeconds`, not both. TypeScript rejects passing both, and a JavaScript caller that does gets a `TypeError` instead of the seconds silently winning.
+
+  ```ts
+  new Composition({ timeline: { durationSeconds: 3 } });
+  new Composition({ timeline: { duration_frames: 90 } });
+  new Composition({ timeline: { duration_frames: 90, durationSeconds: 3 } }); // type error, throws
+  ```
+
+- dea8cf4: **A composition no longer holds encoding settings.** `codec`, `quality`, `bit_depth` and `alpha` are gone from `render_settings`, and a document that still has them is rejected as an unknown field. How a video is encoded is decided by the render request, then by the codec the output container holds (`prores` in a `.mov`, `vp9` in a `.webm`), then by the host's defaults. Every surface already took these options, so move them there; `lumen render comp.json -o out.mov` with no flags still picks ProRes.
+
+  Before:
+
+  ```json
+  {
+    "render_settings": {
+      "width": 1920,
+      "height": 1080,
+      "codec": "hevc",
+      "quality": "high",
+      "bit_depth": 10
+    }
+  }
+  ```
+
+  After, a composition with only the canvas, and the encoding on the render:
+
+  ```json
+  { "render_settings": { "width": 1920, "height": 1080 } }
+  ```
+
+  ```bash
+  lumen render comp.json -o out.mp4 --codec hevc --quality high --bit-depth 10
+  ```
+
+  ```ts
+  await lumen.render(composition, { codec: "hevc", quality: "high", bitDepth: 10 });
+  await render(composition, { output: "out.mp4", codec: "hevc", quality: "high", bitDepth: 10 });
+  ```
+
+  `new Composition({ renderSettings })` takes only `width` and `height`. `VideoCodec` and `VideoBitDepth` stay exported from `@lumiscia/lumen-types`, which the SDK and the `lumen` wrapper now import them from.
+
+  **Rust API:** `lumen_engine::composition::{OutputCodec, OutputSettings, BitDepth}` and `Composition::output_settings()` are removed; use `lumen_ffmpeg::{EncodeCodec, BitDepth}`. The engine's GPU encode targets take `lumen_engine::gpu::BitDepth`, which converts from `lumen_ffmpeg::BitDepth` with `From`. `lumen_server::render::resolve_encoder` reads only the request, the container and the host's config.
+
+- cf41f99: **Expression helpers show their documentation and argument names on hover.** `abs`, `clamp`, `tween`, `keyframes` and the rest are now generated as one documented function per builtin from the engine's table, instead of being derived from it with conditional types. Hovering a helper shows the table's description and its real parameter names; before, an editor showed `args_0`.
+
+  Before, hovering `smoothstep` showed `(args_0: Num, args_1: Num, args_2: Num) => Expr<number>` and no description. After:
+
+  ```ts
+  /** Hermite smoothing of `x` between two edges. */
+  function smoothstep(edge0: Num, edge1: Num, x: Num): Expr<number>;
+  ```
+
+  Every call that type-checked before still does, with the same result type, with one loss: an optional argument can be skipped with an explicit `undefined` before a later one, as in `spring(0, undefined, 20)`, without a type error. It still throws at run time, as it did.
+
+  The helper types `Builtins`, `CamelCase`, `Interpolate`, `Tween`, `MakeKey` and `Keyframes` are no longer exported; their overloads are part of the functions. `expressionBuiltins` in `@lumiscia/lumen-types` says `"same"` instead of `"any"` for the arguments of `lerp`, `tween` and `key` that must share one type, and for the return of `lerp` and `tween`. The engine accepts and evaluates the same expressions.
+
+### Patch Changes
+
+- e716303: `fn()` now rejects a signature the engine would reject, such as `1bad(x)` or `f(x + y)`, when you call it instead of when the composition renders. The function name and each parameter must be an identifier: a letter or `_`, then letters, digits or `_`.
+
+  `uploadMedia` no longer throws when it cannot tell a file's content type. It sends `application/octet-stream`, which hosts accept because they read the file's bytes to tell what it is. It also names `.ttf`, `.otf`, `.woff`, `.woff2`, `.hdr`, `.exr`, `.cube` and `.gltf` files by their extension.
+
+  `RenderOptions.idempotencyKey` is documented as honoured only by the hosted API; `lumen-server` ignores it.
+
+- Updated dependencies [a822c9b]
+- Updated dependencies [0b4d4bc]
+- Updated dependencies [b050d65]
+- Updated dependencies [dea8cf4]
+- Updated dependencies [cf41f99]
+- Updated dependencies [28eea4f]
+- Updated dependencies [2a50568]
+- Updated dependencies [3a7cd1a]
+- Updated dependencies [edc2aa0]
+- Updated dependencies [7573c49]
+  - @lumiscia/lumen-types@0.6.0-beta.3
+
 ## 0.6.0-beta.2
 
 ### Patch Changes
