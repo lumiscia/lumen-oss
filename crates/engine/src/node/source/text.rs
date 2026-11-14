@@ -7,6 +7,7 @@ use std::{
 use crate::error::{LumenError, MediaFailure, MediaReason, RenderError};
 use crate::expr::{ExpressionContext, GlyphScope};
 use crate::gpu::BoundFrame;
+use crate::gpu::frame_graph::{Staticness, held};
 use crate::media::{
     AssetKind, FontResolver, MediaIdentity, MediaStore, TextSession, asset_id, resolve_as, sniff,
 };
@@ -396,6 +397,13 @@ pub(crate) struct TextDraw {
     pub(crate) canvas_bounds: Option<[f32; 4]>,
 }
 
+/// Whether any expression in `value` may give a different value at another frame.
+fn reads_frame_in(value: &impl DelegateEvaluable) -> bool {
+    let mut dependent = false;
+    value.for_each_expression(&mut |expression| dependent |= expression.is_frame_dependent());
+    dependent
+}
+
 impl crate::gpu::frame_graph::RecordNode for Text {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         super::text_record::text_programs(programs)
@@ -406,6 +414,41 @@ impl crate::gpu::frame_graph::RecordNode for Text {
         cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
         super::text_record::record_text(self, cx)
+    }
+
+    // Per-glyph params are evaluated in a scope of their own, which `frame_values` doesn't
+    // evaluate them in.
+    fn staticness(&self, reads_frame: bool) -> Staticness {
+        if reads_frame_in(&self.params.glyph) {
+            Staticness::Never
+        } else {
+            held(reads_frame)
+        }
+    }
+
+    fn analytic_shutter(&self) -> Option<&Deferred<f64>> {
+        Some(&self.params.placement.motion_blur)
+    }
+
+    /// The node's own family is left out when every span names its own.
+    fn literal_font_families(&self) -> Vec<(String, &str)> {
+        let layout = &self.params.layout;
+        let spans = match &layout.content {
+            TextContentDelegate::Spans(spans) => spans.as_slice(),
+            TextContentDelegate::Text(_) => &[],
+        };
+        let mut families = Vec::new();
+        if (spans.is_empty() || spans.iter().any(|span| span.layout.font_family.is_none()))
+            && let Deferred::Value(family) = &layout.font_family
+        {
+            families.push(("font_family".to_string(), family.as_str()));
+        }
+        for (index, span) in spans.iter().enumerate() {
+            if let Some(Deferred::Value(family)) = &span.layout.font_family {
+                families.push((format!("content[{index}].font_family"), family.as_str()));
+            }
+        }
+        families
     }
 }
 
@@ -1437,28 +1480,6 @@ pub(crate) fn used_font_families(layout: &TextLayoutParams) -> impl Iterator<Ite
         .then_some(layout.font_family.as_str())
         .into_iter()
         .chain(spans.iter().filter_map(|span| span.font_family.as_deref()))
-}
-
-/// The families `text` names as literals, each with its param path, such as
-/// `content[1].font_family`. The node's own is left out when every span names its own.
-pub(crate) fn literal_font_families(text: &Text) -> Vec<(String, &str)> {
-    let layout = &text.params.layout;
-    let spans = match &layout.content {
-        TextContentDelegate::Spans(spans) => spans.as_slice(),
-        TextContentDelegate::Text(_) => &[],
-    };
-    let mut families = Vec::new();
-    if (spans.is_empty() || spans.iter().any(|span| span.layout.font_family.is_none()))
-        && let Deferred::Value(family) = &layout.font_family
-    {
-        families.push(("font_family".to_string(), family.as_str()));
-    }
-    for (index, span) in spans.iter().enumerate() {
-        if let Some(Deferred::Value(family)) = &span.layout.font_family {
-            families.push((format!("content[{index}].font_family"), family.as_str()));
-        }
-    }
-    families
 }
 
 /// The text system of `media`'s fonts, which rendering and text measurement share so both see

@@ -1,13 +1,13 @@
 #[cfg(feature = "metadata")]
 use super::schema::NodeSchema;
 use super::{
-    JsonNode, Node, PropertyEval, PropertyRead, compositing, ids::NodeId, media_output, processing,
-    scene, source, vector,
+    Deferred, JsonNode, Node, PropertyEval, PropertyRead, compositing, ids::NodeId, media_output,
+    processing, scene, source, vector,
 };
 use crate::{
     error::{DocumentError, GraphValidationError},
     expr::Expression,
-    gpu::frame_graph::{FrameCx, Programs, Raster, RecordNode},
+    gpu::frame_graph::{FrameCx, Programs, Raster, RecordNode, Staticness},
 };
 
 /// Declares the node kinds. Each line names a variant and its type, which derives
@@ -117,6 +117,36 @@ macro_rules! node_kinds {
             fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
                 match self {
                     $(Self::$variant(node) => node.programs(programs),)+
+                }
+            }
+
+            fn staticness(&self, reads_frame: bool) -> Staticness {
+                match self {
+                    $(Self::$variant(node) => node.staticness(reads_frame),)+
+                }
+            }
+
+            fn analytic_shutter(&self) -> Option<&Deferred<f64>> {
+                match self {
+                    $(Self::$variant(node) => node.analytic_shutter(),)+
+                }
+            }
+
+            fn magnification(&self) -> f64 {
+                match self {
+                    $(Self::$variant(node) => node.magnification(),)+
+                }
+            }
+
+            fn literal_param_errors(&self) -> Vec<(&'static str, String)> {
+                match self {
+                    $(Self::$variant(node) => node.literal_param_errors(),)+
+                }
+            }
+
+            fn literal_font_families(&self) -> Vec<(String, &str)> {
+                match self {
+                    $(Self::$variant(node) => node.literal_font_families(),)+
                 }
             }
         }

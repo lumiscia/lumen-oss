@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::{
     composition::{Composition, Scene},
     error::At,
+    gpu::frame_graph::RecordNode,
     node::{MediaSource, MediaValue, Node, NodeId, NodeKind},
 };
 
@@ -256,12 +257,7 @@ fn walk_nodes<'a>(template: Option<&str>, scene: &'a Scene, f: &mut dyn FnMut(Fo
                 at: at(id, param),
             }),
         });
-        let families = match node {
-            NodeKind::Text(text) => crate::node::source::text::literal_font_families(text),
-            NodeKind::Text3d(text) => text.literal_font_families(),
-            _ => Vec::new(),
-        };
-        for (param, family) in families {
+        for (param, family) in node.literal_font_families() {
             if !family.is_empty() {
                 f(Found::Font {
                     family,

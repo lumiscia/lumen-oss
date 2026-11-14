@@ -6,7 +6,7 @@ use lumen_gpu::{LayoutEntry, LayoutKind};
 
 use crate::error::RenderError;
 use crate::expr::ExpressionContext;
-use crate::gpu::frame_graph::ComputeProgram;
+use crate::gpu::frame_graph::{ComputeProgram, Staticness, held};
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, motion};
 
 /// Most sub-frames a `motion_blur` node renders.
@@ -155,6 +155,19 @@ impl crate::gpu::frame_graph::RecordNode for MotionBlur {
         match offsets {
             Some(offsets) => cx.record_motion_blur(self.id, source, &offsets),
             None => cx.input(source),
+        }
+    }
+
+    fn magnification(&self) -> f64 {
+        1.0
+    }
+
+    // A `motion_blur` mixes its source at frames other than this one.
+    fn staticness(&self, reads_frame: bool) -> Staticness {
+        if reads_frame {
+            Staticness::Never
+        } else {
+            held(reads_frame)
         }
     }
 }

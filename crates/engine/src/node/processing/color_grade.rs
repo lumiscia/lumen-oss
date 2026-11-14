@@ -100,36 +100,6 @@ const COLOR_GRADE_CUBE: ComputeProgram = ComputeProgram {
 
 const LUT_AND_LUT_SOURCE: &str = "`lut` and `lut_source` are both set; use one of them";
 
-impl ColorGrade {
-    /// The params whose literal values are wrong, with what is wrong, for checks that run before
-    /// a render.
-    pub(crate) fn literal_param_errors(&self) -> Vec<(&'static str, String)> {
-        let params = &self.params;
-        let mut errors = Vec::new();
-        let lut = match &params.lut {
-            Deferred::Value(lut) => Some(lut.as_str()),
-            Deferred::Expr(_) => None,
-        };
-        if let Some(lut) = lut
-            && let Err(details) = inline_lut::lut_stops(lut)
-        {
-            errors.push(("lut", details));
-        }
-        if let Deferred::Value(source) = &params.lut_source {
-            if inline_lut::looks_like_inline_lut(source) {
-                errors.push((
-                    "lut_source",
-                    inline_lut::INLINE_LUT_IN_LUT_SOURCE.to_string(),
-                ));
-            } else if !source.is_empty() && lut.is_some_and(|lut| !inline_lut::is_identity_lut(lut))
-            {
-                errors.push(("lut", LUT_AND_LUT_SOURCE.to_string()));
-            }
-        }
-        errors
-    }
-}
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
 #[shader_layout(wgsl = "ColorGradeParams", source = SHADER)]
@@ -154,6 +124,36 @@ impl crate::gpu::frame_graph::RecordNode for ColorGrade {
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
         let source = cx.required(self.id, "source", self.source)?;
         self.grade(cx, source)
+    }
+
+    fn magnification(&self) -> f64 {
+        1.0
+    }
+
+    fn literal_param_errors(&self) -> Vec<(&'static str, String)> {
+        let params = &self.params;
+        let mut errors = Vec::new();
+        let lut = match &params.lut {
+            Deferred::Value(lut) => Some(lut.as_str()),
+            Deferred::Expr(_) => None,
+        };
+        if let Some(lut) = lut
+            && let Err(details) = inline_lut::lut_stops(lut)
+        {
+            errors.push(("lut", details));
+        }
+        if let Deferred::Value(source) = &params.lut_source {
+            if inline_lut::looks_like_inline_lut(source) {
+                errors.push((
+                    "lut_source",
+                    inline_lut::INLINE_LUT_IN_LUT_SOURCE.to_string(),
+                ));
+            } else if !source.is_empty() && lut.is_some_and(|lut| !inline_lut::is_identity_lut(lut))
+            {
+                errors.push(("lut", LUT_AND_LUT_SOURCE.to_string()));
+            }
+        }
+        errors
     }
 }
 

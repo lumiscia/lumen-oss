@@ -24,13 +24,10 @@ use crate::{
     expr::{ExpressionContext, ExpressionValue},
     media::{AssetKind, MediaIdentity, MediaStore},
     node::{
-        Deferred, DelegateEvaluable, MediaValue, Node, NodeId, NodeKind,
+        Deferred, MediaValue, Node, NodeId, NodeKind,
         compositing::clip::Clip,
         required_input,
-        source::{
-            media_in::MediaInSourceKindDelegate,
-            text::{TextDraw, TextInstance},
-        },
+        source::text::{TextDraw, TextInstance},
     },
     scope::{FrameTime, MAX_GRAPH_DEPTH, Routed, Scope},
 };
@@ -156,11 +153,51 @@ impl Raster {
     }
 }
 
+/// What the renderer and the loader ask of a node kind. A rule about one kind of node is a method
+/// here that the kind overrides, not a `match` on `NodeKind` elsewhere.
 pub(crate) trait RecordNode {
     fn record(&self, cx: &mut FrameCx<'_>) -> crate::Result<Raster>;
 
     /// Builds every program this node may record with, whatever its params are at a frame.
     fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()>;
+
+    /// Whether the node renders the same output on every frame as long as its inputs do.
+    /// `reads_frame` is whether any of its expressions depends on the frame.
+    fn staticness(&self, reads_frame: bool) -> Staticness {
+        held(reads_frame)
+    }
+
+    /// The shutter angle of a node that blurs its own motion, evaluating its params at either end
+    /// of the shutter outside a `motion_blur` that samples.
+    fn analytic_shutter(&self) -> Option<&Deferred<f64>> {
+        None
+    }
+
+    /// How much the node magnifies the raster it reads; infinite when it can't say.
+    fn magnification(&self) -> f64 {
+        f64::INFINITY
+    }
+
+    /// The params whose literal values are wrong, with what is wrong, for checks that run before
+    /// a render.
+    fn literal_param_errors(&self) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
+
+    /// The families the node names as literals, each with its param path, for checks that run
+    /// before a render.
+    fn literal_font_families(&self) -> Vec<(String, &str)> {
+        Vec::new()
+    }
+}
+
+/// How static a node is whose output depends on the frame only through its own expressions.
+pub(crate) fn held(reads_frame: bool) -> Staticness {
+    if reads_frame {
+        Staticness::WhileEqual
+    } else {
+        Staticness::Always
+    }
 }
 
 /// Builds the programs a composition may record with, so that a shader that doesn't compile
@@ -278,7 +315,7 @@ type VideoFrameKey = (InstanceKey, MediaIdentity, u32, (u32, u32), bool);
 
 /// Whether a node's output is the same on every frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Staticness {
+pub(crate) enum Staticness {
     Never,
     /// Whatever the frame.
     Always,
@@ -1345,7 +1382,7 @@ impl<'a> FrameCx<'a> {
         let node = self.scope.node(id)?;
         let mut contexts = vec![expr];
         if self.analytic_motion_blur()
-            && let Some(shutter) = analytic_shutter(node)
+            && let Some(shutter) = node.analytic_shutter()
             && let Some(offset) =
                 crate::node::motion::shutter_offset(shutter.eval(id, "motion_blur", &expr).ok()?)
         {
@@ -1994,7 +2031,7 @@ impl<'a> FrameCx<'a> {
                 .scope
                 .node(id)
                 .filter(|node| !matches!(node, NodeKind::Clip(_) | NodeKind::TimeRemap(_)))
-                .map(|node| (node, static_candidate(node)))
+                .map(|node| (node, node.staticness(node.is_frame_dependent())))
                 .filter(|(_, own)| *own != Staticness::Never);
             let Some((node, own)) = candidate else {
                 self.st.statics.insert((graph, id), Staticness::Never);
@@ -2116,61 +2153,6 @@ impl<'a> FrameCx<'a> {
     }
 }
 
-/// Whether the node renders the same output on every frame as long as its inputs do.
-fn static_candidate(node: &NodeKind) -> Staticness {
-    let reads_frame = node.is_frame_dependent();
-    let held_values = if reads_frame {
-        Staticness::WhileEqual
-    } else {
-        Staticness::Always
-    };
-    match node {
-        // An image changes only with the media store, which `images_changed` watches. Video
-        // changes with the frame.
-        NodeKind::MediaIn(media) => match media.params.kind {
-            MediaInSourceKindDelegate::Image => held_values,
-            _ => Staticness::Never,
-        },
-        // Shaders see the built-in time.
-        NodeKind::WgslShader(_) => Staticness::Never,
-        // A model playing a clip poses differently with the frame, until its clip is over or
-        // before it starts, which `add_model` finds out from the clip.
-        NodeKind::Model3d(model) if model.animates() => {
-            if cfg!(feature = "3d") && !reads_frame {
-                Staticness::WhileHeld
-            } else {
-                Staticness::Never
-            }
-        }
-        // Per-copy and per-glyph params are evaluated in a scope of their own, which
-        // `frame_values` doesn't evaluate them in.
-        NodeKind::Instance3d(_) if reads_frame => Staticness::Never,
-        NodeKind::Text(text) if reads_frame_in(&text.params.glyph) => Staticness::Never,
-        // A `motion_blur` mixes its source at frames other than this one.
-        NodeKind::MotionBlur(_) if reads_frame => Staticness::Never,
-        _ => held_values,
-    }
-}
-
-/// Whether any expression in `value` may give a different value at another frame.
-fn reads_frame_in(value: &impl DelegateEvaluable) -> bool {
-    let mut dependent = false;
-    value.for_each_expression(&mut |expression| dependent |= expression.is_frame_dependent());
-    dependent
-}
-
-/// The shutter angle of a node that blurs its own motion, evaluating its params at either end of
-/// the shutter outside a `motion_blur` that samples.
-fn analytic_shutter(node: &NodeKind) -> Option<&Deferred<f64>> {
-    match node {
-        NodeKind::Shape(shape) => Some(&shape.params.placement.motion_blur),
-        NodeKind::Path(path) => Some(&path.params.placement.motion_blur),
-        NodeKind::Text(text) => Some(&text.params.placement.motion_blur),
-        NodeKind::Transform(transform) => Some(&transform.params.motion_blur),
-        _ => None,
-    }
-}
-
 /// Fails, blaming `node`, when `size` is larger than the device's `max` texture dimension.
 pub(crate) fn ensure_texture_fits(
     node: &NodeKind,
@@ -2226,7 +2208,8 @@ pub(crate) fn locate_media_failure(
     if named.is_none()
         && let NodeKind::Text(text) = node
     {
-        named = crate::node::source::text::literal_font_families(text)
+        named = text
+            .literal_font_families()
             .into_iter()
             .find(|(_, family)| *family == failure.source)
             .map(|(param, _)| (param, vec![crate::media::AssetKind::Font]));

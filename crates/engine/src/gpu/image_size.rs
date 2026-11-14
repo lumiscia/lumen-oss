@@ -24,6 +24,7 @@ use crate::node::source::media_in::MediaInSourceKindDelegate;
 use crate::node::{Deferred, Node, NodeId, NodeKind};
 
 use super::color::{linear_to_srgb, srgb_to_linear};
+use super::frame_graph::RecordNode;
 
 /// An image is reduced only when it is shown at less than this fraction of its size.
 const REDUCE_BELOW: f64 = 0.5;
@@ -295,35 +296,9 @@ impl<'a> Magnification<'a> {
 
     /// How much `reader` magnifies what it reads.
     fn factor(&self, reader: NodeId) -> f64 {
-        let Some(node) = self.nodes.get(&reader) else {
-            return f64::INFINITY;
-        };
-        match node {
-            NodeKind::MediaOutput(_)
-            | NodeKind::Merge(_)
-            | NodeKind::RasterMultiMerge(_)
-            | NodeKind::Switch(_)
-            | NodeKind::Opacity(_)
-            | NodeKind::Blur(_)
-            | NodeKind::ColorGrade(_)
-            | NodeKind::Exposure(_)
-            | NodeKind::HueSaturation(_)
-            | NodeKind::Levels(_)
-            | NodeKind::Crop(_)
-            | NodeKind::Shadow(_)
-            | NodeKind::Glow(_)
-            | NodeKind::MotionBlur(_)
-            | NodeKind::DirectionalBlur(_) => 1.0,
-            NodeKind::Transform(transform) => {
-                match (&transform.params.scale_x, &transform.params.scale_y) {
-                    (Deferred::Value(x), Deferred::Value(y)) if x.is_finite() && y.is_finite() => {
-                        x.abs().max(y.abs())
-                    }
-                    _ => f64::INFINITY,
-                }
-            }
-            _ => f64::INFINITY,
-        }
+        self.nodes
+            .get(&reader)
+            .map_or(f64::INFINITY, RecordNode::magnification)
     }
 }
 

@@ -36,7 +36,7 @@ use crate::{
     },
 };
 
-use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
+use crate::gpu::frame_graph::{ComputeProgram, Staticness, dispatch_for};
 
 /// WebGPU's default `maxSampledTexturesPerShaderStage`, guaranteed on every adapter.
 pub const MAX_INPUTS: usize = 16;
@@ -809,6 +809,11 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
             domain: first.domain,
             bounds: None,
         })
+    }
+
+    // Shaders see the built-in time.
+    fn staticness(&self, _: bool) -> Staticness {
+        Staticness::Never
     }
 }
 

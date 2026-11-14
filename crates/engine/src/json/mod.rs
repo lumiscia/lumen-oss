@@ -29,6 +29,7 @@ use crate::{
     diagnostic::{Diagnostic, MAX_DIAGNOSTICS},
     error::{At, DocumentError, GraphValidationError, LumenError, Warning, WarningKind},
     expr::FunctionScope,
+    gpu::frame_graph::RecordNode,
     graph::{Connection, Graph},
     media::{AssetKind, AssetResolver, Found, MediaLocation, asset_id, resolve_asset_of},
     node::{NodeId, NodeKind},
@@ -930,11 +931,7 @@ fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Grap
                 continue;
             }
         };
-        let invalid = match &node_kind {
-            NodeKind::Text3d(text) => text.literal_param_errors(),
-            NodeKind::ColorGrade(grade) => grade.literal_param_errors(),
-            _ => Vec::new(),
-        };
+        let invalid = node_kind.literal_param_errors();
         if !invalid.is_empty() {
             errors.extend(invalid.into_iter().map(|(param, details)| {
                 DocumentError::InvalidParam {

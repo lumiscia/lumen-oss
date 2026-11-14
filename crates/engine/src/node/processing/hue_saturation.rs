@@ -82,4 +82,8 @@ impl crate::gpu::frame_graph::RecordNode for HueSaturation {
         };
         cx.filter(&HUE_SATURATION, source, &gpu_params)
     }
+
+    fn magnification(&self) -> f64 {
+        1.0
+    }
 }

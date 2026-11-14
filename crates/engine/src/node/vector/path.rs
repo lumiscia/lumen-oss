@@ -7,7 +7,7 @@ use super::repeat::{Drawn, GpuCopies, Repeat, RepeatedTransform};
 use crate::error::RenderError;
 use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 use crate::node::motion::Shutter;
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 pub(crate) const PATH_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -752,6 +752,10 @@ impl crate::gpu::frame_graph::RecordNode for Path {
             cx.analytic_motion_blur(),
         )?;
         record_path_source(cx, frame)
+    }
+
+    fn analytic_shutter(&self) -> Option<&Deferred<f64>> {
+        Some(&self.params.placement.motion_blur)
     }
 }
 
