@@ -3,6 +3,7 @@ wasm_bindings_out := justfile_directory() / "packages/lumen-bindings/wasm"
 generated_types_out := justfile_directory() / "packages/lumen-types/src/generated"
 generated_expressions_out := justfile_directory() / "packages/lumen-shared/src/generated"
 node_reference := justfile_directory() / "docs/node-reference.md"
+engine_readme := justfile_directory() / "crates/engine/README.md"
 
 # The TypeScript half of CI's Check job. CI also runs Rust formatting, checks and tests, and the
 # lavapipe-backed SDK integration test.
@@ -18,7 +19,8 @@ wasm-bindings-debug:
 wasm-bindings-release:
     pnpm --filter @lumiscia/generate-bindings generate -- release --out-dir {{ wasm_bindings_out }}
 
-# Also writes docs/node-reference.md from the definitions.
+# Also writes docs/node-reference.md and the table of diagnostic codes in crates/engine/README.md
+# from the definitions.
 generate-types: generate-definitions
     pnpm --filter @lumiscia/generate-types generate
 
@@ -41,7 +43,7 @@ set-schema-version version:
 verify-typescript-artifacts:
     #!/usr/bin/env bash
     set -euo pipefail
-    paths=({{ definitions_out }}/composition.schema.json {{ definitions_out }}/runtime.schema.json {{ node_reference }} {{ generated_types_out }} {{ generated_expressions_out }})
+    paths=({{ definitions_out }}/composition.schema.json {{ definitions_out }}/runtime.schema.json {{ node_reference }} {{ engine_readme }} {{ generated_types_out }} {{ generated_expressions_out }})
     hashes() { find "${paths[@]}" -type f -print0 | sort -z | xargs -0 sha256sum; }
     tmpdir="$(mktemp -d)"
     trap 'rm -rf "$tmpdir"' EXIT

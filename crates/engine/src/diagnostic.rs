@@ -105,6 +105,309 @@ pub fn code_list() -> impl Iterator<Item = (&'static str, Severity)> {
     errors.chain(warnings)
 }
 
+/// Where a diagnostic with a code comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoundBy {
+    /// [`crate::json::check`] finds it, without rendering.
+    Check,
+    /// Only rendering finds it.
+    Render,
+    /// Both find it.
+    CheckAndRender,
+}
+
+impl FoundBy {
+    /// How the codes' documentation spells it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Check => "check",
+            Self::Render => "render",
+            Self::CheckAndRender => "check, render",
+        }
+    }
+}
+
+/// What a diagnostic code means, for documentation.
+#[derive(Debug, Clone, Copy)]
+pub struct CodeDoc {
+    pub code: &'static str,
+    /// Where a diagnostic with this code comes from.
+    pub found_by: FoundBy,
+    /// Markdown.
+    pub meaning: &'static str,
+}
+
+/// Every code with what it means, in the order the documentation lists them. A test keeps it in
+/// step with [`codes`].
+pub const CODE_DOCS: &[CodeDoc] = &[
+    CodeDoc {
+        code: "document.syntax",
+        found_by: FoundBy::Check,
+        meaning: "The text is not JSON.",
+    },
+    CodeDoc {
+        code: "document.schema_version",
+        found_by: FoundBy::Check,
+        meaning: "`lumenSchemaVersion` is not a string, or names a version outside this engine's Lumen line.",
+    },
+    CodeDoc {
+        code: "document.invalid",
+        found_by: FoundBy::Check,
+        meaning: "A key or value outside node params has the wrong shape, is missing or is unknown.",
+    },
+    CodeDoc {
+        code: "expression.function",
+        found_by: FoundBy::Check,
+        meaning: "A function in `functions` doesn't parse, or is defined twice or recursively.",
+    },
+    CodeDoc {
+        code: "node.unknown_type",
+        found_by: FoundBy::Check,
+        meaning: "A node's `type` is not a node type.",
+    },
+    CodeDoc {
+        code: "node.invalid_params",
+        found_by: FoundBy::Check,
+        meaning: "A node's `params` is not an object.",
+    },
+    CodeDoc {
+        code: "node.unknown_param",
+        found_by: FoundBy::Check,
+        meaning: "A node has a param its type doesn't.",
+    },
+    CodeDoc {
+        code: "node.invalid_param",
+        found_by: FoundBy::Check,
+        meaning: "A param's value is wrong for it, including expressions that don't parse.",
+    },
+    CodeDoc {
+        code: "node.unsupported",
+        found_by: FoundBy::Check,
+        meaning: "A node needs what this build of the engine was built without: any 3D node, without the `3d` feature.",
+    },
+    CodeDoc {
+        code: "graph.duplicate_node_id",
+        found_by: FoundBy::Check,
+        meaning: "Two nodes of one graph share an id.",
+    },
+    CodeDoc {
+        code: "connection.invalid_from_port",
+        found_by: FoundBy::Check,
+        meaning: "A connection's `from_port` is not `output`.",
+    },
+    CodeDoc {
+        code: "connection.missing_source_node",
+        found_by: FoundBy::Check,
+        meaning: "A connection or input reads a node that doesn't exist.",
+    },
+    CodeDoc {
+        code: "connection.missing_target_node",
+        found_by: FoundBy::Check,
+        meaning: "A connection writes to a node that doesn't exist.",
+    },
+    CodeDoc {
+        code: "connection.unknown_port",
+        found_by: FoundBy::Check,
+        meaning: "A connection writes to an input its node doesn't have.",
+    },
+    CodeDoc {
+        code: "connection.input_already_connected",
+        found_by: FoundBy::Check,
+        meaning: "A single input is connected twice.",
+    },
+    CodeDoc {
+        code: "connection.wrong_kind",
+        found_by: FoundBy::Check,
+        meaning: "A connection wires a scene into an input that takes a raster, or a raster into one that takes a scene.",
+    },
+    CodeDoc {
+        code: "graph.node_id_mismatch",
+        found_by: FoundBy::Check,
+        meaning: "A node is stored under another id. Only builders made in Rust can do this.",
+    },
+    CodeDoc {
+        code: "graph.missing_required_input",
+        found_by: FoundBy::Check,
+        meaning: "A required input is not connected.",
+    },
+    CodeDoc {
+        code: "graph.missing_media_output",
+        found_by: FoundBy::Check,
+        meaning: "A graph has no `media_output` node.",
+    },
+    CodeDoc {
+        code: "graph.multiple_media_outputs",
+        found_by: FoundBy::Check,
+        meaning: "A graph has more than one `media_output` node.",
+    },
+    CodeDoc {
+        code: "graph.cycle",
+        found_by: FoundBy::Check,
+        meaning: "Nodes read each other in a cycle.",
+    },
+    CodeDoc {
+        code: "clip.invalid",
+        found_by: FoundBy::Check,
+        meaning: "A clip names a composition that doesn't exist, sets props it doesn't declare or of the wrong kind, plays a composition and a `source` together, or has a negative `duration` other than -1.",
+    },
+    CodeDoc {
+        code: "expression.invalid_prop_read",
+        found_by: FoundBy::Check,
+        meaning: "`prop()` is used outside a template, names an undeclared prop, or doesn't name it with a string literal.",
+    },
+    CodeDoc {
+        code: "settings.invalid",
+        found_by: FoundBy::Check,
+        meaning: "A timeline, canvas or prop default can't render, such as an `fps` of 0.",
+    },
+    CodeDoc {
+        code: "audio.invalid",
+        found_by: FoundBy::Check,
+        meaning: "Audio tracks or clips are duplicated, unknown, too many in one composition, or have invalid timing or gain, or a gain expression reads a node, a glyph, text or an undeclared prop.",
+    },
+    CodeDoc {
+        code: "composition.cycle",
+        found_by: FoundBy::Check,
+        meaning: "Templates instantiate themselves.",
+    },
+    CodeDoc {
+        code: "font.fallback",
+        found_by: FoundBy::CheckAndRender,
+        meaning: "A `text` or `text_3d` node's font family resolved to no font, so it renders in a fallback.",
+    },
+    CodeDoc {
+        code: "font.no_outlines",
+        found_by: FoundBy::Render,
+        meaning: "A `text_3d` node's glyphs have no outlines to extrude, such as colour emoji, so they are left out.",
+    },
+    CodeDoc {
+        code: "scene.shadow_limit",
+        found_by: FoundBy::Render,
+        meaning: "A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none.",
+    },
+    CodeDoc {
+        code: "scene.model_primitives_skipped",
+        found_by: FoundBy::Render,
+        meaning: "A `model_3d`'s model has points, lines, or triangle strips or fans, which aren't drawn.",
+    },
+    CodeDoc {
+        code: "media.color_unsupported",
+        found_by: FoundBy::Render,
+        meaning: "A video's colour tags name a transfer or primaries the engine doesn't convert, so it renders as SDR or BT.709 in their place, or an image's ICC profile can't be honoured, so it renders as sRGB.",
+    },
+    CodeDoc {
+        code: "media.image_reduced",
+        found_by: FoundBy::Render,
+        meaning: "An image every use of which is a literal `resize` is larger on a side than the device's texture limit, or the host's `set_max_image_side`, so it is shown from a copy reduced to fit.",
+    },
+    CodeDoc {
+        code: "property.invalid_type",
+        found_by: FoundBy::Render,
+        meaning: "An expression gave a param a value of the wrong type.",
+    },
+    CodeDoc {
+        code: "expression.parse",
+        found_by: FoundBy::Render,
+        meaning: "An expression built at render time doesn't parse.",
+    },
+    CodeDoc {
+        code: "expression.evaluate",
+        found_by: FoundBy::Render,
+        meaning: "An expression failed to evaluate.",
+    },
+    CodeDoc {
+        code: "media.not_found",
+        found_by: FoundBy::CheckAndRender,
+        meaning: "A media source isn't there: a path or alias the host doesn't have, or an `asset:` id its asset store doesn't have.",
+    },
+    CodeDoc {
+        code: "media.wrong_kind",
+        found_by: FoundBy::CheckAndRender,
+        meaning: "A media source is another kind than the place using it reads, such as an `asset:` image used as a model, or a video file given where an image is read.",
+    },
+    CodeDoc {
+        code: "media.unsupported",
+        found_by: FoundBy::Render,
+        meaning: "A media source is the right kind but in a format or with a feature the engine doesn't read: an unknown container or codec, BT.2020 constant-luminance video, a glTF using a required extension, a `.gltf` JSON file, a WOFF font.",
+    },
+    CodeDoc {
+        code: "media.too_large",
+        found_by: FoundBy::Render,
+        meaning: "A media source is over a limit, in bytes, pixels or counts, or is bigger than the device can hold. The limit and, when known, the actual value are in the failure.",
+    },
+    CodeDoc {
+        code: "media.decode",
+        found_by: FoundBy::Render,
+        meaning: "A media source is meant to be what the place reads but can't be read: it is corrupt, truncated or in no format the engine can identify.",
+    },
+    CodeDoc {
+        code: "media.frame_out_of_range",
+        found_by: FoundBy::Render,
+        meaning: "A video frame past the end of its source was asked for.",
+    },
+    CodeDoc {
+        code: "audio.unknown_track",
+        found_by: FoundBy::Render,
+        meaning: "An audio clip names a track that doesn't exist.",
+    },
+    CodeDoc {
+        code: "audio.limit",
+        found_by: FoundBy::Render,
+        meaning: "Audio is more than the plan can hold: too many clips playing sound at once, a loop restarting too often, too many segments in one plan, or a preview timeline too long.",
+    },
+    CodeDoc {
+        code: "render.frame_out_of_range",
+        found_by: FoundBy::Render,
+        meaning: "A frame past the composition's end was asked for.",
+    },
+    CodeDoc {
+        code: "render.node_evaluation",
+        found_by: FoundBy::Render,
+        meaning: "A node failed to render, such as text with too many glyphs or a `wgsl_shader` that doesn't compile.",
+    },
+    CodeDoc {
+        code: "render.missing_node",
+        found_by: FoundBy::Render,
+        meaning: "A node read while rendering doesn't exist.",
+    },
+    CodeDoc {
+        code: "render.invalid_output_type",
+        found_by: FoundBy::Render,
+        meaning: "A node's output had the wrong type for its reader.",
+    },
+    CodeDoc {
+        code: "render.gpu",
+        found_by: FoundBy::Render,
+        meaning: "The GPU failed: the device, its queue or a driver. Nothing the composition says causes it, so trying again may succeed.",
+    },
+    CodeDoc {
+        code: "render.limit",
+        found_by: FoundBy::Render,
+        meaning: "The composition needs more than the device or engine allows, such as a frame whose data is too large for the device's buffers or a video frame larger than its texture limit.",
+    },
+    CodeDoc {
+        code: "render.internal",
+        found_by: FoundBy::Render,
+        meaning: "The engine, or a host's resolver or render target, broke a contract the render relies on, such as a poisoned lock or a stale recorded frame uploaded. Not the composition's fault. Trying again helps only for fonts that kept loading, which stay loaded for the next render.",
+    },
+    CodeDoc {
+        code: "render.too_deeply_nested",
+        found_by: FoundBy::Render,
+        meaning: "A node is more than 48 nodes deep, counting through clips. Flatten the chain: put many layers in one `raster_multimerge` instead of chaining `merge`s, and combine consecutive transforms or adjustments.",
+    },
+];
+
+/// Every code's [`CodeDoc`] with the severity of the diagnostics that carry it, in the order of
+/// [`CODE_DOCS`].
+pub fn code_docs() -> impl Iterator<Item = (&'static CodeDoc, Severity)> {
+    CODE_DOCS.iter().map(|doc| {
+        let (_, severity) = code_list()
+            .find(|(code, _)| *code == doc.code)
+            .expect("every documented code is a code");
+        (doc, severity)
+    })
+}
+
 /// Escapes a JSON pointer reference token.
 pub(crate) fn escape(token: &str) -> String {
     token.replace('~', "~0").replace('/', "~1")
@@ -345,6 +648,8 @@ fn connection_index(scene: &Value, from: NodeId, to: NodeId, port: &str) -> Opti
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -427,21 +732,19 @@ mod tests {
     }
 
     #[test]
-    fn every_code_is_unique_and_documented() {
-        let mut seen = std::collections::BTreeSet::new();
+    fn every_code_is_unique_and_documented_once() {
+        let mut seen = BTreeSet::new();
         for code in codes() {
             assert!(seen.insert(code), "`{code}` is used twice");
         }
-        let documented = include_str!("../README.md")
-            .lines()
-            .filter_map(|line| {
-                let cell = line.strip_prefix('|')?.split('|').next()?.trim();
-                cell.strip_prefix('`')?.strip_suffix('`')
-            })
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            documented, seen,
-            "README.md's table of codes is out of date"
-        );
+        let mut documented = BTreeSet::new();
+        for doc in CODE_DOCS {
+            assert!(
+                documented.insert(doc.code),
+                "`{}` is documented twice",
+                doc.code
+            );
+        }
+        assert_eq!(documented, seen, "`CODE_DOCS` and the codes differ");
     }
 }
