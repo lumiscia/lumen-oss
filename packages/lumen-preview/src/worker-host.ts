@@ -191,29 +191,46 @@ export function createLumenPreviewWorkerHost({
   const fonts = new Map<string, MediaSourceInput>();
   const media = new Map<string, PreviewMediaEntry>();
   const playbackFps = new PlaybackFpsMeter();
-  // The newest clock the page sent, which a load starts on.
-  let clock: PreviewClock = { atEpochMs: 0, originMs: 0, rate: 0 };
-  let audioRequestId = 0;
-  let canvas: OffscreenCanvas | null = null;
-  // The loaded composition's size, which the canvas takes when its first frame is drawn: resizing
-  // clears the canvas, which would drop the frame held while that frame loads.
-  let canvasSize: { height: number; width: number } | null = null;
-  let controller: LumenPreviewController | null = null;
-  let lifecycle: MediaLifecycle<PreviewMediaInput> | null = null;
-  let durationFrames = 0;
-  let lastRenderMs = 0;
-  let loadId = 0;
-  let loop = false;
-  let playbackRevision = 0;
-  let range: LumenPreviewRange | null = null;
+  // What the worker keeps for as long as it lives, as the page sets it.
+  const host: {
+    audioRequestId: number;
+    canvas: OffscreenCanvas | null;
+    // The newest clock the page sent, which a load starts on.
+    clock: PreviewClock;
+    controller: LumenPreviewController | null;
+    lifecycle: MediaLifecycle<PreviewMediaInput> | null;
+    loop: boolean;
+    playbackRevision: number;
+    range: LumenPreviewRange | null;
+  } = {
+    audioRequestId: 0,
+    canvas: null,
+    clock: { atEpochMs: 0, originMs: 0, rate: 0 },
+    controller: null,
+    lifecycle: null,
+    loop: false,
+    playbackRevision: 0,
+    range: null,
+  };
+  // The composition being loaded or shown, which a load or unload names with the page's load id.
+  const composition: {
+    // The loaded composition's size, which the canvas takes when its first frame is drawn:
+    // resizing clears the canvas, which would drop the frame held while that frame loads.
+    canvasSize: { height: number; width: number } | null;
+    durationFrames: number;
+    lastRenderMs: number;
+    loadId: number;
+  } = { canvasSize: null, durationFrames: 0, lastRenderMs: 0, loadId: 0 };
 
   const runner = new PreviewRunner<ReturnType<typeof setTimeout>>(
     {
       prepareFrame: () => requireController().prepareFrame(),
       renderFrame: () => {
+        const { canvas } = host;
         if (!canvas) {
           throw new Error("the preview worker has no canvas");
         }
+        const { canvasSize } = composition;
         if (canvasSize) {
           if (canvas.width !== canvasSize.width) {
             canvas.width = canvasSize.width;
@@ -230,30 +247,35 @@ export function createLumenPreviewWorkerHost({
       clearTimer: (timer) => clearTimeout(timer),
       now: epochNow,
       onEnded: (seekId) => {
-        scope.postMessage({ loadId, playbackRevision, seekId, type: "ended" });
+        scope.postMessage({
+          loadId: composition.loadId,
+          playbackRevision: host.playbackRevision,
+          seekId,
+          type: "ended",
+        });
       },
       onFailure: (error) => {
         scope.postMessage({
           diagnostics: errorRenderDiagnostics(error),
-          loadId,
+          loadId: composition.loadId,
           media: errorMediaFailure(error),
           message: describeError(error),
           type: "render-failed",
         });
       },
       onFrame: (frame, seekId, renderMs) => {
-        lastRenderMs = renderMs ?? lastRenderMs;
+        composition.lastRenderMs = renderMs ?? composition.lastRenderMs;
         scope.postMessage({
-          actualFps: playbackFps.sample(frame, clock.rate > 0),
+          actualFps: playbackFps.sample(frame, host.clock.rate > 0),
           frame,
-          loadId,
-          renderMs: lastRenderMs,
+          loadId: composition.loadId,
+          renderMs: composition.lastRenderMs,
           seekId,
           type: "frame",
         });
       },
       onWaiting: (waiting) => {
-        scope.postMessage({ loadId, type: "waiting", waiting });
+        scope.postMessage({ loadId: composition.loadId, type: "waiting", waiting });
       },
       setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
     },
@@ -269,14 +291,14 @@ export function createLumenPreviewWorkerHost({
         await start(message);
         break;
       case "attach-canvas":
-        canvas = message.canvas;
+        host.canvas = message.canvas;
         break;
       case "load":
         await load(message);
         break;
       case "unload":
-        loadId = message.loadId;
-        durationFrames = 0;
+        composition.loadId = message.loadId;
+        composition.durationFrames = 0;
         runner.unload();
         requireLifecycle().clear();
         requireController().clear();
@@ -287,7 +309,7 @@ export function createLumenPreviewWorkerHost({
         break;
       case "clock":
         followClock(message.clock);
-        playbackRevision = message.revision;
+        host.playbackRevision = message.revision;
         runner.setClock(message.clock);
         break;
       case "seek":
@@ -300,10 +322,10 @@ export function createLumenPreviewWorkerHost({
         break;
       case "set-playback":
         followClock(message.clock);
-        loop = message.loop;
-        playbackRevision = message.revision;
-        range = message.range;
-        if (durationFrames > 0) {
+        host.loop = message.loop;
+        host.playbackRevision = message.revision;
+        host.range = message.range;
+        if (composition.durationFrames > 0) {
           runner.setRange(applyPlaybackRange(requireController()), message.clock);
         }
         break;
@@ -311,17 +333,17 @@ export function createLumenPreviewWorkerHost({
   }
 
   function requireController(): LumenPreviewController {
-    if (!controller) {
+    if (!host.controller) {
       throw new Error("the preview worker has not started");
     }
-    return controller;
+    return host.controller;
   }
 
   function requireLifecycle(): MediaLifecycle<PreviewMediaInput> {
-    if (!lifecycle) {
+    if (!host.lifecycle) {
       throw new Error("the preview worker has not started");
     }
-    return lifecycle;
+    return host.lifecycle;
   }
 
   /** Each kind's way into the renderer. Audio is decoded by the page, which plays it. */
@@ -369,7 +391,7 @@ export function createLumenPreviewWorkerHost({
   }
 
   function requestAudio(source: string, input: MediaSourceInput, signal: AbortSignal) {
-    const requestId = ++audioRequestId;
+    const requestId = ++host.audioRequestId;
     return new Promise<void>((resolve, reject) => {
       const settle = (failure: MediaFailure | null) => {
         audioRequests.delete(requestId);
@@ -386,7 +408,11 @@ export function createLumenPreviewWorkerHost({
   }
 
   function postMedia(): void {
-    scope.postMessage({ loadId, media: requireLifecycle().entries(), type: "media" });
+    scope.postMessage({
+      loadId: composition.loadId,
+      media: requireLifecycle().entries(),
+      type: "media",
+    });
   }
 
   async function start(
@@ -407,8 +433,9 @@ export function createLumenPreviewWorkerHost({
       await initPreview({ module_or_path: message.wasmUrl });
       const { LumenPreviewController: PreviewController } =
         createLumenPreviewRuntime(previewBindings);
-      controller = new PreviewController();
-      lifecycle = new MediaLifecycle(mediaLoader(controller), postMedia);
+      const controller = new PreviewController();
+      host.controller = controller;
+      host.lifecycle = new MediaLifecycle(mediaLoader(controller), postMedia);
       controller.setLogLevel(message.logLevel);
       controller.setLookaheadCount(message.lookaheadCount);
     } catch (error) {
@@ -427,11 +454,11 @@ export function createLumenPreviewWorkerHost({
   ): Promise<void> {
     const activeController = requireController();
     const activeLifecycle = requireLifecycle();
-    const isCurrent = () => message.loadId === loadId;
-    loadId = message.loadId;
+    const isCurrent = () => message.loadId === composition.loadId;
+    composition.loadId = message.loadId;
     runner.unload();
     followClock(message.clock);
-    lastRenderMs = 0;
+    composition.lastRenderMs = 0;
     playbackFps.reset();
     replaceEntries(fonts, message.keepFonts, message.fonts);
     replaceEntries(media, message.keepMedia, message.media);
@@ -451,7 +478,7 @@ export function createLumenPreviewWorkerHost({
         throw failedMedia(failure);
       }
       activeController.loadComposition(message.compositionJson);
-      canvasSize = {
+      composition.canvasSize = {
         height: activeController.height() || 1,
         width: activeController.width() || 1,
       };
@@ -459,23 +486,23 @@ export function createLumenPreviewWorkerHost({
         audioTimelineJson: activeController.audioTimeline() ?? null,
         fps: activeController.fps(),
         height: activeController.height(),
-        loadId,
+        loadId: composition.loadId,
         totalFrames: activeController.durationFrames(),
         type: "loaded",
         width: activeController.width(),
       });
-      durationFrames = activeController.durationFrames();
+      composition.durationFrames = activeController.durationFrames();
       runner.load(
-        durationFrames,
+        composition.durationFrames,
         activeController.fps(),
-        clock,
+        host.clock,
         applyPlaybackRange(activeController),
       );
     } catch (error) {
       if (isCurrent()) {
         scope.postMessage({
           diagnostics: errorDiagnostics(error),
-          loadId,
+          loadId: composition.loadId,
           media: errorMediaFailure(error),
           message: describeError(error),
           type: "load-failed",
@@ -485,16 +512,16 @@ export function createLumenPreviewWorkerHost({
   }
 
   function applyPlaybackRange(activeController: LumenPreviewController) {
-    const resolved = resolvePlaybackRange(range, loop, durationFrames);
+    const resolved = resolvePlaybackRange(host.range, host.loop, composition.durationFrames);
     activeController.setPlaybackRange(resolved);
     return resolved;
   }
 
   function followClock(next: PreviewClock): void {
-    if (next.rate > 0 && clock.rate <= 0) {
+    if (next.rate > 0 && host.clock.rate <= 0) {
       playbackFps.reset();
     }
-    clock = next;
+    host.clock = next;
   }
 }
 
