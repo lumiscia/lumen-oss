@@ -2,7 +2,8 @@ import { readFile } from "node:fs/promises";
 
 import { expect, test } from "vitest";
 
-import { compositionSchemaPath, runtimeSchemaPath } from "../src/paths.js";
+import { apiSchemaPath, compositionSchemaPath, runtimeSchemaPath } from "../src/paths.js";
+import { renderApiTypes } from "../src/render-api.js";
 import { renderRuntimeTypes } from "../src/render-runtime.js";
 import { renderTypes } from "../src/render.js";
 
@@ -41,4 +42,24 @@ test("renders diagnostic codes as an open union beside their table", async () =>
     '{ code: "media.not_found", severity: "error", foundBy: "check, render", meaning: "A media source isn\'t there: ',
   );
   expect(types).toContain("export interface Diagnostic {");
+});
+
+test("renders the API's open unions, its event union and the runtime types it uses", async () => {
+  const [api, runtime] = await Promise.all(
+    [apiSchemaPath, runtimeSchemaPath].map(async (file) =>
+      JSON.parse(await readFile(file, "utf8")),
+    ),
+  );
+  const types = renderApiTypes(api, runtime);
+
+  expect(types).toMatch(
+    /export type ErrorCode =\n {2}\| "unauthorized"[\s\S]*\| \(string & \{\}\);/u,
+  );
+  expect(types).toMatch(
+    /export type RenderStatus =[\s\S]*\| "cancelled"\n {2}\| \(string & \{\}\);/u,
+  );
+  expect(types).toContain("export type RenderEvent = {");
+  expect(types).toContain("readonly objectKey: string | null;");
+  expect(types).toContain('import type { LumenComposition } from "./schema.js";');
+  expect(types).toContain('"jpeg": { contentType: "image/jpeg", extension: "jpg" },');
 });

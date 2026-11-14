@@ -146,6 +146,7 @@ Lumen needs a GPU for its main render paths. [docs/support-matrix.md](docs/suppo
 | `crates/gpu`        | `wgpu` resources, programs, passes, Vulkan export     |
 | `crates/ffmpeg`     | Decode, encode, muxing, GPU frame interop             |
 | `crates/server`     | Render library and local HTTP server                  |
+| `crates/server-api` | The HTTP API's request, response and error types      |
 | `crates/cli`        | `lumen` render and debug CLI                          |
 | `crates/text`       | Text layout and glyph data                            |
 | `crates/3d`         | Meshes, transforms, cameras and draw order for 3D     |

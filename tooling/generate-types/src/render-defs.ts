@@ -114,7 +114,8 @@ export function typeDeclaration(
 ): string {
   const doc = documented ? docComment(schema.description, "") : "";
   const body = typeBody(schema, context, "");
-  return context.payloads && body.startsWith("{")
+  const isObject = body.startsWith("{") && schema.oneOf === undefined && schema.anyOf === undefined;
+  return context.payloads && isObject
     ? `${doc}export interface ${name} ${body}`
     : `${doc}export type ${name} = ${body};`;
 }
@@ -184,6 +185,9 @@ function typeBody(schema: JsonSchema, context: TypeContext, indent: string): str
       .join(" | ");
     if (!branches.some(isExpression)) return literal;
     return `${reference("ExpressionValue")}<${literal}>`;
+  }
+  if (Array.isArray(schema.type)) {
+    return schema.type.map((ty) => typeBody({ ...schema, type: ty }, context, indent)).join(" | ");
   }
   switch (schema.type) {
     case "null":

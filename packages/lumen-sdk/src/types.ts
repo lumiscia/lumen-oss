@@ -63,7 +63,7 @@ export interface RenderFailure {
 export interface Render {
   readonly id: string;
   readonly status: RenderStatus;
-  /** From 0 to 1. Set when the API reported it, which `GET /renders/:id` does not. */
+  /** From 0 to 1, when the API reports it. */
   readonly progress?: number;
   /** Absolute URL of the output, once the render has succeeded. Pass the render to `download`. */
   readonly url?: string;

@@ -29,6 +29,13 @@ export const generatedRuntimeTypesPath = path.join(
   "packages/lumen-types/src/generated/runtime.ts",
 );
 
+export const apiSchemaPath = path.join(repoRoot, "definitions/api.schema.json");
+
+export const generatedApiTypesPath = path.join(
+  repoRoot,
+  "packages/lumen-types/src/generated/api.ts",
+);
+
 export const nodeReferencePath = path.join(repoRoot, "docs/node-reference.md");
 
 export const generatedExpressionsPath = path.join(

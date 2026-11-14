@@ -20,7 +20,7 @@ use super::{
     encode_target::{EncodeTarget, OpenedTarget},
     image_render::ImageRender,
     media::{LocalMediaStore, media_root},
-    output::archive_frame_name,
+    output::{self, archive_frame_name},
     resolve_encoder,
 };
 
@@ -255,23 +255,22 @@ impl<'a> Mp4Render<'a> {
         let (choice, info) = choice
             .look_up(|warning| tracing::warn!("{warning}"))
             .map_err(invalid_render_profile)?;
-        render
-            .format
-            .check_video(
-                Some(EncodeCodec::of(info.codec).ok_or_else(|| {
-                    ServerRenderError::new(
-                        ErrorCode::InvalidOutput,
-                        format!(
-                            "`{}` encodes {:?}, which lumen doesn't write",
-                            choice.first().encoder,
-                            info.codec
-                        ),
-                        false,
-                    )
-                })?),
-                choice.alpha(),
-            )
-            .map_err(|message| ServerRenderError::new(ErrorCode::InvalidOutput, message, false))?;
+        output::check_video(
+            render.format,
+            Some(EncodeCodec::of(info.codec).ok_or_else(|| {
+                ServerRenderError::new(
+                    ErrorCode::InvalidOutput,
+                    format!(
+                        "`{}` encodes {:?}, which lumen doesn't write",
+                        choice.first().encoder,
+                        info.codec
+                    ),
+                    false,
+                )
+            })?),
+            choice.alpha(),
+        )
+        .map_err(|message| ServerRenderError::new(ErrorCode::InvalidOutput, message, false))?;
         tracing::info!(encoder = %choice.first().encoder, codec = ?info.codec, "selected video encoder");
 
         let OpenedTarget {

@@ -205,11 +205,7 @@ mod tests {
     }
 
     fn failure() -> RenderJobError {
-        RenderJobError {
-            code: "render_failed".to_string(),
-            message: "failed".to_string(),
-            retryable: false,
-        }
+        RenderJobError::new(lumen_server_api::ErrorCode::RenderFailed, "failed", false)
     }
 
     #[tokio::test]

@@ -33,7 +33,7 @@ pub use lumen_gpu::GpuSettings;
 pub use media::{HARDWARE_DECODE_ENV, LocalMediaStore, is_enabled_flag};
 pub use output::{
     DEFAULT_JPEG_QUALITY, FrameRange, MAX_ARCHIVE_FRAMES, OutputFormat, RenderOutput,
-    SequenceLimits, frame_number_width,
+    SequenceLimits, check_video, frame_number_width, video_codecs,
 };
 
 /// What renders take from their host. The library reads no environment variables: a binary reads
@@ -141,10 +141,11 @@ fn resolve_encoder_with(
     audio_encoder: &dyn Fn(&AudioEncoderConfig) -> Result<(), String>,
 ) -> Result<VideoEncoderChoice, ServerRenderError> {
     if format != OutputFormat::Mp4 {
-        request.codec = request.codec.or(format.video_codecs().first().copied());
+        request.codec = request
+            .codec
+            .or(output::video_codecs(format).first().copied());
     }
-    format
-        .check_video(request.codec, request.alpha.unwrap_or(false))
+    output::check_video(format, request.codec, request.alpha.unwrap_or(false))
         .map_err(|message| ServerRenderError::new(ErrorCode::InvalidOutput, message, false))?;
     if encoder::has_audio(composition) {
         audio_encoder(&encoder::audio_config(format == OutputFormat::Webm))

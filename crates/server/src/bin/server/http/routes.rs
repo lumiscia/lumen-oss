@@ -8,15 +8,17 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use lumen_engine::{composition::Composition, media::AssetResolver};
-use lumen_ffmpeg::{BitDepth, QualityRequest};
-use lumen_server::render::{check_composition, resolve_encoder};
+use lumen_ffmpeg::{BitDepth, EncodeCodec, QualityRequest};
+use lumen_server::render::{RenderOutput, check_composition, resolve_encoder};
+use lumen_server_api::{
+    CheckRequest, CheckResponse, CreateRenderResponse, ErrorCode, Health, RenderRequest,
+    RenderResponse, VideoBitDepth, VideoCodec,
+};
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::server::{
-    ApiRenderJob, Artifact, CheckInput, CheckResponse, CreateRenderResponse, GetRenderResponse,
-    RenderJob, RenderJobError, RenderJobInput, RenderProgressResponse, RenderQueueState,
-    RenderRecord, RenderStatus, current_timestamp, execute_render_job, input_hash, new_render_id,
-    sanitized_diagnostics, validate_media_manifest,
+    Artifact, RenderJob, RenderJobError, RenderRecord, RenderStatus, current_timestamp,
+    execute_render_job, input_hash, new_render_id, sanitized_diagnostics, validate_media_manifest,
 };
 
 use super::{
@@ -25,22 +27,33 @@ use super::{
     ws::render_socket_session,
 };
 
-#[derive(Debug, serde::Serialize)]
-pub(super) struct HealthResponse {
-    ok: bool,
-    service: &'static str,
+pub(super) async fn health() -> Json<Health> {
+    Json(Health {
+        ok: true,
+        service: "lumen-server".to_string(),
+    })
 }
 
-pub(super) async fn health() -> Json<HealthResponse> {
-    Json(HealthResponse {
-        ok: true,
-        service: "lumen-server",
-    })
+fn encode_codec(codec: VideoCodec) -> EncodeCodec {
+    match codec {
+        VideoCodec::H264 => EncodeCodec::H264,
+        VideoCodec::Hevc => EncodeCodec::Hevc,
+        VideoCodec::Av1 => EncodeCodec::Av1,
+        VideoCodec::Prores => EncodeCodec::ProRes,
+        VideoCodec::Vp9 => EncodeCodec::Vp9,
+    }
+}
+
+fn bit_depth(depth: VideoBitDepth) -> BitDepth {
+    match depth {
+        VideoBitDepth::Eight => BitDepth::Eight,
+        VideoBitDepth::Ten => BitDepth::Ten,
+    }
 }
 
 pub(super) async fn create_render(
     State(state): State<AppState>,
-    input: Result<Json<RenderJobInput>, JsonRejection>,
+    input: Result<Json<RenderRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let Json(input) = input?;
     // Held from here, so a refused request has taken nothing and an invalid one gives its place back.
@@ -50,7 +63,7 @@ pub(super) async fn create_render(
     if input.webhook_url.is_some() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            "webhooks_unsupported",
+            ErrorCode::WebhooksUnsupported,
             "lumen-server does not deliver webhooks; remove webhookUrl and poll the render or use its socket",
         ));
     }
@@ -69,20 +82,19 @@ pub(super) async fn create_render(
     .map_err(|error| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "check_failed",
+            ErrorCode::CheckFailed,
             format!("check worker join failed: {error}"),
         )
     })?;
     let composition = composition?;
 
     // Resolved now with the resolver the render uses, so a request it would fail is refused here.
-    let invalid_quality = |message: String| {
-        ApiError::rejected(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            RenderJobError::invalid_quality(&message),
-        )
-    };
     let output = input.output.unwrap_or_default();
+    let output = RenderOutput {
+        format: output.format,
+        frames: output.frames,
+        jpeg_quality: output.jpeg_quality,
+    };
     output
         .validate(
             composition.timeline().duration_frames,
@@ -103,26 +115,15 @@ pub(super) async fn create_render(
         return Err(ApiError::rejected(
             StatusCode::UNPROCESSABLE_ENTITY,
             RenderJobError::invalid_output(
-                "quality, codec, bit_depth and alpha only apply to the mp4, mov and webm formats",
+                "quality, codec, bitDepth and alpha only apply to the mp4, mov and webm formats",
             ),
         ));
     }
-    let codec = input
-        .codec
-        .as_deref()
-        .map(str::parse)
-        .transpose()
-        .map_err(invalid_quality)?;
-    let bit_depth = input
-        .bit_depth
-        .map(BitDepth::try_from)
-        .transpose()
-        .map_err(invalid_quality)?;
     let encoder = if output.format.is_video() {
         let request = QualityRequest {
             preset: input.quality,
-            codec,
-            bit_depth,
+            codec: input.codec.map(encode_codec),
+            bit_depth: input.bit_depth.map(bit_depth),
             alpha: input.alpha,
             ..QualityRequest::default()
         }
@@ -147,7 +148,7 @@ pub(super) async fn create_render(
         current_timestamp(),
         input_hash(&input.composition, &input.media, encoder.as_ref(), &output),
     ));
-    let render = ApiRenderJob::new(&record, &RenderStatus::Queued);
+    let render = record.render(&RenderStatus::Queued);
 
     // A waiting render's place is held by its record, so cancelling it can give the place back.
     let slot = match ticket {
@@ -202,7 +203,7 @@ fn load_composition(
 /// counting the manifest's media, and `asset:` references resolve in the media store.
 pub(super) async fn check_render(
     State(state): State<AppState>,
-    input: Result<Json<CheckInput>, JsonRejection>,
+    input: Result<Json<CheckRequest>, JsonRejection>,
 ) -> Result<Json<CheckResponse>, ApiError> {
     let Json(input) = input?;
     validate_media_manifest(&input.media)
@@ -220,7 +221,7 @@ pub(super) async fn check_render(
     .map_err(|error| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "check_failed",
+            ErrorCode::CheckFailed,
             format!("check worker join failed: {error}"),
         )
     })?;
@@ -230,14 +231,15 @@ pub(super) async fn check_render(
     }))
 }
 
+/// The render as it is now, for both `GET /renders/{id}` and `GET /renders/{id}/progress`.
 pub(super) async fn get_render(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<GetRenderResponse>, ApiError> {
+) -> Result<Json<RenderResponse>, ApiError> {
     let record = state.get(&id).ok_or_else(ApiError::not_found)?;
     let status = record.status.borrow().clone();
-    Ok(Json(GetRenderResponse {
-        render: ApiRenderJob::new(&record, &status),
+    Ok(Json(RenderResponse {
+        render: record.render(&status),
     }))
 }
 
@@ -248,7 +250,7 @@ pub(super) async fn get_render(
 pub(super) async fn cancel_render(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<(StatusCode, Json<GetRenderResponse>), ApiError> {
+) -> Result<(StatusCode, Json<RenderResponse>), ApiError> {
     let record = state.get(&id).ok_or_else(ApiError::not_found)?;
     state.cancel(&record);
     let status = record.status.borrow().clone();
@@ -259,22 +261,10 @@ pub(super) async fn cancel_render(
     };
     Ok((
         code,
-        Json(GetRenderResponse {
-            render: ApiRenderJob::new(&record, &status),
+        Json(RenderResponse {
+            render: record.render(&status),
         }),
     ))
-}
-
-pub(super) async fn get_render_progress(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<RenderProgressResponse>, ApiError> {
-    let record = state.get(&id).ok_or_else(ApiError::not_found)?;
-    let status = record.status.borrow().clone();
-    Ok(Json(RenderProgressResponse {
-        progress: RenderQueueState::new(&id, &status),
-        render: ApiRenderJob::new(&record, &status),
-    }))
 }
 
 pub(super) async fn render_socket(
@@ -315,7 +305,7 @@ pub(super) async fn get_render_artifact(
         }
         _ => Err(ApiError::new(
             StatusCode::CONFLICT,
-            "artifact_not_ready",
+            ErrorCode::ArtifactNotReady,
             "render has not finished",
         )),
     }

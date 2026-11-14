@@ -29,23 +29,17 @@ export function resolveUrl(url: string, baseUrl: URL): string {
 }
 
 /** Reads the `render` object of an API response, resolving a relative output URL against the API. */
-export function parseRender(
-  job: unknown,
-  baseUrl: URL,
-  extra: { cached?: boolean; progress?: number; error?: RenderFailure } = {},
-): Render {
+export function parseRender(job: unknown, baseUrl: URL, extra: { cached?: boolean } = {}): Render {
   if (!isRecord(job) || typeof job.id !== "string" || !isStatus(job.status)) {
     throw new LumenError("invalid_response", "Lumen API returned a malformed render.");
   }
 
-  const error = extra.error ?? parseFailure(job.error);
+  const error = parseFailure(job.error);
   return {
     id: job.id,
     status: job.status,
-    ...(extra.progress !== undefined ? { progress: extra.progress } : {}),
-    ...(typeof job.outputUrl === "string" && job.outputUrl !== ""
-      ? { url: resolveUrl(job.outputUrl, baseUrl) }
-      : {}),
+    ...(typeof job.progress === "number" ? { progress: job.progress } : {}),
+    ...(typeof job.url === "string" && job.url !== "" ? { url: resolveUrl(job.url, baseUrl) } : {}),
     ...(error !== undefined ? { error } : {}),
     ...(extra.cached !== undefined ? { cached: extra.cached } : {}),
     ...(typeof job.costMicros === "number" ? { costMicros: job.costMicros } : {}),
@@ -54,31 +48,6 @@ export function parseRender(
     ...(typeof job.organizationId === "string" ? { organizationId: job.organizationId } : {}),
     ...(typeof job.outputExpiresAt === "string" ? { outputExpiresAt: job.outputExpiresAt } : {}),
   };
-}
-
-/**
- * Reads a `GET /renders/:id/progress` body, `{ progress, render }`. The status and the output URL
- * come from `render`, so a finished render is understood even when hosted has no `progress` (it
- * sends `null`). A failed render's message and code come from `progress`: lumen-server puts the
- * code in `errorCode`, hosted in `stage`.
- */
-export function parseProgress(body: Record<string, unknown>, baseUrl: URL): Render {
-  const progress = isRecord(body.progress) ? body.progress : {};
-  const status = isRecord(body.render) ? body.render.status : undefined;
-  const failed = status === "failed" || status === "cancelled";
-  const code = progress.errorCode ?? progress.stage;
-  return parseRender(body.render, baseUrl, {
-    ...(typeof progress.progress === "number" ? { progress: progress.progress } : {}),
-    ...(failed && typeof progress.error === "string"
-      ? {
-          error: {
-            code: typeof code === "string" ? code : failureCode(status),
-            message: progress.error,
-            ...(typeof progress.retryable === "boolean" ? { retryable: progress.retryable } : {}),
-          },
-        }
-      : {}),
-  });
 }
 
 /** The error a failed or cancelled render raises where a result was expected. */

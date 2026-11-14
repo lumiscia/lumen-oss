@@ -24,7 +24,9 @@ use reqwest::{
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 
-use super::{RenderJobError, util::sanitize_error_message};
+use lumen_server_api::ErrorCode as ApiErrorCode;
+
+use super::RenderJobError;
 
 const MAX_MEDIA_ENTRIES: usize = 256;
 const MAX_REMOTE_MEDIA_BYTES: u64 = 512 * 1024 * 1024;
@@ -90,7 +92,7 @@ impl MediaClient {
     ) -> Result<Downloaded, DownloadError> {
         let parsed = Url::parse(url).map_err(|err| {
             media_error(
-                "media_download_failed",
+                ApiErrorCode::MediaDownloadFailed,
                 alias,
                 None,
                 format!("invalid URL: {err}"),
@@ -99,11 +101,11 @@ impl MediaClient {
         })?;
         let host = parsed.host_str().map(str::to_string);
         let host = host.as_deref();
-        let failed = |code: &str, cause: &dyn Display, retryable| {
+        let failed = |code: ApiErrorCode, cause: &dyn Display, retryable| {
             media_error(code, alias, host, cause, retryable)
         };
         check_media_url(&parsed, &self.allowed_hosts)
-            .map_err(|cause| failed("media_download_forbidden_host", &cause, false))?;
+            .map_err(|cause| failed(ApiErrorCode::MediaDownloadForbiddenHost, &cause, false))?;
 
         let started = Instant::now();
         let mut response = self
@@ -113,12 +115,16 @@ impl MediaClient {
             .await
             .map_err(|err| DownloadError {
                 non_public_host: is_non_public_host(&err),
-                error: failed("media_download_failed", &request_failure_cause(err), true),
+                error: failed(
+                    ApiErrorCode::MediaDownloadFailed,
+                    &request_failure_cause(err),
+                    true,
+                ),
             })?;
         let status = response.status();
         if !status.is_success() {
             return Err(failed(
-                "media_download_failed",
+                ApiErrorCode::MediaDownloadFailed,
                 &format!("server returned status {status}"),
                 status.is_server_error() || status.as_u16() == 429,
             )
@@ -126,7 +132,7 @@ impl MediaClient {
         }
         let too_large = || {
             failed(
-                "media_download_too_large",
+                ApiErrorCode::MediaDownloadTooLarge,
                 &format!("file exceeds the {limit} byte limit"),
                 false,
             )
@@ -144,15 +150,21 @@ impl MediaClient {
             .map(str::to_string);
 
         let write_failed = |err: std::io::Error| {
-            failed("media_stage_failed", &format!("write failed: {err}"), true)
+            failed(
+                ApiErrorCode::MediaStageFailed,
+                &format!("write failed: {err}"),
+                true,
+            )
         };
         let mut file = tokio::fs::File::create(path).await.map_err(write_failed)?;
         let mut downloaded = 0_u64;
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|err| failed("media_download_failed", &request_failure_cause(err), true))?
-        {
+        while let Some(chunk) = response.chunk().await.map_err(|err| {
+            failed(
+                ApiErrorCode::MediaDownloadFailed,
+                &request_failure_cause(err),
+                true,
+            )
+        })? {
             let length = chunk.len() as u64;
             downloaded += length;
             if downloaded > limit {
@@ -163,7 +175,7 @@ impl MediaClient {
                     > MAX_STAGED_MEDIA_BYTES
             {
                 return Err(failed(
-                    "media_download_too_large",
+                    ApiErrorCode::MediaDownloadTooLarge,
                     &format!("job exceeds the {MAX_STAGED_MEDIA_BYTES} byte total media limit"),
                     false,
                 )
@@ -281,11 +293,11 @@ pub(super) async fn stage_remote_media(
 ) -> Result<TempDir, RenderJobError> {
     let dir = tempfile::tempdir().map_err(|err| {
         tracing::warn!(error = %err, "failed to create media staging directory");
-        RenderJobError {
-            code: "media_stage_failed".to_string(),
-            message: "failed to create media staging directory".to_string(),
-            retryable: true,
-        }
+        RenderJobError::new(
+            ApiErrorCode::MediaStageFailed,
+            "failed to create media staging directory",
+            true,
+        )
     })?;
     let staged_bytes = AtomicU64::new(0);
     stream::iter(media.into_iter().map(Ok))
@@ -313,21 +325,20 @@ pub(crate) fn validate_media_manifest(
     media: &HashMap<String, String>,
 ) -> Result<(), RenderJobError> {
     if media.len() > MAX_MEDIA_ENTRIES {
-        return Err(RenderJobError {
-            code: "media_manifest_too_large".to_string(),
-            message: format!("media manifest exceeds the {MAX_MEDIA_ENTRIES} entry limit"),
-            retryable: false,
-        });
+        return Err(RenderJobError::new(
+            ApiErrorCode::MediaManifestTooLarge,
+            &format!("media manifest exceeds the {MAX_MEDIA_ENTRIES} entry limit"),
+            false,
+        ));
     }
     if media.keys().all(|alias| is_valid_media_alias(alias)) {
         Ok(())
     } else {
-        Err(RenderJobError {
-            code: "invalid_media_alias".to_string(),
-            message: "media aliases must be at most 128 letters, digits, `.`, `_` or `-`, and not only dots"
-                .to_string(),
-            retryable: false,
-        })
+        Err(RenderJobError::new(
+            ApiErrorCode::InvalidMediaAlias,
+            "media aliases must be at most 128 letters, digits, `.`, `_` or `-`, and not only dots",
+            false,
+        ))
     }
 }
 
@@ -359,7 +370,7 @@ fn check_media_url(url: &Url, allowed_hosts: &HashSet<String>) -> Result<(), &'s
 }
 
 fn media_error(
-    code: &str,
+    code: ApiErrorCode,
     alias: &str,
     host: Option<&str>,
     cause: impl Display,
@@ -369,11 +380,7 @@ fn media_error(
         Some(host) => format!("media '{alias}' ({host}): {cause}"),
         None => format!("media '{alias}': {cause}"),
     };
-    RenderJobError {
-        code: code.to_string(),
-        message: sanitize_error_message(&message),
-        retryable,
-    }
+    RenderJobError::new(code, &message, retryable)
 }
 
 /// The URL is dropped because it may carry signed query parameters. The cause is only in the source

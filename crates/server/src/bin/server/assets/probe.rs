@@ -2,7 +2,7 @@
 
 use std::{fs, io::Read, path::Path};
 
-use lumen_3d::model::{AnimationInfo, CameraInfo, MaterialInfo, ModelInfo};
+use lumen_3d::model::ModelInfo;
 use lumen_engine::{
     error::{MediaError, MediaFailure},
     media::{
@@ -11,63 +11,8 @@ use lumen_engine::{
     },
 };
 use lumen_ffmpeg::{EncodeCodec, InputContext};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MediaKind {
-    Image,
-    Video,
-    Audio,
-    Font,
-    Model,
-    Environment,
-}
-
-/// What the check found. Each kind fills its own fields: images their size; video its size, frame
-/// rate, frames, duration, codec and audio; audio its duration, rate and channels; fonts their
-/// families and faces; environment maps their size; models their animation clips, materials and
-/// cameras.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MediaMetadata {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub width: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub height: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fps: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub frame_count: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub codec: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub has_audio: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sample_rate: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub channels: Option<u16>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub families: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub faces: Option<Vec<FontFace>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub animations: Option<Vec<AnimationInfo>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub materials: Option<Vec<MaterialInfo>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cameras: Option<Vec<CameraInfo>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FontFace {
-    pub family: String,
-    pub weight: u16,
-    /// `normal`, `italic` or `oblique`.
-    pub style: String,
-}
+use lumen_server_api::{FontFace, MediaKind, MediaMetadata};
+use serde::Serialize;
 
 /// What the probe calls the uploaded file in a failure.
 const FILE: &str = "the file";
@@ -301,11 +246,19 @@ fn model_metadata(info: ModelInfo) -> Result<MediaMetadata, Rejection> {
         )));
     }
     Ok(MediaMetadata {
-        animations: Some(info.animations),
-        materials: Some(info.materials),
-        cameras: Some(info.cameras),
+        animations: Some(json_list(&info.animations)),
+        materials: Some(json_list(&info.materials)),
+        cameras: Some(json_list(&info.cameras)),
         ..MediaMetadata::default()
     })
+}
+
+/// `items` as the JSON the API carries them in.
+fn json_list<T: Serialize>(items: &[T]) -> Vec<serde_json::Value> {
+    items
+        .iter()
+        .map(|item| serde_json::to_value(item).expect("model info serialises"))
+        .collect()
 }
 
 /// A Radiance or OpenEXR environment map, decoded as renders decode it.
@@ -406,6 +359,8 @@ fn probe_av(path: &Path) -> Result<(MediaKind, MediaMetadata), Rejection> {
 
 #[cfg(test)]
 mod tests {
+    use lumen_3d::model::MaterialInfo;
+
     use super::*;
 
     #[test]

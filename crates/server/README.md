@@ -126,7 +126,7 @@ A render that failed in the engine used to be `render_failed`, retryable, whatev
 
 ### HTTP binary
 
-The exposed Axum API is intentionally binary-owned. The HTTP binary accepts the same public render payload shape as the hosted Lumen API:
+The exposed Axum API is intentionally binary-owned. Its requests, responses, socket events and error codes are the types of the [`lumen-server-api`](../server-api) crate, and [`definitions/api.schema.json`](../../definitions/api.schema.json) is generated from them for other implementations of the API. Every object on the wire is camelCase; the composition inside a request keeps its own format. The HTTP binary accepts the same public render payload shape as the hosted Lumen API:
 
 ```json
 {
@@ -145,17 +145,17 @@ The exposed Axum API is intentionally binary-owned. The HTTP binary accepts the 
 }
 ```
 
-`quality`, `codec`, `bit_depth` and `alpha` are optional. `quality` names a preset: `draft`, `standard`, `high` and `lossless` exist on every host, and the [quality config](#quality-config) can add others. `codec` is `h264`, `hevc` or `av1` in an `mp4`, `prores` (ProRes 4444, `prores_ks`) in a `mov`, or `vp9` (`libvpx-vp9`) in a `webm`; a `mov` or `webm` render without a codec gets its format's. `bit_depth` is `8` (the default) or `10`, which encodes HEVC Main 10 or 10-bit AV1, quantised once from the renderer's float colour; ProRes is always 10-bit. `alpha: true` keeps the frame's transparency as an alpha channel. Each wins over the config's defaults, then `standard`, `h264`, 8 bits and opaque. A composition holds none of them.
+`quality`, `codec`, `bitDepth` and `alpha` are optional. `quality` names a preset: `draft`, `standard`, `high` and `lossless` exist on every host, and the [quality config](#quality-config) can add others. `codec` is `h264`, `hevc` or `av1` in an `mp4`, `prores` (ProRes 4444, `prores_ks`) in a `mov`, or `vp9` (`libvpx-vp9`) in a `webm`; a `mov` or `webm` render without a codec gets its format's. `bitDepth` is `8` (the default) or `10`, which encodes HEVC Main 10 or 10-bit AV1, quantised once from the renderer's float colour; ProRes is always 10-bit. `alpha: true` keeps the frame's transparency as an alpha channel. Each wins over the config's defaults, then `standard`, `h264`, 8 bits and opaque. A composition holds none of them.
 
 ```json
-{ "composition": { "...": "..." }, "quality": "high", "codec": "hevc", "bit_depth": 10 }
+{ "composition": { "...": "..." }, "quality": "high", "codec": "hevc", "bitDepth": 10 }
 { "composition": { "...": "..." }, "alpha": true, "output": { "format": "mov" } }
 { "composition": { "...": "..." }, "alpha": true, "quality": "high", "output": { "format": "webm" } }
 ```
 
 An alpha video's colour is straight (not premultiplied) sRGB-encoded BT.709 limited range, the colour a PNG of the frame holds, and its alpha is full range with no dither. A fully transparent pixel is black. ProRes 4444 is `yuva444p10le`; VP9 is `yuva420p`, whose chroma is the alpha-weighted average of each 2×2 block, so transparent pixels don't darken edges, and its WebM track carries `alpha_mode=1`. Hardware encoders write no alpha: auto selection goes straight to the software encoder, and a pinned hardware encoder is refused. Alpha in an `mp4`, or with `h264`, `hevc` or `av1`, is refused, never rendered opaque. WebM audio is Opus, so a WebM with audio needs an FFmpeg with `libopus`; without it, or without an AAC encoder for an `mp4` or `mov`, a composition with audio returns `422` with `invalid_output` when the render is requested.
 
-They're resolved when the render is requested, with the same resolver the render uses. A preset this host doesn't define, a codec none of the encoders it tries has settings for, a codec other than the one `LUMEN_VIDEO_ENCODER`'s encoder writes, 10 bits with `h264` or with no encoder that writes them, or alpha with no encoder that writes it returns `422` with the code `invalid_quality`. A codec the format can't hold, or alpha in an `mp4`, returns `422` with `invalid_output`.
+They're resolved when the render is requested, with the same resolver the render uses. A preset this host doesn't define, a codec none of the encoders it tries has settings for, a codec other than the one `LUMEN_VIDEO_ENCODER`'s encoder writes, 10 bits with `h264` or with no encoder that writes them, or alpha with no encoder that writes it returns `422` with the code `invalid_quality`. A `codec` or `bitDepth` that isn't one of those values is `422` with `invalid_request_body`. A codec the format can't hold, or alpha in an `mp4`, returns `422` with `invalid_output`.
 
 10-bit is never traded for 8: an encoder that can't write it is skipped like one that won't open, and a pinned one fails the render. `libx265` and `libsvtav1` write `yuv420p10le`; `hevc_vulkan`, `av1_vulkan` and NVENC take P010 where the device supports it, which is only known when they open; H.264 and VideoToolbox are always 8-bit.
 
@@ -164,11 +164,11 @@ They're resolved when the render is requested, with the same resolver the render
 ```json
 { "composition": { "...": "..." }, "output": { "format": "mp4", "frames": { "start": 30, "end": 90 } } }
 { "composition": { "...": "..." }, "output": { "format": "png", "frames": { "start": 45 } } }
-{ "composition": { "...": "..." }, "output": { "format": "jpeg", "jpeg_quality": 80 } }
+{ "composition": { "...": "..." }, "output": { "format": "jpeg", "jpegQuality": 80 } }
 { "composition": { "...": "..." }, "output": { "format": "png_sequence", "frames": { "start": 0, "end": 120 } } }
 ```
 
-`format` is `mp4` (the default), `mov`, `webm`, `png`, `jpeg`, `png_sequence` or `jpeg_sequence`; `frames` is `start..end` of the timeline with `end` not included, either side optional; `jpeg_quality` is 1 to 100 for the JPEG formats. The artifact is what the format says, with its `Content-Type` and a `Content-Disposition` filename of `<render id>.<extension>`:
+`format` is `mp4` (the default), `mov`, `webm`, `png`, `jpeg`, `png_sequence` or `jpeg_sequence`; `frames` is `start..end` of the timeline with `end` not included, either side optional; `jpegQuality` is 1 to 100 for the JPEG formats. The artifact is what the format says, with its `Content-Type` and a `Content-Disposition` filename of `<render id>.<extension>`:
 
 | `format`                        | `Content-Type`    | Artifact                                                                                     |
 | ------------------------------- | ----------------- | -------------------------------------------------------------------------------------------- |
@@ -179,13 +179,13 @@ They're resolved when the render is requested, with the same resolver the render
 | `jpeg`                          | `image/jpeg`      | One opaque frame, transparent pixels composited onto black.                                  |
 | `png_sequence`, `jpeg_sequence` | `application/zip` | A stored ZIP with `frame_0000.png` or `.jpg` per frame, numbered with the timeline's frames. |
 
-`quality`, `codec`, `bit_depth` and `alpha` apply to videos only: sent with another format they return `422` with `invalid_output`, and an `output` can't carry encoder settings. The range and the format's options are checked when the render is requested: an empty range, one past the timeline, a still of more than one frame or a `jpeg_quality` outside 1 to 100 or on another format is `422` with `invalid_output`, and a sequence longer than `--max-sequence-frames` is `422` with `output_too_large`. A sequence whose images add up to more than `--max-sequence-bytes` ends as `failed` with `output_too_large`. Progress counts the frames of the range, and cancelling a sequence stops it before its next frame.
+`quality`, `codec`, `bitDepth` and `alpha` apply to videos only: sent with another format they return `422` with `invalid_output`, and an `output` can't carry encoder settings. The range and the format's options are checked when the render is requested: an empty range, one past the timeline, a still of more than one frame or a `jpegQuality` outside 1 to 100 or on another format is `422` with `invalid_output`, and a sequence longer than `--max-sequence-frames` is `422` with `output_too_large`. A sequence whose images add up to more than `--max-sequence-bytes` ends as `failed` with `output_too_large`. Progress counts the frames of the range, and cancelling a sequence stops it before its next frame.
 
 Inside the composition, media nodes and audio clips reference either a manifest alias (`"hero"`), whose URL the render downloads, or [uploaded media](#media-uploads) as `asset:<id>`. They never name a URL directly. The self-hosted server does not implement artifact staging, provider progress callbacks, billing, accounts, durable queueing, or durable artifact storage; it renders in a local background task, stores the artifact (a video, an image or a ZIP of images) in memory, and exposes it at `GET /renders/:id/artifact`.
 
 `POST /renders` validates the request before accepting it. A composition that does not parse, an invalid manifest, an `asset:` reference to media this server doesn't have or of the wrong kind, or a `quality` or `codec` this host can't serve returns `422`. `webhookUrl` returns `400` with the code `webhooks_unsupported`, because this server does not deliver webhooks. A body over 2 MiB returns `413` with the code `request_too_large`, and a body that is not the expected JSON returns the matching `4xx` with the code `invalid_request_body`. Render IDs are always generated by the server.
 
-A failed request answers with its status and `{ "code": "...", "error": "..." }`. A composition that does not parse, or names an asset it can't use, is a `422` with the code `invalid_project_payload` and a `diagnostics` array of everything wrong with it, at most 50:
+A failed request answers with its status and `{ "code": "...", "error": "..." }`, with `media` too when a media source failed: the engine's `MediaFailure` (`definitions/runtime.schema.json`), its `details` shown without the server's paths. A composition that does not parse, or names an asset it can't use, is a `422` with the code `invalid_project_payload` and a `diagnostics` array of everything wrong with it, at most 50:
 
 ```json
 {
@@ -214,11 +214,11 @@ A failed request answers with its status and `{ "code": "...", "error": "..." }`
 
 `path` is a JSON pointer into the composition, `node` the node's id when there is one, and `message` free-form, trimmed and cut at 1024 characters like every error message. Codes are public and stable; clients must accept codes they don't know. The [engine README](../engine/README.md#diagnostics) lists the codes, the compatibility rules, and what only a render finds.
 
-A render that fails after being accepted keeps why. `GET /renders/:id` and `GET /renders/:id/progress` return it as `render.error`: `{ "code": "...", "message": "...", "retryable": false }`. The `progress` object has the same as `error`, `errorCode` and `retryable`, and the WebSocket's `render.failed` event carries it as `error`. The code is one of the [render error codes](#error-codes), or a media staging code such as `media_download_failed`.
+A render that fails after being accepted keeps why. `GET /renders/:id` and `GET /renders/:id/progress` return it as `render.error`: `{ "code": "...", "message": "...", "retryable": false }`, with `media` when a media source failed, as on an error response. The WebSocket's `render.failed` event carries it as `error`. The code is one of the [render error codes](#error-codes), or a media staging code such as `media_download_failed`.
 
-`GET /renders/:id/artifact` returns `409` with `artifact_not_ready` until the render succeeds, and `409` with the render's own error code if it failed or was cancelled. A succeeded render also reports the artifact's relative URL as `render.outputUrl`. `render.status` is `queued`, `processing`, `succeeded`, `failed` or `cancelled`.
+`GET /renders/:id/artifact` returns `409` with `artifact_not_ready` until the render succeeds, and `409` with the render's own error code if it failed or was cancelled. A succeeded render also reports the artifact's relative URL as `render.url`, its size as `render.outputBytes` and how long it rendered as `render.durationMs`. `render.status` is `queued`, `processing`, `succeeded`, `failed` or `cancelled`, and `render.progress` goes from 0 to 1.
 
-`POST /renders/:id/cancel` cancels a queued or running render. A queued render ends as `cancelled` before the response, gives its place in the queue back at once and never starts, so it answers `200`. A running render answers `202` with its current status and stops at its next frame boundary (or, while it waits for GPU device room, at once; after the last frame, at the next audio chunk, drained frame or before the encoder finishes), then closes its encoder, deletes its temporary output, releases its media and frees its slot; poll it or watch its socket for `cancelled`. A render that has already ended, including one cancelled before, answers `200` unchanged, so repeating the request is harmless and a finished render keeps its result. A render whose output is already complete when the request arrives may still end as `succeeded`. An unknown or evicted id is `404` with `render_not_found`. A cancelled render reports `render.status` `cancelled` and the code `render_cancelled` with `retryable: false` as its `error`, `progress.errorCode` and `retryable`, and the socket sends `{ "type": "render.cancelled", "renderId": "r_123" }` and closes.
+`POST /renders/:id/cancel` cancels a queued or running render. A queued render ends as `cancelled` before the response, gives its place in the queue back at once and never starts, so it answers `200`. A running render answers `202` with its current status and stops at its next frame boundary (or, while it waits for GPU device room, at once; after the last frame, at the next audio chunk, drained frame or before the encoder finishes), then closes its encoder, deletes its temporary output, releases its media and frees its slot; poll it or watch its socket for `cancelled`. A render that has already ended, including one cancelled before, answers `200` unchanged, so repeating the request is harmless and a finished render keeps its result. A render whose output is already complete when the request arrives may still end as `succeeded`. An unknown or evicted id is `404` with `render_not_found`. A cancelled render reports `render.status` `cancelled` and the code `render_cancelled` with `retryable: false` as its `render.error`, and the socket sends `{ "type": "render.cancelled", "renderId": "r_123" }` and closes.
 
 S3-compatible artifact storage is planned for a future self-hosted release. For now, the HTTP binary's in-memory artifact storage is intended for local development and single-process testing, not durable production delivery. Only the most recent `--retained-renders` finished renders (default 16, `LUMEN_SERVER_RETAINED_RENDERS`) are kept, and their artifacts stay in memory until then. Older renders are dropped, record and artifact together, and return `404`.
 
@@ -349,7 +349,7 @@ Fonts are found by the family name inside each font file, not by file name, in t
 
 A family that none of them has is logged once per render as a warning, and text using it falls back to the bundled font. A composition can only read fonts that are in the font directory or the system fonts, never other files on the server. A font directory is trusted, so it follows symlinks.
 
-`GET /renders/:id/progress` and `GET /renders/:id/socket` mirror the hosted progress shape. The WebSocket sends the render's current status when it connects, then each change, and closes after the render succeeds, fails or is cancelled. It sends SDK render events like:
+`GET /renders/:id/progress` answers with the same `{ "render": ... }` as `GET /renders/:id`. The WebSocket at `GET /renders/:id/socket` sends the render's current status when it connects, then each change, and closes after the render succeeds, fails or is cancelled. It sends SDK render events like:
 
 ```json
 {
