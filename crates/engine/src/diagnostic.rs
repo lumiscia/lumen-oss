@@ -4,13 +4,15 @@
 //! A diagnostic's `code` comes from the error or warning variant it was made from, and its `path`
 //! from the ids and fields that variant holds, so both stay in step with the errors themselves.
 
+use std::fmt::Write as _;
+
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
     error::{
-        DocumentError, ExpressionError, GraphValidationError, LumenError, MediaError, MediaReason,
-        PropertyError, RenderError, Warning,
+        At, DocumentError, ExpressionError, GraphValidationError, LumenError, MediaError,
+        MediaReason, PropertyError, RenderError, Warning, WarningKind,
     },
     media::MediaLocation,
     node::NodeId,
@@ -64,19 +66,11 @@ impl Diagnostic {
 
     /// `warning` as a diagnostic about the value at `path`.
     pub fn from_warning(warning: &Warning, path: String) -> Self {
-        let node = match warning {
-            Warning::FontFallback { node_id, .. }
-            | Warning::NoOutlines { node_id, .. }
-            | Warning::ShadowLimit { node_id, .. }
-            | Warning::UnsupportedColor { node_id, .. }
-            | Warning::ModelPrimitivesSkipped { node_id, .. }
-            | Warning::ImageReduced { node_id, .. } => Some(*node_id),
-        };
         Self {
             severity: Severity::Warning,
             code: warning.code(),
             path,
-            node,
+            node: warning.at.node,
             message: warning.to_string(),
         }
     }
@@ -105,7 +99,7 @@ pub fn code_list() -> impl Iterator<Item = (&'static str, Severity)> {
     .into_iter()
     .flatten()
     .map(|code| (*code, Severity::Error));
-    let warnings = Warning::CODES.iter().map(|code| (*code, Severity::Warning));
+    let warnings = WarningKind::CODES.iter().map(|code| (*code, Severity::Warning));
     errors.chain(warnings)
 }
 
@@ -114,10 +108,40 @@ pub(crate) fn escape(token: &str) -> String {
     token.replace('~', "~0").replace('/', "~1")
 }
 
-/// `/compositions/<name>` for a template, empty at the root.
-pub(crate) fn scene_pointer(template: Option<&str>) -> String {
-    template.map_or_else(String::new, |name| {
+/// The JSON pointer of `at`, with `rest` after it. `find` gives a node's index in its scene's
+/// `nodes`, and its `params` when they are at hand, or `None` when the scene has no such node, in
+/// which case the pointer is the scene's `nodes`.
+pub(crate) fn pointer<'v>(
+    at: &At,
+    rest: &str,
+    find: impl FnOnce(NodeId) -> Option<(usize, Option<&'v Value>)>,
+) -> String {
+    let mut pointer = at.template.as_deref().map_or_else(String::new, |name| {
         format!("/compositions/{}", escape(name))
+    });
+    let Some(node) = at.node else {
+        pointer.push_str(rest);
+        return pointer;
+    };
+    let Some((index, params)) = find(node) else {
+        pointer.push_str("/nodes");
+        return pointer;
+    };
+    let _ = write!(pointer, "/nodes/{index}");
+    if let Some(param) = &at.param {
+        pointer.push_str("/params");
+        pointer.push_str(&param_pointer(params, param));
+    }
+    pointer.push_str(rest);
+    pointer
+}
+
+/// The [`pointer`] of `at` in `document`, the JSON of the whole composition.
+pub(crate) fn document_pointer(document: &Value, at: &At, rest: &str) -> String {
+    let scene = template_scene(document, at.template.as_deref());
+    pointer(at, rest, |id| {
+        let index = node_index(scene, id)?;
+        Some((index, scene.get("nodes")?.get(index)?.get("params")))
     })
 }
 
@@ -171,210 +195,13 @@ fn param_pointer(params: Option<&Value>, path: &str) -> String {
     pointer
 }
 
-/// `path`, a param path, under node `id` of `template` in `root`, or of the root.
-pub(crate) fn at_param(
-    root: &Value,
-    template: Option<&str>,
-    id: NodeId,
-    path: &str,
-) -> (String, Option<NodeId>) {
-    let (pointer, node) = at_scene_param(template_scene(root, template), id, path);
-    (format!("{}{pointer}", scene_pointer(template)), node)
-}
-
-/// `path`, a param path, under node `id` of `scene`.
-fn at_scene_param(scene: &Value, id: NodeId, path: &str) -> (String, Option<NodeId>) {
-    let params =
-        node_index(scene, id).and_then(|index| scene.get("nodes")?.get(index)?.get("params"));
-    at_node(
-        scene,
-        id,
-        &format!("/params{}", param_pointer(params, path)),
-    )
-}
-
 /// The index of node `id` in `scene`'s `nodes`.
-pub(crate) fn node_index(scene: &Value, id: NodeId) -> Option<usize> {
+fn node_index(scene: &Value, id: NodeId) -> Option<usize> {
     scene
         .get("nodes")?
         .as_array()?
         .iter()
         .position(|node| node.get("id").and_then(Value::as_u64) == Some(id.0))
-}
-
-/// `rest` under node `id` of `scene`, or `scene`'s `nodes` when it has no such node.
-fn at_node(scene: &Value, id: NodeId, rest: &str) -> (String, Option<NodeId>) {
-    let path = match node_index(scene, id) {
-        Some(index) => format!("/nodes/{index}{rest}"),
-        None => "/nodes".to_string(),
-    };
-    (path, Some(id))
-}
-
-/// The connection in `scene` from `from` into `port` of `to`, or node `to` when no connection
-/// names it.
-fn at_connection(scene: &Value, from: NodeId, to: NodeId, port: &str) -> (String, Option<NodeId>) {
-    let is_it = |connection: &Value| {
-        connection.get("from_node").and_then(Value::as_u64) == Some(from.0)
-            && connection.get("to_node").and_then(Value::as_u64) == Some(to.0)
-            && connection.get("to_port").and_then(Value::as_str) == Some(port)
-    };
-    let index = scene
-        .get("connections")
-        .and_then(Value::as_array)
-        .and_then(|connections| connections.iter().position(is_it));
-    match index {
-        Some(index) => (format!("/connections/{index}"), Some(to)),
-        None => at_node(scene, to, ""),
-    }
-}
-
-/// Where in `scene` the problem `error` describes is, and which node it's about.
-fn locate(error: &LumenError, scene: &Value) -> (String, Option<NodeId>) {
-    match error {
-        LumenError::Document(error) => locate_document(error, scene),
-        LumenError::GraphValidation(error) => locate_graph(error, scene),
-        LumenError::Property(PropertyError::InvalidType {
-            node_id,
-            property_path,
-            ..
-        }) => at_scene_param(scene, *node_id, property_path),
-        LumenError::Expression(error) => locate_expression(error, scene),
-        LumenError::Media(error) => locate_media(error, scene),
-        LumenError::Render(error) => match error {
-            RenderError::NodeEvaluation { node_id, .. }
-            | RenderError::MissingNode { node_id }
-            | RenderError::InvalidNodeOutputType { node_id, .. } => at_node(scene, *node_id, ""),
-            RenderError::TooDeeplyNested {
-                template, node_id, ..
-            } => {
-                let template = template.as_deref();
-                let (path, node) = at_node(template_scene(scene, template), *node_id, "");
-                (format!("{}{path}", scene_pointer(template)), node)
-            }
-            RenderError::FrameOutOfRange { .. }
-            | RenderError::Gpu { .. }
-            | RenderError::Limit { .. }
-            | RenderError::Internal { .. } => (String::new(), None),
-        },
-    }
-}
-
-fn locate_document(error: &DocumentError, scene: &Value) -> (String, Option<NodeId>) {
-    match error {
-        DocumentError::Syntax { .. } => (String::new(), None),
-        DocumentError::SchemaVersion { .. } => ("/lumenSchemaVersion".to_string(), None),
-        DocumentError::Invalid { pointer, .. } => (pointer.clone(), None),
-        DocumentError::Function { .. } => ("/functions".to_string(), None),
-        DocumentError::UnknownNodeType { node_id, .. } => at_node(scene, *node_id, "/type"),
-        DocumentError::ParamsNotObject { node_id, .. } => at_node(scene, *node_id, "/params"),
-        DocumentError::UnknownParam { node_id, param }
-        | DocumentError::InvalidParam { node_id, param, .. } => {
-            at_node(scene, *node_id, &format!("/params/{}", escape(param)))
-        }
-        DocumentError::DuplicateNodeId { node_id, index } => {
-            (format!("/nodes/{index}"), Some(*node_id))
-        }
-        DocumentError::InvalidFromPort { index, .. } => {
-            (format!("/connections/{index}/from_port"), None)
-        }
-        DocumentError::Connection {
-            index,
-            to_node,
-            error,
-            ..
-        } => {
-            let field = match error {
-                GraphValidationError::MissingSourceNode { .. } => "/from_node",
-                GraphValidationError::MissingTargetNode { .. } => "/to_node",
-                _ => "/to_port",
-            };
-            (format!("/connections/{index}{field}"), Some(*to_node))
-        }
-    }
-}
-
-fn locate_graph(error: &GraphValidationError, scene: &Value) -> (String, Option<NodeId>) {
-    let in_template = |template: &Option<String>, rest: &str, node: Option<NodeId>| {
-        let scene = template_scene(scene, template.as_deref());
-        match node {
-            Some(id) => {
-                let (path, node) = at_node(scene, id, rest);
-                (
-                    format!("{}{path}", scene_pointer(template.as_deref())),
-                    node,
-                )
-            }
-            None => (
-                format!("{}{rest}", scene_pointer(template.as_deref())),
-                None,
-            ),
-        }
-    };
-    match error {
-        GraphValidationError::Cycle { path } => match path.first() {
-            Some(node) => at_node(scene, *node, ""),
-            None => ("/nodes".to_string(), None),
-        },
-        GraphValidationError::NodeIdMismatch { key: node_id, .. }
-        | GraphValidationError::MissingRequiredInput { node_id, .. }
-        | GraphValidationError::MissingTargetNode { node_id }
-        | GraphValidationError::MissingSourceNode { node_id }
-        | GraphValidationError::MissingTargetPort { node_id, .. }
-        | GraphValidationError::InputAlreadyConnected { node_id, .. } => {
-            at_node(scene, *node_id, "")
-        }
-        GraphValidationError::No3dSupport { node_id, .. } => at_node(scene, *node_id, "/type"),
-        GraphValidationError::WrongInputKind {
-            node_id,
-            port,
-            source_node,
-            ..
-        } => at_connection(scene, *source_node, *node_id, port),
-        GraphValidationError::MissingMediaOutput
-        | GraphValidationError::MultipleMediaOutputs { .. } => ("/nodes".to_string(), None),
-        GraphValidationError::InvalidClip {
-            template, node_id, ..
-        }
-        | GraphValidationError::InvalidPropRead {
-            template, node_id, ..
-        } => in_template(template, "/params", Some(*node_id)),
-        GraphValidationError::InvalidSettings {
-            template, field, ..
-        } => in_template(template, field, None),
-        GraphValidationError::InvalidAudio { .. } => ("/audio".to_string(), None),
-        GraphValidationError::TemplateCycle { templates } => {
-            (scene_pointer(templates.first().map(String::as_str)), None)
-        }
-        GraphValidationError::InTemplate { template, error } => {
-            let (path, node) = locate(error, template_scene(scene, Some(template)));
-            (format!("{}{path}", scene_pointer(Some(template))), node)
-        }
-    }
-}
-
-/// Where the composition names the source of `error`, when the error says.
-fn locate_media(error: &MediaError, root: &Value) -> (String, Option<NodeId>) {
-    match error.failure().and_then(|failure| failure.at.as_ref()) {
-        Some(MediaLocation::Node(at)) => at_param(root, at.template.as_deref(), at.node, &at.param),
-        Some(MediaLocation::AudioClip {
-            template, index, ..
-        }) => (
-            format!(
-                "{}/audio/clips/{index}/source_id",
-                scene_pointer(template.as_deref())
-            ),
-            None,
-        ),
-        None => (String::new(), None),
-    }
-}
-
-fn locate_expression(error: &ExpressionError, scene: &Value) -> (String, Option<NodeId>) {
-    match error {
-        ExpressionError::Located { node_id, path, .. } => at_scene_param(scene, *node_id, path),
-        ExpressionError::Parse { .. } | ExpressionError::Evaluate { .. } => (String::new(), None),
-    }
 }
 
 /// The JSON of `template` in `root`, or `root` itself for the root.
@@ -386,6 +213,132 @@ fn template_scene<'a>(root: &'a Value, template: Option<&str>) -> &'a Value {
             .unwrap_or(&Value::Null),
         None => root,
     }
+}
+
+/// Where in `document` the problem `error` describes is, and which node it's about.
+fn locate(error: &LumenError, document: &Value) -> (String, Option<NodeId>) {
+    let at = |at: &At, rest: &str| (document_pointer(document, at, rest), at.node);
+    let in_scene = |at: &At, rest: &str| (document_pointer(document, &at.scene(), rest), at.node);
+    match error {
+        LumenError::Document(error) => match error {
+            DocumentError::Syntax { .. } => (String::new(), None),
+            DocumentError::SchemaVersion { .. } => ("/lumenSchemaVersion".to_string(), None),
+            DocumentError::Function { .. } => ("/functions".to_string(), None),
+            DocumentError::Invalid {
+                at: place, pointer, ..
+            } => at(place, pointer),
+            DocumentError::UnknownNodeType { at: place, .. } => at(place, "/type"),
+            DocumentError::ParamsNotObject { at: place, .. }
+            | DocumentError::UnknownParam { at: place }
+            | DocumentError::InvalidParam { at: place, .. } => at(place, ""),
+            DocumentError::DuplicateNodeId { at: place, index } => {
+                in_scene(place, &format!("/nodes/{index}"))
+            }
+            DocumentError::InvalidFromPort {
+                at: place, index, ..
+            } => at(place, &format!("/connections/{index}/from_port")),
+            DocumentError::Connection {
+                at: place,
+                index,
+                to_node,
+                error,
+                ..
+            } => {
+                let field = match error.as_ref() {
+                    GraphValidationError::MissingSourceNode { .. } => "from_node",
+                    GraphValidationError::MissingTargetNode { .. } => "to_node",
+                    _ => "to_port",
+                };
+                let path =
+                    document_pointer(document, place, &format!("/connections/{index}/{field}"));
+                (path, Some(*to_node))
+            }
+        },
+        LumenError::GraphValidation(error) => match error {
+            GraphValidationError::Cycle { at: place, path } => match path.first() {
+                Some(node) => at(
+                    &At {
+                        node: Some(*node),
+                        ..place.clone()
+                    },
+                    "",
+                ),
+                None => at(place, "/nodes"),
+            },
+            GraphValidationError::WrongInputKind {
+                at: place,
+                port,
+                source_node,
+                ..
+            } => {
+                let scene = template_scene(document, place.template.as_deref());
+                match place
+                    .node
+                    .and_then(|to| connection_index(scene, *source_node, to, port))
+                {
+                    Some(index) => in_scene(place, &format!("/connections/{index}")),
+                    None => at(place, ""),
+                }
+            }
+            GraphValidationError::MissingMediaOutput { at: place }
+            | GraphValidationError::MultipleMediaOutputs { at: place, .. } => at(place, "/nodes"),
+            GraphValidationError::No3dSupport { at: place, .. } => at(place, "/type"),
+            GraphValidationError::InvalidSettings {
+                at: place, field, ..
+            } => at(place, field),
+            GraphValidationError::InvalidAudio { at: place, .. } => at(place, "/audio"),
+            GraphValidationError::TemplateCycle { templates } => {
+                let first = At::default().in_template(templates.first().map(String::as_str));
+                at(&first, "")
+            }
+            GraphValidationError::NodeIdMismatch { at: place, .. }
+            | GraphValidationError::MissingTargetNode { at: place }
+            | GraphValidationError::MissingSourceNode { at: place }
+            | GraphValidationError::MissingTargetPort { at: place, .. }
+            | GraphValidationError::InputAlreadyConnected { at: place, .. }
+            | GraphValidationError::MissingRequiredInput { at: place, .. }
+            | GraphValidationError::InvalidClip { at: place, .. }
+            | GraphValidationError::InvalidPropRead { at: place, .. } => at(place, ""),
+        },
+        LumenError::Property(PropertyError::InvalidType { at: place, .. })
+        | LumenError::Expression(ExpressionError::Located { at: place, .. }) => at(place, ""),
+        LumenError::Expression(
+            ExpressionError::Parse { .. } | ExpressionError::Evaluate { .. },
+        ) => (String::new(), None),
+        LumenError::Media(error) => match error.failure().and_then(|failure| failure.at.as_ref()) {
+            Some(MediaLocation::Node(node)) => at(&node.at(), ""),
+            Some(MediaLocation::AudioClip {
+                template, index, ..
+            }) => at(
+                &At::default().in_template(template.as_deref()),
+                &format!("/audio/clips/{index}/source_id"),
+            ),
+            None => (String::new(), None),
+        },
+        LumenError::Render(error) => match error {
+            RenderError::NodeEvaluation { at: place, .. }
+            | RenderError::MissingNode { at: place }
+            | RenderError::InvalidNodeOutputType { at: place, .. }
+            | RenderError::TooDeeplyNested { at: place, .. } => at(place, ""),
+            RenderError::FrameOutOfRange { .. }
+            | RenderError::Gpu { .. }
+            | RenderError::Limit { .. }
+            | RenderError::Internal { .. } => (String::new(), None),
+        },
+    }
+}
+
+/// The index in `scene`'s `connections` of the one from `from` into `port` of `to`.
+fn connection_index(scene: &Value, from: NodeId, to: NodeId, port: &str) -> Option<usize> {
+    scene
+        .get("connections")?
+        .as_array()?
+        .iter()
+        .position(|connection| {
+            connection.get("from_node").and_then(Value::as_u64) == Some(from.0)
+                && connection.get("to_node").and_then(Value::as_u64) == Some(to.0)
+                && connection.get("to_port").and_then(Value::as_str) == Some(port)
+        })
 }
 
 #[cfg(test)]
@@ -417,13 +370,50 @@ mod tests {
     }
 
     #[test]
+    fn a_place_reads_and_points_the_same_way_in_the_root_and_in_a_template() {
+        let document = serde_json::json!({
+            "nodes": [{ "id": 7 }, { "id": 3, "params": { "a.b": 1 } }],
+            "compositions": { "card/x": { "nodes": [{ "id": 3 }] } },
+        });
+        let node = NodeId::new(3);
+        let card = Some("card/x");
+        for (at, shown, pointer) in [
+            (At::default(), "", ""),
+            (At::node(node), "node 3", "/nodes/1"),
+            (
+                At::param(node, "a.b"),
+                "node 3 `a.b`",
+                "/nodes/1/params/a.b",
+            ),
+            (
+                At::default().in_template(card),
+                "composition `card/x`",
+                "/compositions/card~1x",
+            ),
+            (
+                At::node(node).in_template(card),
+                "composition `card/x`: node 3",
+                "/compositions/card~1x/nodes/0",
+            ),
+            (
+                At::param(node, "content[1].size").in_template(card),
+                "composition `card/x`: node 3 `content[1].size`",
+                "/compositions/card~1x/nodes/0/params/content/1/size",
+            ),
+        ] {
+            assert_eq!(at.to_string(), shown);
+            assert_eq!(document_pointer(&document, &at, ""), pointer, "{shown}");
+        }
+    }
+
+    #[test]
     fn a_wrong_kind_points_at_its_connection() {
         let document = serde_json::json!({ "connections": [
             { "from_node": 1, "to_node": 3, "to_port": "source" },
             { "from_node": 2, "to_node": 3, "to_port": "source" },
         ] });
         let error = LumenError::from(GraphValidationError::WrongInputKind {
-            node_id: NodeId::new(3),
+            at: At::node(NodeId::new(3)),
             port: "source".to_string(),
             source_node: NodeId::new(2),
             expected: crate::node::PortKind::Scene,

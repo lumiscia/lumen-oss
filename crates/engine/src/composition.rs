@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     audio::AudioTimeline,
-    error::{GraphValidationError, LumenError},
+    error::{At, GraphValidationError, LumenError},
     expr::{BuiltinFn, ExprNode, ExpressionValue},
     graph::Graph,
     node::{ClipPropValue, Node, NodeId, NodeKind, compositing::clip::Clip},
@@ -291,7 +291,7 @@ impl CompositionBuilder {
         let root_problems = settings_problems(&self.scene);
         errors.extend(root_problems.iter().map(|(field, details)| {
             GraphValidationError::InvalidSettings {
-                template: None,
+                at: At::default(),
                 field: field.clone(),
                 details: details.clone(),
             }
@@ -323,7 +323,7 @@ impl CompositionBuilder {
                     .chain(defaults)
                     .map(|(field, details)| {
                         GraphValidationError::InvalidSettings {
-                            template: Some(name.clone()),
+                            at: At::default().in_template(Some(name)),
                             field,
                             details,
                         }
@@ -331,12 +331,11 @@ impl CompositionBuilder {
                     }),
             );
             if let Err(graph_errors) = template.scene.graph.validate() {
-                errors.extend(graph_errors.into_iter().map(|error| {
-                    LumenError::from(GraphValidationError::InTemplate {
-                        template: name.clone(),
-                        error: Box::new(error),
-                    })
-                }));
+                errors.extend(
+                    graph_errors
+                        .into_iter()
+                        .map(|error| error.in_template(name)),
+                );
             }
         }
         let graphs = std::iter::once((None, &self.scene.graph)).chain(
@@ -351,8 +350,7 @@ impl CompositionBuilder {
                 if let Err(details) = self.check_clip(clip) {
                     errors.push(
                         GraphValidationError::InvalidClip {
-                            template: template.cloned(),
-                            node_id: clip.id,
+                            at: At::param(clip.id, "").in_template(template.map(String::as_str)),
                             details,
                         }
                         .into(),
@@ -366,8 +364,7 @@ impl CompositionBuilder {
                 if let Some(details) = prop_read_problem(node, props) {
                     errors.push(
                         GraphValidationError::InvalidPropRead {
-                            template: template.cloned(),
-                            node_id: node.id(),
+                            at: At::param(node.id(), "").in_template(template.map(String::as_str)),
                             details,
                         }
                         .into(),
@@ -376,12 +373,13 @@ impl CompositionBuilder {
             }
         }
         if let Some(audio) = &self.audio {
-            errors.extend(
-                audio
-                    .problems(None)
-                    .into_iter()
-                    .map(|details| GraphValidationError::InvalidAudio { details }.into()),
-            );
+            errors.extend(audio.problems(None).into_iter().map(|details| {
+                GraphValidationError::InvalidAudio {
+                    at: At::default(),
+                    details,
+                }
+                .into()
+            }));
         }
         for (name, template) in &self.compositions {
             let Some(audio) = &template.audio else {
@@ -392,10 +390,11 @@ impl CompositionBuilder {
                     .problems(Some(&template.props))
                     .into_iter()
                     .map(|details| {
-                        LumenError::from(GraphValidationError::InTemplate {
-                            template: name.clone(),
-                            error: Box::new(GraphValidationError::InvalidAudio { details }.into()),
-                        })
+                        GraphValidationError::InvalidAudio {
+                            at: At::default().in_template(Some(name)),
+                            details,
+                        }
+                        .into()
                     }),
             );
         }
@@ -412,6 +411,7 @@ impl CompositionBuilder {
                 };
                 errors.push(
                     GraphValidationError::InvalidAudio {
+                        at: At::default(),
                         details: format!(
                             "clips play templates with sound {played}, counting the clips inside the templates they play, and at most {limit} are supported. Play a template with sound fewer times, or put its sound on the root's timeline"
                         ),

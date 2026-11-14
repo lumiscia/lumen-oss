@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::{
     composition::{Composition, Scene},
+    error::At,
     node::{MediaSource, MediaValue, Node, NodeId, NodeKind},
 };
 
@@ -24,12 +25,15 @@ pub struct NodeParamAt {
     pub param: String,
 }
 
+impl NodeParamAt {
+    pub fn at(&self) -> At {
+        At::param(self.node, &self.param).in_template(self.template.as_deref())
+    }
+}
+
 impl fmt::Display for NodeParamAt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(template) = &self.template {
-            write!(f, "composition `{template}`, ")?;
-        }
-        write!(f, "node {} `{}`", self.node, self.param)
+        self.at().fmt(f)
     }
 }
 
@@ -61,10 +65,12 @@ impl fmt::Display for MediaLocation {
                 clip,
                 ..
             } => {
-                if let Some(template) = template {
-                    write!(f, "composition `{template}`, ")?;
-                }
-                write!(f, "audio clip `{clip}` on track `{track}`")
+                let scene = At::default().in_template(template.as_deref());
+                write!(
+                    f,
+                    "{}audio clip `{clip}` on track `{track}`",
+                    scene.prefix()
+                )
             }
         }
     }

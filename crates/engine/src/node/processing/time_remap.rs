@@ -50,8 +50,7 @@ const MAX_FRAME: f64 = 9_007_199_254_740_992.0;
 pub fn remap_frame(node_id: NodeId, params: &TimeRemapParams) -> crate::Result<f64> {
     if !params.frame.is_finite() || params.frame > MAX_FRAME {
         return Err(crate::error::PropertyError::InvalidType {
-            node_id,
-            property_path: "frame".to_string(),
+            at: crate::error::At::param(node_id, "frame"),
             expected: "a finite number up to 2^53",
             actual: if params.frame.is_nan() {
                 "NaN"

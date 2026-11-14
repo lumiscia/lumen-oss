@@ -558,12 +558,7 @@ fn shadow_atlas(
 }
 
 pub(super) fn render_error(node_id: crate::node::NodeId, details: String) -> LumenError {
-    RenderError::NodeEvaluation {
-        node_id,
-        node_kind: "Render3d",
-        details,
-    }
-    .into()
+    RenderError::evaluating::<Render3d>(node_id, details).into()
 }
 
 /// Whether `flag` may be on at some frame.
@@ -845,7 +840,7 @@ impl RecordNode for Render3d {
         let aspect = size.width as f32 / size.height.max(1) as f32;
         let mipped = mip_rasters(cx, &mut collected, &camera, aspect, target_size)?;
         let scene = &collected.scene;
-        let fog = solid_linear(self.id, "Render3d", &params.fog_color)?;
+        let fog = solid_linear::<Render3d>(self.id, &params.fog_color)?;
         let view = camera.view();
         let draws = Draws::new(&scene.objects, &view)
             .map_err(|error| render_error(self.id, error.to_string()))?;
@@ -888,7 +883,10 @@ impl RecordNode for Render3d {
                 .map(|&index| direct_nodes[index])
                 .filter(|&node| named.insert(node))
                 .collect();
-            cx.note_shadow_limit(self.id, dropped);
+            cx.warn(
+                self.id,
+                crate::error::WarningKind::ShadowLimit { lights: dropped },
+            );
         }
         let mut lights: Vec<GpuLight> = lighting
             .direct

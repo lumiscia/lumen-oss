@@ -486,29 +486,26 @@ fn placement(placement: &Placement3d) -> Transform {
 }
 
 /// `paint` as linear colour with straight alpha.
-pub(super) fn solid_linear(
+pub(super) fn solid_linear<N: crate::node::JsonNode>(
     node_id: NodeId,
-    kind: &'static str,
     paint: &Paint,
 ) -> crate::Result<[f32; 4]> {
     let Paint::SolidColor(r, g, b, a) = *paint else {
-        return Err(RenderError::NodeEvaluation {
+        return Err(RenderError::evaluating::<N>(
             node_id,
-            node_kind: kind,
-            details: "3D colours must be solid; a gradient can't light a surface".to_string(),
-        }
+            "3D colours must be solid; a gradient can't light a surface",
+        )
         .into());
     };
     let [r, g, b] = [r, g, b].map(lumen_3d::srgb_to_linear);
     Ok([r, g, b, f32::from(a) / 255.0])
 }
 
-fn surface(
+fn surface<N: crate::node::JsonNode>(
     node_id: NodeId,
-    kind: &'static str,
     material: &Material3d,
 ) -> crate::Result<Surface<TexRef>> {
-    let mut base_color = solid_linear(node_id, kind, &material.color)?;
+    let mut base_color = solid_linear::<N>(node_id, &material.color)?;
     base_color[3] *= material.opacity.clamp(0.0, 1.0) as f32;
     let emissive = material.emissive.max(0.0) as f32;
     Ok(Surface {
@@ -600,12 +597,7 @@ fn model_surface(
 }
 
 fn model_error(node_id: NodeId, source: &str, details: impl std::fmt::Display) -> LumenError {
-    RenderError::NodeEvaluation {
-        node_id,
-        node_kind: "Model3d",
-        details: format!("model `{source}`: {details}"),
-    }
-    .into()
+    RenderError::evaluating::<Model3d>(node_id, format!("model `{source}`: {details}")).into()
 }
 
 /// What an object covers before it is placed in the world.
@@ -739,9 +731,9 @@ impl Collected {
         node_id: NodeId,
         parent: Mat4,
     ) -> crate::Result<Option<Vec<(NodeId, Mat4)>>> {
-        let node = cx
-            .node(node_id)
-            .ok_or(RenderError::MissingNode { node_id })?;
+        let node = cx.node(node_id).ok_or(RenderError::MissingNode {
+            at: crate::error::At::node(node_id),
+        })?;
         let expr = cx.expr();
         let ctx = DelegateEvalContext {
             node_id,
@@ -763,7 +755,7 @@ impl Collected {
                 let params = shape.params.eval(&ctx)?;
                 let size = vec3(params.size).max(Vec3::ZERO);
                 let world = parent * placement(&params.placement).matrix() * Mat4::from_scale(size);
-                let surface = surface(node_id, "Shape3d", &params.material)?;
+                let surface = surface::<super::Shape3d>(node_id, &params.material)?;
                 let (rec, cache) = cx.scene_cache();
                 let (mesh, index_count) = cache.shape(rec, params.shape);
                 self.push(
@@ -785,7 +777,7 @@ impl Collected {
             NodeKind::Text3d(text) => {
                 let params = text.params.eval(&ctx)?;
                 let world = parent * placement(&params.placement).matrix();
-                let surface = surface(node_id, "Text3d", &params.material)?;
+                let surface = surface::<super::Text3d>(node_id, &params.material)?;
                 if let Some(text) = super::text_mesh::text_mesh(cx, node_id, &params)? {
                     let local = text.bounds;
                     self.push(
@@ -824,7 +816,7 @@ impl Collected {
                 );
                 let world =
                     parent * placement(&params.placement).matrix() * Mat4::from_scale(scale);
-                let mut surface = surface(node_id, "ImagePlane3d", &params.material)?;
+                let mut surface = surface::<super::ImagePlane3d>(node_id, &params.material)?;
                 // A raster has transparent texels whatever its opacity, so a plane blends unless
                 // told it has none. A shadow catcher keeps its alpha, which sets its coverage.
                 surface.blending = if params.opaque && !params.material.shadow_catcher {
@@ -890,7 +882,7 @@ impl Collected {
             }
             NodeKind::Light3d(light) => {
                 let params = light.params.eval(&ctx)?;
-                let [r, g, b, _] = solid_linear(node_id, "Light3d", &params.color)?;
+                let [r, g, b, _] = solid_linear::<super::Light3d>(node_id, &params.color)?;
                 let light = Light::new(
                     match params.light {
                         Light3dKind::Directional => LightKind::Directional,
@@ -915,11 +907,12 @@ impl Collected {
             }
             // Validation keeps rasters out of scene inputs.
             _ => {
-                return Err(LumenError::from(RenderError::NodeEvaluation {
-                    node_id,
-                    node_kind: "Render3d",
-                    details: "a scene input takes scene nodes, not a raster".to_string(),
-                }));
+                return Err(LumenError::from(
+                    RenderError::evaluating::<super::Render3d>(
+                        node_id,
+                        "a scene input takes scene nodes, not a raster",
+                    ),
+                ));
             }
         }
         Ok(None)
@@ -957,7 +950,13 @@ impl Collected {
         cx.read_source(AssetKind::Model, source, Some(&identity));
         let scene = &model.scene;
         if scene.skipped_primitives() > 0 {
-            cx.note_skipped_primitives(node.id, source, scene.skipped_primitives());
+            cx.warn(
+                node.id,
+                crate::error::WarningKind::ModelPrimitivesSkipped {
+                    model: source.to_string(),
+                    count: scene.skipped_primitives(),
+                },
+            );
         }
         let clip = scene.animation(&params.animation).map_err(error)?;
         let camera = scene.camera(&params.camera).map_err(error)?;

@@ -17,28 +17,20 @@ const _: () = assert!(MAX_INSTANCES as usize <= MAX_SCENE_NODES);
 const MAX_NESTING: u32 = 8;
 
 fn instance_error(node_id: NodeId, details: String) -> LumenError {
-    RenderError::NodeEvaluation {
-        node_id,
-        node_kind: "Instance3d",
-        details,
-    }
-    .into()
+    RenderError::evaluating::<Instance3d>(node_id, details).into()
 }
 
 /// `error`, if it locates an expression failure, saying which instance it happened in.
 fn at_instance(error: LumenError, index: u32) -> LumenError {
     match error {
-        LumenError::Expression(ExpressionError::Located {
-            node_id,
-            path,
-            failure,
-        }) => LumenError::Expression(ExpressionError::Located {
-            node_id,
-            path,
-            failure: Box::new(ExpressionError::Evaluate {
-                details: format!("instance {index}: {failure}"),
-            }),
-        }),
+        LumenError::Expression(ExpressionError::Located { at, failure }) => {
+            LumenError::Expression(ExpressionError::Located {
+                at,
+                failure: Box::new(ExpressionError::Evaluate {
+                    details: format!("instance {index}: {failure}"),
+                }),
+            })
+        }
         error => error,
     }
 }

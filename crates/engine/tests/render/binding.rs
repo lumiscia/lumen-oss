@@ -41,7 +41,7 @@ fn text(content: &str, params: Value) -> Value {
 
 #[test]
 fn bind_errors() {
-    let property = |node: u64, path: &str| format!("property `{path}` on node {node} ");
+    let property = |node: u64, path: &str| format!("node {node} `{path}`: invalid type");
     let glyph = |name: &str| format!("`{name}` is only available in a text node's glyph_offset");
     let crop_resize = |crop: [i64; 4], resize: [i64; 4]| {
         let [x, y, width, height] = crop;
@@ -203,7 +203,7 @@ fn bind_errors() {
                 ]
             } } },
         ]),
-        "property `color` on node 2 has invalid type: expected a solid color, got a gradient",
+        "node 2 `color`: invalid type: expected a solid color, got a gradient",
     ));
     rows.push(row(
         "malformed path data",

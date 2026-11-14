@@ -25,7 +25,7 @@ use crate::{
         Scene, TimelineSettings,
     },
     diagnostic::{Diagnostic, MAX_DIAGNOSTICS},
-    error::{DocumentError, GraphValidationError, LumenError, Warning},
+    error::{At, DocumentError, GraphValidationError, LumenError, Warning, WarningKind},
     expr::FunctionScope,
     graph::{Connection, Graph},
     media::{AssetKind, AssetResolver, Found, MediaLocation, asset_id, resolve_asset_of},
@@ -317,6 +317,7 @@ impl GainJson {
                 .map(AudioGain::Expr)
                 .map_err(|error| {
                     DocumentError::Invalid {
+                        at: At::default(),
                         details: format!("`{}`: `={source}`: {error}", dotted(&pointer)),
                         pointer,
                     }
@@ -542,6 +543,7 @@ fn load(root: &Value) -> Result<Composition, Vec<LumenError>> {
                 .collect();
             vec![
                 DocumentError::Invalid {
+                    at: At::default(),
                     pointer,
                     details: error.to_string(),
                 }
@@ -560,6 +562,7 @@ fn load(root: &Value) -> Result<Composition, Vec<LumenError>> {
         if name.len() > MAX_TEMPLATE_NAME_BYTES {
             errors.push(
                 DocumentError::Invalid {
+                    at: At::default(),
                     pointer: "/compositions".to_string(),
                     details: format!(
                         "a name in `compositions` is {} bytes long; the most is \
@@ -575,7 +578,7 @@ fn load(root: &Value) -> Result<Composition, Vec<LumenError>> {
         errors.extend(
             template_errors
                 .into_iter()
-                .map(|error| in_template(name, error)),
+                .map(|error| error.in_template(name)),
         );
         templates.insert(name.clone(), built);
     }
@@ -594,7 +597,7 @@ fn load(root: &Value) -> Result<Composition, Vec<LumenError>> {
         errors.extend(
             template_errors
                 .into_iter()
-                .map(|error| in_template(name, error)),
+                .map(|error| error.in_template(name)),
         );
     }
     end_phase(&mut errors)?;
@@ -619,18 +622,9 @@ fn end_phase(errors: &mut Vec<LumenError>) -> Result<(), Vec<LumenError>> {
     }
 }
 
-/// `error` found in template `name`, with its message and path in the template.
 /// The longest name a template in `compositions` may have. Whatever lists a composition's parts
 /// repeats the name for each, so it is kept short.
 const MAX_TEMPLATE_NAME_BYTES: usize = 256;
-
-fn in_template(name: &str, error: LumenError) -> LumenError {
-    GraphValidationError::InTemplate {
-        template: name.to_string(),
-        error: Box::new(error),
-    }
-    .into()
-}
 
 fn check_schema_version(root: &Value) -> Result<(), LumenError> {
     let details = match root.get("lumenSchemaVersion") {
@@ -675,7 +669,13 @@ fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Grap
     for (index, node) in nodes.iter().enumerate() {
         let id = NodeId::new(node.id);
         if !ids.insert(id) {
-            errors.push(DocumentError::DuplicateNodeId { node_id: id, index }.into());
+            errors.push(
+                DocumentError::DuplicateNodeId {
+                    at: At::node(id),
+                    index,
+                }
+                .into(),
+            );
             continue;
         }
         let params = match &node.params {
@@ -684,7 +684,7 @@ fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Grap
             Some(other) => {
                 errors.push(
                     DocumentError::ParamsNotObject {
-                        node_id: id,
+                        at: At::param(id, ""),
                         kind: node.kind.clone(),
                         got: json_type(other),
                     }
@@ -708,8 +708,7 @@ fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Grap
         if !invalid.is_empty() {
             errors.extend(invalid.into_iter().map(|(param, details)| {
                 DocumentError::InvalidParam {
-                    node_id: id,
-                    param: param.to_string(),
+                    at: At::param(id, param),
                     details,
                 }
                 .into()
@@ -717,6 +716,7 @@ fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Grap
             continue;
         }
         graph.nodes.insert(id, node_kind);
+        graph.positions.insert(id, index);
     }
     graph
 }
@@ -733,6 +733,7 @@ fn connect(
         {
             errors.push(
                 DocumentError::InvalidFromPort {
+                    at: At::default(),
                     index,
                     port: from_port.clone(),
                 }
@@ -751,11 +752,12 @@ fn connect(
         if let Err(LumenError::GraphValidation(error)) = connected {
             errors.push(
                 DocumentError::Connection {
+                    at: At::default(),
                     index,
                     from_node,
                     to_node,
                     to_port: to_port.clone(),
-                    error,
+                    error: Box::new(error),
                 }
                 .into(),
             );
@@ -785,7 +787,7 @@ fn build_template(
                 Some(value) => def.kind.literal(value).unwrap_or_else(|error| {
                     errors.push(
                         GraphValidationError::InvalidSettings {
-                            template: None,
+                            at: At::default(),
                             field: format!("/props/{}/default", crate::diagnostic::escape(name)),
                             details: format!("prop `{name}` default: {error}"),
                         }
@@ -857,13 +859,13 @@ fn font_fallbacks(
         {
             return;
         }
-        let warning = Warning::FontFallback {
-            template: at.template.clone(),
-            node_id: at.node,
-            family: family.to_string(),
+        let warning = Warning {
+            at: at.at(),
+            kind: WarningKind::FontFallback {
+                family: family.to_string(),
+            },
         };
-        let (path, _) =
-            crate::diagnostic::at_param(root, at.template.as_deref(), at.node, &at.param);
+        let path = crate::diagnostic::document_pointer(root, &warning.at, "");
         warnings.push(Diagnostic::from_warning(&warning, path));
     });
     warnings
@@ -1040,7 +1042,7 @@ mod tests {
             ]),
             serde_json::json!([]),
         );
-        assert!(error.contains("duplicate node id 1"), "{error}");
+        assert!(error.contains("node 1: duplicate node id"), "{error}");
     }
 
     #[test]
@@ -2320,11 +2322,11 @@ mod tests {
             [
                 (
                     "/connections/2",
-                    "node 1 outputs a scene, but input `source` of node 4 takes a raster: draw the scene into a raster through a render_3d, and wire that in"
+                    "node 4: input `source` takes a raster, but node 1 outputs a scene: draw the scene into a raster through a render_3d, and wire that in"
                 ),
                 (
                     "/connections/3",
-                    "node 5 outputs a raster, but input `objects` of node 6 takes a scene: show the raster in the scene through an image_plane_3d"
+                    "node 6: input `objects` takes a scene, but node 5 outputs a raster: show the raster in the scene through an image_plane_3d"
                 ),
             ]
         );

@@ -122,8 +122,7 @@ impl crate::gpu::frame_graph::RecordNode for Glow {
         let tint = if evaluated.tint_enabled {
             let Paint::SolidColor(r, g, b, a) = evaluated.tint else {
                 return Err(PropertyError::InvalidType {
-                    node_id: self.id,
-                    property_path: "tint".to_string(),
+                    at: crate::error::At::param(self.id, "tint"),
                     expected: "a solid color",
                     actual: "a gradient",
                 }

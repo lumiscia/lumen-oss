@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     composition::{Composition, Scene, SceneId, TemplateRef},
-    error::{LumenError, RenderError},
+    error::{At, LumenError, RenderError},
     expr::{ExpressionContext, ExpressionValue},
     media::MediaStore,
     node::{
@@ -129,11 +129,15 @@ impl<'a> Scope<'a> {
         self.root.template_name(self.id)
     }
 
+    /// Node `node_id` of this scope.
+    pub(crate) fn at(&self, node_id: NodeId) -> At {
+        At::node(node_id).in_template(self.template_name())
+    }
+
     /// The error for a walk reaching node `node_id` of this scope inside [`MAX_GRAPH_DEPTH`] nodes.
     pub(crate) fn too_deep(&self, node_id: NodeId) -> LumenError {
         RenderError::TooDeeplyNested {
-            template: self.template_name().map(str::to_string),
-            node_id,
+            at: self.at(node_id),
             limit: MAX_GRAPH_DEPTH,
         }
         .into()

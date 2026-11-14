@@ -190,14 +190,14 @@ A failed request answers with its status and `{ "code": "...", "error": "..." }`
 ```json
 {
   "code": "invalid_project_payload",
-  "error": "unknown param `paintt` on node 1; node 2: unknown or unsupported node type `sparkle`",
+  "error": "node 1: unknown param `paintt`; node 2: unknown or unsupported node type `sparkle`",
   "diagnostics": [
     {
       "severity": "error",
       "code": "node.unknown_param",
       "path": "/nodes/0/params/paintt",
       "node": 1,
-      "message": "unknown param `paintt` on node 1"
+      "message": "node 1: unknown param `paintt`"
     },
     {
       "severity": "error",

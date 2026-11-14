@@ -1542,7 +1542,7 @@ fn a_clip_canvas_larger_than_the_device_allows_fails_naming_the_clip() {
     assert!(
         error.contains(&format!(
             "a {width}x64 canvas is larger than this device's {max}-pixel texture limit"
-        )) && error.contains("Clip"),
+        )) && error.contains("clip node"),
         "{error}"
     );
 }
@@ -2081,12 +2081,12 @@ fn a_clip_or_material_the_model_lacks_is_an_error_listing_those_it_has() {
     };
     assert_eq!(
         error(json!({ "animation": "Dance" })),
-        "Model3d node 1 evaluation failed: model `fox.glb`: the model has no animation `Dance`; \
+        "model_3d node 1 evaluation failed: model `fox.glb`: the model has no animation `Dance`; \
          it has 0 `Survey`, 1 `Walk`, 2 `Run`"
     );
     assert_eq!(
         error(json!({ "texture_material": "screen" })),
-        "Model3d node 1 evaluation failed: model `fox.glb`: the model has no material `screen`; \
+        "model_3d node 1 evaluation failed: model `fox.glb`: the model has no material `screen`; \
          it has `fox_material`"
     );
 }

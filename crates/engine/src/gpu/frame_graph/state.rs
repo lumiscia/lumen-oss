@@ -32,6 +32,13 @@ pub(super) type FrameValues = (
     Option<Arc<[crate::expr::ExpressionValue]>>,
 );
 
+/// A warning's place, kind and [`crate::error::WarningKind::identity`].
+pub(super) type WarningKey = (
+    crate::error::At,
+    std::mem::Discriminant<crate::error::WarningKind>,
+    Option<String>,
+);
+
 #[derive(Default)]
 pub(super) struct RecordState {
     pub(super) fingerprint: Option<u64>,
@@ -51,6 +58,8 @@ pub(super) struct RecordState {
     pub(super) output: Option<Raster>,
     /// Warnings not yet taken.
     pub(super) diagnostics: Vec<crate::diagnostic::Diagnostic>,
+    /// Where, of what kind and about what each warning raised for this composition is.
+    pub(super) warned: HashSet<WarningKey>,
     pub(super) retained: Retained,
     pub(super) text: TextState,
     pub(super) media: MediaState,
@@ -109,6 +118,7 @@ impl RecordState {
         self.frame_values.clear();
         self.full_frames.clear();
         self.output = None;
+        self.warned.clear();
         self.text.reset(recorder);
     }
 
@@ -235,14 +245,11 @@ impl Retained {
 pub(super) struct TextState {
     pub(super) instances: HashMap<InstanceKey, Arc<TextInstance>>,
     pub(super) atlas: Option<TexRef>,
-    /// The template, node and family of each font fallback reported for this composition.
-    pub(super) font_fallbacks: HashSet<(Option<String>, NodeId, String)>,
 }
 
 impl TextState {
     fn reset(&mut self, recorder: &mut Recorder) {
         self.instances.clear();
-        self.font_fallbacks.clear();
         if let Some(atlas) = self.atlas.take() {
             recorder.forget(atlas);
         }
@@ -284,12 +291,8 @@ pub(super) struct MediaState {
     pub(super) frame_imports: HashMap<InstanceKey, u32>,
     #[cfg(feature = "ffmpeg")]
     pub(super) next_video_import: u32,
-    /// The template, node and source of each unsupported colour reported for this composition.
-    pub(super) colors: HashSet<(Option<String>, NodeId, String)>,
     /// How large this composition can show each image, found once it shows one.
     pub(super) shown_sizes: Option<Arc<crate::gpu::image_size::ShownSizes>>,
-    /// Each image reported as reduced to fit the size limit for this composition.
-    pub(super) reduced_images: HashSet<String>,
 }
 
 impl MediaState {
@@ -342,9 +345,7 @@ impl MediaState {
         for (_, (tex, ..)) in self.textures.drain() {
             recorder.forget(tex);
         }
-        self.colors.clear();
         self.shown_sizes = None;
-        self.reduced_images.clear();
     }
 }
 
@@ -409,19 +410,11 @@ impl ShaderCache {
     }
 }
 
-/// The 3D scene cache, and the warnings 3D nodes have raised for this composition.
+/// The 3D scene cache.
 #[cfg(feature = "3d")]
 #[derive(Default)]
 pub(super) struct SceneState {
     pub(super) cache: crate::node::scene::collect::SceneCache,
-    /// The template and `render_3d` node of each shadow limit reported for this composition.
-    pub(super) shadow_limits: HashSet<(Option<String>, NodeId)>,
-    /// The template and `text_3d` node of each report of glyphs without outlines for this
-    /// composition.
-    pub(super) outline_gaps: HashSet<(Option<String>, NodeId)>,
-    /// The template and `model_3d` node of each model with skipped primitives reported for this
-    /// composition.
-    pub(super) skipped_primitives: HashSet<(Option<String>, NodeId)>,
     /// The copies' local matrices of each `instance_3d` whose params don't read the frame.
     pub(super) placements: HashMap<GraphNodeKey, KeptPlacements>,
 }
@@ -443,9 +436,6 @@ impl SceneState {
     }
 
     fn reset(&mut self) {
-        self.shadow_limits.clear();
-        self.outline_gaps.clear();
-        self.skipped_primitives.clear();
         self.placements.clear();
     }
 }
