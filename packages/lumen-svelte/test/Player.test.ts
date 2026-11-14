@@ -3,8 +3,8 @@
 import { flushSync, mount, unmount } from "svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import * as defaults from "@lumiscia/lumen-bindings/urls";
-import * as defaults2d from "@lumiscia/lumen-bindings/urls-2d";
+import { runtime } from "@lumiscia/lumen-bindings/urls";
+import { runtime2d } from "@lumiscia/lumen-bindings/urls-2d";
 import type { LumenPreviewComposition } from "@lumiscia/lumen-preview";
 
 import Player2d from "../src/lib/Player2d.svelte";
@@ -17,8 +17,8 @@ interface MockSession {
     loop?: boolean;
     preview: unknown;
     rate?: number;
-    wasmUrl: unknown;
-    workerUrl: unknown;
+    runtime: unknown;
+    runtimeUrl?: unknown;
   };
   dispose: ReturnType<typeof vi.fn>;
   setInputs: ReturnType<typeof vi.fn>;
@@ -50,10 +50,7 @@ describe("Player", () => {
     });
     flushSync();
     expect(sessions[0]?.host.className).toBe("stage");
-    expect(sessions[0]?.options).toMatchObject({
-      wasmUrl: defaults.wasmUrl.href,
-      workerUrl: defaults.workerUrl.href,
-    });
+    expect(sessions[0]?.options.runtime).toBe(runtime);
 
     component.setPreview(nextPreview);
     flushSync();
@@ -64,19 +61,23 @@ describe("Player", () => {
     expect(sessions[1]?.dispose).toHaveBeenCalledOnce();
   });
 
-  it("finds the runtime files in runtimeUrl when it is set", async () => {
+  it("passes runtimeUrl and a runtime given in props through", async () => {
     const component = mount(Harness, {
       target: document.body,
       props: { initialOptions: { runtimeUrl: "/lumen/" }, initialPreview: createLumenPreview() },
     });
     flushSync();
-    expect(sessions[0]?.options).toMatchObject({
-      runtimeUrl: "/lumen/",
-      wasmUrl: new URL("/lumen/lumen_wasm_bg.wasm", document.baseURI).href,
-      workerUrl: new URL("/lumen/worker.js", document.baseURI).href,
-    });
-
+    expect(sessions[0]?.options).toMatchObject({ runtime, runtimeUrl: "/lumen/" });
     await unmount(component);
+
+    const custom = { ...runtime, wasm: { file: "lumen.wasm", url: "/lumen.wasm" } };
+    const withRuntime = mount(Harness, {
+      target: document.body,
+      props: { initialOptions: { runtime: custom }, initialPreview: createLumenPreview() },
+    });
+    flushSync();
+    expect(sessions[1]?.options.runtime).toBe(custom);
+    await unmount(withRuntime);
   });
 
   it("starts the 2D wasm from the 2d entry point", async () => {
@@ -85,26 +86,8 @@ describe("Player", () => {
       props: { initialPreview: createLumenPreview(), player: Player2d },
     });
     flushSync();
-    expect(sessions[0]?.options).toMatchObject({
-      wasmUrl: defaults2d.wasmUrl.href,
-      workerUrl: defaults2d.workerUrl.href,
-    });
+    expect(sessions[0]?.options.runtime).toBe(runtime2d);
     await unmount(component);
-
-    const inRuntime = mount(Harness, {
-      target: document.body,
-      props: {
-        initialOptions: { runtimeUrl: "/lumen" },
-        initialPreview: createLumenPreview(),
-        player: Player2d,
-      },
-    });
-    flushSync();
-    expect(sessions[1]?.options).toMatchObject({
-      wasmUrl: new URL("/lumen/lumen_wasm_2d_bg.wasm", document.baseURI).href,
-      workerUrl: new URL("/lumen/worker-2d.js", document.baseURI).href,
-    });
-    await unmount(inRuntime);
   });
 
   it("sends a changed input to the current session", async () => {

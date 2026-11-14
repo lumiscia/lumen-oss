@@ -7,10 +7,8 @@ describe("assetHint", () => {
     expect(
       assetHint("http://localhost:5173/node_modules/.vite/deps/dist/browser/worker.js"),
     ).toContain("optimizeDeps");
-    expect(assetHint("https://cdn.test/worker.js?from=/.vite/deps/")).toContain("pass `workerUrl`");
-  });
-
-  it("uses the given fallback elsewhere", () => {
-    expect(assetHint("https://cdn.test/audio-worker.js", "audio fix")).toBe("audio fix");
+    expect(assetHint("https://cdn.test/worker.js?from=/.vite/deps/")).toContain(
+      "pass `runtimeUrl`",
+    );
   });
 });

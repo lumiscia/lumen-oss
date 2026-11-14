@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { LumenPreviewController, createLumenBindings } from "@lumiscia/lumen-bindings/node";
+import { LumenPreviewController, loadLumenBindings } from "@lumiscia/lumen-bindings/node";
 
 const {
   LumenPreviewController: Controller,
   check,
   mediaDependencies,
   modelInfo,
-} = await createLumenBindings().preview();
+} = await loadLumenBindings();
 assert.equal(Controller, LumenPreviewController);
 
 const controller = new Controller();

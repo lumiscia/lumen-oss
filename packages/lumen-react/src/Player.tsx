@@ -1,73 +1,61 @@
 import { useEffect, useRef } from "react";
 
 import type { CSSProperties } from "react";
-import { mountPreview, runtimeFileUrl, type LumenPreviewSession } from "@lumiscia/lumen-preview";
-import type { LumenPreviewSessionInputs } from "@lumiscia/lumen-preview";
+import { mountPreview, type LumenPreviewSession } from "@lumiscia/lumen-preview";
+import type { LumenPreviewSessionInputs, LumenRuntime } from "@lumiscia/lumen-preview";
 
 import type { LumenPreviewContext } from "./preview.js";
 
 export interface PlayerProps extends LumenPreviewSessionInputs {
   preview: LumenPreviewContext;
   /**
-   * A directory serving the preview's runtime files: `worker.js` and `lumen_wasm_bg.wasm` (or
-   * `worker-2d.js` and `lumen_wasm_2d_bg.wasm`, for the `Player` from `@lumiscia/lumen-react/2d`)
-   * from `@lumiscia/lumen-bindings`, and `audio-worker.js` and `audio-worklet.js` from
-   * `@lumiscia/lumen-preview`. When set, every runtime URL not passed on its own is that file in
-   * it; otherwise each is found next to its package.
+   * The runtime files to load. Defaults to `runtime` from `@lumiscia/lumen-bindings/urls`, or
+   * `runtime2d` from `@lumiscia/lumen-bindings/urls-2d` for the `Player` from
+   * `@lumiscia/lumen-react/2d`.
+   */
+  runtime?: LumenRuntime | undefined;
+  /**
+   * A directory serving every file of `runtime` under its `file` name. Without it, each file is
+   * loaded from its `url`.
    */
   runtimeUrl?: string | URL | undefined;
-  /** Where the preview worker's wasm is served. Defaults to the copy in `@lumiscia/lumen-bindings`. */
-  wasmUrl?: string | URL | undefined;
-  /** Where the preview worker is served. Defaults to the copy in `@lumiscia/lumen-bindings`. */
-  workerUrl?: string | URL | undefined;
   /** Applied to the element that holds the canvas, which fills it and keeps its aspect ratio. */
   className?: string;
   style?: CSSProperties;
 }
 
-/** The wasm and worker a `Player` falls back to, and their file names in `runtimeUrl`. */
-export interface PlayerDefaults {
-  wasmUrl: URL;
-  wasmFile: string;
-  workerUrl: URL;
-  workerFile: string;
-}
-
-/** A `Player` whose wasm defaults to `defaults`, so an entry point names only the wasm it uses. */
-export function createPlayer(defaults: PlayerDefaults) {
+/** A `Player` whose runtime defaults to `defaultRuntime`, so an entry point names only the build it uses. */
+export function createPlayer(defaultRuntime: LumenRuntime) {
   return function Player(props: PlayerProps) {
-    return <PreviewPlayer {...props} defaults={defaults} />;
+    return <PreviewPlayer {...props} defaultRuntime={defaultRuntime} />;
   };
 }
 
 function PreviewPlayer({
-  defaults,
+  defaultRuntime,
   preview,
+  runtime = defaultRuntime,
   runtimeUrl,
-  wasmUrl,
-  workerUrl,
   className,
   style,
   ...inputs
-}: PlayerProps & { defaults: PlayerDefaults }) {
+}: PlayerProps & { defaultRuntime: LumenRuntime }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<LumenPreviewSession | null>(null);
-  const runtime = runtimeUrl === undefined ? undefined : String(runtimeUrl);
-  const wasm = wasmUrl === undefined ? undefined : String(wasmUrl);
-  const worker = workerUrl === undefined ? undefined : String(workerUrl);
+  const directory = runtimeUrl === undefined ? undefined : String(runtimeUrl);
+  // By content, so a manifest written inline doesn't restart the preview on every render.
+  const runtimeKey = JSON.stringify(runtime);
 
   useEffect(() => {
-    // Resolved here rather than while rendering, which can run on a server without `document`.
     const session = mountPreview(hostRef.current as HTMLDivElement, {
       ...inputs,
       preview,
-      runtimeUrl: runtime,
-      wasmUrl: runtimeAssetUrl(wasm, runtime, defaults.wasmUrl, defaults.wasmFile),
-      workerUrl: runtimeAssetUrl(worker, runtime, defaults.workerUrl, defaults.workerFile),
+      runtime,
+      runtimeUrl: directory,
     });
     sessionRef.current = session;
     return () => session.dispose();
-  }, [preview, runtime, wasm, worker, defaults]);
+  }, [preview, runtimeKey, directory]);
 
   // Reading a composition serializes it, so the session is told only when an input changed.
   const passedRef = useRef<typeof inputs | null>(null);
@@ -91,17 +79,4 @@ function sameInputs(left: object, right: object): boolean {
     }
   }
   return true;
-}
-
-/** The URL passed, else `file` in `runtimeUrl`, else the package's own copy. */
-function runtimeAssetUrl(
-  url: string | undefined,
-  runtimeUrl: string | undefined,
-  fallback: URL,
-  file: string,
-): string {
-  if (url !== undefined) {
-    return url;
-  }
-  return runtimeUrl === undefined ? String(fallback) : runtimeFileUrl(runtimeUrl, file);
 }

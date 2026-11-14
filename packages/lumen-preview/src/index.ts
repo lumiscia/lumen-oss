@@ -17,7 +17,7 @@ export type {
   MediaSourceInput,
   UrlMediaSourceInput,
 } from "./media/index.js";
-export { LumenPreviewSession, mountPreview, runtimeFileUrl } from "./session/index.js";
+export { LumenPreviewSession, mountPreview } from "./session/index.js";
 export type {
   LumenPreviewComposition,
   LumenPreviewFonts,
@@ -30,4 +30,6 @@ export type {
   LumenPreviewStatsCallback,
   LumenPreviewTimeUpdate,
   LumenPreviewTimeUpdateCallback,
+  LumenRuntime,
+  LumenRuntimeFile,
 } from "./session/index.js";

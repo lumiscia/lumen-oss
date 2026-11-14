@@ -143,7 +143,7 @@ function installFakes() {
 }
 
 function createEngine(): LumenAudioEngine {
-  return new LumenAudioEngine({ workerModuleUrl: "worker.js", workletModuleUrl: "worklet.js" });
+  return new LumenAudioEngine({ workerUrl: "worker.js", workletUrl: "worklet.js" });
 }
 
 const LENGTH = { durationFrames: 240, fps: 24 };
@@ -515,8 +515,8 @@ describe("LumenAudioEngine", () => {
     const onClockChange = vi.fn();
     const engine = new LumenAudioEngine({
       onClockChange,
-      workerModuleUrl: "worker.js",
-      workletModuleUrl: "worklet.js",
+      workerUrl: "worker.js",
+      workletUrl: "worklet.js",
     });
     engine.loadAudioTimeline(timelineJson("a"), LENGTH);
     engine.play(0);
@@ -555,8 +555,8 @@ describe("LumenAudioEngine", () => {
       const engine = new LumenAudioEngine({
         onClockChange,
         onError,
-        workerModuleUrl: "worker.js",
-        workletModuleUrl: "worklet.js",
+        workerUrl: "worker.js",
+        workletUrl: "worklet.js",
       });
       engine.loadAudioTimeline(timelineJson("a"), LENGTH);
       engine.play(0);
@@ -687,8 +687,8 @@ describe("LumenAudioEngine", () => {
     const onClockChange = vi.fn();
     const engine = new LumenAudioEngine({
       onClockChange,
-      workerModuleUrl: "worker.js",
-      workletModuleUrl: "worklet.js",
+      workerUrl: "worker.js",
+      workletUrl: "worklet.js",
     });
     engine.loadAudioTimeline(timelineJson("a"), LENGTH);
     await engine.loadSource("a", new Uint8Array([1]));

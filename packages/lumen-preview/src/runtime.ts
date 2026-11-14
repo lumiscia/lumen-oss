@@ -49,10 +49,6 @@ export interface LumenPreviewBindings {
   LumenPreviewController: new () => LumenPreviewControllerBinding;
 }
 
-export interface LumenBindings {
-  preview: () => Promise<LumenPreviewBindings>;
-}
-
 /** The wasm controller with each kind's browser-side decode in front of it. */
 export interface LumenPreviewController {
   audioTimeline(): string | undefined;

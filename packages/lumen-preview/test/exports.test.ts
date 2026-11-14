@@ -11,7 +11,6 @@ describe("public exports", () => {
       "LumenPreviewSession",
       "createLumenPreview",
       "mountPreview",
-      "runtimeFileUrl",
     ]);
   });
 

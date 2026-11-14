@@ -47,31 +47,28 @@ pnpm add @lumiscia/lumen-svelte @lumiscia/lumen-shared
 
 Pass `media` and `fonts` (name to URL) to `Player` when the composition uses them. `examples/vite-svelte` is a complete app.
 
-`Player` from `@lumiscia/lumen-svelte` loads the wasm that renders 2D and 3D nodes. A page that only shows 2D compositions can import `Player` from `@lumiscia/lumen-svelte/2d` instead: its wasm has no 3D and is about a quarter smaller to download, and it reports each 3D node as a `node.unsupported` error. It runs in its own worker, `@lumiscia/lumen-bindings/worker-2d`, so a page that passes `wasmUrl` to this `Player` passes `workerUrl` too. The rest of the package is the same from either entry point.
+`Player` from `@lumiscia/lumen-svelte` loads the wasm that renders 2D and 3D nodes. A page that only shows 2D compositions can import `Player` from `@lumiscia/lumen-svelte/2d` instead: its wasm has no 3D and is about a quarter smaller to download, and it reports each 3D node as a `node.unsupported` error. Its runtime is `runtime2d` from `@lumiscia/lumen-bindings/urls-2d`, whose wasm runs only in its own worker. The rest of the package is the same from either entry point.
 
 ```ts
 import { Player, createLumenPreview } from "@lumiscia/lumen-svelte/2d";
 ```
 
-The preview renders in a worker, which loads the wasm renderer. Both come from `@lumiscia/lumen-bindings`, a dependency of this package, and Vite or plain ESM finds them next to it. They can be on another origin, such as a CDN, that sends CORS headers. A worker on another origin starts from a `blob:` URL that imports it, so a Content Security Policy must allow `blob:` and that origin in `worker-src`. A page that serves them elsewhere passes `workerUrl` and `wasmUrl` to `Player`, pointing at `@lumiscia/lumen-bindings/worker` and `@lumiscia/lumen-bindings/wasm`. With a bundler, its asset imports give those URLs:
+The preview renders in a worker that loads the wasm renderer, and plays audio through its own worker and an audio worklet. All four files come from `@lumiscia/lumen-bindings`, a dependency of this package, and Vite or plain ESM finds them next to it. They can be on another origin, such as a CDN, that sends CORS headers. A worker on another origin starts from a `blob:` URL that imports it, so a Content Security Policy must allow `blob:` and that origin in `worker-src`.
 
-```js
-import wasmUrl from "@lumiscia/lumen-bindings/wasm?url";
-import workerUrl from "@lumiscia/lumen-bindings/worker?url";
-```
-
-The reliable way to host these files with any bundler or CDN is `runtimeUrl`: a directory serving `worker.js` and `lumen_wasm_bg.wasm` (`worker-2d.js` and `lumen_wasm_2d_bg.wasm` for the `/2d` `Player`), `audio-worker.js` and `audio-worklet.js`, which the `@lumiscia/lumen-preview` README lists. With it, `Player` derives every runtime URL from that directory and needs none of the Vite settings below.
+The reliable way to host these files with any bundler or CDN is `runtimeUrl`: copy the four files the `Player`'s manifest names (`runtime` from `@lumiscia/lumen-bindings/urls`, or `runtime2d` from `/urls-2d` for the `/2d` `Player`) into one directory, which the [`@lumiscia/lumen-bindings` README](https://github.com/lumiscia/lumen-oss/tree/main/packages/lumen-bindings#runtime-files) lists. With it, `Player` loads every file from that directory and needs none of the Vite settings below.
 
 ```svelte
 <Player {preview} {composition} runtimeUrl="/lumen-runtime/" />
 ```
 
-With Vite 6 or 7, keep `@lumiscia/lumen-bindings` and `@lumiscia/lumen-preview` out of the dev server's dependency pre-bundling. It moves the modules that locate the worker, wasm and audio worker into `node_modules/.vite/deps`, so they 404. Vite 8 and `vite build` need nothing.
+To serve one file somewhere else, pass `runtime`, a manifest of your own, such as `{ ...runtime, wasm: { file: "lumen_wasm_bg.wasm", url: wasmUrl } }`.
+
+With Vite 6 or 7, keep `@lumiscia/lumen-bindings` out of the dev server's dependency pre-bundling. It moves the manifest that locates the runtime files into `node_modules/.vite/deps`, so they 404. Vite 8 and `vite build` need nothing.
 
 ```js
 // vite.config.js
 export default defineConfig({
-  optimizeDeps: { exclude: ["@lumiscia/lumen-bindings", "@lumiscia/lumen-preview"] },
+  optimizeDeps: { exclude: ["@lumiscia/lumen-bindings"] },
 });
 ```
 

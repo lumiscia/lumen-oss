@@ -15,7 +15,7 @@ const audio = vi.hoisted(() => ({
   instances: [] as {
     loadAudioTimeline: ReturnType<typeof vi.fn>;
     loadSource: ReturnType<typeof vi.fn>;
-    options: { onClockChange: () => void; workerModuleUrl?: unknown; workletModuleUrl?: unknown };
+    options: { onClockChange: () => void; workerUrl?: unknown; workletUrl?: unknown };
     pause: ReturnType<typeof vi.fn>;
     play: ReturnType<typeof vi.fn>;
     removeSource: ReturnType<typeof vi.fn>;
@@ -121,14 +121,20 @@ function unreadable() {
   };
 }
 
+const RUNTIME = {
+  audioWorker: { file: "audio-worker.js", url: "https://a.test/audio-worker.js" },
+  audioWorklet: { file: "audio-worklet.js", url: "https://a.test/audio-worklet.js" },
+  wasm: { file: "lumen_wasm_2d_bg.wasm", url: "https://a.test/lumen.wasm" },
+  worker: { file: "worker-2d.js", url: "https://a.test/worker.js" },
+};
+
 function createSession(inputs: ConstructorParameters<typeof LumenPreviewSession>[0] | object = {}) {
   const preview = new LumenPreviewContext();
   const canvases: unknown[] = [];
   const host = { append: (canvas: unknown) => canvases.push(canvas) } as unknown as HTMLElement;
   const session = new LumenPreviewSession({
-    wasmUrl: "https://a.test/lumen.wasm",
-    workerUrl: "https://a.test/worker.js",
     composition: composition("first"),
+    runtime: RUNTIME,
     preview,
     ...inputs,
   });
@@ -207,14 +213,16 @@ describe("LumenPreviewSession", () => {
     expect(preview.getSnapshot().errorCode).toBe("worker_failed");
     expect(preview.getSnapshot().error).toContain("worker-src");
     expect(preview.getSnapshot().error).toContain("from https://a.test/worker.js");
-    expect(preview.getSnapshot().error).toContain("pass `workerUrl` and `wasmUrl`");
+    expect(preview.getSnapshot().error).toContain("pass `runtimeUrl`");
     expect(canvases).toHaveLength(0);
     expect(worker.terminated).toBe(true);
   });
 
   it("names the Vite setting when a pre-bundled worker URL doesn't load", async () => {
-    const workerUrl = "https://a.test/node_modules/.vite/deps/dist/browser/worker.js";
-    const { attached, preview, worker } = createSession({ workerUrl });
+    const url = "https://a.test/node_modules/.vite/deps/dist/browser/worker.js";
+    const { attached, preview, worker } = createSession({
+      runtime: { ...RUNTIME, worker: { file: "worker.js", url } },
+    });
     worker.onerror?.({ message: "" });
     await attached;
 
@@ -330,7 +338,7 @@ describe("LumenPreviewSession", () => {
   it("reports a browser without WebGPU before it creates a worker", async () => {
     vi.stubGlobal("navigator", {});
     const preview = new LumenPreviewContext();
-    const session = new LumenPreviewSession({ preview, wasmUrl: "", workerUrl: "" });
+    const session = new LumenPreviewSession({ preview, runtime: RUNTIME });
     await session.attach({} as HTMLElement);
 
     expect(preview.getSnapshot().errorCode).toBe("webgpu_unavailable");
@@ -1731,32 +1739,41 @@ describe("LumenPreviewSession", () => {
     });
   });
 
-  it("finds every runtime file in runtimeUrl, unless one is passed on its own", async () => {
-    const { worker } = await started({
-      audio: { workletModuleUrl: "https://b.test/worklet.js" },
-      runtimeUrl: "/lumen",
-      wasmUrl: undefined,
-      workerUrl: undefined,
-    });
+  it("loads each runtime file from the manifest's URL", async () => {
+    const { worker } = await started();
 
-    expect(worker.url).toBe("https://a.test/lumen/worker.js");
-    expect(worker.ofType("start")[0]?.wasmUrl).toBe("https://a.test/lumen/lumen_wasm_bg.wasm");
+    expect(worker.url).toBe("https://a.test/worker.js");
+    expect(worker.ofType("start")[0]?.wasmUrl).toBe("https://a.test/lumen.wasm");
     expect(audio.instances.at(-1)?.options).toMatchObject({
-      workerModuleUrl: "https://a.test/lumen/audio-worker.js",
-      workletModuleUrl: "https://b.test/worklet.js",
+      workerUrl: "https://a.test/audio-worker.js",
+      workletUrl: "https://a.test/audio-worklet.js",
     });
+  });
+
+  it("finds every runtime file in runtimeUrl under its manifest name", async () => {
+    const { worker } = await started({ runtimeUrl: "/lumen" });
+
+    expect(worker.url).toBe("https://a.test/lumen/worker-2d.js");
+    expect(worker.ofType("start")[0]?.wasmUrl).toBe("https://a.test/lumen/lumen_wasm_2d_bg.wasm");
+    expect(audio.instances.at(-1)?.options).toMatchObject({
+      workerUrl: "https://a.test/lumen/audio-worker.js",
+      workletUrl: "https://a.test/lumen/audio-worklet.js",
+    });
+  });
+
+  it("names the manifest when a JavaScript caller leaves it out", () => {
+    const options = { preview: new LumenPreviewContext() };
+    expect(() => new LumenPreviewSession(options as never)).toThrow(/needs `runtime`/);
   });
 
   it("keeps the query of runtimeUrl on each file, in the directory its path names", async () => {
     const { worker } = await started({
       runtimeUrl: "https://a.test/runtime?v=1#top",
-      wasmUrl: undefined,
-      workerUrl: undefined,
     });
 
-    expect(worker.url).toBe("https://a.test/runtime/worker.js?v=1");
+    expect(worker.url).toBe("https://a.test/runtime/worker-2d.js?v=1");
     expect(worker.ofType("start")[0]?.wasmUrl).toBe(
-      "https://a.test/runtime/lumen_wasm_bg.wasm?v=1",
+      "https://a.test/runtime/lumen_wasm_2d_bg.wasm?v=1",
     );
   });
 });

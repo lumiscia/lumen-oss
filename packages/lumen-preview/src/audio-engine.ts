@@ -18,9 +18,6 @@ import {
 } from "./audio-protocol.js";
 import { mod } from "./playback-range.js";
 
-const AUDIO_FALLBACK =
-  "If it isn't served there, serve `dist/audio-worker.js` from `@lumiscia/lumen-preview` beside `dist/audio-engine.js`, or pass `audio.workerModuleUrl` to `mountPreview`.";
-
 const MS_PER_SECOND = 1_000;
 
 export interface LumenAudioEngineOptions {
@@ -29,8 +26,12 @@ export interface LumenAudioEngineOptions {
   onClockChange?: () => void;
   /** Called once when audio stops arriving mid-playback. The position keeps moving without it. */
   onError?: (message: string) => void;
-  workerModuleUrl?: string | URL;
-  workletModuleUrl?: string | URL;
+}
+
+/** The engine's options, with where its worker and worklet are served. */
+export interface LumenAudioEngineConfig extends LumenAudioEngineOptions {
+  workerUrl: string;
+  workletUrl: string;
 }
 
 // How long a playback holds for audio that hasn't started, such as on a page with no user gesture
@@ -97,9 +98,9 @@ export class LumenAudioEngine {
   #timelineKey: string | null = null;
   #volume = 1;
   #worker: Worker | null = null;
-  readonly #options: LumenAudioEngineOptions;
+  readonly #options: LumenAudioEngineConfig;
 
-  constructor(options: LumenAudioEngineOptions = {}) {
+  constructor(options: LumenAudioEngineConfig) {
     this.#options = options;
   }
 
@@ -457,8 +458,8 @@ export class LumenAudioEngine {
 
   async #createWorklet(): Promise<AudioWorkletNode | null> {
     const context = this.#getContext();
-    const workletModuleUrl = this.#options.workletModuleUrl ?? defaultAudioWorkletUrl();
-    await context.audioWorklet.addModule(String(workletModuleUrl));
+    const { workletUrl } = this.#options;
+    await context.audioWorklet.addModule(workletUrl);
     if (this.#disposed) {
       return null;
     }
@@ -471,9 +472,7 @@ export class LumenAudioEngine {
       });
     } catch (error) {
       throw new Error(
-        `failed to create Lumen audio worklet node from ${String(workletModuleUrl)}: ${String(
-          error,
-        )}`,
+        `failed to create Lumen audio worklet node from ${workletUrl}: ${String(error)}`,
       );
     }
     node.connect(this.#outputGain());
@@ -538,8 +537,8 @@ export class LumenAudioEngine {
       return this.#worker;
     }
 
-    const workerModuleUrl = this.#options.workerModuleUrl ?? defaultAudioWorkerUrl();
-    const worker = createModuleWorker(workerModuleUrl);
+    const { workerUrl } = this.#options;
+    const worker = createModuleWorker(workerUrl);
     worker.onmessage = (event: MessageEvent<AudioWorkerEventMessage>) => {
       const node = this.#node;
       if (!node || event.data.generation !== this.#generation) {
@@ -550,10 +549,9 @@ export class LumenAudioEngine {
     // Without a mixer no chunk ever arrives, so stop holding the video. The next sync decodes into a
     // new worker.
     worker.onerror = (event) => {
-      const url = String(workerModuleUrl);
       console.error(
         "[LumenAudioEngine]",
-        `the audio worker failed at ${url}: ${event.message}. ${assetHint(url, AUDIO_FALLBACK)}`,
+        `the audio worker failed at ${workerUrl}: ${event.message}. ${assetHint(workerUrl)}`,
       );
       this.#halt();
       worker.terminate();
@@ -624,14 +622,6 @@ export class LumenAudioEngine {
 
 function msToLumenAudioSample(ms: number): number {
   return Math.floor((Math.max(0, ms) * LUMEN_AUDIO_SAMPLE_RATE) / MS_PER_SECOND);
-}
-
-export function defaultAudioWorkerUrl(): URL {
-  return new URL("./audio-worker.js", import.meta.url);
-}
-
-export function defaultAudioWorkletUrl(): URL {
-  return new URL("./audio-worklet.js", import.meta.url);
 }
 
 async function decodeStereo(source: MediaSourceInput, signal: AbortSignal): Promise<Float32Array> {

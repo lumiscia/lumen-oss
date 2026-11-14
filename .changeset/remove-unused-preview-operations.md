@@ -8,7 +8,7 @@ The preview controller no longer has five operations that nothing used: `validat
 To check a composition without loading it, use `check` on the preview bindings, which returns diagnostics instead of throwing:
 
 ```ts
-const { check } = await createLumenBindings().preview();
+const { check } = await loadLumenBindings();
 const diagnostics = check(compositionJson);
 ```
 

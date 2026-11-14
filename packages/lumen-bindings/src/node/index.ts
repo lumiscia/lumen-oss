@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import type { LumenBindings } from "@lumiscia/lumen-preview/advanced";
+import type { LumenPreviewBindings } from "@lumiscia/lumen-preview/advanced";
 
 import * as previewBindings from "../../wasm/lumen_wasm.js";
 
@@ -11,6 +11,6 @@ previewBindings.initSync({
 export { LumenPreviewController } from "../../wasm/lumen_wasm.js";
 
 /** Parses compositions and answers timeline questions. Rendering needs a browser's WebGPU. */
-export function createLumenBindings(): LumenBindings {
-  return { preview: async () => previewBindings };
+export async function loadLumenBindings(): Promise<LumenPreviewBindings> {
+  return previewBindings;
 }

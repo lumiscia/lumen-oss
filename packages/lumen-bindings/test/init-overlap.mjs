@@ -32,10 +32,9 @@ function holdFetches() {
   return held;
 }
 
-async function loadedBindings() {
-  return (await import("@lumiscia/lumen-bindings")).createLumenBindings({
-    previewWasmUrl: "https://a.test/lumen.wasm",
-  });
+async function bindingsLoader() {
+  const { loadLumenBindings } = await import("@lumiscia/lumen-bindings");
+  return () => loadLumenBindings({ previewWasmUrl: "https://a.test/lumen.wasm" });
 }
 
 function liveController(Controller) {
@@ -49,9 +48,9 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 500));
 
 async function overlappingPreviews() {
   const held = holdFetches();
-  const bindings = await loadedBindings();
-  const first = bindings.preview();
-  const second = bindings.preview();
+  const load = await bindingsLoader();
+  const first = load();
+  const second = load();
   await settle();
 
   held[0].release();
@@ -67,9 +66,9 @@ async function overlappingPreviews() {
 
 async function initSyncDuringPreview() {
   const held = holdFetches();
-  const bindings = await loadedBindings();
+  const load = await bindingsLoader();
   const { initSync, LumenPreviewController } = await import("@lumiscia/lumen-bindings");
-  const pending = bindings.preview();
+  const pending = load();
   await settle();
 
   initSync({ module: WASM });
@@ -83,13 +82,13 @@ async function initSyncDuringPreview() {
 
 async function retryAfterFailure() {
   const held = holdFetches();
-  const bindings = await loadedBindings();
-  const failed = bindings.preview();
+  const load = await bindingsLoader();
+  const failed = load();
   await settle();
   held[0].fail();
   await assert.rejects(failed, /offline/);
 
-  const retried = bindings.preview();
+  const retried = load();
   await settle();
   held[1].release();
   liveController((await retried).LumenPreviewController);

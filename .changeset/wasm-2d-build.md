@@ -14,13 +14,13 @@ import { Player, createLumenPreview } from "@lumiscia/lumen-react/2d";
 // or, in Svelte: import { Player, createLumenPreview } from "@lumiscia/lumen-svelte/2d";
 ```
 
-With `mountPreview`, take both URLs from `@lumiscia/lumen-bindings/urls-2d`. The 2D wasm runs only in its own worker, `worker-2d.js`:
+With `mountPreview`, take the 2D manifest from `@lumiscia/lumen-bindings/urls-2d`. The 2D wasm runs only in its own worker, `worker-2d.js`:
 
 ```ts
 import { mountPreview } from "@lumiscia/lumen-preview";
-import { wasmUrl, workerUrl } from "@lumiscia/lumen-bindings/urls-2d";
+import { runtime2d } from "@lumiscia/lumen-bindings/urls-2d";
 
-mountPreview(host, { preview, composition, wasmUrl, workerUrl });
+mountPreview(host, { preview, composition, runtime: runtime2d });
 ```
 
-A bundler emits only the build a page imports. With `runtimeUrl`, the `/2d` `Player` loads `worker-2d.js` and `lumen_wasm_2d_bg.wasm` from that directory, and `runtimeFileUrl(runtimeUrl, name)` from `@lumiscia/lumen-preview` gives a file's URL there for pages that call `mountPreview` themselves.
+A bundler emits only the build a page imports. With `runtimeUrl`, the `/2d` `Player` loads `worker-2d.js` and `lumen_wasm_2d_bg.wasm` from that directory, and pages that call `mountPreview` themselves pass `runtime: runtime2d` with the same `runtimeUrl`.
