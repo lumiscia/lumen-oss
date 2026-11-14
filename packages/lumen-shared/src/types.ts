@@ -12,7 +12,7 @@ import type {
   NodeOutputKind,
   NodePortKind,
   NodeVariadicInputPortName,
-  TemplateRenderSettings,
+  RenderSettings,
   TextContent,
   TextSpan,
   Vec2,
@@ -183,7 +183,7 @@ export interface ConnectOptions<
   readonly toPort: TPort;
 }
 
-export type Size = TemplateRenderSettings;
+export type Size = RenderSettings;
 
 export type RenderSettingsInput = Partial<LumenComposition["render_settings"]>;
 
