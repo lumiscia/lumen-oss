@@ -778,7 +778,11 @@ impl Collected {
                 let params = text.params.eval(&ctx)?;
                 let world = parent * placement(&params.placement).matrix();
                 let surface = surface::<super::Text3d>(node_id, &params.material)?;
-                if let Some(text) = super::text_mesh::text_mesh(cx, node_id, &params)? {
+                let text = super::text_mesh::text_mesh(cx, node_id, &params).map_err(|error| {
+                    error
+                        .media_used_as(&[AssetKind::Font], || cx.node_param(node_id, "font_family"))
+                })?;
+                if let Some(text) = text {
                     let local = text.bounds;
                     self.push(
                         Object {

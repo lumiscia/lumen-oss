@@ -540,24 +540,29 @@ impl FrameGraph {
             st: &mut self.state,
             output_format,
         };
-        let mut pending = vec![(SceneId::Root, composition.graph(), composition.output())];
+        let mut pending = vec![(
+            SceneId::Root,
+            None,
+            composition.graph(),
+            composition.output(),
+        )];
         let mut seen = HashSet::default();
-        while let Some((scene, graph, id)) = pending.pop() {
+        while let Some((scene, template, graph, id)) = pending.pop() {
             if !seen.insert((scene, id)) {
                 continue;
             }
             let Some(node) = graph.nodes.get(&id) else {
                 continue;
             };
-            node.programs(&mut programs)?;
+            node.programs(&mut programs)
+                .map_err(|error| in_scene(error, template))?;
             match node {
                 NodeKind::Clip(clip) if clip.template_name().is_some() => {
-                    let template = clip
-                        .template_name()
-                        .and_then(|name| composition.template(name));
-                    if let Some(template) = template {
+                    let name = clip.template_name();
+                    if let Some(template) = name.and_then(|name| composition.template(name)) {
                         pending.push((
                             template.id,
+                            name,
                             &template.template.scene.graph,
                             template.output,
                         ));
@@ -571,13 +576,13 @@ impl FrameGraph {
                             .unwrap_or_default(),
                         Deferred::Expr(_) => &switch.layers,
                     };
-                    pending.extend(layers.iter().map(|&layer| (scene, graph, layer)));
+                    pending.extend(layers.iter().map(|&layer| (scene, template, graph, layer)));
                 }
                 _ => pending.extend(
                     node.input_ports()
                         .into_iter()
                         .flatten()
-                        .map(|input| (scene, graph, input)),
+                        .map(|input| (scene, template, graph, input)),
                 ),
             }
         }
@@ -1183,17 +1188,27 @@ pub(crate) fn ensure_texture_fits(
 }
 
 /// Records `node`, or fails when the textures it acquires itself are larger than the device
-/// allows. The textures its inputs acquire are theirs to check.
+/// allows. The textures its inputs acquire are theirs to check. A failure names the template
+/// `node` is in.
 fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
     let outer = cx.rec.replace_largest_acquired_texture(Size::new(0, 0));
     let raster = node
         .record(cx)
         .map_err(|error| locate_media_failure(node, &cx.scope, error));
     let largest = cx.rec.replace_largest_acquired_texture(outer);
-    let raster = raster?;
-    let max = cx.rec.device().limits().max_texture_dimension_2d;
-    ensure_texture_fits(node, largest, cx.canvas_size(), max)?;
-    Ok(raster)
+    let raster = raster.and_then(|raster| {
+        let max = cx.rec.device().limits().max_texture_dimension_2d;
+        ensure_texture_fits(node, largest, cx.canvas_size(), max).map(|()| raster)
+    });
+    raster.map_err(|error| in_scene(error, cx.scope.template_name()))
+}
+
+/// `error` placed in `template`, or left in the root for `None`.
+fn in_scene(error: LumenError, template: Option<&str>) -> LumenError {
+    match template {
+        Some(name) => error.in_template(name),
+        None => error,
+    }
 }
 
 /// Says where `node` names the source `error` failed on, when `error` is a media failure that
@@ -1213,10 +1228,8 @@ pub(crate) fn locate_media_failure(
         }
         params.push((media.param, media.kinds));
     });
-    if named.is_none()
-        && let NodeKind::Text(text) = node
-    {
-        named = text
+    if named.is_none() {
+        named = node
             .literal_font_families()
             .into_iter()
             .find(|(_, family)| *family == failure.source)
