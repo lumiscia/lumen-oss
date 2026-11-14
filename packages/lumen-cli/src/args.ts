@@ -1,13 +1,19 @@
+import type { flags } from "./flags.js";
 import type { CheckOptions, FrameRange, PreviewOptions, RenderOptions } from "./options.js";
 
-type Flags = readonly (readonly [flag: string, value: string | number | boolean | undefined])[];
+type Subcommand = keyof typeof flags;
+
+type Flags<Command extends Subcommand> = readonly (readonly [
+  flag: `--${(typeof flags)[Command][number]}`,
+  value: string | number | boolean | undefined,
+])[];
 
 /**
- * `--flag=value` for each flag with a value, so an unset option adds nothing. One argument each,
- * so a value that starts with `-` is not read as a flag.
+ * `--flag=value` for each flag of `Command` with a value, so an unset option adds nothing. One
+ * argument each, so a value that starts with `-` is not read as a flag.
  */
-function flagArgs(flags: Flags): string[] {
-  return flags.flatMap(([flag, value]) => (value === undefined ? [] : [`${flag}=${value}`]));
+function flagArgs<Command extends Subcommand>(pairs: Flags<Command>): string[] {
+  return pairs.flatMap(([flag, value]) => (value === undefined ? [] : [`${flag}=${value}`]));
 }
 
 function framesArg(frames: FrameRange | undefined): string | undefined {
@@ -21,7 +27,7 @@ export function renderArgs(options: RenderOptions): string[] {
   return [
     "render",
     "-",
-    ...flagArgs([
+    ...flagArgs<"render">([
       ["--output", options.output],
       ["--frames", framesArg(options.frames)],
       ["--frame", options.frame],
@@ -47,8 +53,8 @@ export function checkArgs(options: CheckOptions): string[] {
   return [
     "check",
     "-",
-    "--format=json",
-    ...flagArgs([
+    ...flagArgs<"check">([
+      ["--format", "json"],
       ["--media-root", options.mediaRoot],
       ["--font-dir", options.fontDir],
     ]),
@@ -59,7 +65,7 @@ export function previewArgs(options: PreviewOptions): string[] {
   return [
     "preview",
     "-",
-    ...flagArgs([
+    ...flagArgs<"preview">([
       ["--output", options.output],
       ["--count", options.count],
       ["--columns", options.columns],
