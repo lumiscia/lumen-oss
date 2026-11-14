@@ -1,6 +1,9 @@
+use bytemuck::{Pod, Zeroable};
+
 use foldhash::HashMap;
 use lumen_gpu::{Recorder, TexRef, wgpu};
 
+use super::inline_lut;
 use crate::error::{LumenError, MediaError, MediaFailure};
 use crate::media::{AssetKind, LutResolver, MediaIdentity, resolve_as};
 use crate::node::processing::cube_lut::{CubeError, CubeLut};
@@ -9,8 +12,8 @@ use crate::node::{
     processing::RasterSampling,
 };
 
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::{evictions, params};
+use crate::gpu::evictions;
+use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -108,19 +111,35 @@ impl ColorGrade {
             Deferred::Expr(_) => None,
         };
         if let Some(lut) = lut
-            && let Err(details) = params::lut_stops(lut)
+            && let Err(details) = inline_lut::lut_stops(lut)
         {
             errors.push(("lut", details));
         }
         if let Deferred::Value(source) = &params.lut_source {
-            if params::looks_like_inline_lut(source) {
-                errors.push(("lut_source", params::INLINE_LUT_IN_LUT_SOURCE.to_string()));
-            } else if !source.is_empty() && lut.is_some_and(|lut| !params::is_identity_lut(lut)) {
+            if inline_lut::looks_like_inline_lut(source) {
+                errors.push((
+                    "lut_source",
+                    inline_lut::INLINE_LUT_IN_LUT_SOURCE.to_string(),
+                ));
+            } else if !source.is_empty() && lut.is_some_and(|lut| !inline_lut::is_identity_lut(lut))
+            {
                 errors.push(("lut", LUT_AND_LUT_SOURCE.to_string()));
             }
         }
         errors
     }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "ColorGradeParams", source = SHADER)]
+struct ColorGradeUniforms {
+    strength: f32,
+    interpolation: u32,
+    _pad: [u32; 2],
+    /// The `.cube` table's `DOMAIN_MIN` and `DOMAIN_MAX`, padded to four floats.
+    domain_min: [f32; 4],
+    domain_max: [f32; 4],
 }
 
 impl crate::gpu::frame_graph::RecordNode for ColorGrade {
@@ -152,7 +171,7 @@ impl ColorGrade {
             expr: &cx.expr(),
         })?;
         let size = source.domain.storage_size;
-        let mut gpu_params = params::ColorGradeParams {
+        let mut gpu_params = ColorGradeUniforms {
             strength: evaluated.strength as f32,
             interpolation: evaluated.interpolation as u32,
             _pad: [0; 2],
@@ -161,7 +180,7 @@ impl ColorGrade {
         };
 
         if evaluated.lut_source.is_empty() {
-            let lut = params::ColorGradeLut::parse(self.id, &evaluated.lut)?;
+            let lut = inline_lut::ColorGradeLut::parse(self.id, &evaluated.lut)?;
             let tex = cx.storage_target(size);
             let program = cx.program(&COLOR_GRADE)?;
             let uniform = cx.rec.uniform(&gpu_params);
@@ -174,16 +193,19 @@ impl ColorGrade {
                     (2, storage),
                     (3, lumen_gpu::Res::Tex(tex)),
                 ],
-                params::dispatch_for(size),
+                dispatch_for(size),
             );
             return Ok(crate::gpu::frame_graph::Raster { tex, ..source });
         }
 
-        if params::looks_like_inline_lut(&evaluated.lut_source) {
-            return Err(params::lut_error(self.id, params::INLINE_LUT_IN_LUT_SOURCE));
+        if inline_lut::looks_like_inline_lut(&evaluated.lut_source) {
+            return Err(inline_lut::lut_error(
+                self.id,
+                inline_lut::INLINE_LUT_IN_LUT_SOURCE,
+            ));
         }
-        if !params::is_identity_lut(&evaluated.lut) {
-            return Err(params::lut_error(self.id, LUT_AND_LUT_SOURCE));
+        if !inline_lut::is_identity_lut(&evaluated.lut) {
+            return Err(inline_lut::lut_error(self.id, LUT_AND_LUT_SOURCE));
         }
         let loaded = self.load_cube(cx, &evaluated.lut_source)?;
         gpu_params.domain_min = [
@@ -228,7 +250,7 @@ impl ColorGrade {
                 (4, lumen_gpu::Res::Tex(loaded.tex)),
                 (5, lumen_gpu::Res::Sampler(sampler)),
             ],
-            params::dispatch_for(size),
+            dispatch_for(size),
         );
         Ok(crate::gpu::frame_graph::Raster { tex, ..source })
     }

@@ -1,8 +1,9 @@
+use bytemuck::{Pod, Zeroable};
+
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
 use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -45,6 +46,15 @@ pub struct Exposure {
     pub source: Option<NodeId>,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "ExposureParams", source = SHADER)]
+struct ExposureUniforms {
+    exposure: f32,
+    contrast: f32,
+    offset: f32,
+}
+
 impl crate::gpu::frame_graph::RecordNode for Exposure {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.compute(&EXPOSURE)
@@ -59,7 +69,7 @@ impl crate::gpu::frame_graph::RecordNode for Exposure {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let gpu_params = params::ExposureParams {
+        let gpu_params = ExposureUniforms {
             exposure: params.exposure as f32,
             contrast: params.contrast as f32,
             offset: params.offset as f32,

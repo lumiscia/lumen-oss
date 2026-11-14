@@ -1,12 +1,11 @@
 use super::drawable::{DrawableMotion, DrawablePlacement, DrawableStyle, DrawableTransform};
 use super::renderer::{ShapeUniforms, domain_origin, style_flags};
 use super::repeat::{GpuCopies, Repeat, RepeatedTransform};
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
+use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 use crate::node::motion::Shutter;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
-const SHAPE_SHADER: &str = concat!(
+pub(super) const SHAPE_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
     include_str!("../../gpu/shaders/color.wgsl"),
     include_str!("paint/paint.wgsl"),
@@ -256,14 +255,14 @@ fn record_shape_source(
                 (3, taps),
                 (4, tiles),
             ],
-            params::dispatch_for(size),
+            dispatch_for(size),
         );
     } else {
         let program = cx.program(&SHAPE)?;
         cx.dispatch(
             program,
             &[(0, uniform), (1, lumen_gpu::Res::Tex(tex))],
-            params::dispatch_for(size),
+            dispatch_for(size),
         );
     }
     Ok(crate::gpu::frame_graph::Raster {

@@ -1,7 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
+use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, processing::RasterSampling,
 };
@@ -99,7 +98,8 @@ pub struct DisplacementMap {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "DisplacementParams", source = SHADER)]
 struct GpuDisplacementParams {
     amount: [f32; 4],
     modes: [u32; 4],
@@ -202,7 +202,7 @@ impl crate::gpu::frame_graph::RecordNode for DisplacementMap {
                 (2, uniform),
                 (3, lumen_gpu::Res::Tex(tex)),
             ],
-            params::dispatch_for(size),
+            dispatch_for(size),
         );
         Ok(crate::gpu::frame_graph::Raster {
             tex,

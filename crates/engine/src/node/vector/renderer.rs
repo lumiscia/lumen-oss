@@ -30,7 +30,8 @@ pub(crate) fn domain_origin(domain: lumen_gpu::TextureDomain) -> [i32; 2] {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "ShapeUniforms", source = super::shape::SHAPE_SHADER)]
 pub(crate) struct ShapeUniforms {
     pub(crate) fill_paint: super::paint::GpuPaint,
     pub(crate) stroke_paint: super::paint::GpuPaint,
@@ -50,7 +51,8 @@ pub(crate) struct ShapeUniforms {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "PathUniforms", source = super::path::PATH_SHADER)]
 pub(crate) struct PathUniforms {
     pub(crate) fill_paint: super::paint::GpuPaint,
     pub(crate) stroke_paint: super::paint::GpuPaint,
@@ -90,7 +92,8 @@ pub(crate) struct PathUniforms {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "PathPoint", source = super::path::PATH_SHADER)]
 pub(crate) struct PathPoint {
     pub(crate) position: [f32; 2],
     pub(crate) contour_start: u32,

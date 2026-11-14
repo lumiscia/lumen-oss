@@ -33,7 +33,8 @@ const TEXT_LAYER_SCALE: u32 = 2;
 const MAX_TEXTURE_DIMENSION: u32 = 8192;
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "TextStyle", source = shared_text_shader())]
 pub(crate) struct TextStyleUniforms {
     pub(crate) transform: GpuDrawableTransform,
     pub(crate) motion: GpuDrawableMotion,
@@ -42,7 +43,8 @@ pub(crate) struct TextStyleUniforms {
 /// A paint of a text, and the box `[x, y, width, height]` its relative coordinates map to
 /// `0..1`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "TextPaint", source = shared_text_shader())]
 pub(crate) struct GpuTextPaint {
     pub(crate) paint: GpuPaint,
     pub(crate) bounds: [f32; 4],
@@ -148,7 +150,7 @@ const RECORD_SMEAR_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::staged(6, FRAG, lumen_gpu::LayoutKind::Storage),
 ];
 
-fn shared_text_shader() -> &'static str {
+pub(crate) fn shared_text_shader() -> &'static str {
     static SHADER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     SHADER.get_or_init(text_shader)
 }

@@ -11,6 +11,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use bytemuck::{Pod, Zeroable};
 use foldhash::HashSet;
 use lumen_gpu::{
     Dispatch, LayoutEntry, LayoutKind, ProgramRef, Recorder, Res, SamplerRef, Size, TexRef,
@@ -39,12 +40,13 @@ use super::media::{GpuMediaFrameImporter, GpuMediaImports};
 use super::{
     BoundFrame,
     color::WORKING_COLOR_FORMAT as WORKING,
-    params::{CropParams, copyable_texture_desc, dispatch_for},
     renderer::{MediaTextureCache, OutputEncoding, fit_frame_to_rgba8},
 };
 use state::{RecordState, Slot, VideoUpload};
 
 mod ingest;
+#[cfg(test)]
+pub(crate) use ingest::YUV_TO_RGBA_SHADER;
 mod state;
 
 /// Copies the visible part of a clip's raster into a texture of the parent canvas.
@@ -78,6 +80,26 @@ pub(crate) const SPATIAL_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::compute(1, LayoutKind::Uniform),
     LayoutEntry::compute(2, LayoutKind::StorageTexture(WORKING)),
 ];
+pub(crate) fn dispatch_for(size: lumen_gpu::Size) -> lumen_gpu::Dispatch {
+    lumen_gpu::Dispatch {
+        x: size.width.div_ceil(8),
+        y: size.height.div_ceil(8),
+        z: 1,
+    }
+}
+
+fn copyable_texture_desc(size: lumen_gpu::Size) -> lumen_gpu::TextureDesc {
+    lumen_gpu::TextureDesc {
+        domain: lumen_gpu::TextureDomain::full_frame(size),
+        format: WORKING,
+        usage: lumen_gpu::wgpu::TextureUsages::COPY_DST
+            | lumen_gpu::wgpu::TextureUsages::COPY_SRC
+            | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
+            | lumen_gpu::wgpu::TextureUsages::STORAGE_BINDING
+            | lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT,
+    }
+}
+
 const CLIP_CROP: ComputeProgram = ComputeProgram::spatial("clip-crop", CLIP_CROP_SHADER);
 
 /// A compute program a node records with, named once and used by both `RecordNode` methods.
@@ -109,6 +131,14 @@ pub(crate) struct RenderProgram {
     pub(crate) vertex: &'static str,
     pub(crate) fragment: &'static str,
     pub(crate) layout: &'static [LayoutEntry],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "SourceBounds", source = crate::node::processing::resize::SHADER)]
+pub(crate) struct CropParams {
+    pub(crate) origin: [i32; 2],
+    pub(crate) size: [u32; 2],
 }
 
 /// A recorded node's output.

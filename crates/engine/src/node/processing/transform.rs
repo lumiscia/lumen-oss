@@ -1,3 +1,5 @@
+use bytemuck::{Pod, Zeroable};
+
 use crate::error::RenderError;
 use crate::node::motion::{self, Lerp, MAX_BOUNDED_MAGNITUDE, ROUNDING_ERROR_FACTOR, Shutter};
 use crate::node::{
@@ -9,7 +11,6 @@ use crate::node::{
 };
 
 use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -304,8 +305,8 @@ impl TransformKey {
         }
     }
 
-    fn to_gpu(self) -> params::TransformTap {
-        params::TransformTap {
+    fn to_gpu(self) -> TransformTap {
+        TransformTap {
             scale: [self.scale.0 as f32, self.scale.1 as f32],
             translate: [self.translate.0 as f32, self.translate.1 as f32],
             pivot: [self.pivot.0 as f32, self.pivot.1 as f32],
@@ -327,6 +328,43 @@ fn resolve_pivot(custom_pivot: bool, pivot: [f32; 2], source_size: lumen_gpu::Si
             source_size.height as f32 * 0.5,
         ]
     }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "TransformParams", source = SHADER)]
+struct TransformUniforms {
+    scale: [f32; 2],
+    translate: [f32; 2],
+    pivot: [f32; 2],
+    rotate_radians: f32,
+    sampling: u32,
+    /// Taps to average over the shutter, or 0 to sample with the fields above alone.
+    tap_count: u32,
+    /// The mip level that a filtered minification reads.
+    lod: f32,
+    /// Canvas pixel of the output's first texel.
+    output_origin: [i32; 2],
+    /// Source pixel of the source's first texel.
+    source_origin: [i32; 2],
+    /// Texels of the source a pixel covers along its axes when the source is minified, else 0.
+    footprint: [f32; 2],
+    taps: [TransformTap; crate::node::motion::MAX_MOTION_TAPS],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "TransformTap", source = SHADER)]
+struct TransformTap {
+    scale: [f32; 2],
+    translate: [f32; 2],
+    pivot: [f32; 2],
+    rotate_radians: f32,
+    /// The mip level that a filtered minification reads.
+    lod: f32,
+    /// Texels of the source a pixel covers along its axes when the source is minified, else 0.
+    footprint: [f32; 2],
+    _pad: [u32; 2],
 }
 
 impl crate::gpu::frame_graph::RecordNode for Transform {
@@ -368,7 +406,7 @@ impl crate::gpu::frame_graph::RecordNode for Transform {
             [evaluated.pivot_x as f32, evaluated.pivot_y as f32],
             motion.source_size,
         );
-        let mut params = params::TransformParams {
+        let mut params = TransformUniforms {
             scale: [evaluated.scale_x as f32, evaluated.scale_y as f32],
             translate: [evaluated.translate_x as f32, evaluated.translate_y as f32],
             pivot,

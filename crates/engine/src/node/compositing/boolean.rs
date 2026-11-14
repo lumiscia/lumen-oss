@@ -1,7 +1,8 @@
+use bytemuck::{Pod, Zeroable};
+
 use crate::node::{DelegateEvaluable, NodeId, NodeParams};
 
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
+use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -70,6 +71,13 @@ const BOOLEAN: ComputeProgram = ComputeProgram {
     layout: RECORD_LAYOUT,
 };
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "BooleanParams", source = SHADER)]
+struct BooleanUniforms {
+    values: [f32; 2],
+}
+
 impl crate::gpu::frame_graph::RecordNode for Boolean {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.compute(&BOOLEAN)
@@ -85,7 +93,7 @@ impl crate::gpu::frame_graph::RecordNode for Boolean {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let gpu_params = params::BooleanParams {
+        let gpu_params = BooleanUniforms {
             values: [params.operation as u32 as f32, params.threshold as f32],
         };
         let size = a.domain.storage_size;
@@ -100,7 +108,7 @@ impl crate::gpu::frame_graph::RecordNode for Boolean {
                 (2, uniform),
                 (3, lumen_gpu::Res::Tex(tex)),
             ],
-            params::dispatch_for(size),
+            dispatch_for(size),
         );
         Ok(crate::gpu::frame_graph::Raster {
             tex,

@@ -489,7 +489,8 @@ fn bin_spans(
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "RepeatCopy", source = crate::node::source::text_record::shared_text_shader())]
 pub(crate) struct GpuRepeatCopy {
     /// The copy's transform at the frame, drawn when it has no taps.
     pub(crate) transform: GpuDrawableTransform,

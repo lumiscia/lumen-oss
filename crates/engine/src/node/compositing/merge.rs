@@ -1,10 +1,11 @@
+use bytemuck::{Pod, Zeroable};
+
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, compositing::BlendMode,
     processing::gaussian,
 };
 
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
+use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -101,6 +102,19 @@ const MERGE: ComputeProgram = ComputeProgram {
     layout: RECORD_LAYOUT,
 };
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct MergeUniforms {
+    opacity: f32,
+    blend_mode: u32,
+    mask_source: u32,
+    mask_mode: u32,
+    invert: u32,
+    _pad0: u32,
+    /// Canvas pixels of the first texels of the output, base, overlay and raw mask.
+    origins: [[i32; 2]; 4],
+}
+
 impl crate::gpu::frame_graph::RecordNode for Merge {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         gaussian::programs(programs, false)?;
@@ -154,7 +168,7 @@ impl crate::gpu::frame_graph::RecordNode for Merge {
             }
             None => None,
         };
-        let params = params::MergeParams {
+        let params = MergeUniforms {
             opacity: evaluated.opacity as f32,
             blend_mode: evaluated.blend_mode as u32,
             mask_source: match feather {
@@ -188,7 +202,7 @@ impl crate::gpu::frame_graph::RecordNode for Merge {
                 (3, uniform),
                 (4, lumen_gpu::Res::Tex(tex)),
             ],
-            params::dispatch_for(domain.storage_size),
+            dispatch_for(domain.storage_size),
         );
         Ok(crate::gpu::frame_graph::Raster {
             tex,

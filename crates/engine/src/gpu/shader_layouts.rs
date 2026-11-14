@@ -1,197 +1,97 @@
 //! Compares the structs and constants that Rust and the shaders each declare, which the compiler
-//! can't: a mismatch only shows up as wrong pixels.
+//! can't: a mismatch only shows up as wrong pixels. Structs deriving `ShaderLayout` carry their own
+//! test, which calls `assert_layout`.
 
 use std::mem::{offset_of, size_of};
 
 use lumen_text::{GpuGlyphInstance, GpuTextGlobals};
 use naga::{ArraySize, Expression, Literal, Module, TypeInner};
 
-use crate::node::{
-    motion::MAX_MOTION_TAPS,
-    source::text_record::{GpuTextPaint, TextStyleUniforms},
-    vector::{
-        drawable::{DRAWABLE_SHADER, GpuDrawableMotion, GpuDrawableTransform},
-        paint::GpuPaint,
-        path::PATH_SHADER,
-        renderer::{PathPoint, PathUniforms},
-        repeat::GpuRepeatCopy,
-    },
-};
+use crate::node::{motion::MAX_MOTION_TAPS, source::text_record::shared_text_shader};
 
-/// A WGSL struct's name, its Rust size, and the Rust offsets of the WGSL members it names.
-type Layout = (&'static str, usize, Vec<(&'static str, usize)>);
-
-macro_rules! layout {
-    ($wgsl:literal, $rust:ty, $($member:ident),+ $(,)?) => {
-        (
-            $wgsl,
-            size_of::<$rust>(),
-            vec![$((stringify!($member), offset_of!($rust, $member))),+],
-        )
-    };
+fn module(source: &str) -> Module {
+    naga::front::wgsl::parse_str(source).expect("the shader should parse")
 }
 
-fn text_module() -> Module {
-    let source = [
-        include_str!("shaders/alpha.wgsl"),
-        include_str!("shaders/color.wgsl"),
-        include_str!("../node/vector/paint/paint.wgsl"),
-        DRAWABLE_SHADER,
-        lumen_text::TEXT_SHADER,
-    ]
-    .concat();
-    naga::front::wgsl::parse_str(&source).expect("the text shader should parse")
-}
-
-fn path_module() -> Module {
-    naga::front::wgsl::parse_str(PATH_SHADER).expect("the path shader should parse")
-}
-
-fn path_layouts() -> Vec<Layout> {
-    vec![
-        layout!(
-            "PathUniforms",
-            PathUniforms,
-            fill_paint,
-            stroke_paint,
-            position,
-            bounds_min,
-            bounds_size,
-            stroke_width,
-            flags,
-            fill_offset,
-            trim_start,
-            trim_end,
-            fill_feather,
-            transform,
-            screen_bounds,
-            band_origin,
-            band_scale,
-            band_count,
-            reach,
-            origin,
-            dash_count,
-            dash_period,
-            dash_start_phase,
-            dash,
-            motion,
-        ),
-        layout!(
-            "PathPoint",
-            PathPoint,
-            position,
-            contour_start,
-            flags,
-            offset,
-            dash_phase,
-        ),
-        layout!(
-            "RepeatCopy",
-            GpuRepeatCopy,
-            transform,
-            bounds,
-            first_tap,
-            tap_count,
-        ),
-    ]
-}
-
-fn layouts() -> Vec<Layout> {
-    vec![
-        layout!(
-            "TextGlobals",
-            GpuTextGlobals,
-            target_size,
-            px_range,
-            glyph_count
-        ),
-        layout!(
-            "GlyphInstance",
-            GpuGlyphInstance,
-            rect,
-            uv_rect,
-            opacity,
-            partner,
-            mode,
-            flags,
-            offset,
-            linear,
-        ),
-        layout!("TextStyle", TextStyleUniforms, transform, motion),
-        layout!("TextPaint", GpuTextPaint, paint, bounds),
-        layout!(
-            "Paint",
-            GpuPaint,
-            colors,
-            offsets,
-            start,
-            end,
-            center,
-            radius,
-            focal_offset,
-            angle,
-            kind,
-            units,
-            spread,
-            interpolation,
-            stop_count,
-            paint_supersample,
-            stroke,
-        ),
-        layout!(
-            "DrawableTransform",
-            GpuDrawableTransform,
-            linear,
-            inverse_linear,
-            offset,
-            inverse_offset,
-            opacity,
-            flags,
-        ),
-        layout!("DrawableMotion", GpuDrawableMotion, tap_count, taps),
-    ]
-}
-
+/// Whether the shader's `member` is padding, which Rust names `_…` and may leave out of its fields.
 fn is_padding(member: &str) -> bool {
     member.starts_with('_') || member == "padding"
 }
 
-#[test]
-fn shader_structs_match_their_rust_layouts() {
-    check_layouts(&text_module(), layouts());
-    check_layouts(&path_module(), path_layouts());
-}
-
-fn check_layouts(module: &Module, layouts: Vec<Layout>) {
-    for (name, size, offsets) in layouts {
-        let (members, span) = module
-            .types
-            .iter()
-            .find_map(|(_, ty)| match &ty.inner {
-                TypeInner::Struct { members, span } if ty.name.as_deref() == Some(name) => {
-                    Some((members, *span))
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the shader has no struct `{name}`"));
-        assert_eq!(span as usize, size, "size of `{name}`");
-        for member in members {
-            let member_name = member.name.as_deref().expect("struct members are named");
-            if is_padding(member_name) {
-                continue;
+/// Asserts that the struct `wgsl` in `source` is `size` bytes, that each of the Rust `fields`,
+/// given as a name and an offset, is a member at that offset, and that every member that isn't
+/// padding is one of them.
+pub(crate) fn assert_layout<S: AsRef<str> + ?Sized>(
+    source: &S,
+    wgsl: &str,
+    size: usize,
+    fields: &[(&str, usize)],
+) {
+    let module = module(source.as_ref());
+    let (members, span) = module
+        .types
+        .iter()
+        .find_map(|(_, ty)| match &ty.inner {
+            TypeInner::Struct { members, span } if ty.name.as_deref() == Some(wgsl) => {
+                Some((members, *span))
             }
-            let (_, offset) = offsets
-                .iter()
-                .find(|(field, _)| *field == member_name)
-                .unwrap_or_else(|| panic!("`{name}.{member_name}` has no Rust offset to check"));
-            assert_eq!(member.offset as usize, *offset, "`{name}.{member_name}`");
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the shader has no struct `{wgsl}`"));
+    assert_eq!(span as usize, size, "size of `{wgsl}`");
+    for member in members {
+        let name = member.name.as_deref().expect("struct members are named");
+        if is_padding(name) {
+            continue;
         }
+        let (_, offset) = fields
+            .iter()
+            .find(|(field, _)| *field == name)
+            .unwrap_or_else(|| panic!("`{wgsl}.{name}` has no Rust field"));
+        assert_eq!(member.offset as usize, *offset, "offset of `{wgsl}.{name}`");
+    }
+    for (field, _) in fields {
+        assert!(
+            members
+                .iter()
+                .any(|member| member.name.as_deref() == Some(field)),
+            "`{wgsl}` has no member `{field}`"
+        );
     }
 }
 
 #[test]
+fn the_text_crates_structs_match_the_shader() {
+    assert_layout(
+        shared_text_shader(),
+        "TextGlobals",
+        size_of::<GpuTextGlobals>(),
+        &[
+            ("target_size", offset_of!(GpuTextGlobals, target_size)),
+            ("px_range", offset_of!(GpuTextGlobals, px_range)),
+            ("glyph_count", offset_of!(GpuTextGlobals, glyph_count)),
+        ],
+    );
+    assert_layout(
+        shared_text_shader(),
+        "GlyphInstance",
+        size_of::<GpuGlyphInstance>(),
+        &[
+            ("rect", offset_of!(GpuGlyphInstance, rect)),
+            ("uv_rect", offset_of!(GpuGlyphInstance, uv_rect)),
+            ("opacity", offset_of!(GpuGlyphInstance, opacity)),
+            ("partner", offset_of!(GpuGlyphInstance, partner)),
+            ("mode", offset_of!(GpuGlyphInstance, mode)),
+            ("flags", offset_of!(GpuGlyphInstance, flags)),
+            ("offset", offset_of!(GpuGlyphInstance, offset)),
+            ("linear", offset_of!(GpuGlyphInstance, linear)),
+        ],
+    );
+}
+
+#[test]
 fn drawable_motion_holds_the_rust_tap_count() {
-    let module = text_module();
+    let module = module(shared_text_shader());
     let taps = module
         .types
         .iter()
@@ -228,7 +128,7 @@ fn literal(module: &Module, name: &str) -> Literal {
 
 #[test]
 fn shader_constants_match_rust() {
-    let module = text_module();
+    let module = module(shared_text_shader());
     let constants = [
         ("GLYPH_TRANSFORMED", lumen_text::GLYPH_TRANSFORMED),
         ("GLYPH_CLUSTER_FOLLOWER", lumen_text::GLYPH_CLUSTER_FOLLOWER),
@@ -259,102 +159,26 @@ fn shader_constants_match_rust() {
 
 #[cfg(feature = "3d")]
 #[test]
-fn scene_shader_matches_its_rust_layouts_and_constants() {
+fn scene_shader_matches_its_rust_constants_and_the_3d_crates_layout() {
     use crate::node::scene::render::{
         FLAG_BASE_COLOR_MAP, FLAG_BLEND, FLAG_EMISSIVE_MAP, FLAG_FLAT_NORMALS, FLAG_MAP_UVS,
         FLAG_MASK, FLAG_METALLIC_ROUGHNESS_MAP, FLAG_MIRRORED, FLAG_NORMAL_MAP, FLAG_OCCLUSION_MAP,
         FLAG_PART, FLAG_RASTER, FLAG_RECEIVE_SHADOWS, FLAG_SHADOW_CATCHER, FLAG_SKINNED,
-        FLAG_UNLIT, FLAG_VERTEX_COLORS, GpuEnvironment, GpuGlobals, GpuLight, GpuMapUv, GpuObject,
-        GpuRun, GpuShadowView, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT, MORPH_DELTA_WORDS,
-        SHADER,
+        FLAG_UNLIT, FLAG_VERTEX_COLORS, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT,
+        MORPH_DELTA_WORDS, SHADER,
     };
 
-    let module = naga::front::wgsl::parse_str(SHADER).expect("the scene shader should parse");
-    check_layouts(
-        &module,
-        vec![
-            layout!(
-                "Globals",
-                GpuGlobals,
-                view_proj,
-                camera_position,
-                light_count,
-                camera_back,
-                orthographic,
-                ambient,
-                environment,
-                fog_color,
-                fog_density,
-                tone_mapping,
-                exposure,
-                supersample,
-                camera_right,
-                depth_near,
-                camera_up,
-                depth_far,
-            ),
-            layout!(
-                "Object",
-                GpuObject,
-                model,
-                normal,
-                base_color,
-                emissive,
-                metallic,
-                roughness,
-                flags,
-                first_vertex,
-                first_index,
-                first_joint,
-                alpha_cutoff,
-                normal_scale,
-                occlusion_strength,
-                extras,
-                first_delta,
-                morph_vertex,
-                morph_targets,
-                first_weight,
-                first_map_uv,
-                part,
-            ),
-            layout!("Vertex", lumen_3d::Vertex, position, normal, uv),
-            layout!("MapUv", GpuMapUv, first, second),
-            layout!(
-                "Light",
-                GpuLight,
-                position,
-                kind,
-                direction,
-                range,
-                radiance,
-                cos_outer,
-                cos_inner,
-                shadow,
-                shadow_softness,
-                shadow_distance,
-            ),
-            layout!(
-                "ShadowView",
-                GpuShadowView,
-                view_proj,
-                depth,
-                tile,
-                texel,
-                perspective,
-            ),
-            layout!("Run", GpuRun, first, count, base),
-            layout!(
-                "Environment",
-                GpuEnvironment,
-                irradiance,
-                clip_to_world,
-                turn,
-                roughest,
-                background_blur,
-                map,
-            ),
+    assert_layout(
+        SHADER,
+        "Vertex",
+        size_of::<lumen_3d::Vertex>(),
+        &[
+            ("position", offset_of!(lumen_3d::Vertex, position)),
+            ("normal", offset_of!(lumen_3d::Vertex, normal)),
+            ("uv", offset_of!(lumen_3d::Vertex, uv)),
         ],
     );
+    let module = module(SHADER);
     for (name, value) in [
         ("FLAG_UNLIT", FLAG_UNLIT),
         ("FLAG_BLEND", FLAG_BLEND),

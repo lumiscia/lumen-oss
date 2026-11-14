@@ -1,5 +1,6 @@
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
+use bytemuck::{Pod, Zeroable};
+
+use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 use crate::node::motion::MAX_BOUNDED_MAGNITUDE;
 
 /// `radius` is the half-width of the discrete box blur it replaces. A box of
@@ -191,6 +192,20 @@ fn record_shader(shifted: bool) -> &'static str {
         .get_or_init(|| format!("{}{SHADER_BODY}", Padding::new(shifted).shader_header()))
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "GaussianParams", source = record_shader(false))]
+struct BlurUniforms {
+    /// Gaussian sigma, transparent-edge flag.
+    values: [f32; 4],
+    /// Whole-pixel offset applied to the source in `xy`.
+    offset: [f32; 4],
+    /// Canvas pixel of the output's first texel in `xy`.
+    region: [i32; 4],
+    /// Canvas pixel of the source's first texel in `xy`, and the source's display size in `zw`.
+    source: [i32; 4],
+}
+
 /// The program of the pass `entry`, over levels of the blur's working format.
 fn level_program(shifted: bool, entry: &'static str) -> ComputeProgram {
     ComputeProgram {
@@ -255,7 +270,7 @@ pub(crate) fn record_passes(
     let sigma = sigma_for_radius(settings.radius);
     let padding = Padding::new(shifted);
     let flag = |value: bool| if value { 1.0 } else { 0.0 };
-    let params = params::BlurParams {
+    let params = BlurUniforms {
         values: [sigma, flag(settings.transparent_edge), 0.0, 0.0],
         offset: [
             settings.offset[0].round() as f32,
@@ -294,7 +309,7 @@ pub(crate) fn record_passes(
                 (4, sampler),
                 (5, Res::Tex(target)),
             ],
-            params::dispatch_for(target_size),
+            dispatch_for(target_size),
         );
         Ok(())
     };
@@ -357,7 +372,7 @@ pub(crate) fn record_passes(
             (4, sampler),
             (6, Res::Tex(target)),
         ],
-        params::dispatch_for(size),
+        dispatch_for(size),
     );
     Ok(target)
 }

@@ -498,7 +498,8 @@ fn to_f32(matrix: [[f64; 2]; 2]) -> [[f32; 2]; 2] {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "DrawableTransform", source = crate::node::source::text_record::shared_text_shader())]
 pub(crate) struct GpuDrawableTransform {
     /// Columns of the map from untransformed to canvas pixels.
     pub(crate) linear: [[f32; 2]; 2],
@@ -579,7 +580,8 @@ impl GpuDrawableTransform {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "DrawableMotion", source = crate::node::source::text_record::shared_text_shader())]
 pub(crate) struct GpuDrawableMotion {
     /// Taps to average, or 0 to draw with the frame's transform alone.
     pub(crate) tap_count: u32,

@@ -1,3 +1,5 @@
+use bytemuck::{Pod, Zeroable};
+
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams,
     processing::{
@@ -8,8 +10,8 @@ use crate::node::{
 
 use lumen_gpu::Size;
 
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
+use super::crop::{pixel_extent, pixel_origin};
+use crate::gpu::frame_graph::{ComputeProgram, CropParams, dispatch_for};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("resize.wgsl"),
@@ -101,6 +103,21 @@ fn footprint(mode: ResizeMode, source: [u32; 2], output: [u32; 2]) -> [f32; 2] {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "ResizeParams", source = SHADER)]
+struct ResizeUniforms {
+    origin: [i32; 2],
+    size: [u32; 2],
+    mode: u32,
+    sampling: u32,
+    /// Texels of the source a pixel covers along its axes when the source is minified, else 0.
+    footprint: [f32; 2],
+    /// The mip level that a filtered minification reads.
+    lod: f32,
+    _pad: u32,
+}
+
 impl crate::gpu::frame_graph::RecordNode for Resize {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         crate::gpu::mips::programs(programs)?;
@@ -116,21 +133,21 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let mut params = params::ResizeParams {
+        let mut params = ResizeUniforms {
             origin: [
-                params::pixel_origin(self.id, "x", evaluated.x)?,
-                params::pixel_origin(self.id, "y", evaluated.y)?,
+                pixel_origin(self.id, "x", evaluated.x)?,
+                pixel_origin(self.id, "y", evaluated.y)?,
             ],
             size: [
-                params::pixel_extent(self.id, "width", evaluated.width, 1)?,
-                params::pixel_extent(self.id, "height", evaluated.height, 1)?,
+                pixel_extent(self.id, "width", evaluated.width, 1)?,
+                pixel_extent(self.id, "height", evaluated.height, 1)?,
             ],
             mode: evaluated.mode as u32,
             sampling: evaluated.sampling as u32,
             ..bytemuck::Zeroable::zeroed()
         };
         // Sources that don't publish bounds fill their whole storage texture.
-        let mut bounds = source.bounds.unwrap_or(params::CropParams {
+        let mut bounds = source.bounds.unwrap_or(CropParams {
             origin: [0, 0],
             size: [
                 source.domain.storage_size.width,
@@ -166,7 +183,7 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
                 (2, lumen_gpu::Res::Tex(tex)),
                 (3, bounds),
             ],
-            params::dispatch_for(size),
+            dispatch_for(size),
         );
         Ok(crate::gpu::frame_graph::Raster {
             tex,

@@ -5,8 +5,7 @@ use super::drawable::{
 use super::renderer::{MAX_PATH_POINTS, PathPoint, PathUniforms, domain_origin, style_flags};
 use super::repeat::{Drawn, GpuCopies, Repeat, RepeatedTransform};
 use crate::error::RenderError;
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
+use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 use crate::node::motion::Shutter;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
@@ -811,11 +810,11 @@ fn record_path_source(
         cx.dispatch(
             program,
             &[&bindings[..], &[(4, copy_list), (5, taps), (6, tiles)]].concat(),
-            params::dispatch_for(size),
+            dispatch_for(size),
         );
     } else {
         let program = cx.program(&PATH)?;
-        cx.dispatch(program, &bindings, params::dispatch_for(size));
+        cx.dispatch(program, &bindings, dispatch_for(size));
     }
     Ok(crate::gpu::frame_graph::Raster {
         tex,

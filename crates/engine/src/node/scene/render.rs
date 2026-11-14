@@ -179,7 +179,8 @@ pub(crate) const LIGHT_SPOT: u32 = 2;
 
 /// Keep in sync with `Globals` in `scene.wgsl`.
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Globals", source = SHADER)]
 pub(crate) struct GpuGlobals {
     pub(crate) view_proj: [[f32; 4]; 4],
     pub(crate) camera_position: [f32; 3],
@@ -202,7 +203,8 @@ pub(crate) struct GpuGlobals {
 
 /// Keep in sync with `Environment` in `scene.wgsl`.
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Environment", source = SHADER)]
 pub(crate) struct GpuEnvironment {
     pub(crate) irradiance: [[f32; 4]; 9],
     pub(crate) clip_to_world: [[f32; 4]; 4],
@@ -215,7 +217,8 @@ pub(crate) struct GpuEnvironment {
 
 /// Keep in sync with `Light` in `scene.wgsl`.
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Light", source = SHADER)]
 pub(crate) struct GpuLight {
     pub(crate) position: [f32; 3],
     pub(crate) kind: u32,
@@ -232,7 +235,8 @@ pub(crate) struct GpuLight {
 
 /// Keep in sync with `ShadowView` in `scene.wgsl`.
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "ShadowView", source = SHADER)]
 pub(crate) struct GpuShadowView {
     pub(crate) view_proj: [[f32; 4]; 4],
     pub(crate) depth: [f32; 4],
@@ -245,7 +249,8 @@ pub(crate) struct GpuShadowView {
 
 /// One row of the object table; keep in sync with `Object` in `scene.wgsl`.
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Object", source = SHADER)]
 pub(crate) struct GpuObject {
     pub(crate) model: [[f32; 4]; 4],
     /// The columns of the normal matrix, each padded to four floats.
@@ -280,7 +285,8 @@ pub(crate) struct GpuObject {
 
 /// One map's row of the map coordinates table; keep in sync with `MapUv` in `scene.wgsl`.
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "MapUv", source = SHADER)]
 pub(crate) struct GpuMapUv {
     /// The transform's first row, then the set of texture coordinates it reads.
     pub(crate) first: [f32; 4],
@@ -289,7 +295,8 @@ pub(crate) struct GpuMapUv {
 
 /// Keep in sync with `Run` in `scene.wgsl`.
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Run", source = SHADER)]
 pub(crate) struct GpuRun {
     pub(crate) first: u32,
     pub(crate) count: u32,
@@ -306,7 +313,8 @@ struct ResolveParams {
 
 /// Keep in sync with `Params` in `data.wgsl`.
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Params", source = DATA_SHADER)]
 struct DataParams {
     background: [f32; 4],
     drawn: u32,

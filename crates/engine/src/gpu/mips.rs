@@ -7,8 +7,7 @@ use lumen_gpu::{
     LayoutEntry, LayoutKind, MipChain, RenderTargetSpec, Res, Size, TargetLoad, TexRef, wgpu,
 };
 
-use crate::gpu::frame_graph::{FrameCx, Raster, RenderProgram};
-use crate::gpu::params::CropParams;
+use crate::gpu::frame_graph::{CropParams, FrameCx, Raster, RenderProgram};
 use crate::node::NodeId;
 
 const SHADER: &str = include_str!("shaders/mips.wgsl");

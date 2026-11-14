@@ -8,6 +8,7 @@ pub mod exposure;
 pub(crate) mod gaussian;
 pub mod glow;
 pub mod hue_saturation;
+mod inline_lut;
 pub mod levels;
 pub(crate) mod minify;
 pub mod motion_blur;

@@ -1,9 +1,10 @@
+use bytemuck::{Pod, Zeroable};
+
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, compositing::BlendMode,
 };
 
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
+use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -64,6 +65,16 @@ const RASTER_MULTIMERGE: ComputeProgram = ComputeProgram {
     layout: RECORD_LAYOUT,
 };
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct RasterMultiMergeUniforms {
+    opacity: f32,
+    blend_mode: u32,
+    /// Output texel of the pass's first invocation, then canvas pixels of the first texels
+    /// of the output, base and overlay.
+    origins: [[i32; 2]; 4],
+}
+
 impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.compute(&RASTER_MULTIMERGE)
@@ -118,7 +129,7 @@ impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
                     .union(overlays[index - 1].domain.data_rect)
                     .intersection(domain.data_rect)
             };
-            let params = params::RasterMultiMergeParams {
+            let params = RasterMultiMergeUniforms {
                 opacity: evaluated.opacity as f32,
                 blend_mode: evaluated.blend_mode as u32,
                 origins: [
@@ -140,7 +151,7 @@ impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
                     (2, uniform),
                     (3, lumen_gpu::Res::Tex(tex)),
                 ],
-                params::dispatch_for(changed.size()),
+                dispatch_for(changed.size()),
             );
             current = crate::gpu::frame_graph::Raster {
                 tex,
