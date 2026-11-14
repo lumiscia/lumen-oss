@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LumenMediaBridge } from "../../src/media/bridge.js";
-import type { NativeVideoFrameTarget } from "../../src/media/types.js";
+import type { FileMediaKind, NativeVideoFrameTarget } from "../../src/media/types.js";
 
 type FakeSample = {
   clone(): FakeSample;
@@ -114,21 +114,26 @@ function steadySamples(failAt = Number.POSITIVE_INFINITY) {
 function fakeTarget(overrides: Partial<NativeVideoFrameTarget> = {}) {
   const frames = new Set<string>();
   const images = new Map<string, number>();
-  const models = new Map<string, Uint8Array>();
+  const files = new Map<string, Uint8Array>();
   const target = {
     clear: () => {},
+    hasFile: (kind: FileMediaKind, id: string) => files.has(`${kind}:${id}`),
     hasImage: (id: string) => images.has(id),
-    hasModel: (id: string) => models.has(id),
     hasVideoFrame: (id: string, frame: number) => frames.has(`${id}:${frame}`),
+    removeFile: vi.fn((kind: FileMediaKind, id: string) => files.delete(`${kind}:${id}`)),
+    removeFontFamily: () => {},
     removeImageSource: (id: string) => images.delete(id),
-    removeModelSource: vi.fn((id: string) => models.delete(id)),
     removeVideoSource: (id: string) => {
       for (const key of frames) {
         if (key.startsWith(`${id}:`)) frames.delete(key);
       }
     },
+    setFile: vi.fn((kind: FileMediaKind, id: string, bytes: Uint8Array) =>
+      files.set(`${kind}:${id}`, bytes),
+    ),
+    setFont: () => {},
     setImage: vi.fn((id: string, width: number) => images.set(id, width)),
-    setModel: vi.fn((id: string, bytes: Uint8Array) => models.set(id, bytes)),
+    setVideoFrameCacheBytes: () => {},
     setVideoFrame: vi.fn((id: string, frame: number) => frames.add(`${id}:${frame}`)),
     setVideoMetadata: vi.fn(),
     ...overrides,
@@ -476,19 +481,19 @@ describe("LumenMediaBridge", () => {
     });
   });
 
-  describe("models and environment maps", () => {
+  describe("files", () => {
     it("hands over a model's bytes once, and removes it", async () => {
       const { target } = fakeTarget();
       const bridge = new LumenMediaBridge(target);
       const source = new Uint8Array([0x67, 0x6c, 0x54, 0x46]);
 
-      await bridge.registerModelSource("fox", source);
-      await bridge.registerModelSource("fox", source);
-      expect(target.setModel).toHaveBeenCalledOnce();
-      expect(vi.mocked(target.setModel).mock.calls[0]).toEqual(["fox", source]);
+      await bridge.registerFile("model", "fox", source);
+      await bridge.registerFile("model", "fox", source);
+      expect(target.setFile).toHaveBeenCalledOnce();
+      expect(vi.mocked(target.setFile).mock.calls[0]).toEqual(["model", "fox", source]);
 
-      bridge.removeModelSource("fox");
-      expect(target.removeModelSource).toHaveBeenCalledWith("fox");
+      bridge.removeFile("model", "fox");
+      expect(target.removeFile).toHaveBeenCalledWith("model", "fox");
     });
 
     it("hands over a model once when the same source is registered twice at a time", async () => {
@@ -497,29 +502,25 @@ describe("LumenMediaBridge", () => {
       const source = new Uint8Array([0x67, 0x6c, 0x54, 0x46]);
 
       await Promise.all([
-        bridge.registerModelSource("fox", source),
-        bridge.registerModelSource("fox", source),
+        bridge.registerFile("model", "fox", source),
+        bridge.registerFile("model", "fox", source),
       ]);
-      expect(target.setModel).toHaveBeenCalledOnce();
+      expect(target.setFile).toHaveBeenCalledOnce();
     });
 
     it("hands an environment map to the target as one, apart from models", async () => {
-      const environments = new Map<string, Uint8Array>();
-      const { target } = fakeTarget({
-        hasEnvironment: (id) => environments.has(id),
-        removeEnvironmentSource: vi.fn((id: string) => environments.delete(id)),
-        setEnvironment: vi.fn((id: string, bytes: Uint8Array) => environments.set(id, bytes)),
-      });
+      const { target } = fakeTarget();
       const bridge = new LumenMediaBridge(target);
       const bytes = new Uint8Array([0x23, 0x3f]);
 
-      await bridge.registerEnvironmentSource("sky.hdr", bytes);
-      await bridge.registerEnvironmentSource("sky.hdr", bytes);
-      expect(target.setEnvironment).toHaveBeenCalledOnce();
-      expect(target.setModel).not.toHaveBeenCalled();
+      await bridge.registerFile("environment", "sky.hdr", bytes);
+      await bridge.registerFile("environment", "sky.hdr", bytes);
+      expect(target.setFile).toHaveBeenCalledOnce();
+      expect(vi.mocked(target.setFile).mock.calls[0]).toEqual(["environment", "sky.hdr", bytes]);
+      expect(target.hasFile("model", "sky.hdr")).toBe(false);
 
-      bridge.removeEnvironmentSource("sky.hdr");
-      expect(environments.size).toBe(0);
+      bridge.removeFile("environment", "sky.hdr");
+      expect(target.hasFile("environment", "sky.hdr")).toBe(false);
     });
 
     it("names the model in a failed fetch", async () => {
@@ -530,7 +531,7 @@ describe("LumenMediaBridge", () => {
       const bridge = new LumenMediaBridge(fakeTarget().target);
 
       await expect(
-        bridge.registerModelSource("fox", "https://a.test/fox.glb"),
+        bridge.registerFile("model", "fox", "https://a.test/fox.glb"),
       ).rejects.toMatchObject({
         code: "invalid_source",
         message: 'model source "fox" failed to load: failed to load media source: 404 Not Found',
@@ -573,14 +574,14 @@ describe("LumenMediaBridge", () => {
       const { target } = fakeTarget();
       const bridge = new LumenMediaBridge(target);
       void bridge.registerImageSource("logo", "https://a.test/logo.png").catch(() => {});
-      void bridge.registerModelSource("fox", "https://a.test/fox.glb").catch(() => {});
-      void bridge.registerEnvironmentSource("sky", "https://a.test/sky.hdr").catch(() => {});
+      void bridge.registerFile("model", "fox", "https://a.test/fox.glb").catch(() => {});
+      void bridge.registerFile("environment", "sky", "https://a.test/sky.hdr").catch(() => {});
       await new Promise((resolve) => setTimeout(resolve));
       expect(signals).toHaveLength(3);
 
       bridge.removeImageSource("logo");
-      bridge.removeModelSource("fox");
-      bridge.removeEnvironmentSource("sky");
+      bridge.removeFile("model", "fox");
+      bridge.removeFile("environment", "sky");
 
       expect(signals.map(({ aborted }) => aborted)).toEqual([true, true, true]);
     });
