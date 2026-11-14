@@ -17,3 +17,19 @@ pub(crate) fn shared() -> Result<MutexGuard<'static, lumen_gpu::Renderer>, Strin
         Err(error) => Err(error.clone()),
     }
 }
+
+/// The shared device, or `None` after saying why on a machine with no adapter. Panics instead
+/// when `LUMEN_REQUIRE_GPU` is `1`, so a run that must exercise the GPU can't pass without it.
+pub(crate) fn shared_or_skip(test: &str) -> Option<MutexGuard<'static, lumen_gpu::Renderer>> {
+    match shared() {
+        Ok(gpu) => Some(gpu),
+        Err(error) => {
+            assert!(
+                std::env::var_os("LUMEN_REQUIRE_GPU").is_none_or(|value| value != "1"),
+                "a GPU is required (LUMEN_REQUIRE_GPU=1) for the {test}, but there is none: {error}"
+            );
+            eprintln!("no GPU ({error}); skipping {test}");
+            None
+        }
+    }
+}

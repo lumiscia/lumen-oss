@@ -3,6 +3,8 @@
 //! Drives the real `lumen` binary on lavapipe to write stills, image sequences and ranged
 //! videos. Skips when lavapipe isn't installed.
 
+mod support;
+
 use std::{
     fs,
     io::Write,
@@ -12,20 +14,7 @@ use std::{
 
 use lumen_ffmpeg::{DecodeMode, DecodedVideoFrame, InputContext, VideoDecoder, VideoDecoderConfig};
 use serde_json::json;
-
-fn lavapipe_icd() -> Option<PathBuf> {
-    let icd = fs::read_dir("/usr/share/vulkan/icd.d")
-        .ok()?
-        .filter_map(|entry| Some(entry.ok()?.path()))
-        .find(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("lvp_icd"))
-        });
-    if icd.is_none() {
-        eprintln!("lavapipe not installed; skipping lumen image tests");
-    }
-    icd
-}
+use support::lavapipe_icd;
 
 fn lumen(icd: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_lumen"))

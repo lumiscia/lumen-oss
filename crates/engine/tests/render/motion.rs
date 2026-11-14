@@ -6,11 +6,9 @@
 //! and a transform node samples its scale, translation, rotation and pivot. Every other param
 //! keeps its value at the frame, so a tap scene writes only those params at the tap's time.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
-
 use serde_json::{Value, json};
 
-use crate::support::{Frame, Gpu, ORANGE, Scene, TestMedia, gpu, panic_message, render, scene};
+use crate::support::{Frame, Gpu, ORANGE, Scene, TestMedia, check_each, gpu, render, scene};
 
 /// Which render of a layer a row's `layer` function describes.
 #[derive(Clone, Copy)]
@@ -254,26 +252,8 @@ fn mean_difference(a: &Frame, b: &Frame) -> f64 {
 }
 
 fn check(rows: Vec<Row>) {
-    let filter = std::env::var("LUMEN_CASE").ok();
     let gpu = gpu();
-    let rows: Vec<_> = rows
-        .iter()
-        .filter(|row| filter.as_deref().is_none_or(|f| row.name.contains(f)))
-        .collect();
-    let failures: Vec<_> = rows
-        .iter()
-        .filter_map(|row| {
-            let error = catch_unwind(AssertUnwindSafe(|| row.run(&gpu))).err()?;
-            Some(format!("  {}: {}", row.name, panic_message(&*error)))
-        })
-        .collect();
-    assert!(
-        failures.is_empty(),
-        "{} of {} rows failed:\n{}",
-        failures.len(),
-        rows.len(),
-        failures.join("\n")
-    );
+    check_each(rows.iter().map(|row| (row.name, row)), |row| row.run(&gpu));
 }
 
 const PLATE: &str = "plate";

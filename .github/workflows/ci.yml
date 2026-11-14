@@ -150,6 +150,7 @@ jobs:
 
       - name: Test Rust workspace
         env:
+          LUMEN_REQUIRE_GPU: "1"
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
         run: cargo nextest run --partition hash:${{ matrix.shard }}/3
 

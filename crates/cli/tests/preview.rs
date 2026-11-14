@@ -3,6 +3,8 @@
 //! Drives the real `lumen preview` on lavapipe and reads the sheet back. Skips the renders when
 //! lavapipe isn't installed.
 
+mod support;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -11,24 +13,11 @@ use std::{
 
 use image::RgbImage;
 use serde_json::json;
+use support::lavapipe_icd;
 
 /// Between cells and around the edge, as `lumen preview` lays them out.
 const GUTTER: u32 = 8;
 const BACKGROUND: [u8; 3] = [40, 40, 40];
-
-fn lavapipe_icd() -> Option<PathBuf> {
-    let icd = fs::read_dir("/usr/share/vulkan/icd.d")
-        .ok()?
-        .filter_map(|entry| Some(entry.ok()?.path()))
-        .find(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("lvp_icd"))
-        });
-    if icd.is_none() {
-        eprintln!("lavapipe not installed; skipping lumen preview renders");
-    }
-    icd
-}
 
 fn lumen(icd: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_lumen"))
