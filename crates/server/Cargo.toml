@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Local HTTP render server for Lumen."
+publish = false
 
 [features]
 metal = ["lumen-engine/metal", "lumen-ffmpeg/metal"]
