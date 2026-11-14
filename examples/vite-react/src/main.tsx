@@ -41,7 +41,7 @@ composition.addNode({ type: "media_output", inputs: { source: merged } });
 
 composition
   .addAudioTrack({ id: "clip-audio", name: "Clip audio" })
-  .addAudio({ source: "clip", start: 0, duration: 4, trackId: "clip-audio" });
+  .addAudio({ source: "clip", startSeconds: 0, durationSeconds: 4, trackId: "clip-audio" });
 
 // Open with `?scene=3d` for a 3D scene: shapes, a video on a plane, an animated glTF model, a light
 // and a camera drawn by render_3d.
