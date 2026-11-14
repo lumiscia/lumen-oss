@@ -144,11 +144,11 @@ export const expressionBuiltins = [
   {
     "args": [
       {
-        "kind": "any",
+        "kind": "same",
         "name": "from"
       },
       {
-        "kind": "any",
+        "kind": "same",
         "name": "to"
       },
       {
@@ -160,7 +160,7 @@ export const expressionBuiltins = [
     "maxArgs": 3,
     "minArgs": 3,
     "name": "lerp",
-    "returns": "any"
+    "returns": "same"
   },
   {
     "args": [
@@ -545,11 +545,11 @@ export const expressionBuiltins = [
   {
     "args": [
       {
-        "kind": "any",
+        "kind": "same",
         "name": "from"
       },
       {
-        "kind": "any",
+        "kind": "same",
         "name": "to"
       },
       {
@@ -569,7 +569,7 @@ export const expressionBuiltins = [
     "maxArgs": 5,
     "minArgs": 4,
     "name": "tween",
-    "returns": "any"
+    "returns": "same"
   },
   {
     "args": [
@@ -612,7 +612,7 @@ export const expressionBuiltins = [
         "name": "at"
       },
       {
-        "kind": "any",
+        "kind": "same",
         "name": "value"
       },
       {

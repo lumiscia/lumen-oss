@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import {
   compositionSchemaPath,
+  generatedExpressionsPath,
   generatedMetaTypesPath,
   generatedRuntimeTypesPath,
   generatedSchemaTypesPath,
@@ -9,6 +10,7 @@ import {
   runtimeSchemaPath,
 } from "./paths.js";
 import type { JsonSchema } from "./render-defs.js";
+import { expressionTables, renderExpressions } from "./render-expressions.js";
 import { renderNodeReference } from "./render-reference.js";
 import { renderRuntimeTypes } from "./render-runtime.js";
 import { renderTypes } from "./render.js";
@@ -22,5 +24,6 @@ await Promise.all([
   writeGeneratedFile(generatedSchemaTypesPath, root),
   writeGeneratedFile(generatedMetaTypesPath, meta),
   writeGeneratedFile(generatedRuntimeTypesPath, renderRuntimeTypes(runtimeSchema)),
+  writeGeneratedFile(generatedExpressionsPath, renderExpressions(expressionTables(schema))),
   writeGeneratedFile(nodeReferencePath, renderNodeReference(schema)),
 ]);

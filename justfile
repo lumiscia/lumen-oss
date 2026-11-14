@@ -1,6 +1,7 @@
 definitions_out := justfile_directory() / "definitions"
 wasm_bindings_out := justfile_directory() / "packages/lumen-bindings/wasm"
 generated_types_out := justfile_directory() / "packages/lumen-types/src/generated"
+generated_expressions_out := justfile_directory() / "packages/lumen-shared/src/generated"
 node_reference := justfile_directory() / "docs/node-reference.md"
 
 # The TypeScript half of CI's Check job. CI also runs Rust formatting, checks and tests, and the
@@ -35,12 +36,12 @@ set-schema-version version:
 
 # Regenerates the checked files and fails, naming the files, when their contents change, so a
 # stale committed file fails and a legitimately dirty tree does not. Also covers verify-definitions,
-# since the generated schema is among the checked paths. `generated/` is gitignored apart from two
+# since the generated schema is among the checked paths. `generated/` is gitignored apart from its
 # tracked files, so its files are hashed rather than read from git status.
 verify-typescript-artifacts:
     #!/usr/bin/env bash
     set -euo pipefail
-    paths=({{ definitions_out }}/composition.schema.json {{ definitions_out }}/runtime.schema.json {{ node_reference }} {{ generated_types_out }})
+    paths=({{ definitions_out }}/composition.schema.json {{ definitions_out }}/runtime.schema.json {{ node_reference }} {{ generated_types_out }} {{ generated_expressions_out }})
     hashes() { find "${paths[@]}" -type f -print0 | sort -z | xargs -0 sha256sum; }
     tmpdir="$(mktemp -d)"
     trap 'rm -rf "$tmpdir"' EXIT

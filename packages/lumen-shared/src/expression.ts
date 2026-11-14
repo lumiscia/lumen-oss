@@ -1,232 +1,40 @@
-import {
-  easingNames,
-  expressionBuiltins,
-  expressionGlobals,
-  type Color,
-  type EasingName,
-  type ExpressionGlobalName,
-  type ExpressionString,
-  type Vec2,
-} from "@lumiscia/lumen-types";
+import { easingNames, type Color, type EasingName, type Vec2 } from "@lumiscia/lumen-types";
 
-import { setLiteral } from "./literal.js";
+import {
+  Expr,
+  binary,
+  formatNumber,
+  lower,
+  operand,
+  rawExpressions,
+  type AnyArg,
+  type Arg,
+  type Condition,
+  type EasingArg,
+  type Num,
+  type Value,
+  type Vec3Value,
+} from "./expression-core.js";
+import { ease as applyEasing, tween } from "./generated/expressions.js";
 import { quote } from "./quote.js";
 import type { NodeReference } from "./types.js";
 
-declare const valueType: unique symbol;
-declare const easingType: unique symbol;
-declare const keyType: unique symbol;
-declare const vec3Type: unique symbol;
+export * from "./generated/expressions.js";
+export type {
+  AnyArg,
+  Arg,
+  Condition,
+  Easing,
+  EasingArg,
+  Key,
+  KeyValue,
+  Num,
+  Value,
+  Vec3Value,
+} from "./expression-core.js";
+export { Expr } from "./expression-core.js";
 
-/** A type an expression can evaluate to. Params take all but `boolean`, `Easing` and `Key`. */
-export type Value = boolean | number | Vec2 | Vec3Value | Color | string | Easing | Key;
-
-/**
- * What `vec3(..)` evaluates to. It is its own type rather than the `Vec3` tuple, which is also an
- * RGB `Color`, so vec3 and colour expressions don't mix.
- */
-export interface Vec3Value {
-  readonly [vec3Type]: true;
-}
-
-/** What `cubicBezier` evaluates to. `ease`, `tween`, `key` and `keyframes` take it; params don't. */
-export interface Easing {
-  readonly [easingType]: true;
-}
-
-/** An easing name such as `ease.outExpo`, or an easing such as `cubicBezier(..)`. */
-export type EasingArg = EasingName | Expr<Easing> | Expr<string>;
-
-/**
- * Strings that are path data interpolate when their commands match; any other string keys only
- * with the `hold` easing.
- */
-export type KeyValue = number | Vec2 | Vec3Value | Color | string;
-
-/** What `key` evaluates to: a keyframe holding a `T`. Only `keyframes` takes it. */
-export interface Key<T extends KeyValue = KeyValue> {
-  readonly [keyType]: T;
-}
-
-export type Num = number | Expr<number>;
-
-/** What `when`, `and` and `or` test. The engine counts a number as true unless it is 0. */
-export type Condition = Expr<boolean> | Expr<number>;
-
-/**
- * An expression, or a literal of the same type. Tuples lower to `vec2(..)`, `rgb(..)` or
- * `rgba(..)`, so a vec3 has no tuple form; write `vec3(x, y, z)`.
- */
-export type Arg<T extends Value> =
-  | Expr<T>
-  | ([T] extends [number]
-      ? number
-      : [T] extends [Vec2]
-        ? readonly [Num, Num]
-        : [T] extends [Color]
-          ? readonly [Num, Num, Num] | readonly [Num, Num, Num, Num]
-          : [T] extends [string]
-            ? string
-            : never);
-
-export type AnyArg = Expr | Arg<number> | Arg<Vec2> | Arg<Color> | Arg<string>;
-
-/**
- * An expression that evaluates to `T`. Arithmetic follows the evaluator: numbers combine freely,
- * vec2 and vec3 values add and subtract with their own kind and scale by numbers or their own
- * kind, and colours have no arithmetic. Comparisons and logic evaluate to `boolean`, which `when`
- * branches on.
- */
-export class Expr<T extends Value = Value> {
-  declare readonly [valueType]: T;
-  readonly #source: string;
-
-  constructor(source: string) {
-    this.#source = source;
-  }
-
-  add(this: Expr<number>, other: Num): Expr<number>;
-  add(this: Expr<Vec2>, other: Arg<Vec2>): Expr<Vec2>;
-  add(this: Expr<Vec3Value>, other: Arg<Vec3Value>): Expr<Vec3Value>;
-  add(other: AnyArg): Expr {
-    return binary(this, "+", other);
-  }
-
-  sub(this: Expr<number>, other: Num): Expr<number>;
-  sub(this: Expr<Vec2>, other: Arg<Vec2>): Expr<Vec2>;
-  sub(this: Expr<Vec3Value>, other: Arg<Vec3Value>): Expr<Vec3Value>;
-  sub(other: AnyArg): Expr {
-    return binary(this, "-", other);
-  }
-
-  mul(this: Expr<number>, other: Num): Expr<number>;
-  mul(this: Expr<number>, other: Arg<Vec2>): Expr<Vec2>;
-  mul(this: Expr<Vec2>, other: Num | Arg<Vec2>): Expr<Vec2>;
-  mul(this: Expr<number>, other: Arg<Vec3Value>): Expr<Vec3Value>;
-  mul(this: Expr<Vec3Value>, other: Num | Arg<Vec3Value>): Expr<Vec3Value>;
-  mul(other: AnyArg): Expr {
-    return binary(this, "*", other);
-  }
-
-  div(this: Expr<number>, other: Num): Expr<number>;
-  div(this: Expr<number>, other: Arg<Vec2>): Expr<Vec2>;
-  div(this: Expr<Vec2>, other: Num | Arg<Vec2>): Expr<Vec2>;
-  div(this: Expr<number>, other: Arg<Vec3Value>): Expr<Vec3Value>;
-  div(this: Expr<Vec3Value>, other: Num | Arg<Vec3Value>): Expr<Vec3Value>;
-  div(other: AnyArg): Expr {
-    return binary(this, "/", other);
-  }
-
-  oneMinus(this: Expr<number>): Expr<number> {
-    return binary(1, "-", this);
-  }
-
-  clamp(this: Expr<number>, min: Num, max: Num): Expr<number> {
-    return clamp(this, min, max);
-  }
-
-  gt(this: Expr<number>, other: Num): Expr<boolean> {
-    return binary(this, ">", other);
-  }
-
-  gte(this: Expr<number>, other: Num): Expr<boolean> {
-    return binary(this, ">=", other);
-  }
-
-  lt(this: Expr<number>, other: Num): Expr<boolean> {
-    return binary(this, "<", other);
-  }
-
-  lte(this: Expr<number>, other: Num): Expr<boolean> {
-    return binary(this, "<=", other);
-  }
-
-  /** Values of different types are never equal, so both sides must share a type. */
-  eq(this: Expr<number>, other: Num): Expr<boolean>;
-  eq(this: Expr<boolean>, other: Expr<boolean>): Expr<boolean>;
-  eq(this: Expr<Vec2>, other: Arg<Vec2>): Expr<boolean>;
-  eq(this: Expr<Vec3Value>, other: Arg<Vec3Value>): Expr<boolean>;
-  eq(this: Expr<Color>, other: Arg<Color>): Expr<boolean>;
-  eq(this: Expr<string>, other: Arg<string>): Expr<boolean>;
-  eq(other: AnyArg): Expr<boolean> {
-    return binary(this, "==", other);
-  }
-
-  /** Values of different types are never equal, so both sides must share a type. */
-  neq(this: Expr<number>, other: Num): Expr<boolean>;
-  neq(this: Expr<boolean>, other: Expr<boolean>): Expr<boolean>;
-  neq(this: Expr<Vec2>, other: Arg<Vec2>): Expr<boolean>;
-  neq(this: Expr<Vec3Value>, other: Arg<Vec3Value>): Expr<boolean>;
-  neq(this: Expr<Color>, other: Arg<Color>): Expr<boolean>;
-  neq(this: Expr<string>, other: Arg<string>): Expr<boolean>;
-  neq(other: AnyArg): Expr<boolean> {
-    return binary(this, "!=", other);
-  }
-
-  /** Skips evaluating `other` when this is false. */
-  and(this: Expr<boolean>, other: Condition): Expr<boolean> {
-    return binary(this, "&&", other);
-  }
-
-  /** Skips evaluating `other` when this is true. */
-  or(this: Expr<boolean>, other: Condition): Expr<boolean> {
-    return binary(this, "||", other);
-  }
-
-  not(this: Expr<boolean>): Expr<boolean> {
-    return new Expr(`(!${operand(this)})`);
-  }
-
-  toString(): ExpressionString {
-    return `=${this.#source}`;
-  }
-
-  toJSON(): ExpressionString {
-    return this.toString();
-  }
-}
-
-function binary<T extends Value>(lhs: AnyArg, operator: string, rhs: AnyArg): Expr<T> {
-  return new Expr<T>(`(${operand(lhs)} ${operator} ${operand(rhs)})`);
-}
-
-/** Expressions made by `expr`, whose source may have operators outside any brackets. */
-const rawExpressions = new WeakSet<Expr>();
-
-/** `value` as one side of an operator, bracketed where its own operators could regroup. */
-function operand(value: AnyArg): string {
-  const source = lower(value);
-  return value instanceof Expr && rawExpressions.has(value) ? `(${source})` : source;
-}
-
-const tupleBuiltins: Readonly<Record<number, string>> = { 2: "vec2", 3: "rgb", 4: "rgba" };
-
-function lower(value: AnyArg): string {
-  if (value instanceof Expr) {
-    return value.toString().slice(1);
-  }
-  if (typeof value === "number") {
-    return formatNumber(value);
-  }
-  if (typeof value === "string") {
-    return quote(value);
-  }
-  const builtin = tupleBuiltins[value.length];
-  if (builtin === undefined) {
-    throw new TypeError(`Cannot use a ${value.length}-element array as an expression value.`);
-  }
-  return `${builtin}(${value.map(lower).join(", ")})`;
-}
-
-/** The shortest decimal or exponent form that round-trips. */
-function formatNumber(value: number): string {
-  if (!Number.isFinite(value)) {
-    throw new RangeError(`Expressions cannot contain \`${value}\`.`);
-  }
-  return String(value);
-}
-
-export type CamelCase<S extends string> = S extends `${infer Head}_${infer Tail}`
+type CamelCase<S extends string> = S extends `${infer Head}_${infer Tail}`
   ? `${Head}${Capitalize<CamelCase<Tail>>}`
   : S;
 
@@ -234,264 +42,12 @@ function camelCase(name: string): string {
   return name.replace(/_([a-z])/g, (_, char: string) => char.toUpperCase());
 }
 
-type BuiltinSpec = (typeof expressionBuiltins)[number];
-type SpecArg = BuiltinSpec["args"][number];
-
-type KindArg<K> = K extends "number"
-  ? Num
-  : K extends "vec2"
-    ? Arg<Vec2>
-    : K extends "vec3"
-      ? Arg<Vec3Value>
-      : K extends "color"
-        ? Arg<Color>
-        : K extends "string"
-          ? Arg<string>
-          : K extends "text"
-            ? Arg<string> | Num
-            : K extends "easing"
-              ? EasingArg
-              : K extends "key"
-                ? Expr<Key>
-                : AnyArg;
-
-type KindValue<K> = K extends "number"
-  ? number
-  : K extends "vec2"
-    ? Vec2
-    : K extends "vec3"
-      ? Vec3Value
-      : K extends "color"
-        ? Color
-        : K extends "string"
-          ? string
-          : K extends "easing"
-            ? Easing
-            : K extends "key"
-              ? Key
-              : Value;
-
-/** Skipped arguments must be `undefined` through to the end, so an interior hole is a type error. */
-type SkippedArgs<A> = A extends readonly [SpecArg, ...infer Tail]
-  ? [] | [undefined, ...SkippedArgs<Tail>]
-  : [];
-
-type OptionalArgs<A> = A extends readonly [infer Head extends SpecArg, ...infer Tail]
-  ?
-      | [(KindArg<Head["kind"]> | undefined)?]
-      | [KindArg<Head["kind"]>, ...OptionalArgs<Tail>]
-      | [undefined, ...SkippedArgs<Tail>]
-  : [];
-
-type FixedArgs<A, Min, Done extends unknown[] = []> = Done["length"] extends Min
-  ? [...Done, ...OptionalArgs<A>]
-  : A extends readonly [infer Head extends SpecArg, ...infer Tail]
-    ? FixedArgs<Tail, Min, [...Done, KindArg<Head["kind"]>]>
-    : Done;
-
-type Repeat<T, Min, Done extends unknown[]> = Done["length"] extends Min
-  ? [...Done, ...T[]]
-  : Repeat<T, Min, [...Done, T]>;
-
-/** A `null` `maxArgs` repeats the last argument. */
-type VariadicArgs<A, Min, Done extends unknown[] = []> = A extends readonly [
-  infer Last extends SpecArg,
-]
-  ? Repeat<KindArg<Last["kind"]>, Min, Done>
-  : A extends readonly [infer Head extends SpecArg, ...infer Tail]
-    ? VariadicArgs<Tail, Min, [...Done, KindArg<Head["kind"]>]>
-    : Done;
-
-type BuiltinArgs<S extends BuiltinSpec> = S["maxArgs"] extends null
-  ? VariadicArgs<S["args"], S["minArgs"]>
-  : FixedArgs<S["args"], S["minArgs"]>;
-
-/** One helper per entry in `expressionBuiltins`, named in camelCase. */
-export type Builtins = {
-  readonly [S in BuiltinSpec as CamelCase<S["name"]>]: (
-    ...args: BuiltinArgs<S>
-  ) => Expr<KindValue<S["returns"]>>;
-};
-
-function call(spec: BuiltinSpec, given: readonly (AnyArg | undefined)[]): Expr {
-  const { maxArgs, minArgs, name } = spec;
-  let end = given.length;
-  while (end > 0 && given[end - 1] === undefined) {
-    end -= 1;
-  }
-  const args = given.slice(0, end);
-  if (args.includes(undefined)) {
-    throw new TypeError(`\`${name}\` cannot skip an optional argument before a later one.`);
-  }
-  if (args.length < minArgs || (maxArgs !== null && args.length > maxArgs)) {
-    const expected =
-      maxArgs === null
-        ? `at least ${minArgs}`
-        : maxArgs === minArgs
-          ? minArgs
-          : `${minArgs} to ${maxArgs}`;
-    throw new TypeError(`\`${name}\` expects ${expected} arguments, got ${args.length}.`);
-  }
-  const expr = new Expr(`${name}(${(args as readonly AnyArg[]).map(lower).join(", ")})`);
-  const numbers = args.filter((arg): arg is number => typeof arg === "number");
-  if ((name === "vec2" || name === "vec3") && numbers.length === args.length) {
-    setLiteral(expr, numbers);
-  }
-  return expr;
-}
-
-const builtins = Object.fromEntries(
-  expressionBuiltins.map((spec) => [
-    camelCase(spec.name),
-    (...args: (AnyArg | undefined)[]) => call(spec, args),
-  ]),
-) as unknown as Builtins;
-
-export interface Interpolate {
-  (from: Num, to: Num, t: Num): Expr<number>;
-  (from: Arg<Vec2>, to: Arg<Vec2>, t: Num): Expr<Vec2>;
-  (from: Arg<Vec3Value>, to: Arg<Vec3Value>, t: Num): Expr<Vec3Value>;
-  (from: Arg<Color>, to: Arg<Color>, t: Num): Expr<Color>;
-  (from: Arg<string>, to: Arg<string>, t: Num): Expr<string>;
-}
-
-export interface Tween {
-  (from: Num, to: Num, start: Num, duration: Num, ease?: EasingArg): Expr<number>;
-  (from: Arg<Vec2>, to: Arg<Vec2>, start: Num, duration: Num, ease?: EasingArg): Expr<Vec2>;
-  (
-    from: Arg<Vec3Value>,
-    to: Arg<Vec3Value>,
-    start: Num,
-    duration: Num,
-    ease?: EasingArg,
-  ): Expr<Vec3Value>;
-  (from: Arg<Color>, to: Arg<Color>, start: Num, duration: Num, ease?: EasingArg): Expr<Color>;
-  (from: Arg<string>, to: Arg<string>, start: Num, duration: Num, ease?: EasingArg): Expr<string>;
-}
-
-export interface MakeKey {
-  (at: Num, value: Num, ease?: EasingArg): Expr<Key<number>>;
-  (at: Num, value: Arg<Vec2>, ease?: EasingArg): Expr<Key<Vec2>>;
-  (at: Num, value: Arg<Vec3Value>, ease?: EasingArg): Expr<Key<Vec3Value>>;
-  (at: Num, value: Arg<Color>, ease?: EasingArg): Expr<Key<Color>>;
-  (at: Num, value: Arg<string>, ease?: EasingArg): Expr<Key<string>>;
-}
-
-type Keys<T extends KeyValue> = readonly [Expr<Key<T>>, ...Expr<Key<T>>[]];
-
-/** Keys without an easing of their own use `ease`, which defaults to `'linear'`. */
-export interface Keyframes {
-  <T extends KeyValue>(t: Num, ...keys: Keys<T>): Expr<T>;
-  <T extends KeyValue>(t: Num, ease: EasingArg, ...keys: Keys<T>): Expr<T>;
-}
-
-export const {
-  abs,
-  atan2,
-  ceil,
-  clamp,
-  concat,
-  cos,
-  cubicBezier,
-  floor,
-  format,
-  fract,
-  hypot,
-  inBack,
-  inBounce,
-  inCirc,
-  inCubic,
-  inElastic,
-  inExpo,
-  inOutBack,
-  inOutBounce,
-  inOutCirc,
-  inOutCubic,
-  inOutElastic,
-  inOutExpo,
-  inOutQuad,
-  inOutQuart,
-  inOutQuint,
-  inOutSine,
-  inQuad,
-  inQuart,
-  inQuint,
-  inSine,
-  lowercase,
-  max,
-  min,
-  mod,
-  noise,
-  outBack,
-  outBounce,
-  outCirc,
-  outCubic,
-  outElastic,
-  outExpo,
-  outQuad,
-  outQuart,
-  outQuint,
-  outSine,
-  pathAngle,
-  pathPoint,
-  pow,
-  progress,
-  random,
-  remap,
-  rgb,
-  rgba,
-  round,
-  sign,
-  sin,
-  smoothstep,
-  spring,
-  step,
-  textHeight,
-  textWidth,
-  uppercase,
-  vec2,
-  vec3,
-} = builtins;
-// `from` and `to`, and the values of keys, share a type, which the table can only describe as
-// `any`. It also can't say that the `ease` of `keyframes` is optional.
-export const lerp = builtins.lerp as Interpolate;
-export const tween = builtins.tween as Tween;
-export const key = builtins.key as MakeKey;
-export const keyframes = builtins.keyframes as Keyframes;
-
-/**
- * `glyph`, `word`, `line` and `span` index the glyph a text node is drawing, and the counts
- * number them. They are only valid in the text node's `glyph_*` params.
- *
- * `instance` is the index of the copy an `instance_3d` is placing, from 0, and `instanceCount` is
- * how many there are. They are only valid in that node's `position`, `rotation` and `scale`.
- */
-export const {
-  fps,
-  frame,
-  glyph,
-  glyphCount,
-  height,
-  instance,
-  instanceCount,
-  line,
-  lineCount,
-  span,
-  spanCount,
-  time,
-  width,
-  word,
-  wordCount,
-} = Object.fromEntries(
-  expressionGlobals.map((global) => [camelCase(global.name), new Expr(global.name)]),
-) as { readonly [N in ExpressionGlobalName as CamelCase<N>]: Expr<number> };
-
 /**
  * `ease(easing, t)` applies an easing to progress `t`. Its properties are the easing names, such
  * as `ease.outExpo` for `'out_expo'`.
  */
 export const ease = Object.assign(
-  builtins.ease,
+  applyEasing,
   Object.fromEntries(easingNames.map((name) => [camelCase(name), name])) as {
     readonly [N in EasingName as CamelCase<N>]: N;
   },

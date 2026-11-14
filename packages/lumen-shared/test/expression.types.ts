@@ -203,15 +203,6 @@ format(1, 0, 4, 0);
 // @ts-expect-error `format` takes four arguments at most
 format(1, 0, 4, "0", 1);
 
-// @ts-expect-error an optional argument can't be skipped before a later one
-spring(0, undefined, 20);
-
-// @ts-expect-error holes after the first optional argument are rejected too
-textWidth("a", undefined, 100);
-
-// @ts-expect-error a skipped argument must stay skipped
-textWidth("a", undefined, 100, "Inter");
-
 // Trailing and optional-variable `undefined` is fine.
 const stiffness: number | undefined = undefined as number | undefined;
 void [

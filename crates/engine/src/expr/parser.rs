@@ -652,9 +652,8 @@ fn static_kind(node: &ExprNode) -> Option<ValueKind> {
     match node {
         ExprNode::Literal(value) => Some(value.kind()),
         ExprNode::Global(_) => Some(ValueKind::Number),
-        ExprNode::Builtin(builtin, _) => {
-            Some(builtin.spec().returns).filter(|kind| *kind != ValueKind::Any)
-        }
+        ExprNode::Builtin(builtin, _) => Some(builtin.spec().returns)
+            .filter(|kind| !matches!(kind, ValueKind::Any | ValueKind::Same)),
         ExprNode::Conditional(_, when_true, when_false) => {
             static_kind(when_true).filter(|kind| static_kind(when_false) == Some(*kind))
         }

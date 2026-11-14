@@ -25,3 +25,8 @@ export const generatedRuntimeTypesPath = path.join(
 );
 
 export const nodeReferencePath = path.join(repoRoot, "docs/node-reference.md");
+
+export const generatedExpressionsPath = path.join(
+  repoRoot,
+  "packages/lumen-shared/src/generated/expressions.ts",
+);
