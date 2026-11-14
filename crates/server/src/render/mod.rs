@@ -18,13 +18,9 @@ use std::{
     },
 };
 
-use lumen_engine::{
-    composition::{BitDepth, Composition, OutputCodec},
-    media::AssetResolver,
-};
+use lumen_engine::{composition::Composition, media::AssetResolver};
 use lumen_ffmpeg::{
-    AudioEncoderConfig, EncodeCodec, QualityConfig, QualityRequest, VideoEncoderChoice,
-    check_audio_encoder,
+    AudioEncoderConfig, QualityConfig, QualityRequest, VideoEncoderChoice, check_audio_encoder,
 };
 
 pub use error::{ErrorCode, ServerRenderError};
@@ -105,8 +101,8 @@ pub struct RenderOptions {
     pub config: RenderConfig,
     /// The directory media sources must stay inside. Without one, the current directory.
     pub media_root: Option<PathBuf>,
-    /// The encoders to try, for a video output only. `None` resolves the composition's settings
-    /// against the built-in presets with [`resolve_encoder`].
+    /// The encoders to try, for a video output only. `None` resolves the built-in presets with
+    /// [`resolve_encoder`].
     pub encoder: Option<VideoEncoderChoice>,
     /// Where `asset:` sources resolve. Without one, they don't.
     pub assets: Option<Arc<dyn AssetResolver>>,
@@ -122,11 +118,10 @@ pub struct RenderOptions {
 }
 
 /// The encoders a render of `composition` to `format` tries: `request`'s preset, codec, bit depth
-/// and alpha where it names them, then the composition's `render_settings`, then the codec a MOV or
-/// WebM holds, then `config`'s defaults. A codec or alpha `format` can't hold, or audio in a
-/// composition with audio when this FFmpeg has no encoder for `format`'s audio (Opus in WebM, AAC
-/// otherwise), is [`ErrorCode::InvalidOutput`], and anything else no encoder here can write is
-/// [`ErrorCode::InvalidQuality`].
+/// and alpha where it names them, then the codec a MOV or WebM holds, then `config`'s defaults. A
+/// codec or alpha `format` can't hold, or audio in a composition with audio when this FFmpeg has no
+/// encoder for `format`'s audio (Opus in WebM, AAC otherwise), is [`ErrorCode::InvalidOutput`], and
+/// anything else no encoder here can write is [`ErrorCode::InvalidQuality`].
 pub fn resolve_encoder(
     config: &QualityConfig,
     composition: &Composition,
@@ -145,25 +140,9 @@ fn resolve_encoder_with(
     mut request: QualityRequest,
     audio_encoder: &dyn Fn(&AudioEncoderConfig) -> Result<(), String>,
 ) -> Result<VideoEncoderChoice, ServerRenderError> {
-    let output = composition.output_settings();
-    request.preset = request.preset.or_else(|| output.quality.clone());
-    request.codec = request.codec.or(output.codec.map(|codec| match codec {
-        OutputCodec::H264 => EncodeCodec::H264,
-        OutputCodec::Hevc => EncodeCodec::Hevc,
-        OutputCodec::Av1 => EncodeCodec::Av1,
-        OutputCodec::ProRes => EncodeCodec::ProRes,
-        OutputCodec::Vp9 => EncodeCodec::Vp9,
-    }));
     if format != OutputFormat::Mp4 {
         request.codec = request.codec.or(format.video_codecs().first().copied());
     }
-    request.bit_depth = request
-        .bit_depth
-        .or(output.bit_depth.map(|depth| match depth {
-            BitDepth::Eight => lumen_ffmpeg::BitDepth::Eight,
-            BitDepth::Ten => lumen_ffmpeg::BitDepth::Ten,
-        }));
-    request.alpha = request.alpha.or(output.alpha);
     format
         .check_video(request.codec, request.alpha.unwrap_or(false))
         .map_err(|message| ServerRenderError::new(ErrorCode::InvalidOutput, message, false))?;

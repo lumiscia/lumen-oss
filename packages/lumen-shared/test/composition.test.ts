@@ -380,14 +380,9 @@ describe("Composition vector literals", () => {
 });
 
 describe("Composition render settings", () => {
-  test("keeps the codec and quality preset beside the default canvas", () => {
-    const composition = new Composition({ renderSettings: { codec: "hevc", quality: "high" } });
+  test("fills the canvas a partial render setting leaves out", () => {
+    const composition = new Composition({ renderSettings: { width: 1280 } });
 
-    expect(composition.toJSON().render_settings).toEqual({
-      codec: "hevc",
-      height: 1080,
-      quality: "high",
-      width: 1920,
-    });
+    expect(composition.toJSON().render_settings).toEqual({ height: 1080, width: 1280 });
   });
 });

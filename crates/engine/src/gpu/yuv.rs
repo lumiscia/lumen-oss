@@ -5,7 +5,22 @@ use std::sync::Arc;
 
 use lumen_gpu::wgpu;
 
-use crate::composition::BitDepth;
+/// Bits per sample of a video frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitDepth {
+    Eight,
+    Ten,
+}
+
+#[cfg(feature = "ffmpeg")]
+impl From<lumen_ffmpeg::BitDepth> for BitDepth {
+    fn from(depth: lumen_ffmpeg::BitDepth) -> Self {
+        match depth {
+            lumen_ffmpeg::BitDepth::Eight => Self::Eight,
+            lumen_ffmpeg::BitDepth::Ten => Self::Ten,
+        }
+    }
+}
 
 /// A YUV format [`YuvConverter`] writes. Samples above 8 bits are two little-endian bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -1,4 +1,9 @@
-import type { LumenComposition, LumenDiagnostic } from "@lumiscia/lumen-types";
+import type {
+  LumenComposition,
+  LumenDiagnostic,
+  VideoBitDepth,
+  VideoCodec,
+} from "@lumiscia/lumen-types";
 
 /** A composition as JSON, or anything that turns into one with `toJSON()`, such as the SDK's `Composition`. */
 export type CompositionSource = LumenComposition | { toJSON(): LumenComposition };
@@ -29,13 +34,15 @@ export interface RenderOptions extends CommandOptions {
   readonly frame?: number;
   /** Most glyph, stroke and decoration instances one text node may draw. */
   readonly maxTextGlyphs?: number;
-  readonly codec?: "h264" | "hevc" | "av1" | "prores" | "vp9";
+  /** `h264`, `hevc` or `av1` in an `.mp4`, `prores` in a `.mov`, `vp9` in a `.webm`. */
+  readonly codec?: VideoCodec;
   /** A preset: `draft`, `standard`, `high`, `lossless`, or one the quality config defines. */
   readonly quality?: string;
   /** Path of a quality config JSON file. */
   readonly qualityConfig?: string;
-  readonly bitDepth?: 8 | 10;
-  /** Keeps transparency as an alpha channel in a `.mov` or `.webm`; `false` renders opaque. */
+  /** 10 for `hevc` and `av1`; ProRes is always 10-bit. */
+  readonly bitDepth?: VideoBitDepth;
+  /** Keeps transparency as an alpha channel in a `.mov` or `.webm`. */
   readonly alpha?: boolean;
   /** Pins one encoder, with no fallback. */
   readonly encoder?: string;

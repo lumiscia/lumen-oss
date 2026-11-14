@@ -28,20 +28,19 @@ export interface RenderOptions {
   /** Media by the alias the composition uses: a URL, or an upload to reference. */
   readonly media?: RenderMediaManifest;
   readonly webhookUrl?: string;
-  /** Wins over the composition's `render_settings.quality`. Unset, the host's default applies. */
+  /** Unset, the host's default applies. */
   readonly quality?: QualityPreset;
-  /** Wins over the composition's `render_settings.codec`. Unset, the host's default applies. */
+  /** Unset, a `mov` or `webm` gets its own codec and an `mp4` the host's default. */
   readonly codec?: VideoCodec;
   /**
-   * 10 encodes `hevc` or `av1` at 10 bits per sample. Wins over the composition's
-   * `render_settings.bit_depth`. Unset, 8, or 10 for `prores`. A host that can't write the depth
-   * rejects the render.
+   * 10 encodes `hevc` or `av1` at 10 bits per sample. Unset, 8, or 10 for `prores`. A host that
+   * can't write the depth rejects the render.
    */
   readonly bitDepth?: VideoBitDepth;
   /**
    * Keeps the frame's transparency as an alpha channel, in a `mov` (ProRes 4444) or `webm` (VP9).
-   * Wins over the composition's `render_settings.alpha`. Unset, the video is opaque. A host rejects
-   * alpha in a format or encoder that can't hold it rather than rendering opaque.
+   * Unset, the video is opaque. A host rejects alpha in a format or encoder that can't hold it
+   * rather than rendering opaque.
    */
   readonly alpha?: boolean;
   /**

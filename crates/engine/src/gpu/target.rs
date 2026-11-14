@@ -12,10 +12,7 @@ use lumen_ffmpeg::{
 
 use crate::error::RenderError;
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
-use crate::{
-    composition::BitDepth,
-    gpu::{GpuCompositionRenderer, YuvConverter, YuvFormat, YuvLayout},
-};
+use crate::gpu::{BitDepth, GpuCompositionRenderer, YuvConverter, YuvFormat, YuvLayout};
 
 /// Converts rendered frames to NV12 or P010 for a Vulkan Video encoder sharing the renderer's
 /// device. Frames render to `Rgba16Float`, so colour is quantised once, in the conversion.

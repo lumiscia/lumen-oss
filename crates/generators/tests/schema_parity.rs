@@ -616,34 +616,23 @@ fn document_keys_schema_matches_engine_parsing() {
             false,
         ),
         (
-            "codec and quality",
-            with_key(
-                &["render_settings"],
-                json!({ "width": 16, "height": 16, "codec": "hevc", "quality": "high" }),
-            ),
-            true,
-        ),
-        (
-            "unknown codec",
-            with_key(&["render_settings", "codec"], json!("vp8")),
+            "codec is not a render setting",
+            with_key(&["render_settings", "codec"], json!("hevc")),
             false,
         ),
         (
-            "alpha",
-            with_key(
-                &["render_settings"],
-                json!({ "width": 16, "height": 16, "codec": "prores", "alpha": true }),
-            ),
-            true,
-        ),
-        (
-            "non-boolean alpha",
-            with_key(&["render_settings", "alpha"], json!(1)),
+            "quality is not a render setting",
+            with_key(&["render_settings", "quality"], json!("high")),
             false,
         ),
         (
-            "non-string quality",
-            with_key(&["render_settings", "quality"], json!(18)),
+            "bit_depth is not a render setting",
+            with_key(&["render_settings", "bit_depth"], json!(10)),
+            false,
+        ),
+        (
+            "alpha is not a render setting",
+            with_key(&["render_settings", "alpha"], json!(true)),
             false,
         ),
         ("whole clip", audio(json!({})), true),

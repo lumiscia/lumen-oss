@@ -20,53 +20,6 @@ pub struct RenderSettings {
     pub height: u32,
 }
 
-/// A video codec a composition asks its encode for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OutputCodec {
-    H264,
-    Hevc,
-    Av1,
-    /// ProRes 4444, in `.mov`.
-    #[serde(rename = "prores")]
-    ProRes,
-    /// VP9, in `.webm`.
-    Vp9,
-}
-
-/// Bits per sample of the encoded video.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
-#[serde(try_from = "u8")]
-pub enum BitDepth {
-    #[default]
-    Eight,
-    Ten,
-}
-
-impl TryFrom<u8> for BitDepth {
-    type Error = String;
-
-    fn try_from(bits: u8) -> Result<Self, String> {
-        match bits {
-            8 => Ok(Self::Eight),
-            10 => Ok(Self::Ten),
-            _ => Err(format!("bit depth must be 8 or 10, got {bits}")),
-        }
-    }
-}
-
-/// How the root composition asks to be encoded. Renderers ignore it; the host that encodes reads
-/// it, and resolves `quality` against the presets it defines.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct OutputSettings {
-    pub codec: Option<OutputCodec>,
-    /// A quality preset name, such as `high`.
-    pub quality: Option<String>,
-    pub bit_depth: Option<BitDepth>,
-    /// Keeps the frame's transparency in the video, which only ProRes and VP9 hold.
-    pub alpha: Option<bool>,
-}
-
 /// A validated composition that can no longer change. It is fingerprinted once when built, so
 /// renderers recognize it across frames without reading all of it again. Edit it through
 /// [`Composition::into_builder`].
@@ -113,8 +66,6 @@ pub struct CompositionBuilder {
     pub scene: Scene,
     #[structural_hash(skip)] // Audio is independent of what frames record and of GPU caches.
     pub audio: Option<AudioTimeline>,
-    #[structural_hash(skip)] // Frames don't depend on how they're encoded.
-    pub output: OutputSettings,
     /// Templates that `clip` nodes instantiate, by name.
     pub compositions: BTreeMap<String, CompositionTemplate>,
 }
@@ -259,10 +210,6 @@ impl Composition {
             .any(|audio| !audio.clips.is_empty())
     }
 
-    pub fn output_settings(&self) -> &OutputSettings {
-        &self.parts.output
-    }
-
     /// Templates that `clip` nodes instantiate, by name.
     pub fn compositions(&self) -> &BTreeMap<String, CompositionTemplate> {
         &self.parts.compositions
@@ -317,7 +264,6 @@ impl CompositionBuilder {
                 render_settings,
             },
             audio: None,
-            output: OutputSettings::default(),
             compositions: BTreeMap::new(),
         }
     }

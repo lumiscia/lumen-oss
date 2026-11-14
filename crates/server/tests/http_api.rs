@@ -776,35 +776,22 @@ fn rejects_quality_this_host_cannot_resolve() {
     let server = Server::start_with(&[], |command| {
         command.env("LUMEN_QUALITY_CONFIG", &config);
     });
-    let post = |quality: Value, codec: Value, render_settings: Value| {
-        let mut composition = solid_composition();
-        composition["render_settings"] = render_settings;
-        server.post(&json!({ "composition": composition, "quality": quality, "codec": codec }))
+    let post = |quality: Value, codec: Value| {
+        server.post(
+            &json!({ "composition": solid_composition(), "quality": quality, "codec": codec }),
+        )
     };
-    let canvas = json!({ "width": 16, "height": 16 });
 
-    let unknown = invalid_quality_message(post(json!("cinema"), Value::Null, canvas.clone()));
+    let unknown = invalid_quality_message(post(json!("cinema"), Value::Null));
     assert!(
         unknown.contains("`cinema`") && unknown.contains("draft, standard, high, lossless"),
         "{unknown}"
     );
-    let no_encoder = invalid_quality_message(post(json!("lossless"), json!("av1"), canvas.clone()));
+    let no_encoder = invalid_quality_message(post(json!("lossless"), json!("av1")));
     assert!(no_encoder.contains("av1"), "{no_encoder}");
-    let from_composition = invalid_quality_message(post(
-        Value::Null,
-        Value::Null,
-        json!({ "width": 16, "height": 16, "quality": "cinema" }),
-    ));
-    assert!(from_composition.contains("`cinema`"), "{from_composition}");
-    let composition_codec = invalid_quality_message(post(
-        json!("lossless"),
-        Value::Null,
-        json!({ "width": 16, "height": 16, "codec": "av1" }),
-    ));
-    assert!(composition_codec.contains("av1"), "{composition_codec}");
-    let bad_codec = invalid_quality_message(post(json!("high"), json!("vp8"), canvas.clone()));
+    let bad_codec = invalid_quality_message(post(json!("high"), json!("vp8")));
     assert!(bad_codec.contains("vp8"), "{bad_codec}");
-    let wrong_container = post(json!("high"), json!("vp9"), canvas.clone());
+    let wrong_container = post(json!("high"), json!("vp9"));
     assert_eq!(wrong_container.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(error_code(wrong_container), "invalid_output");
     let alpha_mp4 = server.post(&json!({ "composition": solid_composition(), "alpha": true }));
@@ -812,17 +799,7 @@ fn rejects_quality_this_host_cannot_resolve() {
     assert_eq!(error_code(alpha_mp4), "invalid_output");
 
     assert_eq!(
-        post(json!("archive"), json!("h264"), canvas.clone()).status(),
-        StatusCode::ACCEPTED
-    );
-    // The request's preset wins over the composition's.
-    assert_eq!(
-        post(
-            json!("archive"),
-            Value::Null,
-            json!({ "width": 16, "height": 16, "quality": "cinema" })
-        )
-        .status(),
+        post(json!("archive"), json!("h264")).status(),
         StatusCode::ACCEPTED
     );
 }

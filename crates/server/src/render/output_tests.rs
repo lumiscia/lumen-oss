@@ -889,34 +889,9 @@ fn resolving_alpha_names_what_can_hold_it() {
     assert_eq!(prores.first().encoder, "prores_ks");
     assert!(prores.alpha());
     assert_eq!(prores.bit_depth(), lumen_ffmpeg::BitDepth::Ten);
-    // The composition's render_settings ask for alpha when the request doesn't.
-    let asks = parse_composition(&json!({
-        "timeline": { "fps": FPS, "duration_frames": 1 },
-        "render_settings": { "width": 16, "height": 16, "alpha": true, "codec": "prores" },
-        "nodes": [
-            { "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 0] } },
-            { "id": 2, "type": "media_output" }
-        ],
-        "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
-    }))
-    .unwrap();
-    let from_settings = super::resolve_encoder(
-        &quality,
-        &asks,
-        OutputFormat::Mov,
-        lumen_ffmpeg::QualityRequest::default(),
-    )
-    .unwrap();
-    assert_eq!(
-        (
-            from_settings.first().encoder.as_str(),
-            from_settings.alpha()
-        ),
-        ("prores_ks", true)
-    );
     let opaque = super::resolve_encoder(
         &quality,
-        &asks,
+        &transparent(),
         OutputFormat::Mov,
         lumen_ffmpeg::QualityRequest {
             alpha: Some(false),
@@ -925,6 +900,50 @@ fn resolving_alpha_names_what_can_hold_it() {
     )
     .unwrap();
     assert!(!opaque.alpha());
+}
+
+/// With nothing in the request, a render takes the codec its container holds, or the host's
+/// default in an MP4, and the request's codec wins over both.
+#[test]
+fn each_container_gets_its_own_codec_without_a_request() {
+    let quality = lumen_ffmpeg::QualityConfig::built_in();
+    let resolve = |format, codec| {
+        super::resolve_encoder(
+            &quality,
+            &transparent(),
+            format,
+            lumen_ffmpeg::QualityRequest {
+                codec,
+                ..lumen_ffmpeg::QualityRequest::default()
+            },
+        )
+    };
+    let codec_of = |choice: lumen_ffmpeg::VideoEncoderChoice| {
+        let info = lumen_ffmpeg::encoder_info(&choice.first().encoder).unwrap();
+        lumen_ffmpeg::EncodeCodec::of(info.codec)
+    };
+    for (format, expected) in [
+        (OutputFormat::Mp4, lumen_ffmpeg::EncodeCodec::H264),
+        (OutputFormat::Mov, lumen_ffmpeg::EncodeCodec::ProRes),
+        (OutputFormat::Webm, lumen_ffmpeg::EncodeCodec::Vp9),
+    ] {
+        match resolve(format, None) {
+            Ok(choice) => assert_eq!(codec_of(choice), Some(expected), "{format:?}"),
+            Err(error) => {
+                assert_eq!(
+                    error.code(),
+                    ErrorCode::InvalidQuality,
+                    "{format:?}: {error}"
+                );
+                eprintln!("{format:?}: no encoder for {expected} in this FFmpeg build");
+            }
+        }
+    }
+    if let Ok(choice) = resolve(OutputFormat::Mp4, Some(lumen_ffmpeg::EncodeCodec::Hevc)) {
+        assert_eq!(codec_of(choice), Some(lumen_ffmpeg::EncodeCodec::Hevc));
+    }
+    let error = resolve(OutputFormat::Mov, Some(lumen_ffmpeg::EncodeCodec::Hevc)).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidOutput);
 }
 
 /// A composition with audio is refused while resolving, before any render is queued or GPU work
