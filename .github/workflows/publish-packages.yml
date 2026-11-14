@@ -161,12 +161,11 @@ jobs:
 
           crates.io:
           - lumen-engine@$release_version
+          - lumen-engine-3d@$release_version
           - lumen-engine-ffmpeg@$release_version
           - lumen-engine-gpu@$release_version
           - lumen-engine-macros@$release_version
           - lumen-engine-text@$release_version
-          - lumen-server-api@$release_version
-          - lumen-server@$release_version
 
           EOF
 

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The HTTP API of lumen-server: its request, response, event and error types."
+publish = false
 
 [lib]
 name = "lumen_server_api"

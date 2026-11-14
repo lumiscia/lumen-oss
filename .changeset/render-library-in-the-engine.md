@@ -2,7 +2,7 @@
 "@lumiscia/lumen-bindings": minor
 ---
 
-The render library is now `lumen_engine::render`, behind the engine's new `render` feature: compositions to MP4, MOV, WebM, stills and image sequences on a GPU with FFmpeg, with the disk media store (`LocalMediaStore`) and the font catalog (`FontCatalog`). `lumen-server` is only the HTTP server: a binary with no library and no `cli` feature, so `cargo install lumen-server` and `cargo run -p lumen-server` build it as they are.
+The render library is now `lumen_engine::render`, behind the engine's new `render` feature: compositions to MP4, MOV, WebM, stills and image sequences on a GPU with FFmpeg, with the disk media store (`LocalMediaStore`) and the font catalog (`FontCatalog`). `lumen-server` is only the HTTP server: a binary with no library and no `cli` feature, so `cargo run -p lumen-server` builds it as it is.
 
 An embedder depends on the engine instead of the server:
 
