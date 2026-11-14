@@ -15,6 +15,7 @@ pub struct RenderOutput {
     pub frames: FrameRange,
     /// `1` to `100`, for the JPEG formats only. Unset, `90`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "metadata", schemars(range(min = 1, max = 100)))]
     pub jpeg_quality: Option<u8>,
 }
 

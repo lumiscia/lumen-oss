@@ -872,8 +872,8 @@
         "jpegQuality": {
           "description": "`1` to `100`, for the JPEG formats only. Unset, `90`.",
           "format": "uint8",
-          "maximum": 255,
-          "minimum": 0,
+          "maximum": 100,
+          "minimum": 1,
           "type": "integer"
         }
       },
