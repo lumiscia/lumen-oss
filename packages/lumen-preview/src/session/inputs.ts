@@ -11,19 +11,29 @@ import type {
 
 /** Everything a load needs, ready to compare against the last one and send to the worker. */
 export interface ResolvedPreviewInputs {
+  composition: LumenPreviewComposition | null | undefined;
   compositionJson: string | null;
   fonts: ReadonlyMap<string, MediaSourceInput>;
   media: ReadonlyMap<string, PreviewMediaEntry>;
 }
 
+/**
+ * A composition that is the very object `previous` resolved isn't serialized again, so a caller
+ * that passes its inputs on every render doesn't pay for the JSON each time. Change a composition
+ * by passing a new object.
+ */
 export function resolvePreviewInputs(
   composition: LumenPreviewComposition | null | undefined,
   media: LumenPreviewMedia = {},
   fonts: LumenPreviewFonts = {},
+  previous: ResolvedPreviewInputs | null = null,
 ): ResolvedPreviewInputs {
-  const document = composition ? compositionDocument(composition) : null;
   return {
-    compositionJson: document && JSON.stringify(document),
+    composition,
+    compositionJson:
+      previous && previous.composition === composition
+        ? previous.compositionJson
+        : serializeComposition(composition),
     fonts: new Map(
       Object.entries(fonts).map(([family, source]) => [family, absoluteSource(source)]),
     ),
@@ -38,6 +48,12 @@ export function resolvePreviewInputs(
 
 export function sameMediaEntry(left: PreviewMediaEntry, right: PreviewMediaEntry): boolean {
   return left.kind === right.kind && samePreviewMediaInput(left, right);
+}
+
+function serializeComposition(
+  composition: LumenPreviewComposition | null | undefined,
+): string | null {
+  return composition ? JSON.stringify(compositionDocument(composition)) : null;
 }
 
 function compositionDocument(composition: LumenPreviewComposition): LumenComposition {

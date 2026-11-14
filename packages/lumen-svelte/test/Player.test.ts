@@ -21,7 +21,7 @@ interface MockSession {
     workerUrl: unknown;
   };
   dispose: ReturnType<typeof vi.fn>;
-  update: ReturnType<typeof vi.fn>;
+  setInputs: ReturnType<typeof vi.fn>;
 }
 
 const sessions = vi.hoisted(() => [] as MockSession[]);
@@ -29,7 +29,7 @@ const sessions = vi.hoisted(() => [] as MockSession[]);
 vi.mock("@lumiscia/lumen-preview", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@lumiscia/lumen-preview")>()),
   mountPreview: (host: HTMLElement, options: MockSession["options"]) => {
-    const session = { dispose: vi.fn(), host, options, update: vi.fn() };
+    const session = { dispose: vi.fn(), host, options, setInputs: vi.fn() };
     sessions.push(session);
     return session;
   },
@@ -118,7 +118,9 @@ describe("Player", () => {
     component.setComposition(composition);
     flushSync();
     expect(sessions).toHaveLength(1);
-    expect(sessions[0]?.update).toHaveBeenLastCalledWith(expect.objectContaining({ composition }));
+    expect(sessions[0]?.setInputs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ composition }),
+    );
 
     await unmount(component);
   });
@@ -144,7 +146,7 @@ describe("Player", () => {
     flushSync();
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.dispose).not.toHaveBeenCalled();
-    expect(sessions[0]?.update).toHaveBeenLastCalledWith(
+    expect(sessions[0]?.setInputs).toHaveBeenLastCalledWith(
       expect.objectContaining({
         loop: true,
         muted: true,
@@ -158,7 +160,7 @@ describe("Player", () => {
 
     component.setOptions({ rate: 0.5 });
     flushSync();
-    expect(sessions[0]?.update).toHaveBeenLastCalledWith(
+    expect(sessions[0]?.setInputs).toHaveBeenLastCalledWith(
       expect.objectContaining({ loop: undefined, rate: 0.5, range: undefined }),
     );
 
