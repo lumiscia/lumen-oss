@@ -43,10 +43,10 @@ pub struct ResizeParams {
     #[meta(min = 1, step = 1)]
     pub height: i64,
     /// How the source raster should fit the output bounds.
-    #[meta(kind = "enum", enum_type = ResizeMode)]
+    #[meta()]
     pub mode: ResizeMode,
     /// Sampling filter used when resizing.
-    #[meta(kind = "enum", enum_type = RasterSampling)]
+    #[meta()]
     pub sampling: RasterSampling,
 }
 

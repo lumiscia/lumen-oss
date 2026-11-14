@@ -29,7 +29,7 @@ pub enum ShapeGeometryKind {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ShapeParams {
     /// Geometry primitive to rasterize.
-    #[meta(kind = "enum", enum_type = ShapeGeometryKind)]
+    #[meta()]
     pub geometry_kind: ShapeGeometryKind,
     /// Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel
     /// wide.

@@ -71,7 +71,7 @@ pub struct Text3dParams {
     #[meta(min = 1, max = 1000)]
     pub font_weight: i64,
     /// Font style.
-    #[meta(kind = "enum", enum_type = TextFontStyle)]
+    #[meta()]
     pub font_style: TextFontStyle,
     /// Maximum line width in world units, at which lines wrap. Use 0 for automatic width.
     #[meta(min = 0, enforced_min, step = 0.1)]
@@ -89,14 +89,14 @@ pub struct Text3dParams {
     pub line_height: f64,
     /// How lines align with each other, and which point of the text's box sits at `position`:
     /// its left edge, centre or right edge. Justified lines anchor at the left edge.
-    #[meta(kind = "enum", enum_type = TextAlignmentHorizontal)]
+    #[meta()]
     pub alignment_horizontal: TextAlignmentHorizontal,
     /// Which point of the text's box sits at `position` vertically: the top of its first line,
     /// its middle, or the bottom of its last line.
-    #[meta(kind = "enum", enum_type = TextAlignmentVertical)]
+    #[meta()]
     pub alignment_vertical: TextAlignmentVertical,
     /// Case applied to the text.
-    #[meta(kind = "enum", enum_type = TextTransform)]
+    #[meta()]
     pub text_transform: TextTransform,
     /// Thickness along Z in world units, centred on `position`, so the front faces +Z at half of
     /// it. 0 is flat.

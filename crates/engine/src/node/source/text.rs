@@ -168,7 +168,7 @@ pub struct TextLayoutParams {
     #[meta(min = 1, max = 1000)]
     pub font_weight: i64,
     /// Font style.
-    #[meta(kind = "enum", enum_type = TextFontStyle)]
+    #[meta()]
     pub font_style: TextFontStyle,
     /// Maximum line width in pixels. Use 0 for automatic width.
     #[meta(min = 0, step = 1)]
@@ -185,7 +185,7 @@ pub struct TextLayoutParams {
     #[meta(min = 0, step = 1)]
     pub line_height: f64,
     /// Horizontal text alignment.
-    #[meta(kind = "enum", enum_type = TextAlignmentHorizontal)]
+    #[meta()]
     pub alignment_horizontal: TextAlignmentHorizontal,
     /// Most lines to show. Unlimited when absent.
     #[meta(min = 0, step = 1)]
@@ -197,20 +197,20 @@ pub struct TextLayoutParams {
     /// it is, or in an ellipsis. Clusters at that line's end are dropped until the ellipsis fits
     /// `max_width`. The ellipsis takes the style and paint of the text it follows, and is one
     /// glyph, numbered after the last one shown.
-    #[meta(kind = "enum", enum_type = TextOverflow)]
+    #[meta()]
     pub overflow: TextOverflow,
     /// Whether the text shrinks to fit `max_width`, `max_lines` and `max_height` without breaking
     /// a word, before any lines are dropped. Every font size, letter spacing, `line_height`,
     /// baseline shift, paragraph spacing, decoration size and stroke width scales by the largest
     /// factor up to 1 that fits.
-    #[meta(kind = "enum", enum_type = TextFit)]
+    #[meta()]
     pub fit: TextFit,
     /// Smallest `font_size` that `fit` shrinks the text to. Lines that still do not fit are
     /// dropped by `overflow`.
     #[meta(min = 1, step = 1)]
     pub min_font_size: f64,
     /// Case applied to the text, and to spans that leave theirs unset.
-    #[meta(kind = "enum", enum_type = TextTransform)]
+    #[meta()]
     pub text_transform: TextTransform,
     /// Extra space in pixels after each paragraph, but the last. A line break starts a new
     /// paragraph.
@@ -267,17 +267,17 @@ pub struct TextDecorationParams {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct TextDrawParams {
     /// Glyph rendering mode. MSDF reuses outline distance fields across sizes; Auto is MSDF from 512 px.
-    #[meta(kind = "enum", enum_type = TextRenderMode)]
+    #[meta()]
     pub render_mode: TextRenderMode,
     /// Text color, and that of spans without their own.
     #[meta(role = "color")]
     pub color: Paint,
     /// Box a span's own gradient `color` spans: the span's lines, or the whole text. The
     /// node's `color` always spans the whole text.
-    #[meta(kind = "enum", enum_type = TextPaintSpace)]
+    #[meta()]
     pub paint_space: TextPaintSpace,
     /// Vertical text alignment.
-    #[meta(kind = "enum", enum_type = TextAlignmentVertical)]
+    #[meta()]
     pub alignment_vertical: TextAlignmentVertical,
     /// Enables 4×4 supersampling when evaluating paint at each glyph pixel.
     #[meta()]

@@ -63,7 +63,7 @@ pub enum MediaInKind {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct MediaInParams {
     /// Type of external media source.
-    #[meta(kind = "enum", name = "Media type", enum_type = MediaInSourceKind)]
+    #[meta(name = "Media type")]
     pub kind: MediaInSourceKind,
     /// External media source: a path or `media` alias, or `asset:<id>` for an asset of the host's.
     #[meta(role = "source_id")]
@@ -79,10 +79,10 @@ pub struct MediaInParams {
     #[meta(step = 0.1)]
     pub speed: f64,
     /// Behavior when playback leaves the source range.
-    #[meta(kind = "enum", enum_type = LoopMode)]
+    #[meta()]
     pub loop_mode: LoopMode,
     /// Whether a video's colour is already multiplied by its alpha. Images ignore it.
-    #[meta(kind = "enum", enum_type = AlphaMode)]
+    #[meta()]
     pub alpha: AlphaMode,
 }
 
