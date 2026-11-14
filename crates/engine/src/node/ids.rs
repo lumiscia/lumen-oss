@@ -13,6 +13,7 @@ use std::fmt;
     serde::Serialize,
     lumen_macros::StructuralHash,
 )]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct NodeId(pub u64);
 

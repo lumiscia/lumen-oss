@@ -1,8 +1,8 @@
-import type { LumenDiagnostic } from "@lumiscia/lumen-types";
+import type { Diagnostic } from "@lumiscia/lumen-types";
 
 export interface LumenErrorFields {
   readonly cause?: unknown;
-  readonly diagnostics?: readonly LumenDiagnostic[];
+  readonly diagnostics?: readonly Diagnostic[];
   readonly renderId?: string;
   readonly requestId?: string;
   readonly retryAfterMs?: number;
@@ -31,7 +31,7 @@ export class LumenError extends Error {
    * What is wrong with the composition, when the server rejected it as invalid. Empty otherwise.
    * Codes you don't know may appear; treat them by their severity.
    */
-  readonly diagnostics: readonly LumenDiagnostic[];
+  readonly diagnostics: readonly Diagnostic[];
 
   constructor(code: string, message: string, fields: LumenErrorFields = {}) {
     super(message, fields.cause === undefined ? undefined : { cause: fields.cause });
@@ -84,11 +84,11 @@ export async function errorFromResponse(
 }
 
 /** The well-formed diagnostics in `value`, dropping anything else. */
-function readDiagnostics(value: unknown): LumenDiagnostic[] {
+function readDiagnostics(value: unknown): Diagnostic[] {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value.flatMap((entry: unknown): LumenDiagnostic[] => {
+  return value.flatMap((entry: unknown): Diagnostic[] => {
     if (
       !isRecord(entry) ||
       (entry.severity !== "error" && entry.severity !== "warning") ||

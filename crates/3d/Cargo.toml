@@ -18,6 +18,8 @@ draco = ["dep:draco-core"]
 meshopt = ["dep:meshopt-pure"]
 ktx2 = ["dep:basisu", "dep:ruzstd"]
 webp = ["image/webp"]
+# Derives the JSON Schema of `ModelInfo`.
+metadata = ["dep:schemars"]
 
 [dependencies]
 base64 = "0.22.1"
@@ -45,3 +47,4 @@ meshopt-pure = { version = "1.3.0", optional = true }
 ruzstd = { version = "0.7.3", default-features = false, features = ["std"], optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+schemars = { version = "1.2.3", optional = true }

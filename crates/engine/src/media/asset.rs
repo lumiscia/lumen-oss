@@ -12,6 +12,7 @@ pub const ASSET_SCHEME: &str = "asset:";
 
 /// What an asset holds, which its store knows from checking it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum AssetKind {
     Image,

@@ -1,4 +1,4 @@
-import type { LumenDiagnostic, MediaFailure } from "@lumiscia/lumen-types";
+import type { Diagnostic, MediaFailure } from "@lumiscia/lumen-types";
 import { epochNow, type PreviewClock } from "./clock.js";
 import {
   previewDependencies,
@@ -114,7 +114,7 @@ export type LumenPreviewWorkerEvent =
       width: number;
     }
   | {
-      diagnostics: LumenDiagnostic[];
+      diagnostics: Diagnostic[];
       loadId: number;
       /** The media source that couldn't be used, when that is why the load failed. */
       media: MediaFailure | null;
@@ -132,7 +132,7 @@ export type LumenPreviewWorkerEvent =
     }
   | {
       /** The engine's code for the failure, when it has one, as the one diagnostic. */
-      diagnostics: LumenDiagnostic[];
+      diagnostics: Diagnostic[];
       loadId: number;
       /** The media source that couldn't be used, when that is why the frame failed. */
       media: MediaFailure | null;

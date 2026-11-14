@@ -1,4 +1,4 @@
-import type { LumenDiagnostic, MediaFailure } from "@lumiscia/lumen-types";
+import type { Diagnostic, MediaFailure } from "@lumiscia/lumen-types";
 
 export type LumenPreviewErrorCode =
   /** A source named in the composition's audio couldn't be decoded. The video keeps playing. */
@@ -23,7 +23,7 @@ export interface LumenPreviewError {
    * or `render.node_evaluation`) as one error diagnostic with an empty `path`. Empty for every
    * other failure, and for a render that failed on a media source, which `media` says.
    */
-  diagnostics: readonly LumenDiagnostic[];
+  diagnostics: readonly Diagnostic[];
   /**
    * The media source that couldn't be used, when that is why the composition didn't load or a
    * frame didn't render: which source, what was wanted, why it failed (`media.not_found`,

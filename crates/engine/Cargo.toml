@@ -13,7 +13,8 @@ path = "src/lib.rs"
 [features]
 ffmpeg = ["dep:lumen-ffmpeg"]
 image = ["dep:image", "dep:tiff", "dep:moxcms"]
-metadata = []
+# The node schemas, and the JSON Schema of the payloads the engine returns.
+metadata = ["dep:schemars", "lumen-3d?/metadata"]
 metal = ["dep:objc2-metal", "lumen-ffmpeg?/metal", "lumen-gpu/metal"]
 vulkan = ["lumen-ffmpeg?/vulkan", "lumen-gpu/vulkan"]
 cuda = ["lumen-ffmpeg?/cuda"]
@@ -43,6 +44,7 @@ tiff = { version = "0.11.3", default-features = false, optional = true }
 moxcms = { version = "0.8.1", default-features = false, optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145", features = ["float_roundtrip"] }
+schemars = { version = "1.2.3", optional = true }
 serde_path_to_error = "0.1.20"
 anyhow = "1.0.101"
 foldhash = "0.2.0"

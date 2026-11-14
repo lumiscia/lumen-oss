@@ -1,4 +1,4 @@
-import type { LumenDiagnostic, MediaFailure } from "@lumiscia/lumen-types";
+import type { Diagnostic, MediaFailure } from "@lumiscia/lumen-types";
 
 import { LumenAudioEngine } from "../audio-engine.js";
 import { clockPositionMs, epochNow, fitClock, type PreviewClock } from "../clock.js";
@@ -542,7 +542,7 @@ export class LumenPreviewSession {
 
   #loadFailed(
     error: unknown,
-    diagnostics: readonly LumenDiagnostic[] = [],
+    diagnostics: readonly Diagnostic[] = [],
     media: MediaFailure | null = errorMediaFailure(error),
   ): void {
     this.#loading = false;
@@ -977,7 +977,7 @@ export class LumenPreviewSession {
     code: LumenPreviewErrorCode,
     scope: string,
     error: unknown,
-    diagnostics: readonly LumenDiagnostic[] = [],
+    diagnostics: readonly Diagnostic[] = [],
     media: MediaFailure | null = errorMediaFailure(error),
   ): LumenPreviewError {
     reportConsoleError(scope, error);

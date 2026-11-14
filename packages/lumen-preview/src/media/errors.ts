@@ -1,4 +1,4 @@
-import type { MediaFailure, MediaFailureCode, MediaFailureKind } from "@lumiscia/lumen-types";
+import type { MediaFailure, MediaFailureCode, AssetKind } from "@lumiscia/lumen-types";
 
 /**
  * Why a media source failed in the browser. They match the engine's reasons for a source it can't
@@ -20,9 +20,9 @@ export type LumenMediaErrorCode =
 /** What a media error says about the kinds of media involved. */
 export interface LumenMediaErrorKinds {
   /** The kinds the use reads. */
-  readonly wanted?: readonly MediaFailureKind[];
+  readonly wanted?: readonly AssetKind[];
   /** The kind the source is, when it was established. */
-  readonly found?: MediaFailureKind;
+  readonly found?: AssetKind;
 }
 
 export class LumenMediaError extends Error {
@@ -30,8 +30,8 @@ export class LumenMediaError extends Error {
   readonly cause: unknown;
   /** The id of the image, model or video source that failed, when one is involved. */
   readonly sourceId: string | undefined;
-  readonly wanted: readonly MediaFailureKind[];
-  readonly found: MediaFailureKind | undefined;
+  readonly wanted: readonly AssetKind[];
+  readonly found: AssetKind | undefined;
 
   constructor(
     code: LumenMediaErrorCode,

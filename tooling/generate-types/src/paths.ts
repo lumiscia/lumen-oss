@@ -17,4 +17,11 @@ export const generatedMetaTypesPath = path.join(
   "packages/lumen-types/src/generated/meta.ts",
 );
 
+export const runtimeSchemaPath = path.join(repoRoot, "definitions/runtime.schema.json");
+
+export const generatedRuntimeTypesPath = path.join(
+  repoRoot,
+  "packages/lumen-types/src/generated/runtime.ts",
+);
+
 export const nodeReferencePath = path.join(repoRoot, "docs/node-reference.md");

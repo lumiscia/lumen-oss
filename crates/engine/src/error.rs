@@ -594,6 +594,63 @@ impl Serialize for MediaFailure {
     }
 }
 
+/// The schema of what [`Serialize`] writes: `limit` and `actual` only for `media.too_large`.
+#[cfg(feature = "metadata")]
+impl schemars::JsonSchema for MediaFailure {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "MediaFailure".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let kind = generator.subschema_for::<AssetKind>();
+        let location = generator.subschema_for::<MediaLocation>();
+        schemars::json_schema!({
+            "description": "A media source that can't be used, the same way for every kind and every host.",
+            "type": "object",
+            "properties": {
+                "code": {
+                    "x-lumen-type": "MediaFailureCode",
+                    "description": "Why the source can't be used, as its public diagnostic code. `media.decode` is data that should be\nwhat the use reads but is corrupt, truncated or in no format the engine identifies;\n`media.unsupported` is data it identifies and doesn't read, such as a codec it lacks.",
+                    "type": "string",
+                    "enum": MediaReason::CODES
+                },
+                "source": {
+                    "description": "The source as the composition wrote it: a path, URL, alias or `asset:<id>`.",
+                    "type": "string"
+                },
+                "wanted": {
+                    "description": "The kinds the place using the source reads; empty when the host that failed doesn't know.",
+                    "type": "array",
+                    "items": kind
+                },
+                "found": {
+                    "description": "The kind the source is, when that is established. It is absent when it can't be told,\nsuch as an MP4 that is not video-only or audio-only until opened.",
+                    "$ref": kind.get("$ref")
+                },
+                "at": {
+                    "description": "Where the composition uses the source, when known.",
+                    "$ref": location.get("$ref")
+                },
+                "details": { "type": "string" },
+                "limit": {
+                    "description": "For `media.too_large`, the limit, in the unit `details` names.",
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                },
+                "actual": {
+                    "description": "For `media.too_large`, the value over the limit, when it is known.",
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                }
+            },
+            "required": ["code", "source", "wanted", "details"],
+            "additionalProperties": false
+        })
+    }
+}
+
 /// What a kind is called in a sentence about one source.
 fn kind_noun(kind: AssetKind) -> &'static str {
     match kind {

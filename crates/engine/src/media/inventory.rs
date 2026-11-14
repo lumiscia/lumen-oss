@@ -14,8 +14,9 @@ use super::AssetKind;
 
 /// A param of a node, in the root composition or in a template.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 pub struct NodeParamAt {
-    /// The template the node is in, or `None` for the root.
+    /// The template the node is in, absent for the root.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
     pub node: NodeId,
@@ -34,6 +35,7 @@ impl fmt::Display for NodeParamAt {
 
 /// Where a composition names a source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum MediaLocation {
     Node(NodeParamAt),
@@ -70,6 +72,7 @@ impl fmt::Display for MediaLocation {
 
 /// One place a source is used, and the kinds of media it reads there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 pub struct MediaUse {
     pub at: MediaLocation,
     pub kinds: Vec<AssetKind>,
@@ -78,6 +81,7 @@ pub struct MediaUse {
 /// A source the composition names as written (a path, a URL or an alias, or `asset:<id>`), with
 /// each place it is used.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 pub struct MediaDependency {
     pub source: String,
     /// The kinds of media the uses read, without repeats, in the order the uses first name them.
@@ -87,6 +91,7 @@ pub struct MediaDependency {
 
 /// A media param set by an expression, whose source is known only when a frame evaluates it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 pub struct DynamicMediaUse {
     #[serde(flatten)]
     pub at: NodeParamAt,
@@ -96,6 +101,7 @@ pub struct DynamicMediaUse {
 /// A font family a text node names as a literal. A family is not a media source: the host
 /// resolves it by name, falling back to its own fonts, unless it is written `asset:<id>`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 pub struct FontDependency {
     pub family: String,
     pub uses: Vec<NodeParamAt>,
@@ -103,6 +109,7 @@ pub struct FontDependency {
 
 /// Everything a composition needs before it renders, found without rendering it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 pub struct MediaInventory {
     /// Each distinct source, in the order the root's nodes, the templates' nodes and then the
     /// audio first name it.
