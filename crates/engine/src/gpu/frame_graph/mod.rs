@@ -18,7 +18,7 @@ use lumen_gpu::{
 };
 
 use crate::{
-    composition::Composition,
+    composition::{Composition, SceneId},
     error::{LumenError, RenderError},
     expr::{ExpressionContext, ExpressionValue},
     media::{AssetKind, MediaIdentity, MediaStore},
@@ -208,9 +208,9 @@ fn dynamic_program(
 struct PathId(u32);
 
 /// A node reached along one path of time remaps and clips, in one graph.
-type InstanceKey = (usize, PathId, NodeId);
+type InstanceKey = (SceneId, PathId, NodeId);
 /// A node of one graph, wherever it is reached from.
-type GraphNodeKey = (usize, NodeId);
+type GraphNodeKey = (SceneId, NodeId);
 /// A node reached along one path, in one sample of the `motion_blur` that path samples, or in
 /// sample 0 outside one.
 type MemoKey = (InstanceKey, u32);
@@ -511,11 +511,10 @@ impl FrameGraph {
             st: &mut self.state,
             output_format,
         };
-        let root = composition.graph();
-        let mut pending = vec![(root, root.output())];
+        let mut pending = vec![(SceneId::Root, composition.graph(), composition.output())];
         let mut seen = HashSet::default();
-        while let Some((graph, id)) = pending.pop() {
-            if !seen.insert((std::ptr::from_ref(graph) as usize, id)) {
+        while let Some((scene, graph, id)) = pending.pop() {
+            if !seen.insert((scene, id)) {
                 continue;
             }
             let Some(node) = graph.nodes.get(&id) else {
@@ -527,8 +526,12 @@ impl FrameGraph {
                     let template = clip
                         .template_name()
                         .and_then(|name| composition.template(name));
-                    if let Some((template, output)) = template {
-                        pending.push((&template.scene.graph, output));
+                    if let Some(template) = template {
+                        pending.push((
+                            template.id,
+                            &template.template.scene.graph,
+                            template.output,
+                        ));
                     }
                 }
                 NodeKind::Switch(switch) => {
@@ -539,13 +542,13 @@ impl FrameGraph {
                             .unwrap_or_default(),
                         Deferred::Expr(_) => &switch.layers,
                     };
-                    pending.extend(layers.iter().map(|&layer| (graph, layer)));
+                    pending.extend(layers.iter().map(|&layer| (scene, graph, layer)));
                 }
                 _ => pending.extend(
                     node.input_ports()
                         .into_iter()
                         .flatten()
-                        .map(|input| (graph, input)),
+                        .map(|input| (scene, graph, input)),
                 ),
             }
         }
@@ -647,10 +650,10 @@ impl FrameGraph {
     #[cfg(feature = "test-hooks")]
     pub(crate) fn node_domain(
         &self,
-        composition: &Composition,
+        _composition: &Composition,
         node: NodeId,
     ) -> Option<TextureDomain> {
-        let graph = std::ptr::from_ref(composition.graph()) as usize;
+        let graph = SceneId::Root;
         let recorded = self.state.memo.iter().find_map(|((key, _), raster)| {
             (key.0 == graph && key.2 == node).then_some(raster.domain)
         });
@@ -1066,7 +1069,7 @@ impl<'a> FrameCx<'a> {
         raster: Raster,
     ) -> Option<crate::gpu::mips::Stable> {
         use crate::gpu::mips::Stable;
-        let graph = self.graph_key();
+        let graph = self.scope.id;
         if let Some(slot) = self.st.retained.slots.get(&(graph, node))
             && (slot.raster.tex == raster.tex || slot.full == Some(raster.tex))
         {
@@ -1113,7 +1116,7 @@ impl<'a> FrameCx<'a> {
         node: NodeId,
         count: u32,
     ) -> Option<Arc<[lumen_3d::glam::Mat4]>> {
-        let key = (self.graph_key(), node);
+        let key = (self.scope.id, node);
         let kept = self.st.scene.placements.get_mut(&key)?;
         if kept.count != count {
             return None;
@@ -1131,7 +1134,7 @@ impl<'a> FrameCx<'a> {
         count: u32,
         locals: Arc<[lumen_3d::glam::Mat4]>,
     ) {
-        let key = (self.graph_key(), node);
+        let key = (self.scope.id, node);
         self.st.scene.placements.insert(
             key,
             state::KeptPlacements {
@@ -1145,10 +1148,6 @@ impl<'a> FrameCx<'a> {
     pub(crate) fn canvas_size(&self) -> Size {
         let settings = &self.scope.scene.render_settings;
         Size::new(settings.width.max(1), settings.height.max(1))
-    }
-
-    fn graph_key(&self) -> usize {
-        std::ptr::from_ref(&self.scope.scene.graph) as usize
     }
 
     /// Records the required input `port` of `node_id` as is.
@@ -1177,7 +1176,7 @@ impl<'a> FrameCx<'a> {
             .scope
             .node(node_id)
             .ok_or(RenderError::MissingNode { node_id })?;
-        let graph = self.graph_key();
+        let graph = self.scope.id;
         let staticness = if self.retain_static {
             self.staticness(node)
         } else {
@@ -1255,7 +1254,7 @@ impl<'a> FrameCx<'a> {
     #[expect(clippy::too_many_arguments, reason = "the parts of a slot")]
     fn retain(
         &mut self,
-        graph: usize,
+        graph: SceneId,
         node: NodeId,
         raster: Raster,
         passes: u64,
@@ -1288,7 +1287,7 @@ impl<'a> FrameCx<'a> {
 
     /// Notes in the output being recorded that it reads the kept output of `node`, which holds
     /// only on the frames the slot is correct on.
-    fn hold_slot(&mut self, graph: usize, node: NodeId) {
+    fn hold_slot(&mut self, graph: SceneId, node: NodeId) {
         let Some(track) = self.holds.last_mut() else {
             return;
         };
@@ -1341,7 +1340,7 @@ impl<'a> FrameCx<'a> {
     /// blurs its own motion adds their values at either end of its shutter, where it evaluates
     /// them too. `None` when one fails to evaluate.
     fn frame_values(&mut self, node: NodeId, frame: FrameTime) -> Option<Vec<ExpressionValue>> {
-        let graph = self.graph_key();
+        let graph = self.scope.id;
         let mut values = Vec::new();
         let mut pending = vec![node];
         let mut seen = HashSet::default();
@@ -1365,7 +1364,7 @@ impl<'a> FrameCx<'a> {
     fn own_values(&mut self, id: NodeId, frame: FrameTime) -> Option<Arc<[ExpressionValue]>> {
         let props = self.scope.props.as_ref();
         let key = (
-            (self.graph_key(), self.path, id),
+            (self.scope.id, self.path, id),
             frame.value().to_bits(),
             props.map_or(0, |props| Arc::as_ptr(props) as usize),
         );
@@ -1411,7 +1410,7 @@ impl<'a> FrameCx<'a> {
         if raster.domain.is_full_frame() {
             return Ok(raster);
         }
-        let slot_key = (self.graph_key(), node_id);
+        let slot_key = (self.scope.id, node_id);
         let kept = |slot: &Slot| slot.raster.tex == raster.tex;
         if let Some(slot) = self.st.retained.slots.get(&slot_key)
             && kept(slot)
@@ -1760,7 +1759,7 @@ impl<'a> FrameCx<'a> {
         node_id: NodeId,
         build: impl FnOnce(&Self) -> crate::Result<TextInstance>,
     ) -> crate::Result<Arc<TextInstance>> {
-        let key = (self.graph_key(), self.path, node_id);
+        let key = (self.scope.id, self.path, node_id);
         if let Some(text) = self.st.text.instances.get(&key) {
             return Ok(Arc::clone(text));
         }
@@ -2040,7 +2039,7 @@ impl<'a> FrameCx<'a> {
     /// How far `node` and everything it reads are static candidates. Walks its inputs depth first
     /// with a stack of its own, so a long chain of nodes can't run out of call stack.
     fn staticness(&mut self, node: &NodeKind) -> Staticness {
-        let graph = self.graph_key();
+        let graph = self.scope.id;
         let mut pending = vec![node.id()];
         // Nodes whose inputs have been put on `pending`, which are decided when next reached.
         let mut entered = HashSet::default();

@@ -202,6 +202,37 @@ fn static_template_parts_are_kept_per_clip_instance() {
     );
 }
 
+#[test]
+fn kept_output_is_reused_by_an_identical_composition_parsed_again() {
+    let template = json!([
+        { "id": 1, "type": "background", "params": { "paint": "#2040c0" } },
+        { "id": 2, "type": "opacity", "params": { "opacity": 0.5 } },
+        { "id": 3, "type": "background", "params": { "paint": "=rgba(frame * 10, prop('g'), 0, 128)" } },
+        { "id": 4, "type": "merge" },
+        { "id": 5, "type": "media_output" }
+    ]);
+    let clip = json!({ "id": 1, "type": "clip", "params": { "composition": "tile", "props": { "g": 40 } } });
+    let parse = || tile_clips(json!([clip]), template.clone());
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let first = parse();
+    at(&mut renderer, &first, 2.0);
+    let before = renderer.skipped_pass_count();
+    at(&mut renderer, &first, 3.0);
+    let kept_per_frame = renderer.skipped_pass_count() - before;
+    assert!(kept_per_frame >= 2, "the clip's static part is kept");
+    drop(first);
+
+    let second = parse();
+    let before = renderer.skipped_pass_count();
+    at(&mut renderer, &second, 4.0);
+    assert_eq!(
+        renderer.skipped_pass_count() - before,
+        kept_per_frame,
+        "the first frame of the second parse reads what the first kept"
+    );
+}
+
 /// Static layers 4 and 5 sharing square 3, and 7 with a third colour, selected in turn every two
 /// frames, under a moving square.
 fn switching_static_layers() -> Composition {

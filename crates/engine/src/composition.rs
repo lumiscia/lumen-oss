@@ -74,9 +74,28 @@ pub struct OutputSettings {
 pub struct Composition {
     parts: CompositionBuilder,
     fingerprint: u64,
-    /// The `media_output` node of the root graph, and of each template's.
+    /// The `media_output` node of the root graph.
     output: NodeId,
-    template_outputs: BTreeMap<String, NodeId>,
+    /// Each template's name and `media_output` node, in name order. A template's [`SceneId`] is
+    /// its position here.
+    templates: Vec<(String, NodeId)>,
+}
+
+/// Which scene of a composition a graph belongs to: the root, or one of its templates. The same
+/// for every composition built from equal parts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SceneId {
+    Root,
+    /// The template at this position in name order.
+    Template(u32),
+}
+
+/// A template of a composition with the scene id of its graph and its `media_output` node.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TemplateRef<'a> {
+    pub id: SceneId,
+    pub template: &'a CompositionTemplate,
+    pub output: NodeId,
 }
 
 /// What the root and each template are made of: a graph, its timeline and its canvas.
@@ -254,10 +273,28 @@ impl Composition {
         self.output
     }
 
-    /// The template named `name` with its `media_output` node.
-    pub(crate) fn template(&self, name: &str) -> Option<(&CompositionTemplate, NodeId)> {
-        let template = self.parts.compositions.get(name)?;
-        Some((template, self.template_outputs[name]))
+    /// The template named `name`.
+    pub(crate) fn template(&self, name: &str) -> Option<TemplateRef<'_>> {
+        let index = self
+            .templates
+            .binary_search_by(|(template, _)| template.as_str().cmp(name))
+            .ok()?;
+        Some(TemplateRef {
+            id: SceneId::Template(u32::try_from(index).ok()?),
+            template: self.parts.compositions.get(name)?,
+            output: self.templates[index].1,
+        })
+    }
+
+    /// The name of the template `id` is, or `None` for the root.
+    pub(crate) fn template_name(&self, id: SceneId) -> Option<&str> {
+        match id {
+            SceneId::Root => None,
+            SceneId::Template(index) => self
+                .templates
+                .get(usize::try_from(index).ok()?)
+                .map(|(name, _)| name.as_str()),
+        }
     }
 
     /// Identifies the composition's content: equal for compositions built from equal parts.
@@ -293,7 +330,7 @@ impl CompositionBuilder {
         Ok(Composition {
             fingerprint: fingerprint(&self),
             output: self.scene.graph.output(),
-            template_outputs: self
+            templates: self
                 .compositions
                 .iter()
                 .map(|(name, template)| (name.clone(), template.scene.graph.output()))
@@ -756,7 +793,32 @@ mod validation_tests {
     fn build_stores_the_output_node_of_every_graph() {
         let composition = builder().build().unwrap();
         assert_eq!(composition.output(), NodeId::new(2));
-        assert_eq!(composition.template("card").unwrap().1, NodeId::new(2));
+        assert_eq!(composition.template("card").unwrap().output, NodeId::new(2));
+    }
+
+    #[test]
+    fn templates_are_identified_by_their_position_in_name_order() {
+        let nodes = json!([
+            { "id": 1, "type": "background" },
+            { "id": 2, "type": "media_output" }
+        ]);
+        let connections = json!([{ "from_node": 1, "to_node": 2, "to_port": "source" }]);
+        let composition = crate::json::parse_value(&json!({
+            "timeline": { "fps": 30, "duration_frames": 10 },
+            "render_settings": { "width": 16, "height": 16 },
+            "compositions": {
+                "b": { "nodes": nodes, "connections": connections },
+                "a": { "nodes": nodes, "connections": connections }
+            },
+            "nodes": nodes,
+            "connections": connections
+        }))
+        .unwrap();
+        assert_eq!(composition.template("a").unwrap().id, SceneId::Template(0));
+        assert_eq!(composition.template("b").unwrap().id, SceneId::Template(1));
+        assert_eq!(composition.template_name(SceneId::Template(1)), Some("b"));
+        assert_eq!(composition.template_name(SceneId::Root), None);
+        assert!(composition.template("c").is_none());
     }
 }
 
