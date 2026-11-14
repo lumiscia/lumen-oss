@@ -11,6 +11,8 @@ pub use types::{
 
 /// `paint` if it is a solid color, or an error naming `path` if it is a gradient. Backs the
 /// `solid` param key.
+// Called by the derive macros' output.
+#[doc(hidden)]
 pub fn require_solid(paint: PaintDelegate, path: &str) -> Result<PaintDelegate, String> {
     match paint {
         PaintDelegate::Gradient(_) => Err(format!(

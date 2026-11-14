@@ -26,16 +26,13 @@ use crate::expr::Expression;
 
 pub use clip_props::{ClipPropValue, ClipProps};
 pub use deferred::Deferred;
-pub use deferred::{ParamValue, enum_value, truncated_int};
+pub use deferred::{ParamValue, truncated_int};
 pub use delegate::{
     DelegateEvalContext, DelegateEvaluable, Delegated, NodeParams, Override, PropertyRead,
-    assert_unique_params, field_path, nested_fields,
 };
 pub use ids::NodeId;
 pub use kind::NodeKind;
-pub use media_source::{
-    MediaParam, MediaSource, MediaSourceField, MediaValue, selected_media_kind,
-};
+pub use media_source::{MediaParam, MediaSource, MediaValue};
 pub use param_type::NodeParamType;
 pub(crate) use ports::required_input;
 pub use ports::{InputPortDef, PortKind};
@@ -45,6 +42,14 @@ pub use schema::{NodeCategory, NodeSchemaDef, PropertyDef, PropertyKind};
 #[cfg(feature = "metadata")]
 pub use schema::{NodeSchema, PropertyConstraints};
 pub use shader_uniforms::{ShaderUniformValue, ShaderUniforms};
+
+// The derive macros' output names these, so they are public for it and not for hosts.
+#[doc(hidden)]
+pub use deferred::enum_value;
+#[doc(hidden)]
+pub use delegate::{assert_unique_params, field_path, nested_fields};
+#[doc(hidden)]
+pub use media_source::{MediaSourceField, selected_media_kind};
 
 pub trait Node: Send + Sync {
     fn id(&self) -> NodeId;

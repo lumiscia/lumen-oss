@@ -60,6 +60,8 @@ impl MediaSourceField for String {
 impl<'a> MediaSource<'a> {
     /// The source `field` holds for `param`, read as the `selected` kind or else as any of the
     /// declared ones.
+    // Called by the derive macros' output.
+    #[doc(hidden)]
     pub fn new<F: MediaSourceField>(
         param: &MediaParam,
         field: &'a F,
