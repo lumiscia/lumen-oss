@@ -1,5 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
@@ -197,10 +198,16 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Uniform),
     lumen_gpu::LayoutEntry::compute(1, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
+const FRACTAL_NOISE: ComputeProgram = ComputeProgram {
+    label: "fractal-noise",
+    shader: SHADER,
+    entry: "cs_main",
+    layout: RECORD_LAYOUT,
+};
 
 impl crate::gpu::frame_graph::RecordNode for FractalNoise {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.compute("fractal-noise", SHADER, "cs_main", RECORD_LAYOUT)
+        programs.compute(&FRACTAL_NOISE)
     }
 
     fn record(
@@ -218,7 +225,7 @@ impl crate::gpu::frame_graph::RecordNode for FractalNoise {
             dimension(params.height, canvas.height),
         );
         let tex = cx.storage_target(size);
-        let program = cx.program("fractal-noise", SHADER, "cs_main", RECORD_LAYOUT)?;
+        let program = cx.program(&FRACTAL_NOISE)?;
         let uniform = cx.rec.uniform(&gpu_params(&params));
         cx.dispatch(
             program,

@@ -1,6 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
@@ -8,6 +9,7 @@ pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/color.wgsl"),
     include_str!("exposure.wgsl")
 );
+const EXPOSURE: ComputeProgram = ComputeProgram::spatial("exposure", SHADER);
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ExposureParams {
@@ -45,7 +47,7 @@ pub struct Exposure {
 
 impl crate::gpu::frame_graph::RecordNode for Exposure {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.spatial("exposure", SHADER)
+        programs.compute(&EXPOSURE)
     }
 
     fn record(
@@ -62,6 +64,6 @@ impl crate::gpu::frame_graph::RecordNode for Exposure {
             contrast: params.contrast as f32,
             offset: params.offset as f32,
         };
-        cx.filter("exposure", SHADER, source, &gpu_params)
+        cx.filter(&EXPOSURE, source, &gpu_params)
     }
 }

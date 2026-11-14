@@ -3,6 +3,7 @@ use crate::node::{
     processing::gaussian,
 };
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
@@ -93,11 +94,17 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(5, lumen_gpu::LayoutKind::Texture),
     lumen_gpu::LayoutEntry::compute(4, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
+const MERGE: ComputeProgram = ComputeProgram {
+    label: "merge",
+    shader: SHADER,
+    entry: "cs_main",
+    layout: RECORD_LAYOUT,
+};
 
 impl crate::gpu::frame_graph::RecordNode for Merge {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         gaussian::programs(programs, false)?;
-        programs.compute("merge", SHADER, "cs_main", RECORD_LAYOUT)
+        programs.compute(&MERGE)
     }
 
     fn record(
@@ -166,7 +173,7 @@ impl crate::gpu::frame_graph::RecordNode for Merge {
             _pad0: 0,
         };
         let tex = cx.storage_target(domain.storage_size);
-        let program = cx.program("merge", SHADER, "cs_main", RECORD_LAYOUT)?;
+        let program = cx.program(&MERGE)?;
         let uniform = cx.rec.uniform(&params);
         cx.dispatch(
             program,

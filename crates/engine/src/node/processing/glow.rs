@@ -1,6 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::error::PropertyError;
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
@@ -98,6 +99,18 @@ const COMPOSITE_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
     lumen_gpu::LayoutEntry::compute(4, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
+const BRIGHT: ComputeProgram = ComputeProgram {
+    label: "glow",
+    shader: SHADER,
+    entry: "bright_main",
+    layout: BRIGHT_LAYOUT,
+};
+const COMPOSITE: ComputeProgram = ComputeProgram {
+    label: "glow",
+    shader: SHADER,
+    entry: "composite_main",
+    layout: COMPOSITE_LAYOUT,
+};
 
 fn finite_or(value: f64, fallback: f64) -> f64 {
     if value.is_finite() { value } else { fallback }
@@ -106,8 +119,8 @@ fn finite_or(value: f64, fallback: f64) -> f64 {
 impl crate::gpu::frame_graph::RecordNode for Glow {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         gaussian::programs(programs, false)?;
-        programs.compute("glow", SHADER, "bright_main", BRIGHT_LAYOUT)?;
-        programs.compute("glow", SHADER, "composite_main", COMPOSITE_LAYOUT)
+        programs.compute(&BRIGHT)?;
+        programs.compute(&COMPOSITE)
     }
 
     fn record(
@@ -172,7 +185,7 @@ impl crate::gpu::frame_graph::RecordNode for Glow {
         // past 1 before the blur spreads it out.
         let bright_size = source.domain.storage_size;
         let bright = cx.float_target(bright_size);
-        let program = cx.program("glow", SHADER, "bright_main", BRIGHT_LAYOUT)?;
+        let program = cx.program(&BRIGHT)?;
         cx.dispatch(
             program,
             &[
@@ -206,7 +219,7 @@ impl crate::gpu::frame_graph::RecordNode for Glow {
 
         let size = domain.storage_size;
         let tex = cx.storage_target(size);
-        let program = cx.program("glow", SHADER, "composite_main", COMPOSITE_LAYOUT)?;
+        let program = cx.program(&COMPOSITE)?;
         cx.dispatch(
             program,
             &[

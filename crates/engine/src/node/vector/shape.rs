@@ -1,6 +1,7 @@
 use super::drawable::{DrawableMotion, DrawablePlacement, DrawableStyle, DrawableTransform};
 use super::renderer::{ShapeUniforms, domain_origin, style_flags};
 use super::repeat::{GpuCopies, Repeat, RepeatedTransform};
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 use crate::node::motion::Shutter;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
@@ -189,14 +190,9 @@ fn shape_flags(params: &ShapeParams) -> u32 {
 
 impl crate::gpu::frame_graph::RecordNode for Shape {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.compute("shape", SHAPE_SHADER, "cs_main", RECORD_SHAPE_LAYOUT)?;
+        programs.compute(&SHAPE)?;
         if self.params.repeat.is_some() {
-            programs.compute(
-                "shape_repeat",
-                SHAPE_SHADER,
-                "cs_repeat",
-                RECORD_SHAPE_REPEAT_LAYOUT,
-            )?;
+            programs.compute(&SHAPE_REPEAT)?;
         }
         Ok(())
     }
@@ -223,6 +219,18 @@ const RECORD_SHAPE_REPEAT_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(3, lumen_gpu::LayoutKind::Storage),
     lumen_gpu::LayoutEntry::compute(4, lumen_gpu::LayoutKind::Storage),
 ];
+const SHAPE: ComputeProgram = ComputeProgram {
+    label: "shape",
+    shader: SHAPE_SHADER,
+    entry: "cs_main",
+    layout: RECORD_SHAPE_LAYOUT,
+};
+const SHAPE_REPEAT: ComputeProgram = ComputeProgram {
+    label: "shape_repeat",
+    shader: SHAPE_SHADER,
+    entry: "cs_repeat",
+    layout: RECORD_SHAPE_REPEAT_LAYOUT,
+};
 
 /// Records a rectangle or ellipse, sized to what its uniforms draw this frame, or its copies.
 fn record_shape_source(
@@ -237,12 +245,7 @@ fn record_shape_source(
     let tex = cx.storage_target(size);
     let uniform = cx.rec.uniform(&*uniforms);
     if let Some(copies) = copies {
-        let program = cx.program(
-            "shape_repeat",
-            SHAPE_SHADER,
-            "cs_repeat",
-            RECORD_SHAPE_REPEAT_LAYOUT,
-        )?;
+        let program = cx.program(&SHAPE_REPEAT)?;
         let [copy_list, taps, tiles] = copies.storage(cx, domain);
         cx.dispatch(
             program,
@@ -256,7 +259,7 @@ fn record_shape_source(
             params::dispatch_for(size),
         );
     } else {
-        let program = cx.program("shape", SHAPE_SHADER, "cs_main", RECORD_SHAPE_LAYOUT)?;
+        let program = cx.program(&SHAPE)?;
         cx.dispatch(
             program,
             &[(0, uniform), (1, lumen_gpu::Res::Tex(tex))],

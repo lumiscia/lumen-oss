@@ -1,6 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
@@ -8,6 +9,7 @@ pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/color.wgsl"),
     include_str!("hue_saturation.wgsl")
 );
+const HUE_SATURATION: ComputeProgram = ComputeProgram::spatial("hue-saturation", SHADER);
 
 /// Adjusts raster hue, saturation, and lightness of the sRGB-encoded colour.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -51,7 +53,7 @@ pub struct HueSaturation {
 
 impl crate::gpu::frame_graph::RecordNode for HueSaturation {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.spatial("hue-saturation", SHADER)
+        programs.compute(&HUE_SATURATION)
     }
 
     fn record(
@@ -68,6 +70,6 @@ impl crate::gpu::frame_graph::RecordNode for HueSaturation {
             saturation: params.saturation as f32,
             lightness: params.lightness as f32,
         };
-        cx.filter("hue-saturation", SHADER, source, &gpu_params)
+        cx.filter(&HUE_SATURATION, source, &gpu_params)
     }
 }

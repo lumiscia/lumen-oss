@@ -1,8 +1,10 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::params;
 
 pub(crate) const SHADER: &str = include_str!("crop.wgsl");
+const CROP: ComputeProgram = ComputeProgram::spatial("crop", SHADER);
 
 /// Keeps a raster region in place and clears everything outside it.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -46,7 +48,7 @@ pub struct Crop {
 
 impl crate::gpu::frame_graph::RecordNode for Crop {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.spatial("crop", SHADER)
+        programs.compute(&CROP)
     }
 
     fn record(
@@ -77,7 +79,7 @@ impl crate::gpu::frame_graph::RecordNode for Crop {
             source_origin: source.origin(),
         };
         let tex = cx.storage_target(size);
-        cx.spatial_pass("crop", SHADER, source.tex, &pass_params, tex, size)?;
+        cx.spatial_pass(&CROP, source.tex, &pass_params, tex, size)?;
         Ok(crate::gpu::frame_graph::Raster {
             tex,
             domain: lumen_gpu::TextureDomain::full_frame(size),

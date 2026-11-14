@@ -78,6 +78,38 @@ pub(crate) const SPATIAL_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::compute(1, LayoutKind::Uniform),
     LayoutEntry::compute(2, LayoutKind::StorageTexture(WORKING)),
 ];
+const CLIP_CROP: ComputeProgram = ComputeProgram::spatial("clip-crop", CLIP_CROP_SHADER);
+
+/// A compute program a node records with, named once and used by both `RecordNode` methods.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ComputeProgram {
+    pub(crate) label: &'static str,
+    pub(crate) shader: &'static str,
+    pub(crate) entry: &'static str,
+    pub(crate) layout: &'static [LayoutEntry],
+}
+
+impl ComputeProgram {
+    /// A program with the one-input layout `SPATIAL_LAYOUT` and the `cs_main` entry point.
+    pub(crate) const fn spatial(label: &'static str, shader: &'static str) -> Self {
+        Self {
+            label,
+            shader,
+            entry: "cs_main",
+            layout: SPATIAL_LAYOUT,
+        }
+    }
+}
+
+/// A render program without its target, which is only known at a frame.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RenderProgram {
+    pub(crate) label: &'static str,
+    pub(crate) shader: &'static str,
+    pub(crate) vertex: &'static str,
+    pub(crate) fragment: &'static str,
+    pub(crate) layout: &'static [LayoutEntry],
+}
 
 /// A recorded node's output.
 #[derive(Debug, Clone, Copy)]
@@ -118,41 +150,34 @@ impl Programs<'_> {
         self.rec.device().limits()
     }
 
-    pub(crate) fn compute(
-        &mut self,
-        label: &str,
-        shader: &'static str,
-        entry: &'static str,
-        layout: &'static [LayoutEntry],
-    ) -> crate::Result<()> {
+    pub(crate) fn compute(&mut self, program: &ComputeProgram) -> crate::Result<()> {
         self.rec
-            .compute_program(label, shader, entry, layout)
+            .compute_program(program.label, program.shader, program.entry, program.layout)
             .map_err(gpu_error)?;
         Ok(())
     }
 
-    pub(crate) fn spatial(&mut self, label: &str, shader: &'static str) -> crate::Result<()> {
-        self.compute(label, shader, "cs_main", SPATIAL_LAYOUT)
-    }
-
     /// The program `FrameCx::record_clip` crops a clip's content with.
     pub(crate) fn clip_crop(&mut self) -> crate::Result<()> {
-        self.spatial("clip-crop", CLIP_CROP_SHADER)
+        self.compute(&CLIP_CROP)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "a render program's parts")]
     pub(crate) fn render(
         &mut self,
-        label: &str,
-        shader: &'static str,
-        vertex: &'static str,
-        fragment: &'static str,
-        layout: &'static [LayoutEntry],
+        program: &RenderProgram,
         target: lumen_gpu::RenderTargetSpec,
         variant: u64,
     ) -> crate::Result<()> {
         self.rec
-            .render_program(label, shader, vertex, fragment, layout, target, variant)
+            .render_program(
+                program.label,
+                program.shader,
+                program.vertex,
+                program.fragment,
+                program.layout,
+                target,
+                variant,
+            )
             .map_err(gpu_error)?;
         Ok(())
     }
@@ -1469,45 +1494,41 @@ impl<'a> FrameCx<'a> {
         self.rec.acquire(size, format, usage)
     }
 
-    pub(crate) fn program(
-        &mut self,
-        label: &str,
-        shader: &'static str,
-        entry: &'static str,
-        layout: &'static [LayoutEntry],
-    ) -> crate::Result<ProgramRef> {
+    pub(crate) fn program(&mut self, program: &ComputeProgram) -> crate::Result<ProgramRef> {
         self.rec
-            .compute_program(label, shader, entry, layout)
+            .compute_program(program.label, program.shader, program.entry, program.layout)
             .map_err(gpu_error)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "a render program's parts")]
     pub(crate) fn render_program(
         &mut self,
-        label: &str,
-        shader: &'static str,
-        vertex: &'static str,
-        fragment: &'static str,
-        layout: &'static [LayoutEntry],
+        program: &RenderProgram,
         target: lumen_gpu::RenderTargetSpec,
         variant: u64,
     ) -> crate::Result<ProgramRef> {
         self.rec
-            .render_program(label, shader, vertex, fragment, layout, target, variant)
+            .render_program(
+                program.label,
+                program.shader,
+                program.vertex,
+                program.fragment,
+                program.layout,
+                target,
+                variant,
+            )
             .map_err(gpu_error)
     }
 
-    /// Runs `shader` from `source` into `target` over `size`.
+    /// Runs `program` from `source` into `target` over `size`.
     pub(crate) fn spatial_pass<T: bytemuck::Pod>(
         &mut self,
-        label: &str,
-        shader: &'static str,
+        program: &ComputeProgram,
         source: TexRef,
         params: &T,
         target: TexRef,
         size: Size,
     ) -> crate::Result<()> {
-        let program = self.program(label, shader, "cs_main", SPATIAL_LAYOUT)?;
+        let program = self.program(program)?;
         let uniform = self.rec.uniform(params);
         self.rec.compute(
             program,
@@ -1520,14 +1541,13 @@ impl<'a> FrameCx<'a> {
     /// A filter over `source`, writing a raster of the same domain, metadata and bounds.
     pub(crate) fn filter<T: bytemuck::Pod>(
         &mut self,
-        label: &str,
-        shader: &'static str,
+        program: &ComputeProgram,
         source: Raster,
         params: &T,
     ) -> crate::Result<Raster> {
         let size = source.domain.storage_size;
         let tex = self.storage_target(size);
-        self.spatial_pass(label, shader, source.tex, params, tex, size)?;
+        self.spatial_pass(program, source.tex, params, tex, size)?;
         Ok(Raster { tex, ..source })
     }
 
@@ -1902,19 +1922,14 @@ impl<'a> FrameCx<'a> {
             None => self.unused_float(),
         };
         let size = domain.storage_size;
-        let (entry, layout, binding, tex) = if last {
-            (
-                "resolve_main",
-                blur::RESOLVE_LAYOUT,
-                4,
-                self.storage_target(size),
-            )
+        let (program, binding, tex) = if last {
+            (&blur::RESOLVE, 4, self.storage_target(size))
         } else {
             let usage = TextureDesc::storage(size, blur::SUM_FORMAT).usage;
             let tex = self.rec.acquire(size, blur::SUM_FORMAT, usage);
-            ("accumulate_main", blur::ACCUMULATE_LAYOUT, 3, tex)
+            (&blur::ACCUMULATE, 3, tex)
         };
-        let program = self.program("motion-blur", blur::SHADER, entry, layout)?;
+        let program = self.program(program)?;
         let uniform = self.rec.uniform(&params);
         self.rec.compute(
             program,
@@ -2062,14 +2077,7 @@ impl<'a> FrameCx<'a> {
             0,
             0,
         ];
-        self.spatial_pass(
-            "clip-crop",
-            CLIP_CROP_SHADER,
-            raster.tex,
-            &offset,
-            tex,
-            size,
-        )?;
+        self.spatial_pass(&CLIP_CROP, raster.tex, &offset, tex, size)?;
         Ok(Raster {
             tex,
             domain,

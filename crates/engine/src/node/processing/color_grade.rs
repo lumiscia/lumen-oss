@@ -9,6 +9,7 @@ use crate::node::{
     processing::RasterSampling,
 };
 
+use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::{evictions, params};
 
 pub(crate) const SHADER: &str = concat!(
@@ -81,6 +82,18 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Storage),
     lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
+const COLOR_GRADE: ComputeProgram = ComputeProgram {
+    label: "color-grade",
+    shader: SHADER,
+    entry: "cs_main",
+    layout: RECORD_LAYOUT,
+};
+const COLOR_GRADE_CUBE: ComputeProgram = ComputeProgram {
+    label: "color-grade-cube",
+    shader: SHADER,
+    entry: "cs_cube",
+    layout: CUBE_LAYOUT,
+};
 
 const LUT_AND_LUT_SOURCE: &str = "`lut` and `lut_source` are both set; use one of them";
 
@@ -112,8 +125,8 @@ impl ColorGrade {
 
 impl crate::gpu::frame_graph::RecordNode for ColorGrade {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.compute("color-grade", SHADER, "cs_main", RECORD_LAYOUT)?;
-        programs.compute("color-grade-cube", SHADER, "cs_cube", CUBE_LAYOUT)
+        programs.compute(&COLOR_GRADE)?;
+        programs.compute(&COLOR_GRADE_CUBE)
     }
 
     fn record(
@@ -150,7 +163,7 @@ impl ColorGrade {
         if evaluated.lut_source.is_empty() {
             let lut = params::ColorGradeLut::parse(self.id, &evaluated.lut)?;
             let tex = cx.storage_target(size);
-            let program = cx.program("color-grade", SHADER, "cs_main", RECORD_LAYOUT)?;
+            let program = cx.program(&COLOR_GRADE)?;
             let uniform = cx.rec.uniform(&gpu_params);
             let storage = cx.rec.storage_parts(&[bytemuck::bytes_of(&lut)]);
             cx.dispatch(
@@ -204,7 +217,7 @@ impl ColorGrade {
                 }
             });
         let tex = cx.storage_target(size);
-        let program = cx.program("color-grade-cube", SHADER, "cs_cube", CUBE_LAYOUT)?;
+        let program = cx.program(&COLOR_GRADE_CUBE)?;
         let uniform = cx.rec.uniform(&gpu_params);
         cx.dispatch(
             program,
