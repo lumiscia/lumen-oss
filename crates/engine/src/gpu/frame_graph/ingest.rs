@@ -150,6 +150,102 @@ fn cpu_retry_failed(error: crate::error::MediaError, reason: &str) -> crate::err
 }
 
 impl FrameCx<'_> {
+    /// The param `param` of node `node` in the graph being recorded.
+    pub(crate) fn node_param(&self, node: NodeId, param: &str) -> crate::media::MediaLocation {
+        crate::media::MediaLocation::Node(crate::media::NodeParamAt {
+            template: self.scope.template_name().map(str::to_string),
+            node,
+            param: param.to_string(),
+        })
+    }
+
+    /// Fails as `media.too_large` when `size`, a media source's native size, is more than this
+    /// device makes a texture.
+    pub(crate) fn ensure_media_fits(&self, source: &str, size: Size) -> crate::Result<()> {
+        let max = self.rec.device().limits().max_texture_dimension_2d;
+        let side = size.width.max(size.height);
+        if side <= max {
+            return Ok(());
+        }
+        Err(crate::error::MediaFailure::too_large(
+            source,
+            format!(
+                "it is {}x{} pixels, over the {max}-pixel texture limit of this device",
+                size.width, size.height
+            ),
+            u64::from(max),
+            Some(u64::from(side)),
+        )
+        .into())
+    }
+
+    /// The size image `source`, of `native` size, is decoded at for `node_id` to show it (see
+    /// [`crate::gpu::image_size::decoded_size`]), with a warning once per composition when it is
+    /// reduced to fit the size limit. Fails as `media.too_large` when it is past the device's
+    /// limit and can't be reduced.
+    pub(crate) fn image_size(
+        &mut self,
+        node_id: NodeId,
+        source: &str,
+        native: Size,
+    ) -> crate::Result<Size> {
+        use crate::gpu::image_size::{Decoded, decoded_size};
+        let shown = Arc::clone(
+            self.st
+                .media
+                .shown_sizes
+                .get_or_insert_with(|| crate::gpu::image_size::ShownSizes::of(self.composition)),
+        );
+        let device_max = self.rec.device().limits().max_texture_dimension_2d.max(1);
+        let max_image_side = self.settings.max_image_side;
+        let size = match decoded_size(&shown, source, native, max_image_side, device_max) {
+            Decoded::Native => native,
+            Decoded::Reduced { size, limited } => {
+                if limited {
+                    self.warn_image_reduced(node_id, source, native, size);
+                }
+                size
+            }
+            Decoded::TooLarge => {
+                let side = native.width.max(native.height);
+                return Err(crate::error::MediaFailure::too_large(
+                    source,
+                    format!(
+                        "it is {}x{} pixels, over the {device_max}-pixel texture limit of this \
+                         device, and only an image every use of which is a `resize` to a literal \
+                         size, in the root composition, is shown reduced to its aspect ratio",
+                        native.width, native.height
+                    ),
+                    u64::from(device_max),
+                    Some(u64::from(side)),
+                )
+                .into());
+            }
+        };
+        Ok(size)
+    }
+
+    fn warn_image_reduced(&mut self, node_id: NodeId, source: &str, native: Size, size: Size) {
+        let limit = self
+            .rec
+            .device()
+            .limits()
+            .max_texture_dimension_2d
+            .min(self.settings.max_image_side)
+            .max(1);
+        self.warn(
+            node_id,
+            crate::error::WarningKind::ImageReduced {
+                image: source.to_string(),
+                width: native.width,
+                height: native.height,
+                reduced_width: size.width,
+                reduced_height: size.height,
+                limit,
+            },
+        );
+    }
+
     /// An image in the working space at `size`, the size of `key`. Its texture, 8-bit for
     /// sRGB-encoded frames and half float for linear ones, is uploaded once and kept in the
     /// renderer's media cache, and each frame that shows it brings it into the working space.

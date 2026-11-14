@@ -15,8 +15,9 @@ use crate::{
 };
 
 use super::{
-    CachedShader, GraphNodeKey, HoldTrack, InstanceKey, MemoKey, PathId, Raster, ShaderParts,
-    Staticness, VideoFrameKey, source_changed,
+    CachedShader, GraphNodeKey, InstanceKey, MemoKey, PathId, Raster, ShaderParts, Staticness,
+    VideoFrameKey,
+    retention::{HoldTrack, source_changed},
 };
 
 /// Frames a retained output stays without being read.
