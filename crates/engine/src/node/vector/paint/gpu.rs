@@ -3,7 +3,8 @@ use bytemuck::Zeroable;
 use super::types::{GradientPaint, MAX_GRADIENT_STOPS};
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Paint", source = crate::node::source::text_record::shared_text_shader())]
 pub(crate) struct GpuPaint {
     pub(crate) colors: [[f32; 4]; MAX_GRADIENT_STOPS],
     pub(crate) offsets: [[f32; 4]; MAX_GRADIENT_STOPS],

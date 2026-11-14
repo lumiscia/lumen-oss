@@ -1,8 +1,9 @@
+use bytemuck::{Pod, Zeroable};
+
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
 use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
 
 pub(crate) const SHADER: &str = include_str!("opacity.wgsl");
 const OPACITY: ComputeProgram = ComputeProgram::spatial("opacity", SHADER);
@@ -32,6 +33,13 @@ pub struct Opacity {
     pub source: Option<NodeId>,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "OpacityParams", source = SHADER)]
+struct OpacityUniforms {
+    opacity: f32,
+}
+
 impl crate::gpu::frame_graph::RecordNode for Opacity {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.compute(&OPACITY)
@@ -46,7 +54,7 @@ impl crate::gpu::frame_graph::RecordNode for Opacity {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let params = params::OpacityParams {
+        let params = OpacityUniforms {
             opacity: evaluated.opacity.clamp(0.0, 1.0) as f32,
         };
         cx.filter(&OPACITY, source, &params)

@@ -9,9 +9,8 @@
 
 use lumen_gpu::{Size, TexRef};
 
-use crate::gpu::frame_graph::{FrameCx, Raster};
+use crate::gpu::frame_graph::{CropParams, FrameCx, Raster};
 use crate::gpu::mips::mipped;
-use crate::gpu::params::CropParams;
 use crate::node::NodeId;
 
 /// The most texels the filter spans along an axis of the level it reads; keep in sync with

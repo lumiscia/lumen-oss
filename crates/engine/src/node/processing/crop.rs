@@ -1,7 +1,8 @@
+use bytemuck::{Pod, Zeroable};
+
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
 
 pub(crate) const SHADER: &str = include_str!("crop.wgsl");
 const CROP: ComputeProgram = ComputeProgram::spatial("crop", SHADER);
@@ -46,6 +47,46 @@ pub struct Crop {
     pub source: Option<NodeId>,
 }
 
+/// A crop over a source stored from `source_origin`, which is where its first texel sits in the
+/// display.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "CropParams", source = SHADER)]
+struct CropUniforms {
+    origin: [i32; 2],
+    size: [u32; 2],
+    source_origin: [i32; 2],
+}
+
+/// Converts a signed pixel coordinate property to the `i32` the shaders use.
+pub(super) fn pixel_origin(node_id: NodeId, property_path: &str, value: i64) -> crate::Result<i32> {
+    i32::try_from(value).map_err(|_| {
+        crate::error::PropertyError::InvalidType {
+            at: crate::error::At::param(node_id, property_path),
+            expected: "an integer between -2147483648 and 2147483647",
+            actual: "out-of-range integer",
+        }
+        .into()
+    })
+}
+
+/// Converts a pixel extent property to the `u32` the shaders use; values below `min` clamp to it.
+pub(super) fn pixel_extent(
+    node_id: NodeId,
+    property_path: &str,
+    value: i64,
+    min: u32,
+) -> crate::Result<u32> {
+    u32::try_from(value.max(i64::from(min))).map_err(|_| {
+        crate::error::PropertyError::InvalidType {
+            at: crate::error::At::param(node_id, property_path),
+            expected: "an integer between 0 and 4294967295",
+            actual: "out-of-range integer",
+        }
+        .into()
+    })
+}
+
 impl crate::gpu::frame_graph::RecordNode for Crop {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.compute(&CROP)
@@ -60,20 +101,20 @@ impl crate::gpu::frame_graph::RecordNode for Crop {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let x = params::pixel_origin(self.id, "x", params.x)?;
-        let y = params::pixel_origin(self.id, "y", params.y)?;
-        let width = params::pixel_extent(self.id, "width", params.width, 0)?;
-        let height = params::pixel_extent(self.id, "height", params.height, 0)?;
+        let x = pixel_origin(self.id, "x", params.x)?;
+        let y = pixel_origin(self.id, "y", params.y)?;
+        let width = pixel_extent(self.id, "width", params.width, 0)?;
+        let height = pixel_extent(self.id, "height", params.height, 0)?;
         let size = source.domain.display_size();
         let left = i64::from(x).clamp(0, i64::from(size.width));
         let top = i64::from(y).clamp(0, i64::from(size.height));
         let right = (i64::from(x) + i64::from(width)).clamp(left, i64::from(size.width));
         let bottom = (i64::from(y) + i64::from(height)).clamp(top, i64::from(size.height));
-        let gpu_params = params::CropParams {
+        let gpu_params = crate::gpu::frame_graph::CropParams {
             origin: [left as i32, top as i32],
             size: [(right - left) as u32, (bottom - top) as u32],
         };
-        let pass_params = params::CropPassParams {
+        let pass_params = CropUniforms {
             origin: gpu_params.origin,
             size: gpu_params.size,
             source_origin: source.origin(),

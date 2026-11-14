@@ -1,8 +1,9 @@
+use bytemuck::{Pod, Zeroable};
+
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
 use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -55,6 +56,17 @@ pub struct Levels {
     pub source: Option<NodeId>,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "LevelsParams", source = SHADER)]
+struct LevelsUniforms {
+    black_point: f32,
+    white_point: f32,
+    gamma: f32,
+    output_black: f32,
+    output_white: f32,
+}
+
 impl crate::gpu::frame_graph::RecordNode for Levels {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.compute(&LEVELS)
@@ -69,7 +81,7 @@ impl crate::gpu::frame_graph::RecordNode for Levels {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let gpu_params = params::LevelsParams {
+        let gpu_params = LevelsUniforms {
             black_point: params.black_point as f32,
             white_point: params.white_point as f32,
             gamma: params.gamma as f32,

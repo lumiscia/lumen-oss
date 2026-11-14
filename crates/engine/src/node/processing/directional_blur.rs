@@ -8,8 +8,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::{frame_graph, params};
+use crate::gpu::frame_graph::{self, ComputeProgram, dispatch_for};
 use crate::node::motion::MAX_BOUNDED_MAGNITUDE;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
@@ -316,14 +315,16 @@ fn tap_counts(longest_streak: f64) -> (usize, usize) {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "SweepTap", source = SHADER)]
 struct GpuSweepTap {
     m: [f32; 4],
     t: [f32; 4],
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "SweepParams", source = SHADER)]
 struct GpuSweepParams {
     /// Taps of the short box, 1 when reads of the source clamp to the canvas, and taps of the
     /// comb.
@@ -515,7 +516,7 @@ fn record(
                 (2, sampler),
                 (3, Res::Tex(boxes_tex)),
             ],
-            params::dispatch_for(size),
+            dispatch_for(size),
         );
     }
     let tex = cx.storage_target(domain.storage_size);
@@ -529,7 +530,7 @@ fn record(
             (4, Res::Tex(tex)),
             (5, Res::Tex(boxes_tex)),
         ],
-        params::dispatch_for(domain.storage_size),
+        dispatch_for(domain.storage_size),
     );
     Ok(frame_graph::Raster {
         tex,

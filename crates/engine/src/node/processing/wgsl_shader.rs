@@ -36,8 +36,7 @@ use crate::{
     },
 };
 
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
+use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 
 /// WebGPU's default `maxSampledTexturesPerShaderStage`, guaranteed on every adapter.
 pub const MAX_INPUTS: usize = 16;
@@ -127,7 +126,8 @@ pub struct WgslShader {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "LumenGlobals", source = PRELUDE)]
 struct LumenGlobals {
     resolution: [f32; 2],
     time: f32,
@@ -796,13 +796,13 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
         for (index, input) in inputs.iter().enumerate() {
             bindings.push((input_binding(index), Res::Tex(input.tex)));
         }
-        cx.dispatch(program, &bindings, params::dispatch_for(size));
+        cx.dispatch(program, &bindings, dispatch_for(size));
         let sanitise = cx.program(&SANITISE)?;
         let sanitised = cx.storage_target(size);
         cx.dispatch(
             sanitise,
             &[(0, Res::Tex(tex)), (1, Res::Tex(sanitised))],
-            params::dispatch_for(size),
+            dispatch_for(size),
         );
         Ok(crate::gpu::frame_graph::Raster {
             tex: sanitised,

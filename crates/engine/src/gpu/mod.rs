@@ -11,10 +11,9 @@ mod image_size;
 #[cfg(feature = "ffmpeg")]
 mod media;
 pub(crate) mod mips;
-pub(crate) mod params;
 mod renderer;
 #[cfg(test)]
-mod shader_layouts;
+pub(crate) mod shader_layouts;
 #[cfg(any(
     all(target_os = "macos", feature = "ffmpeg", feature = "metal"),
     all(target_os = "linux", feature = "ffmpeg", feature = "vulkan")

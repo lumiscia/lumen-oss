@@ -6,12 +6,12 @@ use std::sync::Arc;
 use lumen_gpu::{LayoutEntry, LayoutKind, Res, Size, TexRef, TextureDesc, wgpu};
 
 use super::{
-    ComputeProgram, FrameCx, InstanceKey, Programs, internal,
+    ComputeProgram, FrameCx, InstanceKey, Programs, dispatch_for, internal,
     state::{VideoUpload, YuvUpload},
 };
 use crate::{
     error::RenderError,
-    gpu::{color::WORKING_COLOR_FORMAT as WORKING, params::dispatch_for},
+    gpu::color::WORKING_COLOR_FORMAT as WORKING,
     media::{
         CpuMediaFrame, MediaFrame, MediaIdentity, YuvChroma, YuvFormat, YuvFrame, YuvPlanes,
         YuvUniform,
@@ -64,7 +64,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
 );
 /// `INGEST_SHADER`'s parameters.
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Params", source = INGEST_SHADER)]
 struct IngestParams {
     premultiplied: u32,
     encoded: u32,
@@ -97,7 +98,7 @@ enum ImageUpload<'a> {
     Linear(&'a crate::media::LinearMediaFrame),
 }
 
-const YUV_TO_RGBA_SHADER: &str = concat!(
+pub(crate) const YUV_TO_RGBA_SHADER: &str = concat!(
     include_str!("../shaders/color.wgsl"),
     include_str!("../shaders/yuv_to_rgba.wgsl")
 );

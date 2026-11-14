@@ -1,7 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
+use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 pub(crate) const SHADER: &str = concat!(
@@ -95,7 +94,8 @@ pub struct FractalNoise {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "NoiseOctave", source = SHADER)]
 struct GpuNoiseOctave {
     origin: [f32; 4],
     cell: [u32; 2],
@@ -104,7 +104,8 @@ struct GpuNoiseOctave {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "NoiseParams", source = SHADER)]
 struct GpuNoiseParams {
     gradients: [[f32; 4]; BASE_GRADIENTS * GRADIENT_SPEEDS.len() / 2],
     octaves: [GpuNoiseOctave; MAX_NOISE_OCTAVES],
@@ -230,7 +231,7 @@ impl crate::gpu::frame_graph::RecordNode for FractalNoise {
         cx.dispatch(
             program,
             &[(0, uniform), (1, lumen_gpu::Res::Tex(tex))],
-            params::dispatch_for(size),
+            dispatch_for(size),
         );
         Ok(crate::gpu::frame_graph::Raster {
             tex,

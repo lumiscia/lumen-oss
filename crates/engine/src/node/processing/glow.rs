@@ -1,8 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::error::PropertyError;
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
+use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
 };
@@ -73,7 +72,8 @@ pub struct Glow {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "GlowParams", source = SHADER)]
 struct GpuGlowParams {
     /// Premultiplied tint, or zero to keep the source's colours.
     tint: [f32; 4],
@@ -193,7 +193,7 @@ impl crate::gpu::frame_graph::RecordNode for Glow {
                 (2, uniform),
                 (3, lumen_gpu::Res::Tex(bright)),
             ],
-            params::dispatch_for(bright_size),
+            dispatch_for(bright_size),
         );
         let glow = gaussian::record_passes(
             cx,
@@ -228,7 +228,7 @@ impl crate::gpu::frame_graph::RecordNode for Glow {
                 (2, uniform),
                 (4, lumen_gpu::Res::Tex(tex)),
             ],
-            params::dispatch_for(size),
+            dispatch_for(size),
         );
         Ok(crate::gpu::frame_graph::Raster {
             tex,

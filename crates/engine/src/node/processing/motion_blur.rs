@@ -47,7 +47,8 @@ pub(crate) const RESOLVE: ComputeProgram = ComputeProgram {
 };
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Params", source = SHADER)]
 pub(crate) struct AccumulateParams {
     pub(crate) sum_offset: [i32; 2],
     pub(crate) sample_offset: [i32; 2],

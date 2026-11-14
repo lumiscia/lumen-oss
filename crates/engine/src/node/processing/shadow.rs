@@ -1,10 +1,11 @@
+use bytemuck::{Pod, Zeroable};
+
 use crate::error::PropertyError;
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
 };
 
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
+use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 
 use super::gaussian;
 
@@ -71,6 +72,18 @@ const SHADOW_COMPOSITE: ComputeProgram = ComputeProgram {
     layout: RECORD_LAYOUT,
 };
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "ShadowParams", source = COMPOSITE_SHADER)]
+struct ShadowUniforms {
+    /// The shadow colour, with its opacity as alpha.
+    color: [f32; 4],
+    /// Canvas pixel of the output's first texel in `xy`, and of the blurred shadow's in `zw`.
+    origins: [i32; 4],
+    /// Canvas pixel of the source's first texel in `xy`.
+    source_origin: [i32; 4],
+}
+
 impl crate::gpu::frame_graph::RecordNode for Shadow {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         gaussian::programs(programs, true)?;
@@ -120,7 +133,7 @@ impl crate::gpu::frame_graph::RecordNode for Shadow {
         let color =
             [r, g, b].map(|channel| crate::gpu::color::srgb_to_linear(f32::from(channel) / 255.0));
         let opacity = evaluated.opacity.clamp(0.0, 1.0) as f32 * f32::from(a) / 255.0;
-        let params = params::ShadowParams {
+        let params = ShadowUniforms {
             color: [color[0], color[1], color[2], opacity],
             origins: [
                 domain.data_rect.x,
@@ -142,7 +155,7 @@ impl crate::gpu::frame_graph::RecordNode for Shadow {
                 (2, uniform),
                 (3, lumen_gpu::Res::Tex(tex)),
             ],
-            params::dispatch_for(size),
+            dispatch_for(size),
         );
         Ok(crate::gpu::frame_graph::Raster {
             tex,

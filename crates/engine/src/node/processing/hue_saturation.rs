@@ -1,8 +1,9 @@
+use bytemuck::{Pod, Zeroable};
+
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
 use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -51,6 +52,15 @@ pub struct HueSaturation {
     pub source: Option<NodeId>,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "HueSaturationParams", source = SHADER)]
+struct HueSaturationUniforms {
+    hue_offset: f32,
+    saturation: f32,
+    lightness: f32,
+}
+
 impl crate::gpu::frame_graph::RecordNode for HueSaturation {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.compute(&HUE_SATURATION)
@@ -65,7 +75,7 @@ impl crate::gpu::frame_graph::RecordNode for HueSaturation {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let gpu_params = params::HueSaturationParams {
+        let gpu_params = HueSaturationUniforms {
             hue_offset: (params.hue_degrees / 360.0) as f32,
             saturation: params.saturation as f32,
             lightness: params.lightness as f32,

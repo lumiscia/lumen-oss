@@ -441,7 +441,10 @@ impl YuvFrame {
 /// chroma `(c - c_offset) * c_scale` and alpha `a * a_scale`, after a sample shifts right by
 /// `sample_shift`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable, lumen_macros::ShaderLayout,
+)]
+#[shader_layout(wgsl = "Params", source = crate::gpu::frame_graph::YUV_TO_RGBA_SHADER)]
 pub(crate) struct YuvUniform {
     pub(crate) coded_width: u32,
     pub(crate) coded_height: u32,

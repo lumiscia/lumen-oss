@@ -1,5 +1,4 @@
-use crate::gpu::frame_graph::ComputeProgram;
-use crate::gpu::params;
+use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
 };
@@ -85,7 +84,7 @@ impl crate::gpu::frame_graph::RecordNode for Background {
         cx.dispatch(
             program,
             &[(0, uniform), (1, lumen_gpu::Res::Tex(tex))],
-            params::dispatch_for(size),
+            dispatch_for(size),
         );
         Ok(crate::gpu::frame_graph::Raster {
             tex,

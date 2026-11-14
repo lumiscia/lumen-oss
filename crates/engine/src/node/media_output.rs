@@ -40,7 +40,8 @@ const MEDIA_OUTPUT: RenderProgram = RenderProgram {
 
 /// `media_output.wgsl`'s `Output`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Output", source = SHADER)]
 pub(crate) struct OutputParams {
     pub(crate) origin: [i32; 2],
     /// 0 premultiplied, 1 straight, 2 opaque.

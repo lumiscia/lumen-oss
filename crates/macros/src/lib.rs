@@ -12,6 +12,7 @@ mod delegate;
 mod diagnostic_code;
 mod media_sources;
 mod schema;
+mod shader_layout;
 mod structural_hash;
 
 /// Hashes every field structurally, including enum variant discriminants.
@@ -64,6 +65,18 @@ pub fn derive_diagnostic_code(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(MediaSources, attributes(media))]
 pub fn derive_media_sources(input: TokenStream) -> TokenStream {
     match media_sources::expand(&parse_macro_input!(input as syn::DeriveInput)) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+/// Adds a test that compares a `#[repr(C)]` struct's size and field offsets with the WGSL struct
+/// `#[shader_layout(wgsl = "Name", source = EXPR)]` names, where `EXPR` evaluates to the shader's
+/// source. Fields whose names start with `_` are padding, which the test leaves out. Only the
+/// engine crate uses it.
+#[proc_macro_derive(ShaderLayout, attributes(shader_layout))]
+pub fn derive_shader_layout(input: TokenStream) -> TokenStream {
+    match shader_layout::expand(&parse_macro_input!(input as syn::DeriveInput)) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
