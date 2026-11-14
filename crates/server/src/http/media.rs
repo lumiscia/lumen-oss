@@ -12,7 +12,7 @@ use lumen_server_api::{
 };
 use tokio::io::AsyncReadExt;
 
-use crate::server::assets::{NewUpload, StoreError};
+use crate::assets::{NewUpload, StoreError};
 
 use super::{errors::ApiError, state::AppState};
 

@@ -18,12 +18,12 @@ use std::{
     },
 };
 
-use lumen_engine::{composition::Composition, media::AssetResolver};
+use crate::{composition::Composition, media::AssetResolver};
 use lumen_ffmpeg::{
     AudioEncoderConfig, QualityConfig, QualityRequest, VideoEncoderChoice, check_audio_encoder,
 };
 
-pub use error::{ErrorCode, ServerRenderError};
+pub use error::{Error, ErrorCode};
 pub use fonts::{FONT_DIR_ENV, FontCatalog, ResolvedFont, existing_font_dir};
 pub use gpu::{
     Mp4Render, RenderReport, RenderTiming, RenderedOutput, create_gpu_renderer, render_project,
@@ -88,9 +88,9 @@ impl CancelToken {
     }
 
     /// The cancelled error once the token is cancelled.
-    pub(crate) fn check(&self) -> Result<(), ServerRenderError> {
+    pub(crate) fn check(&self) -> Result<(), Error> {
         if self.is_cancelled() {
-            return Err(ServerRenderError::cancelled());
+            return Err(Error::cancelled());
         }
         Ok(())
     }
@@ -107,7 +107,7 @@ pub struct RenderOptions {
     /// Where `asset:` sources resolve. Without one, they don't.
     pub assets: Option<Arc<dyn AssetResolver>>,
     /// The most glyph, stroke and decoration instances one text node may draw. `None` keeps
-    /// [`lumen_engine::gpu::DEFAULT_MAX_TEXT_GLYPHS`].
+    /// [`crate::gpu::DEFAULT_MAX_TEXT_GLYPHS`].
     pub max_text_glyphs: Option<usize>,
     /// What to render: the format and the frames. The default is an MP4 of the whole timeline.
     pub output: RenderOutput,
@@ -127,7 +127,7 @@ pub fn resolve_encoder(
     composition: &Composition,
     format: OutputFormat,
     request: QualityRequest,
-) -> Result<VideoEncoderChoice, ServerRenderError> {
+) -> Result<VideoEncoderChoice, Error> {
     resolve_encoder_with(config, composition, format, request, &check_audio_encoder)
 }
 
@@ -139,24 +139,24 @@ fn resolve_encoder_with(
     format: OutputFormat,
     mut request: QualityRequest,
     audio_encoder: &dyn Fn(&AudioEncoderConfig) -> Result<(), String>,
-) -> Result<VideoEncoderChoice, ServerRenderError> {
+) -> Result<VideoEncoderChoice, Error> {
     if format != OutputFormat::Mp4 {
         request.codec = request
             .codec
             .or(output::video_codecs(format).first().copied());
     }
     output::check_video(format, request.codec, request.alpha.unwrap_or(false))
-        .map_err(|message| ServerRenderError::new(ErrorCode::InvalidOutput, message, false))?;
+        .map_err(|message| Error::new(ErrorCode::InvalidOutput, message, false))?;
     if encoder::has_audio(composition) {
         audio_encoder(&encoder::audio_config(format == OutputFormat::Webm))
-            .map_err(|message| ServerRenderError::new(ErrorCode::InvalidOutput, message, false))?;
+            .map_err(|message| Error::new(ErrorCode::InvalidOutput, message, false))?;
     }
     config
         .resolve(&request)
-        .map_err(|message| ServerRenderError::new(ErrorCode::InvalidQuality, message, false))
+        .map_err(|message| Error::new(ErrorCode::InvalidQuality, message, false))
 }
 
-/// What [`lumen_engine::json::check`] finds in `payload`, with fonts resolved as a render with
+/// What [`crate::json::check`] finds in `payload`, with fonts resolved as a render with
 /// `config` resolves them: from its font directory, the system, or the media `staged` says the
 /// render will stage under that name. `asset:` references resolve in `assets`.
 pub fn check_composition(
@@ -164,18 +164,18 @@ pub fn check_composition(
     staged: &dyn Fn(&str) -> bool,
     assets: &dyn AssetResolver,
     config: &RenderConfig,
-) -> Vec<lumen_engine::diagnostic::Diagnostic> {
+) -> Vec<crate::diagnostic::Diagnostic> {
     let fonts = FontCatalog::without_media(config.font_dir());
     let known_font = |family: &str| staged(family) || fonts.resolve(family, || None).is_some();
-    lumen_engine::json::check_value(payload, Some(&known_font), Some(assets))
+    crate::json::check_value(payload, Some(&known_font), Some(assets))
 }
 
 /// The composition `payload` describes. A payload that isn't one fails with
-/// [`ErrorCode::InvalidProjectPayload`], caused by the [`lumen_engine::json::ParseError`] that
+/// [`ErrorCode::InvalidProjectPayload`], caused by the [`crate::json::ParseError`] that
 /// holds its diagnostics.
-pub fn parse_composition(payload: &serde_json::Value) -> Result<Composition, ServerRenderError> {
-    lumen_engine::json::parse_value(payload).map_err(|err| {
-        ServerRenderError::new(
+pub fn parse_composition(payload: &serde_json::Value) -> Result<Composition, Error> {
+    crate::json::parse_value(payload).map_err(|err| {
+        Error::new(
             ErrorCode::InvalidProjectPayload,
             "the payload is not a composition",
             false,

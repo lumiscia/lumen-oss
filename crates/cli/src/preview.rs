@@ -15,7 +15,7 @@ use image::{
     imageops::{self, FilterType},
 };
 use lumen_engine::gpu::{DEFAULT_MAX_TEXT_GLYPHS, MAX_TEXT_GLYPHS_CEILING};
-use lumen_server::render::{
+use lumen_engine::render::{
     CancelToken, DEFAULT_JPEG_QUALITY, FrameRange, ImageRender, OutputFormat, RenderOutput,
 };
 

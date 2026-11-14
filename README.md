@@ -76,7 +76,7 @@ export const composition = new Composition({ timeline: { durationSeconds: 3 } })
 **2. Render it.** Start a [`lumen-server`](crates/server/README.md) on your GPU machine:
 
 ```bash
-cargo run -p lumen-server --features cli --bin lumen-server -- --bind 127.0.0.1:8080
+cargo run -p lumen-server -- --bind 127.0.0.1:8080
 ```
 
 Then send it the composition and print the URL of the MP4. A server on loopback needs no token; set `--token` for anything else and pass it as `apiKey`.
@@ -187,8 +187,8 @@ cargo check && cargo test
 <summary>Native targets, generated code and bindings</summary>
 
 ```bash
-cargo check -p lumen-server --features vulkan,cuda --lib
-cargo check -p lumen-server --features metal --lib
+cargo check -p lumen-server --features vulkan,cuda
+cargo check -p lumen-server --features metal
 
 just generate-definitions
 just generate-types

@@ -7,18 +7,19 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use lumen_engine::render::{check_composition, resolve_encoder};
 use lumen_engine::{composition::Composition, media::AssetResolver};
 use lumen_ffmpeg::{BitDepth, EncodeCodec, QualityRequest};
-use lumen_server::render::{RenderOutput, check_composition, resolve_encoder};
 use lumen_server_api::{
     CheckReport, CheckRequest, CreateRenderResponse, ErrorCode, Health, RenderRequest,
     RenderResponse, VideoBitDepth, VideoCodec,
 };
 use tokio::sync::OwnedSemaphorePermit;
 
-use crate::server::{
+use crate::{
     Artifact, RenderJob, RenderJobError, RenderRecord, RenderStatus, current_timestamp,
     execute_render_job, input_hash, new_render_id, sanitized_diagnostics, validate_media_manifest,
+    wire::render_output,
 };
 
 use super::{
@@ -89,12 +90,7 @@ pub(super) async fn create_render(
     let composition = composition?;
 
     // Resolved now with the resolver the render uses, so a request it would fail is refused here.
-    let output = input.output.unwrap_or_default();
-    let output = RenderOutput {
-        format: output.format,
-        frames: output.frames,
-        jpeg_quality: output.jpeg_quality,
-    };
+    let output = render_output(input.output.unwrap_or_default());
     output
         .validate(
             composition.timeline().duration_frames,

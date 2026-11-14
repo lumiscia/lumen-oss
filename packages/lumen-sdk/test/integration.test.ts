@@ -10,7 +10,7 @@ import type { RenderProgress } from "../src/types.js";
 const shouldRun = process.env.LUMEN_SDK_INTEGRATION === "1";
 const describeIntegration = shouldRun ? describe : describe.skip;
 const serverToken = "sdk-integration-token";
-const serverFeatures = process.env.LUMEN_SERVER_FEATURES ?? "cli";
+const serverFeatures = process.env.LUMEN_SERVER_FEATURES;
 const startupTimeoutMs = 180_000;
 const renderTimeoutMs = 180_000;
 
@@ -26,10 +26,7 @@ describeIntegration("Lumen SDK with lumen-server", () => {
         "run",
         "-p",
         "lumen-server",
-        "--features",
-        serverFeatures,
-        "--bin",
-        "lumen-server",
+        ...(serverFeatures ? ["--features", serverFeatures] : []),
         "--",
         "--bind",
         "127.0.0.1:0",
@@ -43,7 +40,7 @@ describeIntegration("Lumen SDK with lumen-server", () => {
         env: {
           ...process.env,
           NO_COLOR: "1",
-          RUST_LOG: process.env.RUST_LOG ?? "lumen_server=info,warn",
+          RUST_LOG: process.env.RUST_LOG ?? "lumen_server=info,lumen_engine::render=info,warn",
         },
       },
     );

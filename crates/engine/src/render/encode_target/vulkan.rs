@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use anyhow::{Context, anyhow};
-use lumen_engine::{
+use crate::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE},
     composition::Composition,
     gpu::{GpuCompositionRenderer, RenderedFrame, VulkanVideoTarget},
 };
+use anyhow::{Context, anyhow};
 use lumen_ffmpeg::{
     AudioEncoderConfig, EncodeMode, Encoder, EncoderQuality, GpuBackend, GpuVideoInput,
     MuxedEncoder, Rational, VideoEncoderConfig,
@@ -13,7 +13,7 @@ use lumen_ffmpeg::{
 use lumen_gpu::wgpu::SubmissionIndex;
 
 use super::{
-    RenderTiming, ServerRenderError, checked_size, encode_failed, has_audio, poll, render_failed,
+    Error, RenderTiming, checked_size, encode_failed, has_audio, poll, render_failed,
     render_raster, timed,
 };
 use crate::render::{encoder::warn_if_container_cropped, media::LocalMediaStore};
@@ -87,7 +87,7 @@ impl VulkanTarget {
         frame: u32,
         pts: u32,
         timing: &mut RenderTiming,
-    ) -> Result<(), ServerRenderError> {
+    ) -> Result<(), Error> {
         let RenderedFrame { raster, submission } =
             render_raster(renderer, composition, media_store, frame, timing)?;
         checked_size(composition, &raster, frame)?;

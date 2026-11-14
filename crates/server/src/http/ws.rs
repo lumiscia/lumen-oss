@@ -3,7 +3,7 @@ use futures_util::SinkExt;
 use lumen_server_api::RenderEvent;
 use tokio::sync::watch;
 
-use crate::server::RenderStatus;
+use crate::RenderStatus;
 
 /// Sends the render's current status and then each change, and closes once it has ended.
 pub(super) async fn render_socket_session(
@@ -66,7 +66,7 @@ mod tests {
     use lumen_server_api::ErrorCode;
 
     use super::*;
-    use crate::server::RenderJobError;
+    use crate::RenderJobError;
 
     #[test]
     fn a_failed_render_event_carries_the_failure_code() {

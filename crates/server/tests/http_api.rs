@@ -1,5 +1,3 @@
-#![cfg(feature = "cli")]
-
 //! Drives the real `lumen-server` binary over HTTP. Everything here stops before the GPU except the
 //! `*_with_gpu` tests, which skip like the engine's GPU tests when no adapter is available.
 
@@ -76,7 +74,7 @@ impl Server {
             .args(["--bind", "127.0.0.1:0", "--token", TOKEN])
             .args(args)
             .env("LUMEN_SERVER_MEDIA_DIR", media_dir.path())
-            .env("RUST_LOG", "lumen_server=info")
+            .env("RUST_LOG", "lumen_server=info,lumen_engine::render=info")
             .env("NO_COLOR", "1")
             .stdout(Stdio::null())
             .stderr(Stdio::piped());

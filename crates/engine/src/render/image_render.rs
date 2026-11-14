@@ -1,19 +1,19 @@
 use std::{ops::Range, time::Instant};
 
+use crate::{
+    composition::Composition,
+    gpu::{GpuCompositionRenderer, OutputAlpha},
+};
 use image::{
     ExtendedColorType, ImageEncoder,
     codecs::{jpeg::JpegEncoder, png::PngEncoder},
-};
-use lumen_engine::{
-    composition::Composition,
-    gpu::{GpuCompositionRenderer, OutputAlpha},
 };
 use lumen_ffmpeg::EncoderFamily;
 use lumen_gpu::{Size, wgpu::TextureFormat};
 
 use super::{
-    CancelToken, ErrorCode, OutputFormat, RenderOutput, RenderProgress, RenderReport, RenderTiming,
-    ServerRenderError,
+    CancelToken, Error, ErrorCode, OutputFormat, RenderOutput, RenderProgress, RenderReport,
+    RenderTiming,
     device_budget::{DeviceReservation, reserve_devices},
     encode_target::{
         checked_size, gpu_renderer_failed, poll, readback_failed, render_raster, timed,
@@ -57,9 +57,9 @@ impl<'a> ImageRender<'a> {
         mut media_store: LocalMediaStore,
         output: &RenderOutput,
         cancel: CancelToken,
-    ) -> Result<Self, ServerRenderError> {
+    ) -> Result<Self, Error> {
         if output.format.image_extension().is_none() {
-            return Err(ServerRenderError::new(
+            return Err(Error::new(
                 ErrorCode::InvalidOutput,
                 "an image render needs a png, jpeg, png_sequence or jpeg_sequence format",
                 false,
@@ -80,7 +80,7 @@ impl<'a> ImageRender<'a> {
         });
         renderer
             .compile_with_output_format(composition, TextureFormat::Rgba8Unorm)
-            .map_err(|err| ServerRenderError::engine("failed to compile composition", err))?;
+            .map_err(|err| Error::engine("failed to compile composition", err))?;
         Ok(Self {
             composition,
             media_store,
@@ -107,9 +107,9 @@ impl<'a> ImageRender<'a> {
 
     /// Renders only `frames`, in the order given, in place of every frame of the range. Each must
     /// be in the range.
-    pub fn render_only(&mut self, frames: Vec<u32>) -> Result<(), ServerRenderError> {
+    pub fn render_only(&mut self, frames: Vec<u32>) -> Result<(), Error> {
         if let Some(frame) = frames.iter().find(|frame| !self.frames.contains(frame)) {
-            return Err(ServerRenderError::new(
+            return Err(Error::new(
                 ErrorCode::InvalidOutput,
                 format!(
                     "frame {frame} is outside the render's frames {}..{}",
@@ -123,13 +123,13 @@ impl<'a> ImageRender<'a> {
     }
 
     /// Renders each frame in order and passes it to `on_image`. An error from it ends
-    /// the render: a [`ServerRenderError`] as it is, and any other as [`ErrorCode::OutputIo`].
+    /// the render: a [`Error`] as it is, and any other as [`ErrorCode::OutputIo`].
     /// Cancelling stops it before the next frame.
     pub fn run(
         mut self,
         on_image: &mut dyn FnMut(EncodedImage) -> anyhow::Result<()>,
         on_progress: &mut dyn FnMut(RenderProgress),
-    ) -> Result<RenderReport, ServerRenderError> {
+    ) -> Result<RenderReport, Error> {
         let started = Instant::now();
         let frames: Box<dyn ExactSizeIterator<Item = u32>> = match self.only.take() {
             Some(frames) => Box::new(frames.into_iter()),
@@ -165,7 +165,7 @@ impl<'a> ImageRender<'a> {
                 encode_image(pixels, size, self.format, self.jpeg_quality)
             })
             .map_err(|err| {
-                ServerRenderError::new(
+                Error::new(
                     ErrorCode::EncodeFailed,
                     format!("failed to encode frame {frame}"),
                     false,
@@ -173,16 +173,14 @@ impl<'a> ImageRender<'a> {
                 .caused_by(err)
             })?;
             on_image(EncodedImage { frame, bytes }).map_err(|error| {
-                error
-                    .downcast::<ServerRenderError>()
-                    .unwrap_or_else(|error| {
-                        ServerRenderError::new(
-                            ErrorCode::OutputIo,
-                            format!("failed to write frame {frame}"),
-                            true,
-                        )
-                        .caused_by(error)
-                    })
+                error.downcast::<Error>().unwrap_or_else(|error| {
+                    Error::new(
+                        ErrorCode::OutputIo,
+                        format!("failed to write frame {frame}"),
+                        true,
+                    )
+                    .caused_by(error)
+                })
             })?;
             let completed = index as u32 + 1;
             on_progress(RenderProgress {

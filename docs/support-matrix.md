@@ -68,11 +68,11 @@ Software Vulkan through lavapipe is the deterministic CI baseline. It is useful 
 
 A render asks for a codec (`h264`, `hevc` or `av1` in `.mp4`, default `h264`; `prores` in `.mov`; `vp9` in `.webm`) and a quality preset (`draft`, `standard`, `high` or `lossless`, default `standard`). Each codec tries its encoders in order, and the first that opens wins, with one warning and the reason for each that didn't:
 
-| Platform | `h264`                              | `hevc`                              | `av1`                          |
-| -------- | ----------------------------------- | ----------------------------------- | ------------------------------ |
-| Linux    | `h264_vulkan`, then `libx264`       | `hevc_vulkan`, then `libx265`       | `av1_vulkan`, then `libsvtav1` |
-| macOS    | `h264_videotoolbox`, then `libx264` | `hevc_videotoolbox`, then `libx265` | `libsvtav1`                    |
-| Other    | `libx264`                           | `libx265`                           | `libsvtav1`                    |
+| Platform | `h264`                              | `hevc`                              | `av1`                          | `prores`    | `vp9`        |
+| -------- | ----------------------------------- | ----------------------------------- | ------------------------------ | ----------- | ------------ |
+| Linux    | `h264_vulkan`, then `libx264`       | `hevc_vulkan`, then `libx265`       | `av1_vulkan`, then `libsvtav1` | `prores_ks` | `libvpx-vp9` |
+| macOS    | `h264_videotoolbox`, then `libx264` | `hevc_videotoolbox`, then `libx265` | `libsvtav1`                    | `prores_ks` | `libvpx-vp9` |
+| Other    | `libx264`                           | `libx265`                           | `libsvtav1`                    | `prores_ks` | `libvpx-vp9` |
 
 On a Linux host that has NVIDIA's encode library (`libnvidia-encode.so.1`), `av1` tries `av1_nvenc`, then `libsvtav1`, because `av1_vulkan` [encodes wrong frames on NVIDIA](#vulkan-encoders). `av1_nvenc` needs a card that encodes AV1, an RTX 40-series or newer.
 

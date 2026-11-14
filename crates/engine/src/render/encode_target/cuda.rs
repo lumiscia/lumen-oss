@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use lumen_engine::{
+use crate::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE},
     composition::Composition,
     gpu::{CudaNvencTarget, CudaNvencTargetPool, GpuCompositionRenderer, RenderTarget},
@@ -11,8 +11,8 @@ use lumen_ffmpeg::{
 };
 
 use super::{
-    ErrorCode, RenderTiming, ServerRenderError, create_gpu_renderer, encode_failed,
-    encoder_start_failed, gpu_renderer_failed, has_audio, poll, timed,
+    Error, ErrorCode, RenderTiming, create_gpu_renderer, encode_failed, encoder_start_failed,
+    gpu_renderer_failed, has_audio, poll, timed,
 };
 use crate::render::media::LocalMediaStore;
 
@@ -30,11 +30,11 @@ impl CudaTarget {
         encoder: &Encoder,
         quality: &EncoderQuality,
         depth: lumen_ffmpeg::BitDepth,
-    ) -> Result<(GpuCompositionRenderer, Self), ServerRenderError> {
+    ) -> Result<(GpuCompositionRenderer, Self), Error> {
         let renderer = create_gpu_renderer(media_store).map_err(gpu_renderer_failed)?;
         renderer
             .check_output_size(composition)
-            .map_err(|err| ServerRenderError::engine("the output can't be rendered", err))?;
+            .map_err(|err| Error::engine("the output can't be rendered", err))?;
         let settings = composition.render_settings();
         let (width, height) = (settings.width, settings.height);
         let pool = CudaNvencTargetPool::new(
@@ -44,14 +44,14 @@ impl CudaTarget {
             true,
         )
         .map_err(|err| {
-            ServerRenderError::new(
+            Error::new(
                 ErrorCode::RenderFailed,
                 format!("failed to create CUDA/NVENC target pool: {err}"),
                 false,
             )
         })?;
         let target = pool.acquire(renderer.gpu_renderer()).map_err(|err| {
-            ServerRenderError::new(
+            Error::new(
                 ErrorCode::RenderFailed,
                 format!("failed to create CUDA/NVENC target: {err}"),
                 false,
@@ -63,10 +63,8 @@ impl CudaTarget {
             "created CUDA primary context for Vulkan device"
         );
 
-        let frame_rate =
-            Rational::from_fps(f64::from(composition.timeline().fps)).map_err(|err| {
-                ServerRenderError::new(ErrorCode::InvalidRenderProfile, err.to_string(), false)
-            })?;
+        let frame_rate = Rational::from_fps(f64::from(composition.timeline().fps))
+            .map_err(|err| Error::new(ErrorCode::InvalidRenderProfile, err.to_string(), false))?;
         let mut config = VideoEncoderConfig::cpu_rgba(width, height, frame_rate, encoder);
         config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
         config.cuda_ordinal = Some(pool.cuda_ordinal());
@@ -95,7 +93,7 @@ impl CudaTarget {
         frame: u32,
         pts: u32,
         timing: &mut RenderTiming,
-    ) -> Result<(), ServerRenderError> {
+    ) -> Result<(), Error> {
         timed(&mut timing.render, || {
             renderer.render(
                 composition,
@@ -104,7 +102,7 @@ impl CudaTarget {
                 RenderTarget::External(self.target.external_texture()),
             )
         })
-        .map_err(|err| ServerRenderError::engine(format!("render failed at frame {frame}"), err))?;
+        .map_err(|err| Error::engine(format!("render failed at frame {frame}"), err))?;
         let converted = timed(&mut timing.render, || {
             self.target.convert(renderer.gpu_renderer())
         });

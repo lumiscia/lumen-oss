@@ -4,8 +4,7 @@ use std::{
     sync::{Arc, PoisonError, RwLock},
 };
 
-use anyhow::{Context, anyhow};
-use lumen_engine::{
+use crate::{
     audio::AudioResolver,
     error::{MediaError, MediaFailure},
     media::{
@@ -15,9 +14,10 @@ use lumen_engine::{
         TextSession, VideoFrameResolver, asset_id, resolve_asset,
     },
 };
+use anyhow::{Context, anyhow};
 
 use super::{
-    ErrorCode, GpuSettings, RenderConfig, ServerRenderError,
+    Error, ErrorCode, GpuSettings, RenderConfig,
     fonts::{FontCatalog, ResolvedFont},
 };
 
@@ -211,11 +211,11 @@ impl<T> Written<T> {
 }
 
 impl<T: ImageResolver> ImageResolver for Written<T> {
-    fn metadata(&self) -> lumen_engine::media::ImageMetadata {
+    fn metadata(&self) -> crate::media::ImageMetadata {
         self.inner.metadata()
     }
 
-    fn frame(&self) -> Result<lumen_engine::media::MediaFrame, MediaError> {
+    fn frame(&self) -> Result<crate::media::MediaFrame, MediaError> {
         self.inner.frame().map_err(|error| self.named(error))
     }
 
@@ -225,7 +225,7 @@ impl<T: ImageResolver> ImageResolver for Written<T> {
 }
 
 impl<T: VideoFrameResolver> VideoFrameResolver for Written<T> {
-    fn metadata(&self) -> lumen_engine::media::VideoMetadata {
+    fn metadata(&self) -> crate::media::VideoMetadata {
         self.inner.metadata()
     }
 
@@ -235,7 +235,7 @@ impl<T: VideoFrameResolver> VideoFrameResolver for Written<T> {
             .map_err(|error| self.named(error))
     }
 
-    fn frame(&self, frame: u32) -> Result<lumen_engine::media::MediaFrame, MediaError> {
+    fn frame(&self, frame: u32) -> Result<crate::media::MediaFrame, MediaError> {
         self.inner.frame(frame).map_err(|error| self.named(error))
     }
 
@@ -253,7 +253,7 @@ impl<T: AudioResolver> AudioResolver for Written<T> {
         &self,
         start_sample: u64,
         frames: usize,
-    ) -> Result<Arc<lumen_engine::audio::AudioBuffer>, MediaError> {
+    ) -> Result<Arc<crate::audio::AudioBuffer>, MediaError> {
         self.inner
             .resolve_range(start_sample, frames)
             .map_err(|error| self.named(error))
@@ -348,7 +348,7 @@ impl MediaStore for LocalMediaStore {
                 (identity, MediaResolver::Environment(Box::new(file)))
             }
             AssetKind::Lut => {
-                let limit = lumen_engine::media::MAX_LUT_BYTES;
+                let limit = crate::media::MAX_LUT_BYTES;
                 let file = SceneFile::open(source, resolved, identity, "LUT", limit)?;
                 let identity = file.identity.clone();
                 (identity, MediaResolver::Lut(Box::new(file)))
@@ -469,10 +469,10 @@ fn local_path_failure(
 }
 
 /// `root`, or the current directory, made absolute.
-pub(super) fn media_root(root: Option<&Path>) -> Result<PathBuf, ServerRenderError> {
+pub(super) fn media_root(root: Option<&Path>) -> Result<PathBuf, Error> {
     let root = root.unwrap_or(Path::new("."));
     root.canonicalize().map_err(|error| {
-        ServerRenderError::new(
+        Error::new(
             ErrorCode::InvalidConfig,
             format!("failed to resolve media root `{}`", root.display()),
             false,
@@ -534,7 +534,7 @@ fn resolve_local_path_with_root(source: &str, root: &Path) -> anyhow::Result<Pat
 
 #[cfg(test)]
 mod tests {
-    use lumen_engine::{
+    use crate::{
         audio::AudioResolver,
         error::MediaReason,
         expr::{Expression, ExpressionContext},

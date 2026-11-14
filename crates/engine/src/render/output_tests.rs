@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path, sync::MutexGuard};
 
-use lumen_engine::composition::Composition;
+use crate::composition::Composition;
 use lumen_ffmpeg::{
     AudioRangeReader, DecodeMode, DecodedVideoFrame, EncoderQuality, InputContext, VideoDecoder,
     VideoDecoderConfig, VideoEncoderChoice, YuvVideoFrame,

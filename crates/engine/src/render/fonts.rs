@@ -4,11 +4,11 @@ use std::{
     sync::{LazyLock, RwLock},
 };
 
-use fontdb::Source;
-use lumen_engine::{
+use crate::{
     error::{MediaError, MediaFailure},
     media::{AssetKind, FontResolver, MediaIdentity},
 };
+use fontdb::Source;
 
 /// The variable the binaries read [`RenderConfig::font_dir`](super::RenderConfig::font_dir) from.
 pub const FONT_DIR_ENV: &str = "LUMEN_FONT_DIR";

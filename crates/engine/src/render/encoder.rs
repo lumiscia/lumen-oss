@@ -5,11 +5,11 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use anyhow::{Context, anyhow};
-use lumen_engine::{
+use crate::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMixer},
     composition::Composition,
 };
+use anyhow::{Context, anyhow};
 use lumen_ffmpeg::{
     AudioEncoderConfig, AudioFrame, BitDepth, CpuVideoFrame, Encoder, EncoderQuality, FfmpegError,
     MuxedEncoder, PixelFormat, Rational, VideoEncoderConfig,

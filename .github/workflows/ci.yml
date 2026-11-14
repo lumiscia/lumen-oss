@@ -69,7 +69,7 @@ jobs:
         env:
           LUMEN_GPU_FORCE_FALLBACK_ADAPTER: "1"
           LUMEN_SDK_INTEGRATION: "1"
-          LUMEN_SERVER_FEATURES: "cli,vulkan"
+          LUMEN_SERVER_FEATURES: "vulkan"
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
           WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER: "1"
           WGPU_BACKEND: vulkan
@@ -79,6 +79,7 @@ jobs:
           vulkaninfo --summary
           pnpm test:integration
 
+      # The shards leave it out: it needs the lavapipe settings above.
       - name: Test lumen-server HTTP API
         env:
           LUMEN_GPU_FORCE_FALLBACK_ADAPTER: "1"
@@ -86,7 +87,7 @@ jobs:
           WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER: "1"
           WGPU_BACKEND: vulkan
           WGPU_POWER_PREF: none
-        run: cargo test -p lumen-server --features cli,vulkan --bin lumen-server --test http_api
+        run: cargo test -p lumen-server --features vulkan --test http_api
 
   lint:
     name: Rust lint
@@ -116,10 +117,12 @@ jobs:
       - name: Lint Rust workspace
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Lint feature-gated lumen-server
+      # The workspace lint builds with Vulkan and without CUDA. These cover the render library and
+      # lumen-server without Vulkan, and with CUDA.
+      - name: Lint other render library features
         run: |
-          cargo clippy -p lumen-server --all-targets --features cli -- -D warnings
-          cargo clippy -p lumen-server --all-targets --features cli,vulkan,cuda -- -D warnings
+          cargo clippy -p lumen-engine -p lumen-server --all-targets -- -D warnings
+          cargo clippy -p lumen-engine -p lumen-server --all-targets --features lumen-server/vulkan,lumen-server/cuda -- -D warnings
 
   test:
     name: Rust tests (${{ matrix.shard }}/3)
@@ -152,7 +155,7 @@ jobs:
         env:
           LUMEN_REQUIRE_GPU: "1"
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
-        run: cargo nextest run --partition hash:${{ matrix.shard }}/3
+        run: cargo nextest run --partition hash:${{ matrix.shard }}/3 -E 'not binary_id(lumen-server::http_api)'
 
   # The required check. It passes only when every job above has.
   check:
