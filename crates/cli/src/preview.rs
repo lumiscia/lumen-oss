@@ -20,7 +20,10 @@ use lumen_engine::render::{
 };
 
 use crate::{
-    SourceArgs, load_composition, parse_frames, print_progress, print_warnings, render_to_partial,
+    args::{SourceArgs, parse_frames},
+    load_composition,
+    partial::render_to_partial,
+    print_progress, print_warnings,
 };
 
 /// Space between cells and around the edge of the sheet, in pixels.
