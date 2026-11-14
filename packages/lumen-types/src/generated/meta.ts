@@ -1413,7 +1413,7 @@ export type CompositionTemplate = {
   readonly nodes: readonly CompositionNode[];
   /** Props that `prop('name')` reads inside the template, set per `clip`. */
   readonly props?: Readonly<Record<string, CompositionPropDeclaration>>;
-  readonly render_settings?: TemplateRenderSettings;
+  readonly render_settings?: RenderSettings;
   readonly timeline?: Timeline;
 };
 export type Connection = {
@@ -1534,10 +1534,6 @@ export type ShaderUniforms = Readonly<Record<string, ShaderUniformValue>>;
 export type Shape3dKind = "box" | "sphere" | "plane" | "cylinder" | "torus" | "cone";
 export type Shape3dShape = Shape3dKind;
 export type ShapeGeometryKind = "rectangle" | "ellipse";
-export type TemplateRenderSettings = {
-  readonly height: number;
-  readonly width: number;
-};
 export type Text3dAlignmentHorizontal = TextAlignmentHorizontal;
 export type Text3dAlignmentVertical = TextAlignmentVertical;
 export type Text3dFontStyle = TextFontStyle;

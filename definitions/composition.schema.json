@@ -257,7 +257,7 @@
           "type": "object"
         },
         "render_settings": {
-          "$ref": "#/$defs/templateRenderSettings"
+          "$ref": "#/$defs/renderSettings"
         },
         "timeline": {
           "$ref": "#/$defs/timeline"
@@ -798,24 +798,6 @@
       "description": "Shader uniform values by field name, checked against the shader's uniform struct when the node compiles.",
       "type": "object",
       "x-lumen-type": "ShaderUniforms"
-    },
-    "templateRenderSettings": {
-      "additionalProperties": false,
-      "properties": {
-        "height": {
-          "maximum": 4294967295,
-          "minimum": 1,
-          "type": "integer"
-        },
-        "width": {
-          "maximum": 4294967295,
-          "minimum": 1,
-          "type": "integer"
-        }
-      },
-      "required": ["width", "height"],
-      "type": "object",
-      "x-lumen-type": "TemplateRenderSettings"
     },
     "textContent": {
       "description": "Text to render: a string, or spans that each override the node's text style.",
