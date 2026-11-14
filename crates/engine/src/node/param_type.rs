@@ -83,13 +83,19 @@ impl NodeParamType for [f32; 3] {
 
 impl NodeParamType for super::ShaderUniforms {
     fn property_kind() -> PropertyKind {
-        PropertyKind::ShaderUniforms
+        PropertyKind::Custom(&super::shader_uniforms::SHADER_UNIFORMS)
     }
 }
 
 impl NodeParamType for super::ClipProps {
     fn property_kind() -> PropertyKind {
-        PropertyKind::ClipProps
+        PropertyKind::Custom(&super::clip_props::CLIP_PROPS)
+    }
+}
+
+impl NodeParamType for super::vector::paint::Paint {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Custom(&super::vector::paint::PAINT)
     }
 }
 
@@ -113,49 +119,49 @@ impl<T: NodeParamType> NodeParamType for super::Override<T> {
 
 impl NodeParamType for super::source::text_content::TextContent {
     fn property_kind() -> PropertyKind {
-        PropertyKind::TextContent
+        PropertyKind::Custom(&super::source::text_content::TEXT_CONTENT)
     }
 }
 
 impl NodeParamType for super::source::text_content::TextLine {
     fn property_kind() -> PropertyKind {
-        PropertyKind::TextLine
+        PropertyKind::Custom(&super::source::text_content::TEXT_LINE)
     }
 }
 
 impl NodeParamType for super::source::text_content::TextHighlight {
     fn property_kind() -> PropertyKind {
-        PropertyKind::TextHighlight
+        PropertyKind::Custom(&super::source::text_content::TEXT_HIGHLIGHT)
     }
 }
 
 impl NodeParamType for super::source::text_content::FontFeatures {
     fn property_kind() -> PropertyKind {
-        PropertyKind::FontFeatures
+        PropertyKind::Custom(&super::source::text_content::FONT_FEATURES)
     }
 }
 
 impl NodeParamType for super::source::text_content::TextStroke {
     fn property_kind() -> PropertyKind {
-        PropertyKind::TextStroke
+        PropertyKind::Custom(&super::source::text_content::TEXT_STROKE)
     }
 }
 
 impl NodeParamType for super::vector::dash::DashPattern {
     fn property_kind() -> PropertyKind {
-        PropertyKind::DashPattern
+        PropertyKind::Custom(&super::vector::dash::DASH_PATTERN)
     }
 }
 
 impl NodeParamType for super::scene::Region {
     fn property_kind() -> PropertyKind {
-        PropertyKind::Region
+        PropertyKind::Custom(&super::scene::REGION)
     }
 }
 
 impl NodeParamType for super::vector::repeat::Repeat {
     fn property_kind() -> PropertyKind {
-        PropertyKind::Repeat
+        PropertyKind::Custom(&super::vector::repeat::REPEAT)
     }
 }
 

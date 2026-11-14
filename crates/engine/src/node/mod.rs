@@ -38,7 +38,7 @@ pub(crate) use ports::required_input;
 pub use ports::{InputPortDef, PortKind};
 pub use schema::JsonNode;
 pub use schema::{EnumDef, EnumOptionDef, NodeEnum};
-pub use schema::{NodeCategory, NodeSchemaDef, PropertyDef, PropertyKind};
+pub use schema::{NodeCategory, NodeSchemaDef, ParamTypeDef, PropertyDef, PropertyKind};
 #[cfg(feature = "metadata")]
 pub use schema::{NodeSchema, PropertyConstraints};
 pub use shader_uniforms::{ShaderUniformValue, ShaderUniforms};

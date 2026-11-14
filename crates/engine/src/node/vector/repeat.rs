@@ -6,7 +6,8 @@ use crate::error::LumenError;
 use crate::expr::{ExpressionContext, ExpressionValue};
 use crate::node::motion::{self, Shutter};
 use crate::node::{
-    Deferred, DelegateEvalContext, DelegateEvaluable, Delegated, NodeId, ParamValue, truncated_int,
+    Deferred, DelegateEvalContext, DelegateEvaluable, Delegated, NodeId, ParamTypeDef, ParamValue,
+    truncated_int,
 };
 
 /// Most copies a repeat may draw.
@@ -100,6 +101,12 @@ pub struct Repeat {
     #[meta(min = -1, max = 1, step = 0.01)]
     pub opacity_offset: f64,
 }
+
+pub(crate) static REPEAT: ParamTypeDef = ParamTypeDef {
+    name: "repeat",
+    #[cfg(feature = "metadata")]
+    schema: || serde_json::json!({ "$ref": "#/$defs/repeat" }),
+};
 
 impl Default for Repeat {
     fn default() -> Self {

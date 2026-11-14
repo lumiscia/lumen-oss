@@ -1,7 +1,9 @@
 use serde_json::Value;
 
 use crate::expr::Expression;
-use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, Delegated, PropertyRead};
+use crate::node::{
+    Deferred, DelegateEvalContext, DelegateEvaluable, Delegated, ParamTypeDef, PropertyRead,
+};
 
 /// Most lengths a dash pattern may list.
 pub const MAX_DASH_LENGTHS: usize = 16;
@@ -14,6 +16,12 @@ pub const MAX_DASH_LENGTH: f64 = 1e37;
 /// Lengths that a stroke alternately draws and skips, starting with a dash.
 #[derive(Debug, Clone, Default, PartialEq, lumen_macros::StructuralHash)]
 pub struct DashPattern(pub Vec<f64>);
+
+pub(crate) static DASH_PATTERN: ParamTypeDef = ParamTypeDef {
+    name: "dash_pattern",
+    #[cfg(feature = "metadata")]
+    schema: || serde_json::json!({ "$ref": "#/$defs/dashPattern" }),
+};
 
 /// [`DashPattern`] whose lengths take literals or expressions. The whole pattern cannot be an
 /// expression.

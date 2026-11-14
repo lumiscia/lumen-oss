@@ -11,10 +11,17 @@ use serde_json::Value;
 use crate::{
     expr::Expression,
     json::{StringParam, classify_string},
+    node::ParamTypeDef,
 };
 
 #[derive(Debug, Clone, Default, lumen_macros::StructuralHash)]
 pub struct ClipProps(pub BTreeMap<String, ClipPropValue>);
+
+pub(crate) static CLIP_PROPS: ParamTypeDef = ParamTypeDef {
+    name: "clip_props",
+    #[cfg(feature = "metadata")]
+    schema: || serde_json::json!({ "$ref": "#/$defs/clipProps" }),
+};
 
 #[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub enum ClipPropValue {

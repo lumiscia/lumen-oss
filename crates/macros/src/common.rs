@@ -216,23 +216,6 @@ pub(crate) fn property_kind_tokens(kind: &Ident) -> proc_macro2::TokenStream {
         "vec2" | "Vec2" => quote!(::lumen_engine::node::PropertyKind::Vec2),
         "vec3" | "Vec3" => quote!(::lumen_engine::node::PropertyKind::Vec3),
         "enum" | "Enum" => quote!(::lumen_engine::node::PropertyKind::Enum),
-        "paint" | "Paint" => quote!(::lumen_engine::node::PropertyKind::Paint),
-        "shader_uniforms" | "ShaderUniforms" => {
-            quote!(::lumen_engine::node::PropertyKind::ShaderUniforms)
-        }
-        "clip_props" | "ClipProps" => quote!(::lumen_engine::node::PropertyKind::ClipProps),
-        "text_content" | "TextContent" => quote!(::lumen_engine::node::PropertyKind::TextContent),
-        "text_line" | "TextLine" => quote!(::lumen_engine::node::PropertyKind::TextLine),
-        "text_highlight" | "TextHighlight" => {
-            quote!(::lumen_engine::node::PropertyKind::TextHighlight)
-        }
-        "font_features" | "FontFeatures" => {
-            quote!(::lumen_engine::node::PropertyKind::FontFeatures)
-        }
-        "text_stroke" | "TextStroke" => quote!(::lumen_engine::node::PropertyKind::TextStroke),
-        "dash_pattern" | "DashPattern" => quote!(::lumen_engine::node::PropertyKind::DashPattern),
-        "region" | "Region" => quote!(::lumen_engine::node::PropertyKind::Region),
-        "repeat" | "Repeat" => quote!(::lumen_engine::node::PropertyKind::Repeat),
         _ => {
             let span = kind.span();
             quote::quote_spanned!(span=> compile_error!("unknown param kind"))

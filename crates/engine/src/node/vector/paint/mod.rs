@@ -4,6 +4,7 @@ mod types;
 
 pub(crate) use gpu::GpuPaint;
 
+pub(crate) use types::PAINT;
 pub use types::{
     GradientInterpolation, GradientPaint, GradientPaintDelegate, GradientSpread, GradientStop,
     GradientStopDelegate, GradientUnits, MAX_GRADIENT_STOPS, Paint, PaintDelegate, PaintKind,

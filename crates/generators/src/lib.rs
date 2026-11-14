@@ -670,20 +670,10 @@ fn value_schema_json(property: &PropertyDef) -> Value {
         }
         PropertyKind::String => json!({ "type": "string" }),
         PropertyKind::Color => json!({ "$ref": "#/$defs/color" }),
-        PropertyKind::Paint => json!({ "$ref": "#/$defs/paint" }),
         PropertyKind::Vec2 => json!({ "$ref": "#/$defs/vec2" }),
         PropertyKind::Vec3 => json!({ "$ref": "#/$defs/vec3" }),
-        PropertyKind::ShaderUniforms => json!({ "$ref": "#/$defs/shaderUniforms" }),
-        PropertyKind::ClipProps => json!({ "$ref": "#/$defs/clipProps" }),
-        PropertyKind::TextContent => json!({ "$ref": "#/$defs/textContent" }),
-        PropertyKind::TextLine => json!({ "$ref": "#/$defs/textLine" }),
-        PropertyKind::TextHighlight => json!({ "$ref": "#/$defs/textHighlight" }),
-        PropertyKind::FontFeatures => json!({ "$ref": "#/$defs/fontFeatures" }),
-        PropertyKind::TextStroke => json!({ "$ref": "#/$defs/textStroke" }),
-        PropertyKind::DashPattern => json!({ "$ref": "#/$defs/dashPattern" }),
-        PropertyKind::Region => json!({ "$ref": "#/$defs/region" }),
-        PropertyKind::Repeat => json!({ "$ref": "#/$defs/repeat" }),
         PropertyKind::Enum => enum_schema_json(property),
+        PropertyKind::Custom(def) => (def.schema)(),
     }
 }
 
@@ -823,20 +813,10 @@ fn property_kind_name(kind: PropertyKind) -> &'static str {
         PropertyKind::Bool => "bool",
         PropertyKind::String => "string",
         PropertyKind::Color => "color",
-        PropertyKind::Paint => "paint",
         PropertyKind::Vec2 => "vec2",
         PropertyKind::Vec3 => "vec3",
         PropertyKind::Enum => "enum",
-        PropertyKind::ShaderUniforms => "shader_uniforms",
-        PropertyKind::ClipProps => "clip_props",
-        PropertyKind::TextContent => "text_content",
-        PropertyKind::TextLine => "text_line",
-        PropertyKind::TextHighlight => "text_highlight",
-        PropertyKind::FontFeatures => "font_features",
-        PropertyKind::TextStroke => "text_stroke",
-        PropertyKind::DashPattern => "dash_pattern",
-        PropertyKind::Region => "region",
-        PropertyKind::Repeat => "repeat",
+        PropertyKind::Custom(def) => def.name,
     }
 }
 

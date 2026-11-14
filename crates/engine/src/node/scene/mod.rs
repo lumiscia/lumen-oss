@@ -26,6 +26,7 @@ pub use environment::check_environment;
 pub use text_3d::{Text3d, Text3dParams, Text3dParamsDelegate};
 
 pub use instance::{Instance3d, Instance3dParams, InstanceCount, MAX_INSTANCES};
+pub(crate) use region::REGION;
 pub use region::{Region, RegionDelegate};
 
 use crate::node::vector::paint::Paint;

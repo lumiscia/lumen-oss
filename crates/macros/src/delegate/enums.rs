@@ -151,29 +151,29 @@ pub(crate) fn expand_enum_delegate(
     let delegate = parse_delegate_attr(input)?;
     let delegate_ident = delegate.name.clone();
     let expressions = delegate.expressions;
-    let kind = delegate.kind.as_ref().ok_or_else(|| {
-        syn::Error::new(
-            ident.span(),
-            "Delegate enums require `#[delegate(kind = ...)]`",
-        )
-    })?;
-    let is_enum_kind = kind == "enum" || kind == "Enum";
-    let property_kind = property_kind_tokens(kind);
-    let enum_def_method: Option<proc_macro2::TokenStream> = is_enum_kind.then(|| {
+    let is_enum_kind = delegate
+        .kind
+        .as_ref()
+        .is_some_and(|kind| kind == "enum" || kind == "Enum");
+    // Without a `kind`, the type implements `NodeParamType` itself.
+    let node_meta_type_impl = delegate.kind.as_ref().map(|kind| {
+        let property_kind = property_kind_tokens(kind);
+        let enum_def_method = is_enum_kind.then(|| {
+            quote! {
+                fn enum_def() -> ::core::option::Option<&'static ::lumen_engine::node::EnumDef> {
+                    ::core::option::Option::Some(<#ident as ::lumen_engine::node::NodeEnum>::enum_def())
+                }
+            }
+        });
         quote! {
-            fn enum_def() -> ::core::option::Option<&'static ::lumen_engine::node::EnumDef> {
-                ::core::option::Option::Some(<#ident as ::lumen_engine::node::NodeEnum>::enum_def())
+            impl ::lumen_engine::node::NodeParamType for #ident {
+                fn property_kind() -> ::lumen_engine::node::PropertyKind {
+                    #property_kind
+                }
+                #enum_def_method
             }
         }
     });
-    let node_meta_type_impl = quote! {
-        impl ::lumen_engine::node::NodeParamType for #ident {
-            fn property_kind() -> ::lumen_engine::node::PropertyKind {
-                #property_kind
-            }
-            #enum_def_method
-        }
-    };
     let mut delegate_variants = variants
         .iter()
         .map(enum_delegate_variant_tokens)

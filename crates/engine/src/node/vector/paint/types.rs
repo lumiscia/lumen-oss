@@ -1,5 +1,7 @@
 #![allow(clippy::enum_variant_names)]
 
+use crate::node::ParamTypeDef;
+
 /// The most stops a gradient holds, which the paint shader's fixed arrays also size.
 pub const MAX_GRADIENT_STOPS: usize = 8;
 
@@ -153,11 +155,17 @@ pub struct GradientPaint {
 }
 
 #[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
-#[delegate(kind = "paint", expressions)]
+#[delegate(expressions)]
 pub enum Paint {
     SolidColor(u8, u8, u8, u8),
     Gradient(GradientPaint),
 }
+
+pub(crate) static PAINT: ParamTypeDef = ParamTypeDef {
+    name: "paint",
+    #[cfg(feature = "metadata")]
+    schema: || serde_json::json!({ "$ref": "#/$defs/paint" }),
+};
 
 impl Default for Paint {
     fn default() -> Self {
