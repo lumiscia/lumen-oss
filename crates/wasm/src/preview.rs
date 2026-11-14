@@ -147,14 +147,6 @@ impl LumenPreviewController {
         Ok(())
     }
 
-    /// Fails as `loadComposition` would on a composition the engine rejects, without loading it.
-    #[wasm_bindgen(js_name = "validateComposition")]
-    pub fn validate_composition(&self, composition_json: &str) -> Result<(), JsValue> {
-        composition_json_to_composition(composition_json)
-            .map(drop)
-            .map_err(|error| parse_failure(&error))
-    }
-
     /// What the loaded composition's audio plays over its timeline, as the JSON of an
     /// [`AudioTimelinePayload`], or `None` when it has no audio.
     #[wasm_bindgen(js_name = "audioTimeline")]
@@ -237,22 +229,6 @@ impl LumenPreviewController {
         serde_json::to_string(&payload).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
-    #[wasm_bindgen(js_name = "clearMedia")]
-    pub fn clear_media(&self) -> Result<(), JsValue> {
-        self.change_media(WasmMediaStore::clear)?;
-        self.reset_renderer()
-    }
-
-    #[wasm_bindgen(js_name = "clearVideos")]
-    pub fn clear_videos(&self) -> Result<(), JsValue> {
-        self.change_media(WasmMediaStore::clear_video_frames)
-    }
-
-    #[wasm_bindgen(js_name = "clearVideoSource")]
-    pub fn clear_video_source(&self, stream_id: &str) -> Result<(), JsValue> {
-        self.change_media(|media| media.clear_video_frames_for_stream(stream_id))
-    }
-
     #[wasm_bindgen(js_name = "removeImageSource")]
     pub fn remove_image_source(&self, image_id: &str) -> Result<(), JsValue> {
         self.change_media(|media| media.remove_image(image_id))?;
@@ -316,11 +292,6 @@ impl LumenPreviewController {
     #[wasm_bindgen(js_name = "hasVideoFrame")]
     pub fn has_video_frame(&self, stream_id: &str, frame: u32) -> bool {
         self.media.has_video_frame(stream_id, frame)
-    }
-
-    #[wasm_bindgen(js_name = "hasFont")]
-    pub fn has_font(&self, font_family: &str) -> bool {
-        self.media.has_font(font_family)
     }
 
     /// Sets the byte budget shared by all cached video frames; frames needed at the playhead are
@@ -906,25 +877,6 @@ mod tests {
         assert!(ready_at_playhead(&controller));
         assert!(!controller.media.has_video_frame("a", 100));
         assert!(!controller.media.has_video_frame("b", 100));
-    }
-
-    #[test]
-    fn clearing_videos_keeps_the_playhead_pinned() {
-        // Room for one frame, but the playhead needs one frame from each of the two streams.
-        let controller = controller(4);
-        register(&controller, "a", 30.0);
-        register(&controller, "b", 30.0);
-        controller
-            .load_composition(COMPOSITION_JSON)
-            .expect("load composition");
-        upload_one(&controller, "a", 0);
-        upload_one(&controller, "b", 0);
-
-        controller.clear_videos().expect("clear video frames");
-        upload_one(&controller, "a", 0);
-        upload_one(&controller, "b", 0);
-
-        assert!(ready_at_playhead(&controller));
     }
 
     fn controller(budget_bytes: usize) -> LumenPreviewController {

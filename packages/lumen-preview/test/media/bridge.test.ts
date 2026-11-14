@@ -117,8 +117,6 @@ function fakeTarget(overrides: Partial<NativeVideoFrameTarget> = {}) {
   const models = new Map<string, Uint8Array>();
   const target = {
     clear: () => {},
-    clearVideoSource: () => {},
-    clearVideos: () => frames.clear(),
     hasImage: (id: string) => images.has(id),
     hasModel: (id: string) => models.has(id),
     hasVideoFrame: (id: string, frame: number) => frames.has(`${id}:${frame}`),
@@ -348,13 +346,13 @@ describe("LumenMediaBridge", () => {
 
       const decoding = bridge.loadVideoFrame("clip", 1);
       await new Promise((resolve) => setTimeout(resolve));
-      bridge.clearVideos();
+      bridge.removeVideoSource("clip");
       expect(held.closed).toBe(false);
 
       gate.resolve();
       await decoding;
       await vi.waitFor(() => expect(held.closed).toBe(true));
-      expect(target.setVideoFrame).toHaveBeenCalledTimes(2);
+      expect(target.setVideoFrame).toHaveBeenCalledTimes(1);
     });
 
     it("drops a frame load whose source is removed and whose read is cancelled", async () => {

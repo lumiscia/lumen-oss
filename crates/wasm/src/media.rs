@@ -63,11 +63,6 @@ pub(crate) struct VideoFrameCache {
 }
 
 impl VideoFrameCache {
-    pub fn clear(&mut self) {
-        self.entries.clear();
-        self.bytes = 0;
-    }
-
     pub fn contains(&self, frame: u32) -> bool {
         self.entries.contains_key(&frame)
     }
@@ -280,30 +275,6 @@ impl WasmMediaStore {
             .map_err(|_| "media store lock poisoned")
     }
 
-    pub fn clear_video_frames(&self) -> Result<(), &'static str> {
-        let mut videos = self
-            .inner
-            .videos
-            .write()
-            .map_err(|_| "media store lock poisoned")?;
-        for video in videos.streams.values_mut() {
-            video.frames.clear();
-        }
-        Ok(())
-    }
-
-    pub fn clear_video_frames_for_stream(&self, stream_id: &str) -> Result<(), &'static str> {
-        let mut videos = self
-            .inner
-            .videos
-            .write()
-            .map_err(|_| "media store lock poisoned")?;
-        if let Some(video) = videos.streams.get_mut(stream_id) {
-            video.frames.clear();
-        }
-        Ok(())
-    }
-
     pub fn remove_image(&self, image_id: &str) -> Result<(), &'static str> {
         self.inner
             .images
@@ -392,14 +363,6 @@ impl WasmMediaStore {
             .read()
             .ok()
             .is_some_and(|luts| luts.contains_key(source))
-    }
-
-    pub fn has_font(&self, font_family: &str) -> bool {
-        self.inner
-            .fonts
-            .read()
-            .ok()
-            .is_some_and(|fonts| fonts.contains_key(font_family))
     }
 
     pub fn has_video_frame(&self, stream_id: &str, frame: u32) -> bool {
@@ -1008,35 +971,6 @@ mod tests {
             .expect("set frame");
         let tagged = self::resolver::<dyn VideoFrameResolver>(&store, "b");
         assert_eq!(tagged.color_warning(), Some(warning));
-    }
-
-    #[test]
-    fn clear_videos_preserves_metadata() {
-        let store = WasmMediaStore::default();
-        store
-            .set_video_metadata(
-                "intro".to_string(),
-                VideoMetadata {
-                    width: 1920,
-                    height: 1080,
-                    frame_count: 240,
-                    fps: 30.0,
-                },
-            )
-            .expect("set metadata");
-        let frame = crate::utils::raw_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
-        store
-            .set_video_frame("intro".to_string(), 0, frame)
-            .expect("set frame");
-
-        store.clear_video_frames().expect("clear video frames");
-
-        let resolver = resolver::<dyn VideoFrameResolver>(&store, "intro");
-        assert_eq!(resolver.metadata().frame_count, 240);
-        assert!(matches!(
-            resolver.frame(0),
-            Err(MediaError::FrameOutOfRange { .. })
-        ));
     }
 
     const INTER: &[u8] = include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf");
