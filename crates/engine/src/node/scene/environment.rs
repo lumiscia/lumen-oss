@@ -8,8 +8,9 @@ use foldhash::HashMap;
 use lumen_3d::environment::{self, EnvironmentError, Equirect};
 use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
-use super::collect::{evictions, storage_buffer};
+use super::collect::storage_buffer;
 use crate::error::{LumenError, MediaError, MediaFailure};
+use crate::gpu::evictions;
 use crate::gpu::frame_graph::FrameCx;
 use crate::media::{AssetKind, EnvironmentResolver, MediaIdentity, resolve_as, sniff};
 

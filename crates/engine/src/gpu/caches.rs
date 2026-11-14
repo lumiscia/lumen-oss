@@ -72,3 +72,56 @@ pub struct CacheStats {
     /// The shared glyph atlas, 64 MiB once a frame has drawn text, which has no budget.
     pub text_atlas: u64,
 }
+
+/// Which of `entries`, each with its bytes, the tick it was last used in and whether it must stay,
+/// to free so that the `total` bytes they hold come down to `budget`: least recently used first,
+/// then by key, and none that must stay.
+pub(crate) fn evictions<K: Ord + Copy>(
+    entries: impl Iterator<Item = (K, u64, u64, bool)>,
+    total: u64,
+    budget: u64,
+) -> Vec<K> {
+    let mut idle: Vec<(u64, K, u64)> = entries
+        .filter(|&(_, _, _, protected)| !protected)
+        .map(|(key, bytes, last_used, _)| (last_used, key, bytes))
+        .collect();
+    idle.sort_unstable();
+    let mut total = total;
+    let mut freed = Vec::new();
+    for (_, key, bytes) in idle {
+        if total <= budget {
+            break;
+        }
+        total -= bytes;
+        freed.push(key);
+    }
+    freed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::evictions;
+
+    #[test]
+    fn evictions_free_the_least_recently_used_down_to_the_budget_and_spare_protected_entries() {
+        // Each entry's key, bytes, last tick used and whether it must stay.
+        let models = [
+            ("old", 10, 1, false),
+            ("kept", 10, 1, true),
+            ("older", 10, 0, false),
+            ("recent", 10, 2, false),
+            ("drawn", 10, 3, true),
+        ];
+        assert_eq!(
+            evictions(models.into_iter(), 50, 25,),
+            ["older", "old", "recent"]
+        );
+        assert_eq!(evictions(models.into_iter(), 50, 35), ["older", "old"]);
+        assert_eq!(evictions(models.into_iter(), 50, 50), Vec::<&str>::new());
+        // Protected entries stay even when what is left is over the budget.
+        assert_eq!(
+            evictions(models.into_iter(), 50, 0),
+            ["older", "old", "recent"]
+        );
+    }
+}

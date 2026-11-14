@@ -17,6 +17,7 @@ use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
 use super::{Light3dKind, Material3d, Model3d, Placement3d, Pose3d, Projection3d, Shape3dKind};
 use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
+use crate::gpu::evictions;
 use crate::gpu::frame_graph::{FrameCx, Raster};
 use crate::media::{AssetKind, MediaIdentity, ModelResolver, resolve_as};
 use crate::node::vector::paint::Paint;
@@ -324,31 +325,6 @@ fn model_failure(source: &str, bytes: &[u8], error: ModelError) -> MediaError {
         } => MediaFailure::too_large(source, details, limit, actual),
     };
     failure.wanting(&wanted).into()
-}
-
-/// Which of `models`, each with its bytes, the tick it was last drawn in and whether it must stay,
-/// to free so that the `total` bytes they hold come down to `budget`: least recently drawn first,
-/// then by key, and none that must stay.
-pub(super) fn evictions<K: Ord + Copy>(
-    models: impl Iterator<Item = (K, u64, u64, bool)>,
-    total: u64,
-    budget: u64,
-) -> Vec<K> {
-    let mut idle: Vec<(u64, K, u64)> = models
-        .filter(|&(_, _, _, protected)| !protected)
-        .map(|(key, bytes, last_used, _)| (last_used, key, bytes))
-        .collect();
-    idle.sort_unstable();
-    let mut total = total;
-    let mut freed = Vec::new();
-    for (_, key, bytes) in idle {
-        if total <= budget {
-            break;
-        }
-        total -= bytes;
-        freed.push(key);
-    }
-    freed
 }
 
 fn forget_model(rec: &mut Recorder, model: &LoadedModel) {
@@ -1158,7 +1134,7 @@ mod tests {
 
     use lumen_gpu::Size;
 
-    use super::{PlanePart, evictions, held_frames, model_failure, plane_part};
+    use super::{PlanePart, held_frames, model_failure, plane_part};
     use crate::error::MediaReason;
     use crate::media::AssetKind;
     use crate::node::scene::Model3dParams;
@@ -1231,29 +1207,6 @@ mod tests {
         assert!(contains(everywhere, -1e9) && contains(everywhere, 1e9));
         let timeless = held_frames(span, &forwards, 0.0, 7.0);
         assert!(contains(timeless, 7.0));
-    }
-
-    #[test]
-    fn evictions_free_the_least_recently_drawn_down_to_the_budget_and_spare_protected_models() {
-        // Each model's key, bytes, last tick drawn and whether it must stay.
-        let models = [
-            ("old", 10, 1, false),
-            ("kept", 10, 1, true),
-            ("older", 10, 0, false),
-            ("recent", 10, 2, false),
-            ("drawn", 10, 3, true),
-        ];
-        assert_eq!(
-            evictions(models.into_iter(), 50, 25,),
-            ["older", "old", "recent"]
-        );
-        assert_eq!(evictions(models.into_iter(), 50, 35), ["older", "old"]);
-        assert_eq!(evictions(models.into_iter(), 50, 50), Vec::<&str>::new());
-        // Protected models stay even when what is left is over the budget.
-        assert_eq!(
-            evictions(models.into_iter(), 50, 0),
-            ["older", "old", "recent"]
-        );
     }
 
     /// What reading `bytes` as a binary glTF fails with: its code and the kind found.

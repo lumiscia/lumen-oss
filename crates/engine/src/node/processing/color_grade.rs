@@ -9,7 +9,7 @@ use crate::node::{
     processing::RasterSampling,
 };
 
-use crate::gpu::params;
+use crate::gpu::{evictions, params};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -357,16 +357,17 @@ impl LutCache {
     /// Frees tables, least recently used first, while the cache holds more than `budget` bytes,
     /// keeping those frame `tick` used.
     pub(crate) fn trim(&mut self, rec: &mut Recorder, tick: u64, budget: u64) {
-        while self.bytes > budget {
-            let Some((id, _)) = self
-                .luts
+        let freed: Vec<String> = evictions(
+            self.luts
                 .iter()
-                .filter(|(_, cached)| cached.last_used != tick)
-                .min_by_key(|(id, cached)| (cached.last_used, *id))
-                .map(|(id, cached)| (id.clone(), cached.last_used))
-            else {
-                return;
-            };
+                .map(|(id, cached)| (id, cached.bytes, cached.last_used, cached.last_used == tick)),
+            self.bytes,
+            budget,
+        )
+        .into_iter()
+        .cloned()
+        .collect();
+        for id in freed {
             if let Some(cached) = self.luts.remove(&id) {
                 rec.forget(cached.lut.tex);
                 self.bytes -= cached.bytes;
