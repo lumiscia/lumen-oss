@@ -263,7 +263,7 @@ describe("LumenPreviewSession", () => {
     const { attached, session, worker } = createSession({ lookaheadCount: 8, logLevel: "off" });
     expect(worker.ofType("start")[0]).toMatchObject({ logLevel: "off", lookaheadCount: 8 });
 
-    session.update({ composition: composition("second"), logLevel: "warn", lookaheadCount: 2 });
+    session.setInputs({ composition: composition("second"), logLevel: "warn", lookaheadCount: 2 });
     expect(worker.ofType("set-options")).toHaveLength(0);
     worker.emit({ type: "ready" });
     await attached;
@@ -280,7 +280,7 @@ describe("LumenPreviewSession", () => {
     const replacementError = vi.fn();
     const { attached, session, worker } = createSession({ lookaheadCount: 8, onError });
 
-    session.update({
+    session.setInputs({
       composition: composition("replacement"),
       lookaheadCount: 2,
       onError: replacementError,
@@ -312,17 +312,17 @@ describe("LumenPreviewSession", () => {
     expect(worker.ofType("start")[0]).toMatchObject({ lookaheadCount: 2 });
     expect(worker.ofType("load")).toHaveLength(1);
 
-    session.update({ composition: composition("first"), rate: 2 });
+    session.setInputs({ composition: composition("first"), rate: 2 });
     expect(preview.getSnapshot().errorCode).toBeNull();
     expect(session.rate).toBe(2);
   });
 
   it("sends options only when they really change", async () => {
     const { session, worker } = await started({ lookaheadCount: 8 });
-    session.update({ composition: composition("first") });
+    session.setInputs({ composition: composition("first") });
     expect(worker.ofType("set-options")).toHaveLength(0);
 
-    session.update({ composition: composition("first"), lookaheadCount: 2 });
+    session.setInputs({ composition: composition("first"), lookaheadCount: 2 });
     expect(worker.ofType("set-options")).toMatchObject([{ lookaheadCount: 2 }]);
   });
 
@@ -400,6 +400,21 @@ describe("LumenPreviewSession", () => {
       });
     }
 
+    it("reads a composition object once, however often the same inputs are set", async () => {
+      const toJSON = vi.fn(() => ({ metadata: { name: "built" } }) as unknown as LumenComposition);
+      const built = { toJSON };
+      const { session, worker } = await started({ composition: built });
+      session.setInputs({ composition: built });
+      session.setInputs({ composition: built, rate: 2 });
+
+      expect(toJSON).toHaveBeenCalledTimes(1);
+      expect(worker.ofType("load")).toHaveLength(1);
+
+      session.setInputs({ composition: { toJSON } });
+      expect(toJSON).toHaveBeenCalledTimes(2);
+      expect(worker.ofType("load")).toHaveLength(1);
+    });
+
     it("keeps playing through the load, and the audio isn't touched when its timeline is the same", async () => {
       const { preview, session, worker } = await playable();
       const engine = audio.instances[0];
@@ -407,7 +422,7 @@ describe("LumenPreviewSession", () => {
       preview.play();
       const calls = (engine?.play.mock.calls.length ?? 0) + (engine?.seekMs.mock.calls.length ?? 0);
 
-      session.update({ composition: composition("second") });
+      session.setInputs({ composition: composition("second") });
       expect(preview.getSnapshot()).toMatchObject({ frame: 30, isPlaying: true });
       expect(worker.ofType("load").at(-1)?.clock).toMatchObject({ originMs: 3_000 });
 
@@ -435,7 +450,7 @@ describe("LumenPreviewSession", () => {
       audio.positionMs = 1_060;
       worker.emit({ actualFps: 30, frame: 32, loadId, renderMs: 1, seekId: 0, type: "frame" });
 
-      session.update({ composition: composition("colour") });
+      session.setInputs({ composition: composition("colour") });
       loaded(worker, 300, audioTimeline(300, "music", 30), 30);
 
       expect(preview.getSnapshot()).toMatchObject({ frame: 32, isPlaying: true });
@@ -456,7 +471,7 @@ describe("LumenPreviewSession", () => {
 
       for (let edit = 0; edit < 60; edit += 1) {
         nowMs += 16;
-        session.update({ composition: composition(`edit ${edit}`) });
+        session.setInputs({ composition: composition(`edit ${edit}`) });
         loaded(worker, 300, silent, 30);
       }
 
@@ -475,7 +490,7 @@ describe("LumenPreviewSession", () => {
       preview.play();
 
       nowMs = 14_000;
-      session.update({ composition: composition("second"), loop: true });
+      session.setInputs({ composition: composition("second"), loop: true });
       loaded(worker, 100, null);
       expect(worker.ofType("seek")).toEqual([]);
 
@@ -488,14 +503,14 @@ describe("LumenPreviewSession", () => {
       const engine = audio.instances[0];
       preview.play();
 
-      session.update({ composition: composition("longer") });
+      session.setInputs({ composition: composition("longer") });
       void preview.seek(150);
       expect(preview.getSnapshot()).toMatchObject({ frame: 150, isPlaying: true });
       loaded(worker, 200);
       expect(preview.getSnapshot()).toMatchObject({ frame: 150, isPlaying: true });
       expect(engine?.play).toHaveBeenLastCalledWith(15_000);
 
-      session.update({ composition: composition("colour") });
+      session.setInputs({ composition: composition("colour") });
       void preview.seek(250);
       loaded(worker, 200);
       expect(preview.getSnapshot()).toMatchObject({ frame: 199, isPlaying: true });
@@ -509,7 +524,7 @@ describe("LumenPreviewSession", () => {
       void preview.seek(20);
       preview.play();
 
-      session.update({ composition: composition("second") });
+      session.setInputs({ composition: composition("second") });
       audio.positionMs = 2_500;
       loaded(worker, 100, audioTimeline(100, "voice"));
 
@@ -524,7 +539,7 @@ describe("LumenPreviewSession", () => {
       const engine = audio.instances[0];
       void preview.seek(30);
 
-      session.update({ composition: composition("second") });
+      session.setInputs({ composition: composition("second") });
       expect(worker.ofType("load").at(-1)?.clock).toMatchObject({ originMs: 3_000, rate: 0 });
       loaded(worker, 100);
 
@@ -538,7 +553,7 @@ describe("LumenPreviewSession", () => {
       const engine = audio.instances[0];
       void preview.seek(80);
 
-      session.update({ composition: composition("second"), loop: true });
+      session.setInputs({ composition: composition("second"), loop: true });
       loaded(worker, 50);
 
       expect(preview.getSnapshot()).toMatchObject({ frame: 49, isPlaying: false, totalFrames: 50 });
@@ -552,7 +567,7 @@ describe("LumenPreviewSession", () => {
       void preview.seek(80);
       preview.play();
 
-      session.update({ composition: composition("second"), loop: true });
+      session.setInputs({ composition: composition("second"), loop: true });
       loaded(worker, 50);
 
       expect(preview.getSnapshot()).toMatchObject({ frame: 30, isPlaying: true, totalFrames: 50 });
@@ -571,7 +586,7 @@ describe("LumenPreviewSession", () => {
       const engine = audio.instances[0];
       void preview.seek(30);
       preview.play();
-      session.update({ composition: composition("second") });
+      session.setInputs({ composition: composition("second") });
 
       audio.positionMs = 3_500;
       preview.pause();
@@ -590,7 +605,7 @@ describe("LumenPreviewSession", () => {
     it("lets a seek during the load win over the saved frame", async () => {
       const { preview, session, worker } = await playable();
       void preview.seek(30);
-      session.update({ composition: composition("second") });
+      session.setInputs({ composition: composition("second") });
 
       void preview.seek(80);
       loaded(worker, 100);
@@ -603,10 +618,10 @@ describe("LumenPreviewSession", () => {
       const { preview, session, worker } = await playable();
       preview.play();
 
-      session.update({ composition: composition("second") });
+      session.setInputs({ composition: composition("second") });
       const stale = worker.ofType("load").at(-1)?.loadId as number;
       void preview.seek(150);
-      session.update({ composition: composition("third") });
+      session.setInputs({ composition: composition("third") });
       worker.emit({
         audioTimelineJson: null,
         fps: 10,
@@ -632,7 +647,7 @@ describe("LumenPreviewSession", () => {
       void preview.seek(30);
       preview.play();
 
-      session.update({ composition: composition("broken") });
+      session.setInputs({ composition: composition("broken") });
       worker.emit({
         diagnostics: [],
         loadId: worker.ofType("load").at(-1)?.loadId as number,
@@ -642,7 +657,7 @@ describe("LumenPreviewSession", () => {
       });
       expect(preview.getSnapshot()).toMatchObject({ frame: 30, isLoaded: false, isPlaying: false });
 
-      session.update({ composition: composition("fixed") });
+      session.setInputs({ composition: composition("fixed") });
       expect(worker.ofType("load").at(-1)?.clock).toMatchObject({ originMs: 3_000, rate: 0 });
       loaded(worker, 100);
       expect(preview.getSnapshot()).toMatchObject({ frame: 30, isPlaying: false });
@@ -652,9 +667,9 @@ describe("LumenPreviewSession", () => {
       const { preview, session, worker } = await playable();
       void preview.seek(30);
 
-      session.update({ composition: null });
+      session.setInputs({ composition: null });
       expect(audio.instances[0]?.loadAudioTimeline).toHaveBeenLastCalledWith(null);
-      session.update({ composition: composition("again") });
+      session.setInputs({ composition: composition("again") });
       expect(worker.ofType("load").at(-1)?.clock).toMatchObject({ originMs: 0, rate: 0 });
       loaded(worker, 100);
 
@@ -665,7 +680,7 @@ describe("LumenPreviewSession", () => {
   it("ignores events from a load that has been replaced", async () => {
     const { preview, session, worker } = await playable();
     const staleLoadId = worker.ofType("load").at(-1)?.loadId as number;
-    session.update({ composition: composition("second") });
+    session.setInputs({ composition: composition("second") });
 
     worker.emit({
       diagnostics: [],
@@ -695,14 +710,14 @@ describe("LumenPreviewSession", () => {
         ?.media.map(([source]) => source),
     ).toEqual(["clip", "logo"]);
 
-    session.update({
+    session.setInputs({
       composition: composition("first"),
       fonts: { Inter: font },
       media: { clip: { source: video }, logo },
     });
     expect(worker.ofType("load")).toHaveLength(1);
 
-    session.update({
+    session.setInputs({
       composition: first,
       fonts: { Inter: font },
       media: { clip: video, logo: nextLogo },
@@ -754,10 +769,10 @@ describe("LumenPreviewSession", () => {
       message: "bad composition",
     });
 
-    session.update({ composition: composition("first") });
+    session.setInputs({ composition: composition("first") });
     expect(worker.ofType("load")).toHaveLength(1);
 
-    session.update({ composition: composition("second") });
+    session.setInputs({ composition: composition("second") });
     expect(worker.ofType("load")).toHaveLength(2);
   });
 
@@ -818,28 +833,28 @@ describe("LumenPreviewSession", () => {
     const onError = vi.fn();
     const { session } = await started({ onError });
     const unresolved = { composition: unreadable() };
-    session.update({ ...unresolved, onError });
+    session.setInputs({ ...unresolved, onError });
     expect(onError).toHaveBeenCalledOnce();
     expect(onError.mock.calls[0]?.[0]).toMatchObject({ code: "load_failed", diagnostics: [] });
 
     // A callback that re-renders with the same inputs doesn't hear the same failure again.
     const replaced = vi.fn();
-    session.update({ ...unresolved, onError: replaced });
-    session.update({ composition: unreadable(), onError: replaced });
+    session.setInputs({ ...unresolved, onError: replaced });
+    session.setInputs({ composition: unreadable(), onError: replaced });
     expect(onError).toHaveBeenCalledOnce();
     expect(replaced).not.toHaveBeenCalled();
 
-    session.update({ composition: composition("first"), onError: replaced });
-    session.update({ ...unresolved, onError: replaced });
+    session.setInputs({ composition: composition("first"), onError: replaced });
+    session.setInputs({ ...unresolved, onError: replaced });
     expect(replaced).toHaveBeenCalledOnce();
   });
 
   it("keeps a resolution error over an earlier load, then clears it when valid inputs load", async () => {
     const { preview, session, worker } = await started({});
-    session.update({ composition: composition("first") });
+    session.setInputs({ composition: composition("first") });
     const first = worker.ofType("load").at(-1)?.loadId as number;
     const unresolved = { composition: unreadable() };
-    session.update(unresolved);
+    session.setInputs(unresolved);
     expect(preview.getSnapshot().errorCode).toBe("load_failed");
 
     worker.emit({
@@ -852,10 +867,10 @@ describe("LumenPreviewSession", () => {
       width: 16,
     });
     expect(preview.getSnapshot().errorCode).toBe("load_failed");
-    session.update(unresolved);
+    session.setInputs(unresolved);
     expect(preview.getSnapshot().errorCode).toBe("load_failed");
 
-    session.update({ composition: composition("first") });
+    session.setInputs({ composition: composition("first") });
     const retry = worker.ofType("load").at(-1)?.loadId as number;
     expect(retry).toBeGreaterThan(first);
     worker.emit({
@@ -877,10 +892,10 @@ describe("LumenPreviewSession", () => {
     worker.postMessage = () => {
       throw new DOMException("could not be cloned", "DataCloneError");
     };
-    session.update({ composition: composition("first"), media: { logo } });
+    session.setInputs({ composition: composition("first"), media: { logo } });
     worker.postMessage = postMessage;
 
-    session.update({ composition: composition("second"), media: { logo } });
+    session.setInputs({ composition: composition("second"), media: { logo } });
     expect(
       worker
         .ofType("load")
@@ -904,7 +919,7 @@ describe("LumenPreviewSession", () => {
     await expect(shown).resolves.toBe(true);
 
     const replaced = preview.seek(40);
-    session.update({ composition: composition("second") });
+    session.setInputs({ composition: composition("second") });
     await expect(replaced).resolves.toBe(false);
   });
 
@@ -955,9 +970,9 @@ describe("LumenPreviewSession", () => {
   });
 
   describe("playback options", () => {
-    type Inputs = Parameters<LumenPreviewSession["update"]>[0];
+    type Inputs = Parameters<LumenPreviewSession["setInputs"]>[0];
     const update = (session: LumenPreviewSession, inputs: Inputs = {}) =>
-      session.update({ composition: composition("first"), ...inputs });
+      session.setInputs({ composition: composition("first"), ...inputs });
     const showFrame = (worker: FakeWorker, frame: number, seekId = 0) =>
       worker.emit({
         actualFps: 10,
@@ -1162,14 +1177,14 @@ describe("LumenPreviewSession", () => {
         const { preview, session, worker } = await playable({ lookaheadCount: 8, onError });
         const posted = worker.posted.length;
 
-        session.update({
+        session.setInputs({
           composition: composition("replacement"),
           lookaheadCount: 2,
           onEnded,
           onError: vi.fn(),
           rate: 9,
         });
-        session.update({ rate: 9 });
+        session.setInputs({ rate: 9 });
         expect(worker.posted.slice(posted)).toEqual([]);
         expect(onError).toHaveBeenCalledTimes(1);
         expect(preview.getSnapshot()).toMatchObject({
@@ -1323,7 +1338,7 @@ describe("LumenPreviewSession", () => {
         const { preview, session, worker } = await playable({ range: { in: 20, out: 50 } });
         void preview.seek(30);
 
-        session.update({ composition: composition("second"), range: { in: 20, out: 50 } });
+        session.setInputs({ composition: composition("second"), range: { in: 20, out: 50 } });
         worker.emit({
           audioTimelineJson: audioTimeline(40),
           fps: 10,
@@ -1573,7 +1588,7 @@ describe("LumenPreviewSession", () => {
     it("waits for the newest composition, and reports why one failed", async () => {
       const { session, worker } = await started();
       const waiting = session.whenReady();
-      session.update({ composition: composition("second") });
+      session.setInputs({ composition: composition("second") });
       const failure = {
         code: "media.not_found" as const,
         details: "`media` has no entry by this name",
@@ -1589,7 +1604,7 @@ describe("LumenPreviewSession", () => {
       });
 
       await expect(waiting).resolves.toMatchObject({ code: "load_failed", media: failure });
-      session.update({ composition: null });
+      session.setInputs({ composition: null });
       await expect(session.whenReady()).resolves.toBeNull();
     });
 

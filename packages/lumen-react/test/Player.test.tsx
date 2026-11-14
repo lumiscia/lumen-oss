@@ -18,7 +18,7 @@ interface MockSession {
     workerUrl: unknown;
   };
   dispose: ReturnType<typeof vi.fn>;
-  update: ReturnType<typeof vi.fn>;
+  setInputs: ReturnType<typeof vi.fn>;
 }
 
 const sessions = vi.hoisted(() => [] as MockSession[]);
@@ -26,7 +26,7 @@ const sessions = vi.hoisted(() => [] as MockSession[]);
 vi.mock("@lumiscia/lumen-preview", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@lumiscia/lumen-preview")>()),
   mountPreview: (host: HTMLElement, options: MockSession["options"]) => {
-    const session = { dispose: vi.fn(), host, options, update: vi.fn() };
+    const session = { dispose: vi.fn(), host, options, setInputs: vi.fn() };
     sessions.push(session);
     return session;
   },
@@ -80,7 +80,9 @@ describe("Player", () => {
       root.render(<Player preview={preview} composition={composition} />);
     });
     expect(sessions).toHaveLength(1);
-    expect(sessions[0]?.update).toHaveBeenLastCalledWith(expect.objectContaining({ composition }));
+    expect(sessions[0]?.setInputs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ composition }),
+    );
 
     await act(async () => root.unmount());
   });
@@ -120,7 +122,7 @@ describe("Player", () => {
     });
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.dispose).not.toHaveBeenCalled();
-    expect(sessions[0]?.update).toHaveBeenLastCalledWith(
+    expect(sessions[0]?.setInputs).toHaveBeenLastCalledWith(
       expect.objectContaining({
         loop: false,
         muted: false,
@@ -130,29 +132,6 @@ describe("Player", () => {
         rate: 0.5,
         volume: 0.2,
       }),
-    );
-
-    await act(async () => root.unmount());
-  });
-
-  it("doesn't update the session for a range that is equal but a new object", async () => {
-    const preview = createLumenPreview();
-    const root = createRoot(document.createElement("div"));
-
-    await act(async () => {
-      root.render(<Player preview={preview} range={{ in: 10, out: 40 }} />);
-    });
-    const updates = sessions[0]?.update.mock.calls.length;
-    await act(async () => {
-      root.render(<Player preview={preview} range={{ in: 10, out: 40 }} />);
-    });
-    expect(sessions[0]?.update).toHaveBeenCalledTimes(updates ?? 0);
-
-    await act(async () => {
-      root.render(<Player preview={preview} range={{ in: 10, out: 50 }} />);
-    });
-    expect(sessions[0]?.update).toHaveBeenLastCalledWith(
-      expect.objectContaining({ range: { in: 10, out: 50 } }),
     );
 
     await act(async () => root.unmount());

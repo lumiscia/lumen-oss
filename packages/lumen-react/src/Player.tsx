@@ -46,41 +46,12 @@ function PreviewPlayer({
   runtimeUrl,
   wasmUrl,
   workerUrl,
-  composition,
-  fonts,
-  loop,
-  lookaheadCount,
-  logLevel,
-  media,
-  muted,
-  onEnded,
-  onError,
-  onStats,
-  onTimeUpdate,
-  range,
-  rate,
-  volume,
   className,
   style,
+  ...inputs
 }: PlayerProps & { defaults: PlayerDefaults }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<LumenPreviewSession | null>(null);
-  const inputs = {
-    composition,
-    fonts,
-    loop,
-    lookaheadCount,
-    logLevel,
-    media,
-    muted,
-    onEnded,
-    onError,
-    onStats,
-    onTimeUpdate,
-    range,
-    rate,
-    volume,
-  };
   const runtime = runtimeUrl === undefined ? undefined : String(runtimeUrl);
   const wasm = wasmUrl === undefined ? undefined : String(wasmUrl);
   const worker = workerUrl === undefined ? undefined : String(workerUrl);
@@ -98,26 +69,10 @@ function PreviewPlayer({
     return () => session.dispose();
   }, [preview, runtime, wasm, worker, defaults]);
 
+  // The session ignores inputs that haven't changed, so every render can pass them all on.
   useEffect(() => {
-    sessionRef.current?.update(inputs);
-  }, [
-    composition,
-    fonts,
-    loop,
-    lookaheadCount,
-    logLevel,
-    media,
-    muted,
-    onEnded,
-    onError,
-    onStats,
-    onTimeUpdate,
-    // A range written inline in JSX is a new object on every render.
-    range?.in,
-    range?.out,
-    rate,
-    volume,
-  ]);
+    sessionRef.current?.setInputs(inputs);
+  });
 
   return <div ref={hostRef} className={className} style={style} />;
 }
