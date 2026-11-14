@@ -163,4 +163,8 @@ impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
         }
         Ok(current)
     }
+
+    fn magnification(&self) -> f64 {
+        1.0
+    }
 }

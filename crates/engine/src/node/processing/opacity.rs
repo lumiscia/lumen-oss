@@ -59,4 +59,8 @@ impl crate::gpu::frame_graph::RecordNode for Opacity {
         };
         cx.filter(&OPACITY, source, &params)
     }
+
+    fn magnification(&self) -> f64 {
+        1.0
+    }
 }

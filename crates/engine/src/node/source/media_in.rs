@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use crate::error::{MediaError, RenderError};
+use crate::gpu::frame_graph::{Staticness, held};
 use crate::media::{AssetKind, ImageResolver, VideoFrameResolver, resolve_as};
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 use crate::scope::FrameTime;
@@ -317,6 +318,15 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
             domain: lumen_gpu::TextureDomain::full_frame(size),
             bounds: None,
         })
+    }
+
+    // An image changes only with the media store, which `images_changed` watches. Video changes
+    // with the frame.
+    fn staticness(&self, reads_frame: bool) -> Staticness {
+        match self.params.kind {
+            MediaInSourceKindDelegate::Image => held(reads_frame),
+            _ => Staticness::Never,
+        }
     }
 }
 

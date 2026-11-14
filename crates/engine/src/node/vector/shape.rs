@@ -3,7 +3,7 @@ use super::renderer::{ShapeUniforms, domain_origin, style_flags};
 use super::repeat::{GpuCopies, Repeat, RepeatedTransform};
 use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 use crate::node::motion::Shutter;
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 pub(super) const SHAPE_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -203,6 +203,10 @@ impl crate::gpu::frame_graph::RecordNode for Shape {
         let (mut uniforms, copies) =
             shape_frame(&self.params, self.id, &cx.expr(), cx.analytic_motion_blur())?;
         record_shape_source(cx, &mut uniforms, copies.as_ref())
+    }
+
+    fn analytic_shutter(&self) -> Option<&Deferred<f64>> {
+        Some(&self.params.placement.motion_blur)
     }
 }
 

@@ -5,7 +5,7 @@ use crate::node::source::text::{
     TextAlignmentHorizontal, TextAlignmentVertical, TextFontStyle, TextTransform,
 };
 use crate::node::source::text_content::FontFeatures;
-use crate::node::{Deferred, NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams};
 
 /// Greatest size, depth, bevel, line width, letter spacing or line height in world units.
 const MAX_LENGTH: f64 = 1e6;
@@ -19,7 +19,7 @@ pub(super) const MIN_FONT_SIZE: f64 = 1e-6;
 
 /// Checks that `value`, the length param `param`, is a finite number of at most [`MAX_LENGTH`]
 /// in size that is not negative unless `signed`.
-fn check_length(param: &str, value: f64, signed: bool) -> Result<(), String> {
+pub(super) fn check_length(param: &str, value: f64, signed: bool) -> Result<(), String> {
     if !value.is_finite() {
         Err(format!("`{param}` must be a finite number, got {value}"))
     } else if !signed && value < 0.0 {
@@ -33,7 +33,7 @@ fn check_length(param: &str, value: f64, signed: bool) -> Result<(), String> {
     }
 }
 
-fn check_weight(weight: i64) -> Result<(), String> {
+pub(super) fn check_weight(weight: i64) -> Result<(), String> {
     if (1..=1000).contains(&weight) {
         Ok(())
     } else {
@@ -193,45 +193,6 @@ pub struct Text3d {
     pub id: NodeId,
     #[params]
     pub params: Text3dParamsDelegate,
-}
-
-impl Text3d {
-    /// The params whose literal values are wrong, with what is wrong, for checks that run before
-    /// a render.
-    pub(crate) fn literal_param_errors(&self) -> Vec<(&'static str, String)> {
-        let params = &self.params;
-        let lengths = [
-            ("font_size", &params.font_size, false),
-            ("max_width", &params.max_width, false),
-            ("letter_spacing", &params.letter_spacing, true),
-            ("line_height", &params.line_height, false),
-            ("depth", &params.depth, false),
-            ("bevel_size", &params.bevel_size, false),
-        ];
-        let mut errors = Vec::new();
-        for (param, value, signed) in lengths {
-            if let Deferred::Value(value) = value
-                && let Err(details) = check_length(param, *value, signed)
-            {
-                errors.push((param, details));
-            }
-        }
-        if let Deferred::Value(weight) = &params.font_weight
-            && let Err(details) = check_weight(*weight)
-        {
-            errors.push(("font_weight", details));
-        }
-        errors
-    }
-
-    /// The family the node names as a literal, with the param naming it, for checks that run
-    /// before a render.
-    pub(crate) fn literal_font_families(&self) -> Vec<(String, &str)> {
-        match &self.params.font_family {
-            Deferred::Value(family) => vec![("font_family".to_string(), family.as_str())],
-            Deferred::Expr(_) => Vec::new(),
-        }
-    }
 }
 
 #[cfg(all(test, feature = "3d"))]

@@ -540,7 +540,7 @@ fn record(
 }
 
 macro_rules! sweep_node {
-    ($node:ty, |$params:ident, $render:ident| $sweep:expr) => {
+    ($node:ty $(, magnification = $magnification:literal)?, |$params:ident, $render:ident| $sweep:expr) => {
         impl crate::gpu::frame_graph::RecordNode for $node {
             fn programs(
                 &self,
@@ -562,6 +562,11 @@ macro_rules! sweep_node {
                 let $render = [f64::from(expr.width), f64::from(expr.height)];
                 self::record(cx, source, $sweep)
             }
+$(
+            fn magnification(&self) -> f64 {
+                $magnification
+            }
+)?
         }
     };
 }
@@ -572,7 +577,7 @@ fn center(center: Option<(f64, f64)>, render: [f64; 2]) -> [f64; 2] {
     [x, y].map(|axis| finite_or_zero(axis).clamp(-MAX_BOUNDED_MAGNITUDE, MAX_BOUNDED_MAGNITUDE))
 }
 
-sweep_node!(DirectionalBlur, |params, _render| {
+sweep_node!(DirectionalBlur, magnification = 1.0, |params, _render| {
     let (sin, cos) = finite_or_zero(params.angle).to_radians().sin_cos();
     Sweep {
         path: Path::Line {

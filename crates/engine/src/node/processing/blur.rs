@@ -63,4 +63,8 @@ impl crate::gpu::frame_graph::RecordNode for Blur {
             bounds: None,
         })
     }
+
+    fn magnification(&self) -> f64 {
+        1.0
+    }
 }

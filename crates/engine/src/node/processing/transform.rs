@@ -450,6 +450,19 @@ impl crate::gpu::frame_graph::RecordNode for Transform {
             bounds: None,
         })
     }
+
+    fn analytic_shutter(&self) -> Option<&Deferred<f64>> {
+        Some(&self.params.motion_blur)
+    }
+
+    fn magnification(&self) -> f64 {
+        match (&self.params.scale_x, &self.params.scale_y) {
+            (Deferred::Value(x), Deferred::Value(y)) if x.is_finite() && y.is_finite() => {
+                x.abs().max(y.abs())
+            }
+            _ => f64::INFINITY,
+        }
+    }
 }
 
 #[cfg(test)]

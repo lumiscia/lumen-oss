@@ -46,4 +46,8 @@ impl crate::gpu::frame_graph::RecordNode for Switch {
             None => Ok(cx.transparent(cx.canvas_size())),
         }
     }
+
+    fn magnification(&self) -> f64 {
+        1.0
+    }
 }

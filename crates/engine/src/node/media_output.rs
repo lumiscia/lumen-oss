@@ -125,4 +125,8 @@ impl crate::gpu::frame_graph::RecordNode for MediaOutput {
             bounds: None,
         })
     }
+
+    fn magnification(&self) -> f64 {
+        1.0
+    }
 }

@@ -90,4 +90,8 @@ impl crate::gpu::frame_graph::RecordNode for Levels {
         };
         cx.filter(&LEVELS, source, &gpu_params)
     }
+
+    fn magnification(&self) -> f64 {
+        1.0
+    }
 }
