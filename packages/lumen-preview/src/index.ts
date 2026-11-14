@@ -6,9 +6,7 @@ export {
   type LumenPreviewErrorCode,
   type LumenPreviewListener,
   type LumenPreviewMediaState,
-  type LumenPreviewPatch,
   type LumenPreviewState,
-  type LumenPreviewTransport,
 } from "./preview.js";
 export type { LumenAudioEngineOptions } from "./audio-engine.js";
 export type { LumenLogLevel } from "./runtime.js";

@@ -193,6 +193,8 @@ session.rate; // 1.5: the options in effect are readable as loop, rate, volume, 
 
 `@lumiscia/lumen-preview` exports `createLumenPreview`, `mountPreview`, `LumenPreviewContext`, `LumenPreviewSession` and the types of their state, errors, options and callbacks, including `MediaFailure` and `LumenPreviewMediaState`. Nothing else is public: media decoding and audio are internal.
 
+The preview object from `createLumenPreview()` is read-only for an app: it has `subscribe`, `getSnapshot`, `play`, `pause`, `seek` and `whenReady`, and only the session mounted with it changes its state. `getSnapshot()` returns the same object until the state changes, then a new one, so it works as a `useSyncExternalStore` snapshot.
+
 `@lumiscia/lumen-preview/advanced` exports only types: the bindings a custom host passes to `@lumiscia/lumen-preview/worker-host` (`LumenBindings`, `LumenPreviewBindings`, `LumenPreviewControllerBinding`, `LumenMediaTarget`) and the types its messages carry (`VideoSourceRegistration`, `PreviewClock`). `@lumiscia/lumen-bindings` implements them, so an application doesn't need this entry.
 
 The preview draws the 3D scene nodes too. The [3D guide](https://github.com/lumiscia/lumen-oss/blob/main/docs/3d.md) covers them.

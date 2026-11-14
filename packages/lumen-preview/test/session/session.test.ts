@@ -336,6 +336,22 @@ describe("LumenPreviewSession", () => {
     expect(FakeWorker.instances).toHaveLength(0);
   });
 
+  it("keeps the same snapshot until the state changes", async () => {
+    const preview = new LumenPreviewContext();
+    const first = preview.getSnapshot();
+    expect(preview.getSnapshot()).toBe(first);
+
+    const listener = vi.fn();
+    preview.subscribe(listener);
+    await preview.seek(5);
+    const second = preview.getSnapshot();
+    expect(second).not.toBe(first);
+    expect(second.frame).toBe(5);
+    expect(first.frame).toBe(0);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(preview.getSnapshot()).toBe(second);
+  });
+
   it("removes the canvas and stops playing when the worker crashes", async () => {
     const { canvases, preview, worker } = await playable();
     preview.play();

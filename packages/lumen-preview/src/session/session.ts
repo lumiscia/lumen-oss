@@ -19,6 +19,7 @@ import type { MediaEntryState } from "../media/lifecycle.js";
 import { sameMediaInput } from "../media/source.js";
 import { assetHint } from "../asset-hint.js";
 import { createModuleWorker } from "../module-worker.js";
+import { internalsOf, type LumenPreviewInternals } from "../preview-internals.js";
 import type {
   LumenPreviewContext,
   LumenPreviewError,
@@ -72,6 +73,7 @@ class PreviewStartupError extends Error {
  */
 export class LumenPreviewSession {
   readonly preview: LumenPreviewContext;
+  readonly #previewInternals: LumenPreviewInternals;
   // Bumped by every attach and dispose, so a slow startup can tell it has been replaced.
   #attachment = 0;
   #audio: LumenAudioEngine | null = null;
@@ -147,6 +149,7 @@ export class LumenPreviewSession {
       ...(workletModuleUrl && { workletModuleUrl }),
     };
     this.preview = preview;
+    this.#previewInternals = internalsOf(preview);
     this.#wasmUrl = wasmUrl ?? runtimeFile("lumen_wasm_bg.wasm");
     this.#workerUrl = workerUrl ?? runtimeFile("worker.js");
     this.#inputs = inputs;
@@ -192,7 +195,7 @@ export class LumenPreviewSession {
   async attach(host: HTMLElement): Promise<void> {
     this.#teardown();
     const attachment = ++this.#attachment;
-    this.preview.update({
+    this.#previewInternals.update({
       error: null,
       errorCode: null,
       frame: 0,
@@ -200,7 +203,7 @@ export class LumenPreviewSession {
       isPlaying: false,
       media: NO_MEDIA,
     });
-    this.preview.attach({
+    this.#previewInternals.attach({
       pause: () => this.#pause(),
       play: () => this.#play(),
       seek: (frame) => this.#seek(frame),
@@ -288,7 +291,7 @@ export class LumenPreviewSession {
     this.#attachment += 1;
     this.#teardown();
     this.#settleReady(stoppedError());
-    this.preview.detach();
+    this.#previewInternals.detach();
   }
 
   #teardown(): void {
@@ -360,7 +363,7 @@ export class LumenPreviewSession {
     if (this.#optionFailure !== null) {
       this.#optionFailure = null;
       if (this.preview.getSnapshot().errorCode === "invalid_option") {
-        this.preview.update({ error: null, errorCode: null });
+        this.#previewInternals.update({ error: null, errorCode: null });
       }
     }
     return next;
@@ -498,7 +501,7 @@ export class LumenPreviewSession {
       this.#timeline = null;
       this.#audio?.loadAudioTimeline(null);
       this.#post({ loadId, type: "unload" });
-      this.preview.update({
+      this.#previewInternals.update({
         frame: 0,
         height: 0,
         isLoaded: false,
@@ -550,7 +553,7 @@ export class LumenPreviewSession {
     this.#range = null;
     this.#timeline = null;
     this.#inputs.onStats?.(EMPTY_PREVIEW_STATS);
-    this.preview.update({ isLoaded: false });
+    this.#previewInternals.update({ isLoaded: false });
     this.#settleReady(this.#reportError("load_failed", "load", error, diagnostics, media));
   }
 
@@ -619,7 +622,7 @@ export class LumenPreviewSession {
     this.#media = media;
     const count = (status: MediaEntryState["status"]) =>
       media.filter((entry) => entry.status === status).length;
-    this.preview.update({
+    this.#previewInternals.update({
       media: { failed: count("failed"), pending: count("pending"), ready: count("ready") },
     });
     this.#updateHold();
@@ -765,7 +768,7 @@ export class LumenPreviewSession {
       targetFrameDurationMs: 1_000 / fps,
       timelineFps: fps,
     });
-    this.preview.update({
+    this.#previewInternals.update({
       // Newer inputs that didn't resolve keep their error over this earlier load.
       ...(this.#resolveFailure === null &&
         this.#optionFailure === null && { error: null, errorCode: null }),
@@ -801,7 +804,7 @@ export class LumenPreviewSession {
       this.preview.getSnapshot().errorCode === "render_failed"
         ? { error: null, errorCode: null }
         : {};
-    this.preview.update({ frame: event.frame, ...recovered });
+    this.#previewInternals.update({ frame: event.frame, ...recovered });
     // A seek to the frame on screen is answered without showing anything.
     if (event.frame !== this.#reportedFrame) {
       this.#reportedFrame = event.frame;
@@ -830,7 +833,7 @@ export class LumenPreviewSession {
     }
     this.#playing = true;
     this.#playbackRevision += 1;
-    this.preview.update({ isPlaying: true });
+    this.#previewInternals.update({ isPlaying: true });
     this.#updateHold();
     if (!this.#held) {
       this.#startClock();
@@ -863,7 +866,7 @@ export class LumenPreviewSession {
       this.#clock = fitClock(this.#clock, this.#range, this.#timeline.fps);
     }
     this.#postClock(this.#clock);
-    this.preview.update({ isPlaying: false });
+    this.#previewInternals.update({ isPlaying: false });
   }
 
   /** Playback ran out of range: it stops on the last frame, as a pause there would. */
@@ -881,7 +884,7 @@ export class LumenPreviewSession {
     this.#stopCorrections();
     this.#clock = { atEpochMs: epochNow(), originMs: lastFrameMs, rate: 0 };
     this.#postClock(this.#clock);
-    this.preview.update({ frame: lastFrame, isPlaying: false });
+    this.#previewInternals.update({ frame: lastFrame, isPlaying: false });
     this.#inputs.onEnded?.();
   }
 
@@ -890,7 +893,7 @@ export class LumenPreviewSession {
     if (this.#loading || !timeline) {
       // The next load decides how long the composition is, then seeks there.
       this.#pendingSeek = Math.max(0, Math.round(frame));
-      this.preview.update({ frame: this.#pendingSeek });
+      this.#previewInternals.update({ frame: this.#pendingSeek });
       return Promise.resolve(false);
     }
     const target = clampFrame(
@@ -900,7 +903,7 @@ export class LumenPreviewSession {
     const originMs = (target * 1_000) / timeline.fps;
     this.#audio?.seekMs(originMs);
     this.#placeClock(originMs);
-    this.preview.update({ frame: target });
+    this.#previewInternals.update({ frame: target });
     const seekId = this.#postSeek();
     return new Promise((resolve) => this.#pendingSeeks.set(seekId, resolve));
   }
@@ -967,7 +970,7 @@ export class LumenPreviewSession {
 
   #workerCrashed(message: string): void {
     this.#teardown();
-    this.preview.update({ isLoaded: false, isPlaying: false, media: NO_MEDIA });
+    this.#previewInternals.update({ isLoaded: false, isPlaying: false, media: NO_MEDIA });
     this.#settleReady(
       this.#reportError("worker_failed", "worker", `the preview worker stopped: ${message}`),
     );
@@ -983,7 +986,7 @@ export class LumenPreviewSession {
     reportConsoleError(scope, error);
     const message = describeError(error);
     const reported = { code, diagnostics, media, message };
-    this.preview.update({ error: message, errorCode: code });
+    this.#previewInternals.update({ error: message, errorCode: code });
     this.#inputs.onError?.(reported);
     return reported;
   }
