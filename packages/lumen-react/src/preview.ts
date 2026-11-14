@@ -5,9 +5,7 @@ export {
   createLumenPreview,
   type LumenPreviewErrorCode,
   type LumenPreviewListener,
-  type LumenPreviewPatch,
   type LumenPreviewState,
-  type LumenPreviewTransport,
 } from "@lumiscia/lumen-preview/preview";
 
 import type { LumenPreviewContext, LumenPreviewState } from "@lumiscia/lumen-preview/preview";

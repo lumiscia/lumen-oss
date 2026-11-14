@@ -178,8 +178,10 @@ describe("Player", () => {
 
   it("exposes the core state through one reactive snapshot", () => {
     const preview = createLumenPreview();
-    preview.update({ frame: 12, totalFrames: 90 });
+    const before = preview.state;
+    void preview.seek(12);
     expect(preview.state.frame).toBe(12);
-    expect(preview.state.totalFrames).toBe(90);
+    expect(preview.state).toBe(preview.getSnapshot());
+    expect(preview.state).not.toBe(before);
   });
 });

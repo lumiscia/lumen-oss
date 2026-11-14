@@ -1,5 +1,7 @@
 import type { Diagnostic, MediaFailure } from "@lumiscia/lumen-types";
 
+import { previewInternals, type LumenPreviewTransport } from "./preview-internals.js";
+
 export type LumenPreviewErrorCode =
   /** A source named in the composition's audio couldn't be decoded. The video keeps playing. */
   | "audio_failed"
@@ -38,32 +40,24 @@ export interface LumenPreviewError {
  * and failed, every kind counted alike.
  */
 export interface LumenPreviewMediaState {
-  pending: number;
-  ready: number;
-  failed: number;
+  readonly pending: number;
+  readonly ready: number;
+  readonly failed: number;
 }
 
 export interface LumenPreviewState {
-  frame: number;
-  totalFrames: number;
-  width: number;
-  height: number;
-  isLoaded: boolean;
-  isPlaying: boolean;
-  error: string | null;
-  errorCode: LumenPreviewErrorCode | null;
-  media: LumenPreviewMediaState;
+  readonly frame: number;
+  readonly totalFrames: number;
+  readonly width: number;
+  readonly height: number;
+  readonly isLoaded: boolean;
+  readonly isPlaying: boolean;
+  readonly error: string | null;
+  readonly errorCode: LumenPreviewErrorCode | null;
+  readonly media: LumenPreviewMediaState;
 }
 
-export type LumenPreviewPatch = Partial<LumenPreviewState>;
 export type LumenPreviewListener = () => void;
-
-export interface LumenPreviewTransport {
-  pause(): void;
-  play(): void;
-  seek(frame: number): Promise<boolean>;
-  whenReady(): Promise<LumenPreviewError | null>;
-}
 
 const INITIAL_STATE: LumenPreviewState = {
   frame: 0,
@@ -77,10 +71,31 @@ const INITIAL_STATE: LumenPreviewState = {
   media: { failed: 0, pending: 0, ready: 0 },
 };
 
+/**
+ * What an app holds to show and control a preview: it subscribes to the state and sends commands.
+ * A `LumenPreviewSession` fills the state in.
+ */
 export class LumenPreviewContext {
   #state: LumenPreviewState = INITIAL_STATE;
   #listeners = new Set<LumenPreviewListener>();
   #transport: LumenPreviewTransport | null = null;
+
+  constructor() {
+    previewInternals.set(this, {
+      update: (patch) => this.#setState({ ...this.#state, ...patch }),
+      attach: (transport) => {
+        this.#transport = transport;
+      },
+      detach: () => {
+        this.#transport = null;
+        this.#setState({
+          ...INITIAL_STATE,
+          error: this.#state.error,
+          errorCode: this.#state.errorCode,
+        });
+      },
+    });
+  }
 
   subscribe = (listener: LumenPreviewListener): (() => void) => {
     this.#listeners.add(listener);
@@ -89,24 +104,8 @@ export class LumenPreviewContext {
     };
   };
 
+  /** The same object until the state changes, then a new one. */
   getSnapshot = (): LumenPreviewState => this.#state;
-
-  update(patch: LumenPreviewPatch): void {
-    this.#setState({ ...this.#state, ...patch });
-  }
-
-  attach(transport: LumenPreviewTransport): void {
-    this.#transport = transport;
-  }
-
-  detach(): void {
-    this.#transport = null;
-    this.#setState({
-      ...INITIAL_STATE,
-      error: this.#state.error,
-      errorCode: this.#state.errorCode,
-    });
-  }
 
   /** Does nothing until a composition has loaded. */
   play(): void {
@@ -125,7 +124,7 @@ export class LumenPreviewContext {
     if (this.#transport) {
       return this.#transport.seek(frame);
     }
-    this.update({ frame });
+    this.#setState({ ...this.#state, frame });
     return Promise.resolve(false);
   }
 
