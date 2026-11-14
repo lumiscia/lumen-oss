@@ -43,9 +43,10 @@ installed="$target/vcpkg-installed"
 
 # Cargo copies the static libraries into ffmpeg-sys-next when it compiles it, and doesn't notice
 # when vcpkg has rebuilt them.
-cargo clean --manifest-path "$root/Cargo.toml" --release --package ffmpeg-sys-next
+cargo clean --manifest-path "$root/Cargo.toml" --target-dir "$target" --release --package ffmpeg-sys-next
 PKG_CONFIG_PATH="$installed/$triplet/lib/pkgconfig" cargo build \
   --manifest-path "$root/Cargo.toml" \
+  --target-dir "$target" \
   --release \
   --locked \
   --package lumen-cli \
