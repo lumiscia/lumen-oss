@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use super::{AUDIO_SAMPLE_RATE, AudioClip, AudioTimeline, AudioTrack, ms_to_sample};
 use crate::{
-    composition::{Composition, CompositionTemplate},
+    composition::{Composition, TemplateRef},
     error::{LumenError, MediaError},
     media::{MediaLocation, MediaStore},
     node::{
@@ -355,8 +355,7 @@ struct Walk<'a> {
 #[derive(Clone, Copy)]
 struct Plays<'a> {
     clip: &'a Clip,
-    template: &'a CompositionTemplate,
-    output: NodeId,
+    template: TemplateRef<'a>,
 }
 
 /// A looping `time_remap`: frames `[start + repeat * length, start + (repeat + 1) * length)` of
@@ -640,9 +639,9 @@ impl<'a> Planner<'a> {
         // A restart reads the clip's props where it begins.
         let props_at = |frame: f64| {
             template
-                .map(|(template, _)| {
+                .map(|template| {
                     let ctx = walk.scope.expr_context(frame.into(), self.media);
-                    clip.instance_props(template, &ctx)
+                    clip.instance_props(template.template, &ctx)
                 })
                 .transpose()
         };
@@ -678,11 +677,7 @@ impl<'a> Planner<'a> {
                     &[Link::Window {
                         window,
                         repeat,
-                        plays: template.map(|(template, output)| Plays {
-                            clip,
-                            template,
-                            output,
-                        }),
+                        plays: template.map(|template| Plays { clip, template }),
                     }],
                 ]
                 .concat(),
@@ -691,7 +686,7 @@ impl<'a> Planner<'a> {
             };
             let restart = window.start + repeat as f64 * window.duration;
             let props = props_at(if begin > 0.0 { restart } else { walk.frame })?;
-            let (Some((template, output)), Some(props)) = (template, props) else {
+            let (Some(template), Some(props)) = (template, props) else {
                 if let Some(source) = clip.source {
                     found.stack.push(Walk {
                         node: source,
@@ -700,9 +695,9 @@ impl<'a> Planner<'a> {
                 }
                 continue;
             };
-            next.scope = Scope::template(self.composition, template, output, props);
+            next.scope = Scope::template(self.composition, template, props);
             if let (Some(timeline), Some(index)) = (
-                &template.audio,
+                &template.template.audio,
                 clip.template_name()
                     .and_then(|name| self.template_indexes.get(name)),
             ) {
@@ -986,8 +981,8 @@ impl<'a> Planner<'a> {
                 let at = FrameTime::from(frame + rate * ahead as f64);
                 let props = plays
                     .clip
-                    .instance_props(plays.template, &scope.expr_context(at, self.media))?;
-                scope = Scope::template(self.composition, plays.template, plays.output, props);
+                    .instance_props(plays.template.template, &scope.expr_context(at, self.media))?;
+                scope = Scope::template(self.composition, plays.template, props);
             }
             frame = piece.map(frame);
             rate *= piece.rate;

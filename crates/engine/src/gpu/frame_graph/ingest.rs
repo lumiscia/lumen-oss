@@ -391,7 +391,7 @@ impl FrameCx<'_> {
         size: Size,
         alpha: AlphaMode,
     ) -> crate::Result<TexRef> {
-        let instance = (self.graph_key(), self.path, node_id);
+        let instance = (self.scope.id, self.path, node_id);
         let key = (
             instance,
             identity.clone(),

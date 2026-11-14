@@ -50,7 +50,7 @@ const IDLE_FRAMES: u64 = 600;
 pub(crate) enum Stable {
     /// The kept output of a node, until that is dropped.
     Slot {
-        graph: usize,
+        graph: crate::composition::SceneId,
         node: NodeId,
         generation: u64,
     },
