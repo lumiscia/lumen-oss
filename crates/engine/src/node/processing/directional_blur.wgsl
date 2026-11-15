@@ -19,6 +19,9 @@ struct SweepParams {
     // `x`: how much of the output the comb of stored short boxes makes, against every tap at
     // once.
     blend: vec4<f32>,
+    // Canvas bounds the comb clamps its reads of the stored short boxes to, past which they stay
+    // the same.
+    unchanging: vec4<f32>,
     taps: array<SweepTap, 64>,
     comb: array<SweepTap, 64>,
 }
@@ -96,7 +99,8 @@ fn comb_main(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var index = 0u; index < params.header.z; index = index + 1u) {
         let at = sweep_move(params.comb[index], pos);
         if (blend > 0.0) {
-            stored += sweep_read(boxes_tex, params.origins.xy, at);
+            let held = clamp(at, params.unchanging.xy, params.unchanging.zw);
+            stored += sweep_read(boxes_tex, params.origins.xy, held);
         }
         if (blend < 1.0) {
             direct += sweep_box(at);
