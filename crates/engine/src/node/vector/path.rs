@@ -95,12 +95,13 @@ pub struct Path {
     pub params: PathParamsDelegate,
 }
 
-/// Evaluates a path node's uniforms, points and bands at the frame of `expr`, blurring its motion
-/// only when `motion_blur` allows.
+/// Evaluates a path node's uniforms, points and bands at the frame of `expr` for a canvas of
+/// `canvas` pixels, blurring its motion only when `motion_blur` allows.
 fn path_frame(
     params: &PathParamsDelegate,
     node_id: NodeId,
     expr: &crate::expr::ExpressionContext<'_>,
+    canvas: [f32; 2],
     band_capacity: usize,
     motion_blur: bool,
 ) -> crate::Result<PathFrame> {
@@ -181,6 +182,7 @@ fn path_frame(
         &transform,
         shutter.as_ref(),
         repeated.as_ref(),
+        canvas,
         band_capacity,
     ))
 }
@@ -194,13 +196,15 @@ pub(super) struct PathFrame {
 }
 
 impl PathFrame {
-    /// Fills in the bounds, transform, culling and motion of `uniforms` and bins `points`.
+    /// Fills in the bounds, transform, culling and motion of `uniforms` and bins `points` for a
+    /// canvas of `canvas` pixels.
     pub(super) fn new(
         mut uniforms: PathUniforms,
         points: Vec<PathPoint>,
         transform: &DrawableTransform,
         shutter: Option<&Shutter<DrawableTransform>>,
         repeated: Option<&RepeatedTransform<'_>>,
+        canvas: [f32; 2],
         band_capacity: usize,
     ) -> Self {
         let bounds = point_bounds(&points);
@@ -223,6 +227,7 @@ impl PathFrame {
                 &points,
                 bounds,
                 &Drawn::Once(transform, &motion),
+                canvas,
                 band_capacity,
             );
             uniforms.motion = motion.to_gpu();
@@ -239,6 +244,7 @@ impl PathFrame {
             &points,
             bounds,
             &Drawn::Copies(&copies),
+            canvas,
             band_capacity,
         );
         // Each copy is culled like the path drawn once, by how far it draws at its own scale.
@@ -744,10 +750,12 @@ impl crate::gpu::frame_graph::RecordNode for Path {
         &self,
         cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let canvas = cx.canvas_size();
         let frame = path_frame(
             &self.params,
             self.id,
             &cx.expr(),
+            [canvas.width as f32, canvas.height as f32],
             super::path_bands::band_capacity(MAX_PATH_POINTS),
             cx.analytic_motion_blur(),
         )?;

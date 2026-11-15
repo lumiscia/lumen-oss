@@ -328,6 +328,13 @@ impl DrawableMotion {
             .fold(f64::MAX, f64::min)
     }
 
+    /// Whether every transform that draws the drawable scales both axes by the same amount.
+    pub(crate) fn has_uniform_scale(&self, frame: &DrawableTransform) -> bool {
+        self.drawn(frame)
+            .iter()
+            .all(|transform| transform.scale.0.abs() == transform.scale.1.abs())
+    }
+
     /// `frame.canvas_bounds`, or when blurred the box that holds the box from `min` to
     /// `max` under every tap.
     pub(crate) fn canvas_bounds(
@@ -349,6 +356,18 @@ impl DrawableMotion {
         self.taps
             .iter()
             .map(|tap| tap.to_gpu_from(self.layout_position))
+    }
+
+    /// The transforms the shaders draw the drawable under, given the frame's.
+    pub(super) fn gpu_drawn(
+        &self,
+        frame: GpuDrawableTransform,
+    ) -> impl Iterator<Item = GpuDrawableTransform> + '_ {
+        self.taps
+            .is_empty()
+            .then_some(frame)
+            .into_iter()
+            .chain(self.gpu_taps())
     }
 
     /// The transform that text is drawn under, to a layer of `layer` pixels, before the

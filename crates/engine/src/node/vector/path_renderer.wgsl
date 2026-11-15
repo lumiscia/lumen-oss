@@ -18,6 +18,13 @@ struct PathUniforms {
     band_scale: f32,
     band_count: u32,
     reach: f32,
+    grid_origin: vec2<f32>,
+    // Cells per untransformed pixel along each axis.
+    grid_scale: vec2<f32>,
+    grid_size: vec2<u32>,
+    // Index in `path_bands` of the grid's first `(start, count)` pair.
+    grid_start: u32,
+    _grid_pad: u32,
     // Canvas pixel of the output's first texel.
     origin: vec2<i32>,
     _origin_pad: vec2<i32>,
@@ -53,10 +60,17 @@ struct PathPoints {
     points: array<PathPoint>,
 }
 
-// A `(start, count)` pair per band, then the first point index of each listed segment.
+// A `(start, count)` pair per band, then one per grid cell from `grid_start`, then the first
+// point index of each listed segment.
 struct PathBands {
     values: array<u32>,
 }
+
+// Bits of a cell's count. The fill covers all or none of the cell, as `CELL_INSIDE` says, and
+// the cell lists no fill edges.
+const CELL_FILL_DECIDED: u32 = 0x80000000u;
+const CELL_INSIDE: u32 = 0x40000000u;
+const CELL_COUNT: u32 = 0x3fffffffu;
 
 @group(0) @binding(0) var<uniform> params: PathUniforms;
 @group(0) @binding(1) var<storage, read> path_points: PathPoints;
@@ -343,9 +357,37 @@ fn soft_fill_end(edges: PathEdges, p: vec2<f32>, end: vec2<f32>, radius: f32, sc
     return soft_fill_piece(edges, capsule, SOFT_FILL_FAR, -SOFT_FILL_FAR);
 }
 
-// Visits only the segments listed in the band containing `p`, which is relative to
-// `params.position`. Segments beyond `params.reach` cannot cover the pixel, so they
-// only take part in the fill's crossing count. Fill edges are measured after they have
+// Whether `p` is inside the fill under the even-odd rule, counting the crossings of a ray from
+// it toward +x with the segments listed in its band.
+fn path_inside(p: vec2<f32>) -> bool {
+    let band_position = (p.y - params.band_origin) * params.band_scale;
+    if (band_position < 0.0 || band_position >= f32(params.band_count)) {
+        return false;
+    }
+    let band = min(u32(band_position), params.band_count - 1u);
+    let start = path_bands.values[band * 2u];
+    let end = start + path_bands.values[band * 2u + 1u];
+    var inside = false;
+    for (var k = start; k < end; k = k + 1u) {
+        let i = path_bands.values[k];
+        let current = path_points.points[i];
+        let is_end = (current.flags & POINT_END) != 0u;
+        let a = current.position;
+        let b = path_points.points[select(i + 1u, current.contour_start, is_end)].position;
+        if ((a.y > p.y) != (b.y > p.y)) {
+            let denominator = b.y - a.y;
+            let safe_denominator = select(denominator, 0.000001, abs(denominator) < 0.000001);
+            if (p.x < (b.x - a.x) * (p.y - a.y) / safe_denominator + a.x) {
+                inside = !inside;
+            }
+        }
+    }
+    return inside;
+}
+
+// Measures only the segments listed in the grid cell containing `p`, which is relative to
+// `params.position`, and takes the fill rule from its band unless the cell decides the fill.
+// Segments beyond `params.reach` cannot cover the pixel. Fill edges are measured after they have
 // been transformed to the canvas. The stroke is the union of a capsule around each
 // segment, measured exactly in canvas pixels, so its caps and joins stay elliptical
 // under non-uniform scale.
@@ -364,13 +406,21 @@ fn path_edges(transform: DrawableTransform, p: vec2<f32>, fill_enabled: bool, st
     let canvas_p = drawable_vector_to_canvas(transform, p);
     let stroke_half_width = params.stroke_width * 0.5;
     let axis_scale = drawable_axis_scale(transform);
-    let band_position = (p.y - params.band_origin) * params.band_scale;
-    if (band_position < 0.0 || band_position >= f32(params.band_count)) {
+    let cell_position = (p - params.grid_origin) * params.grid_scale;
+    if (any(cell_position < vec2<f32>(0.0)) || any(cell_position >= vec2<f32>(params.grid_size))) {
         return edges;
     }
-    let band = min(u32(band_position), params.band_count - 1u);
-    let start = path_bands.values[band * 2u];
-    let end = start + path_bands.values[band * 2u + 1u];
+    let cell = min(vec2<u32>(cell_position), params.grid_size - 1u);
+    let entry = params.grid_start + 2u * (cell.y * params.grid_size.x + cell.x);
+    let start = path_bands.values[entry];
+    let cell_count = path_bands.values[entry + 1u];
+    let end = start + (cell_count & CELL_COUNT);
+    let fill_measured = fill_enabled && (cell_count & CELL_FILL_DECIDED) == 0u;
+    if (fill_measured) {
+        edges.inside = path_inside(p);
+    } else {
+        edges.inside = (cell_count & CELL_INSIDE) != 0u;
+    }
     let trimmed_stroke_enabled = stroke_enabled && params.trim_start < params.trim_end;
     var stroke_reaches = false;
     for (var k = start; k < end; k = k + 1u) {
@@ -380,17 +430,10 @@ fn path_edges(transform: DrawableTransform, p: vec2<f32>, fill_enabled: bool, st
         let next = path_points.points[select(i + 1u, current.contour_start, is_end)];
         let a = current.position;
         let b = next.position;
-        if (fill_enabled && (a.y > p.y) != (b.y > p.y)) {
-            let denominator = b.y - a.y;
-            let safe_denominator = select(denominator, 0.000001, abs(denominator) < 0.000001);
-            if (p.x < (b.x - a.x) * (p.y - a.y) / safe_denominator + a.x) {
-                edges.inside = !edges.inside;
-            }
-        }
         if (!segment_reaches(p, a, b)) {
             continue;
         }
-        let fill_edge = fill_enabled && (current.flags & POINT_FILL_HIDDEN) == 0u;
+        let fill_edge = fill_measured && (current.flags & POINT_FILL_HIDDEN) == 0u;
         if (fill_edge && soft_fill) {
             let nearest = segment_offset(p, a, b);
             let local_distance = length(nearest);
