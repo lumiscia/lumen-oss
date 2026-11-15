@@ -194,7 +194,6 @@ const DRAW_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMENT
     .union(wgpu::TextureUsages::TEXTURE_BINDING)
     .union(wgpu::TextureUsages::COPY_SRC);
 
-/// A program covering the target with a red `value` at a depth, both given by its uniform.
 #[test]
 fn the_pool_budget_counts_only_textures_the_frame_left_unused() {
     let (_renderer, mut recorder) = setup();
@@ -229,6 +228,7 @@ fn recorder_texture_bytes(size: Size) -> u64 {
     u64::from(size.width) * u64::from(size.height) * 4
 }
 
+/// A program covering the target with a red `value` at a depth, both given by its uniform.
 fn draw_program(recorder: &mut Recorder, depth: Option<DepthTest>) -> ProgramRef {
     recorder
         .render_program(
