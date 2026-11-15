@@ -12,10 +12,10 @@
 pub struct CacheBudgets {
     /// Image textures no frame binds. Only those count toward it; bound ones are kept. 256 MiB.
     pub image_textures: u64,
-    /// Every pooled texture: those the latest frame used, retained outputs, and those frames are
-    /// done with, which later frames reuse. Only the last are freed, and by size bucket: the
-    /// bucket whose least recently used spare is oldest gives up its spares first, so the order is
-    /// not least recently used across buckets. 384 MiB.
+    /// Pooled textures the latest frame didn't use, which later frames reuse. Those it used and
+    /// retained outputs don't count. They are freed by size bucket: the bucket whose least
+    /// recently used spare is oldest gives up its spares first, so the order is not least
+    /// recently used across buckets. 384 MiB.
     pub pooled_textures: u64,
     /// Outputs of nodes that don't change with the frame, kept so later frames skip drawing them,
     /// counted in total. Those the latest frame read are kept. Each is also dropped after 600
@@ -54,8 +54,8 @@ impl Default for CacheBudgets {
     }
 }
 
-/// The bytes each of a renderer's caches holds, including what the latest frame uses, counted as
-/// [`CacheBudgets`] counts them, as [`super::GpuCompositionRenderer::cache_stats`] reports them.
+/// The bytes each of a renderer's caches holds, including what the latest frame uses, as
+/// [`super::GpuCompositionRenderer::cache_stats`] reports them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheStats {
     pub image_textures: u64,

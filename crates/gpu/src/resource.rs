@@ -28,6 +28,8 @@ impl TextureDesc {
         }
     }
 
+    /// A texture compute passes write. It is a render attachment too, which lets a browser
+    /// zero a new one on the GPU instead of uploading zeros to it.
     pub fn storage(size: Size, format: wgpu::TextureFormat) -> Self {
         Self {
             domain: TextureDomain::full_frame(size),
@@ -35,7 +37,8 @@ impl TextureDesc {
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
         }
     }
 }
