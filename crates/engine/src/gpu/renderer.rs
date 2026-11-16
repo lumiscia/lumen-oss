@@ -309,13 +309,6 @@ impl GpuCompositionRenderer {
         self.graph.recorder.pass_count()
     }
 
-    /// How many times frames evaluated the params that read the frame of a node kept while their
-    /// values hold, rather than reusing values that still held.
-    #[cfg(feature = "test-hooks")]
-    pub fn held_value_evaluation_count(&self) -> u64 {
-        self.graph.value_evaluations()
-    }
-
     /// What recording has cost so far.
     pub fn frame_graph_stats(&self) -> FrameGraphStats {
         let recorder = &self.graph.recorder;

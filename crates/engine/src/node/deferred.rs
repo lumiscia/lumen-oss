@@ -48,26 +48,6 @@ impl<T> Deferred<T> {
                 .map_err(|error| error.located(node_id, field)),
         }
     }
-
-    /// [`Self::eval`], with the frames around `ctx.frame` on which the value holds, as
-    /// [`Expression::evaluate_held`] finds them.
-    pub(crate) fn eval_held(
-        &self,
-        node_id: NodeId,
-        field: &str,
-        ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<(T, (f64, f64))>
-    where
-        T: ParamValue,
-    {
-        match self {
-            Self::Value(value) => Ok((value.clone(), crate::expr::EVERY_FRAME)),
-            Self::Expr(expr) => expr
-                .evaluate_held(ctx)
-                .and_then(|held| Ok((T::from_expression(held.value)?, held.frames)))
-                .map_err(|error| error.located(node_id, field)),
-        }
-    }
 }
 
 impl<T> From<T> for Deferred<T> {
@@ -644,6 +624,7 @@ mod tests {
             glyph: None,
             instance: None,
             props: None,
+            held: None,
         }
     }
 

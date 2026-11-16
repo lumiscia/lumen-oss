@@ -418,6 +418,7 @@ impl MeasurementFixture {
             glyph: None,
             instance: None,
             props: None,
+            held: None,
         };
         std::hint::black_box(self.width.evaluate(&ctx)?);
         std::hint::black_box(self.height.evaluate(&ctx)?);

@@ -504,6 +504,7 @@ fn parses_and_evaluates_vec2_expression() {
             glyph: None,
             instance: None,
             props: None,
+            held: None,
         };
 
         assert_eq!(

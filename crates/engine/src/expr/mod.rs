@@ -2,6 +2,7 @@
 
 mod ast;
 mod builtins;
+mod cache;
 mod easing;
 mod eval;
 mod format;
@@ -19,10 +20,13 @@ pub use ast::{
     BinaryOp, BuiltinFn, Easing, ExprNode, Expression, ExpressionValue, GlobalVar, Key, Reads,
     UnaryOp,
 };
+pub use cache::HeldValues;
+pub(crate) use cache::{HeldCache, same_value};
 #[cfg(feature = "3d")]
 pub(crate) use eval::InstanceEvaluator;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use eval::evaluation_count;
 pub use functions::FunctionScope;
-pub(crate) use hold::{EVERY_FRAME, contains as frames_contain, intersect as intersect_frames};
 pub use spec::{
     BUILTINS, BuiltinArg, BuiltinSpec, FORMS, FormSpec, GLOBALS, GlobalSpec, NamedEasing,
     ValueKind, reserved_names,
@@ -49,6 +53,9 @@ pub struct ExpressionContext<'a> {
     pub instance: Option<InstanceScope>,
     /// The props of the template instance being evaluated, which `prop('name')` reads.
     pub props: Option<&'a crate::scope::PropValues>,
+    /// Where values of this scope instance's expressions are kept while they hold; `None`
+    /// evaluates every time.
+    pub held: Option<HeldValues<'a>>,
 }
 
 /// A glyph and the text it is drawn in, read by the `glyph`, `word`, `line` and `span` globals and

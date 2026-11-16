@@ -20,7 +20,7 @@ use lumen_gpu::{
 use crate::{
     composition::{Composition, SceneId},
     error::{LumenError, RenderError, Warning, WarningKind},
-    expr::ExpressionContext,
+    expr::{ExpressionContext, HeldCache},
     media::{MediaIdentity, MediaStore},
     node::{
         Deferred, MediaValue, Node, NodeId, NodeKind,
@@ -340,6 +340,8 @@ pub(crate) struct CachedShader {
 pub(crate) struct FrameGraph {
     pub(crate) recorder: Recorder,
     state: RecordState,
+    /// The values of expressions recording evaluated, kept while they hold.
+    held: HeldCache,
     /// What the caches recording fills keep of what frames stop using.
     budgets: super::CacheBudgets,
     /// The target of the next frame recorded, which holds its output until it is submitted.
@@ -384,6 +386,7 @@ impl FrameGraph {
         Self {
             recorder: Recorder::new(device, queue),
             state: RecordState::default(),
+            held: HeldCache::default(),
             budgets: super::CacheBudgets::default(),
             external: None,
             #[cfg(feature = "ffmpeg")]
@@ -420,14 +423,16 @@ impl FrameGraph {
             {
                 self.state.retained.drop_all(&mut self.recorder);
                 // Values measured with the fonts before are evaluated again.
-                self.state.frame_values.clear();
+                self.held.clear();
                 self.state.font_generation = generation;
             }
             self.state.begin_frame();
+            self.held.begin_frame();
             self.recorder.begin_frame();
             let mut cx = FrameCx {
                 rec: &mut self.recorder,
                 st: &mut self.state,
+                held: settings.retain_static.then_some(&self.held),
                 media_cache: &mut *media_cache,
                 composition,
                 scope: Scope::root(composition),
@@ -717,6 +722,7 @@ impl FrameGraph {
             self.imports = GpuMediaImports::default();
         }
         self.state.reset(&mut self.recorder);
+        self.held.clear();
     }
 
     /// Frees everything recording holds, as `reset` alone keeps its pool and programs for the next
@@ -761,11 +767,6 @@ impl FrameGraph {
         self.state.retained.skipped_passes
     }
 
-    #[cfg(feature = "test-hooks")]
-    pub(crate) fn value_evaluations(&self) -> u64 {
-        self.state.value_evaluations
-    }
-
     fn drop_pending(&mut self) {
         self.state.mips.discard_pending();
         self.state.retained.drop_pending(&mut self.recorder);
@@ -782,10 +783,27 @@ fn font_generation(media: Option<&dyn MediaStore>) -> Option<u64> {
         .map(|text_system| text_system.font_generation())
 }
 
+/// The context expressions of `scope`, reached along `path`, are evaluated in at `frame`.
+fn held_context<'s>(
+    scope: &'s Scope<'_>,
+    path: PathId,
+    held: Option<&'s HeldCache>,
+    frame: FrameTime,
+    media: Option<&'s dyn MediaStore>,
+) -> ExpressionContext<'s> {
+    ExpressionContext {
+        held: held.map(|held| held.scope(scope.id, path.0, scope.props.as_ref())),
+        ..scope.expr_context(frame, media)
+    }
+}
+
 /// One walk of the graph for one frame.
 pub(crate) struct FrameCx<'a> {
     pub(crate) rec: &'a mut Recorder,
     st: &'a mut RecordState,
+    /// Where expressions keep their values while they hold, unless outputs are recorded anew on
+    /// every frame.
+    held: Option<&'a HeldCache>,
     media_cache: &'a mut MediaTextureCache,
     composition: &'a Composition,
     scope: Scope<'a>,
@@ -832,13 +850,18 @@ fn internal(details: &str) -> crate::error::LumenError {
 
 impl<'a> FrameCx<'a> {
     pub(crate) fn expr(&self) -> ExpressionContext<'_> {
-        self.scope.expr_context(self.frame, self.media)
+        self.expr_at(self.frame)
+    }
+
+    /// The context expressions of this scope instance are evaluated in at `frame`.
+    fn expr_at(&self, frame: FrameTime) -> ExpressionContext<'_> {
+        held_context(&self.scope, self.path, self.held, frame, self.media)
     }
 
     /// Evaluates `text` at this frame, placing its glyphs in the atlas and writing what it draws
     /// to the frame's buffers.
     pub(crate) fn bind_text(&mut self, text: &TextInstance) -> crate::Result<TextDraw> {
-        let expr = self.scope.expr_context(self.frame, self.media);
+        let expr = held_context(&self.scope, self.path, self.held, self.frame, self.media);
         let mut fallbacks = Vec::new();
         let draw = text.bind(
             expr,

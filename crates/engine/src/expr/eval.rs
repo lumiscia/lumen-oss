@@ -14,7 +14,18 @@ use crate::{
 };
 
 impl Expression {
+    /// The value of the expression in `ctx`. An evaluation that no other evaluation is inside,
+    /// in a context with held values and no glyph or instance scope, reuses a value they hold.
     pub fn evaluate(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
+        match ctx.held {
+            Some(held) if ctx.glyph.is_none() && ctx.instance.is_none() && outermost() => {
+                held.evaluate(self, ctx)
+            }
+            _ => self.evaluate_now(ctx),
+        }
+    }
+
+    fn evaluate_now(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
         let _evaluation = EvaluationGuard::enter(self.depth)?;
         let mut scratch = Scratch::new(&self.plan);
         usable(
@@ -108,6 +119,23 @@ thread_local! {
     static EVALUATIONS: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static STARTED: Cell<u64> = const { Cell::new(0) };
+}
+
+/// How many evaluations of an expression this thread has started, counting those started inside
+/// another, as the evaluation limits count them.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn evaluation_count() -> u64 {
+    STARTED.get()
+}
+
+/// Whether no evaluation is open on this thread.
+fn outermost() -> bool {
+    EVALUATIONS.get().0 == 0
+}
+
 pub(super) struct EvaluationGuard {
     levels: u32,
 }
@@ -133,6 +161,8 @@ impl EvaluationGuard {
             return Err(LumenError::evaluate(details));
         }
         EVALUATIONS.set((open + levels, started + 1));
+        #[cfg(any(test, feature = "test-hooks"))]
+        STARTED.set(STARTED.get() + 1);
         Ok(Self { levels })
     }
 }

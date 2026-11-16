@@ -159,6 +159,7 @@ impl<'a> Scope<'a> {
             glyph: None,
             instance: None,
             props: self.props.as_deref(),
+            held: None,
         }
     }
 }

@@ -833,6 +833,7 @@ mod tests {
             glyph: None,
             instance: None,
             props: None,
+            held: None,
         }
     }
 
