@@ -123,3 +123,33 @@ fn a_node_read_is_evaluated_inside_its_reader() {
         0
     );
 }
+
+#[test]
+fn a_value_that_measured_text_is_kept_for_its_own_frame_only() {
+    let cache = HeldCache::default();
+    let measuring = Expression::parse("text_width('WW', 16)").unwrap();
+    let holding = Expression::parse("tween(0, 1, 30, 20)").unwrap();
+    let at = |expression: &Expression| {
+        let ctx = ExpressionContext {
+            frame: 5.0,
+            held: Some(cache.scope(SceneId::Root, 0, None)),
+            ..base()
+        };
+        evaluate(expression, &ctx).1
+    };
+    assert_eq!((at(&measuring), at(&measuring)), (1, 0));
+    assert_eq!((at(&holding), at(&holding)), (1, 0));
+
+    let mut cache = cache;
+    cache.begin_frame();
+    let at = |expression: &Expression| {
+        let ctx = ExpressionContext {
+            frame: 5.0,
+            held: Some(cache.scope(SceneId::Root, 0, None)),
+            ..base()
+        };
+        evaluate(expression, &ctx).1
+    };
+    assert_eq!(at(&measuring), 1);
+    assert_eq!(at(&holding), 0);
+}

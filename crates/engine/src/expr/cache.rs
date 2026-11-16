@@ -39,6 +39,8 @@ struct Held {
     props: Option<Arc<PropValues>>,
     frames: (f64, f64),
     value: ExpressionValue,
+    /// Whether the value measured text, in which case it is kept until the next frame starts.
+    measured: bool,
     last_used: u64,
 }
 
@@ -57,13 +59,15 @@ impl HeldCache {
         }
     }
 
-    /// Starts a frame, dropping what the last two frames didn't use: animated props are new on
-    /// every frame, and a value they held for goes with them.
+    /// Starts a frame, dropping what the last two frames didn't use, as animated props are new on
+    /// every frame and a value they held for goes with them, and every value that measured text,
+    /// as the fonts it measured with may have changed.
     pub(crate) fn begin_frame(&mut self) {
         self.tick += 1;
         let tick = self.tick;
         self.entries.get_mut().retain(|_, kept| {
-            kept.held.retain(|held| held.last_used + 2 >= tick);
+            kept.held
+                .retain(|held| !held.measured && held.last_used + 2 >= tick);
             !kept.held.is_empty()
         });
     }
@@ -143,6 +147,7 @@ impl HeldValues<'_> {
                 props,
                 frames: found.frames,
                 value: found.value.clone(),
+                measured: found.measured,
                 last_used: tick,
             });
         Ok(found.value)

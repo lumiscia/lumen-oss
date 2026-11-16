@@ -58,6 +58,9 @@ use crate::{
 pub(crate) struct Held {
     pub(crate) value: ExpressionValue,
     pub(crate) frames: (f64, f64),
+    /// Whether evaluating it measured text, or read an expression that did, which a font loaded
+    /// since changes.
+    pub(crate) measured: bool,
 }
 
 pub(crate) const EVERY_FRAME: (f64, f64) = (f64::NEG_INFINITY, f64::INFINITY);
@@ -70,6 +73,8 @@ impl Expression {
             return Ok(Held {
                 value: self.evaluate_now(ctx)?,
                 frames: (ctx.frame, ctx.frame),
+                // Without a walk it can't see whether a step measured, unless none can.
+                measured: !self.plan.steps[self.plan.roots[0]].repeatable,
             });
         }
         let _evaluation = EvaluationGuard::enter(self.depth)?;
@@ -79,21 +84,24 @@ impl Expression {
                 plan: &self.plan,
                 ctx,
                 checks,
+                measured: false,
                 scratch: HeldScratch::new(&self.plan),
             };
-            holding.step(root)
+            let step = holding.step(root)?;
+            crate::Result::Ok((step, holding.measured))
         };
-        let mut step = held(!self.plan.steps[root].repeatable)?;
+        let (mut step, mut measured) = held(!self.plan.steps[root].repeatable)?;
         let frames = |step: &HeldStep| match step.hold.shape {
             Shape::Constant => step.hold.frames,
             Shape::Monotone(_) => (ctx.frame, ctx.frame),
         };
         if frames(&step) != (ctx.frame, ctx.frame) && self.plan.steps[root].repeatable {
-            step = held(true)?;
+            (step, measured) = held(true)?;
         }
         Ok(Held {
             frames: frames(&step),
             value: usable(step.value)?,
+            measured,
         })
     }
 }
@@ -346,11 +354,13 @@ fn rule(builtin: BuiltinFn) -> Rule {
 }
 
 /// One held evaluation of a plan. Without `checks`, a range a check would find is the range of the
-/// operands it is found in.
+/// operands it is found in. `measured` is set once a step measures text, here or in a node it
+/// reads.
 struct Holding<'p, 'c> {
     plan: &'p EvalPlan,
     ctx: &'c ExpressionContext<'c>,
     checks: bool,
+    measured: bool,
     scratch: HeldScratch,
 }
 
@@ -401,6 +411,7 @@ impl Holding<'_, '_> {
                 (value, hold)
             }
             Op::Builtin(builtin, args) => {
+                self.measured |= matches!(rule(*builtin), Rule::Measured);
                 // As `evaluate_step` does, with each argument's hold beside its value.
                 let start = self.scratch.args.len();
                 let value = args
@@ -452,8 +463,10 @@ impl Holding<'_, '_> {
                     |value| Held {
                         value,
                         frames: EVERY_FRAME,
+                        measured: false,
                     },
                 )?;
+                self.measured |= held.measured;
                 (held.value, Hold::constant(held.frames))
             }
             Op::NodeRef(node_id) => {
@@ -463,6 +476,7 @@ impl Holding<'_, '_> {
                 )));
             }
             Op::MeasureNode(builtin, node_id) => {
+                self.measured = true;
                 (measure_node(*builtin, *node_id, ctx)?, Hold::at(frame))
             }
         };
