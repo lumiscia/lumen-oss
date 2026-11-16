@@ -23,12 +23,15 @@ struct RasterMultiMergeParams {
 @group(0) @binding(9) var overlay_6: texture_2d<f32>;
 @group(0) @binding(10) var overlay_7: texture_2d<f32>;
 
-// `stack` with overlay `index` over it, or as it is when the pass has no such overlay.
+// `stack` with overlay `index` over it, or as it is where the overlay has no texel or the pass
+// has no such overlay.
 fn with_overlay(stack: vec4<f32>, tex: texture_2d<f32>, index: u32, pixel: vec2<i32>) -> vec4<f32> {
-    if (index >= params.count) {
+    let coord = pixel - params.overlay_origins[index].xy;
+    if (index >= params.count || any(coord < vec2<i32>(0))
+        || any(coord >= vec2<i32>(textureDimensions(tex)))) {
         return stack;
     }
-    let overlay = sample_or_transparent(tex, pixel, params.overlay_origins[index].xy);
+    let overlay = textureLoad(tex, coord, 0);
     return composite(stack, overlay * clamp(params.opacity, 0.0, 1.0), params.blend_mode);
 }
 
