@@ -45,9 +45,41 @@ struct Held {
     value: ExpressionValue,
     /// Whether the value measured text, in which case it is kept until the next frame starts.
     measured: bool,
-    /// Whether a hold walk found the value to hold for a single frame only.
-    tracked: bool,
+    /// For a value kept for a single frame: how long the same value goes on being evaluated
+    /// plainly before a hold walk looks for its range again.
+    retry: Retry,
     last_used: u64,
+}
+
+/// When a hold walk next looks for the range of a value that repeats from frame to frame but was
+/// found to hold for a single frame. A value can repeat without holding, as `frame % 100 < 50`
+/// does, so each walk that finds a single frame again doubles the frames until the next.
+#[derive(Debug, Clone, Copy, Default)]
+struct Retry {
+    /// Frames the value is still evaluated plainly for.
+    wait: u32,
+    /// Walks since the value last changed that found a single frame.
+    walks: u32,
+}
+
+impl Retry {
+    /// Most frames between two walks.
+    const MAX_WAIT: u32 = 64;
+
+    fn waited(self) -> Self {
+        Self {
+            wait: self.wait - 1,
+            ..self
+        }
+    }
+
+    /// After one more walk, which matters only if it found a single frame again.
+    fn later(self) -> Self {
+        Self {
+            wait: (1 << self.walks.min(6)).min(Self::MAX_WAIT),
+            walks: self.walks + 1,
+        }
+    }
 }
 
 impl HeldCache {
@@ -105,8 +137,8 @@ impl HeldValues<'_> {
     /// `expression` in `ctx`: the value it was found to hold on `ctx.frame` with the same props, or
     /// else evaluated and kept with the frames it holds on. An expression that reads no node and
     /// measures no text, and last held for a single frame, is evaluated plainly and kept for its
-    /// own frame, and walked for the frames it holds on only when that gives its last value again
-    /// and no walk found that value to hold for a single frame. Errors are not kept.
+    /// own frame, and walked for the frames it holds on only when that gives its last value again,
+    /// as often as its [`Retry`] allows. Errors are not kept.
     pub(super) fn evaluate(
         self,
         expression: &Expression,
@@ -147,24 +179,22 @@ impl HeldValues<'_> {
                 .iter()
                 .rev()
                 .find(|held| held.frames.0 == held.frames.1 && same(held))
-                .map(|held| (held.value.clone(), held.tracked));
+                .map(|held| (held.value.clone(), held.retry));
         }
-        let walked = |found: Found| {
-            let tracked = found.frames.0 == found.frames.1;
-            (found.value, found.frames, found.measured, tracked)
-        };
-        let (value, frames, measured, tracked) = match changed_last {
-            Some((last, tracked)) if expression.plan.steps[expression.plan.roots[0]].repeatable => {
+        let walked =
+            |found: Found, retry: Retry| (found.value, found.frames, found.measured, retry);
+        let (value, frames, measured, retry) = match changed_last {
+            Some((last, retry)) if expression.plan.steps[expression.plan.roots[0]].repeatable => {
                 let value = expression.evaluate_now(ctx)?;
                 if !same_value(&value, &last) {
-                    (value, (ctx.frame, ctx.frame), false, false)
-                } else if tracked {
-                    (value, (ctx.frame, ctx.frame), false, true)
+                    (value, (ctx.frame, ctx.frame), false, Retry::default())
+                } else if retry.wait > 0 {
+                    (value, (ctx.frame, ctx.frame), false, retry.waited())
                 } else {
-                    walked(expression.evaluate_held(ctx)?)
+                    walked(expression.evaluate_held(ctx)?, retry.later())
                 }
             }
-            _ => walked(expression.evaluate_held(ctx)?),
+            _ => walked(expression.evaluate_held(ctx)?, Retry::default()),
         };
         let props = match shared {
             Some(props) => Some(Arc::clone(props)),
@@ -186,7 +216,7 @@ impl HeldValues<'_> {
             frames,
             value: value.clone(),
             measured,
-            tracked,
+            retry,
             last_used: tick,
         });
         Ok(value)

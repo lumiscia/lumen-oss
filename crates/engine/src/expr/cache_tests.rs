@@ -180,22 +180,37 @@ fn a_value_that_changed_last_frame_is_the_value_evaluating_gives() {
 }
 
 #[test]
-fn a_value_that_repeats_but_holds_for_one_frame_is_not_walked_again() {
-    let mut cache = HeldCache::default();
-    let repeating = Expression::parse("if(frame % 100 < 50, 1, 0)").unwrap();
-    let mut started = Vec::new();
-    for frame in 0..10 {
-        let ctx = ExpressionContext {
-            frame: f64::from(frame),
-            held: Some(cache.scope(SceneId::Root, 0, None)),
-            ..base()
-        };
-        let (value, count) = evaluate(&repeating, &ctx);
-        assert_eq!(value, ExpressionValue::Number(1.0));
-        started.push(count);
-        cache.begin_frame();
-    }
-    assert_eq!(started[1..], [1; 9]);
+fn a_value_that_repeats_is_walked_again_less_and_less_often() {
+    let started = |source: &str, expected: &dyn Fn(u32) -> f64| {
+        let mut cache = HeldCache::default();
+        let expression = Expression::parse(source).unwrap();
+        let mut started = Vec::new();
+        for frame in 0..16 {
+            let ctx = ExpressionContext {
+                frame: f64::from(frame),
+                held: Some(cache.scope(SceneId::Root, 0, None)),
+                ..base()
+            };
+            let (value, count) = evaluate(&expression, &ctx);
+            assert_eq!(value, ExpressionValue::Number(expected(frame)), "{source}");
+            started.push(count);
+            cache.begin_frame();
+        }
+        started
+    };
+    // It never holds for more than a frame: the walks are 1, 2, 4 and 8 frames apart.
+    assert_eq!(
+        started("if(frame % 100 < 50, 1, 0)", &|_| 1.0),
+        [1, 2, 1, 2, 1, 1, 2, 1, 1, 1, 1, 2, 1, 1, 1, 1]
+    );
+    // The frame its edge reaches the bound on gives the value it then holds, for that frame only:
+    // the next walk finds the rest.
+    assert_eq!(
+        started("clamp(frame - 4 + 1, 0, 1)", &|frame| f64::from(u8::from(
+            frame >= 4
+        )))[4..8],
+        [1, 2, 0, 0]
+    );
 }
 
 #[test]
