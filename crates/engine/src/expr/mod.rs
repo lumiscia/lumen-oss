@@ -6,6 +6,7 @@ mod easing;
 mod eval;
 mod format;
 pub(crate) mod functions;
+mod hold;
 mod noise;
 mod parser;
 mod path;
@@ -21,6 +22,7 @@ pub use ast::{
 #[cfg(feature = "3d")]
 pub(crate) use eval::InstanceEvaluator;
 pub use functions::FunctionScope;
+pub(crate) use hold::{EVERY_FRAME, contains as frames_contain, intersect as intersect_frames};
 pub use spec::{
     BUILTINS, BuiltinArg, BuiltinSpec, FORMS, FormSpec, GLOBALS, GlobalSpec, NamedEasing,
     ValueKind, reserved_names,

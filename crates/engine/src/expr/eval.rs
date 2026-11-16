@@ -25,7 +25,7 @@ impl Expression {
 }
 
 /// `value`, unless it is a kind no param takes.
-fn usable(value: ExpressionValue) -> crate::Result<ExpressionValue> {
+pub(super) fn usable(value: ExpressionValue) -> crate::Result<ExpressionValue> {
     match unusable_result(value.kind()) {
         Some(details) => Err(LumenError::evaluate(details)),
         None => Ok(value),
@@ -108,12 +108,12 @@ thread_local! {
     static EVALUATIONS: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
 }
 
-struct EvaluationGuard {
+pub(super) struct EvaluationGuard {
     levels: u32,
 }
 
 impl EvaluationGuard {
-    fn enter(depth: usize) -> crate::Result<Self> {
+    pub(super) fn enter(depth: usize) -> crate::Result<Self> {
         let levels = u32::try_from(depth)
             .unwrap_or(u32::MAX)
             .saturating_add(EVALUATION_OVERHEAD);
@@ -152,12 +152,12 @@ impl Drop for EvaluationGuard {
 /// conditional branches stay lazy.
 #[derive(Debug)]
 pub(crate) struct EvalPlan {
-    steps: Vec<Step>,
+    pub(super) steps: Vec<Step>,
     /// The step of each expression the plan evaluates.
-    roots: Vec<usize>,
+    pub(super) roots: Vec<usize>,
     /// The values of the steps that were evaluated when the plan was built.
-    constants: Vec<ExpressionValue>,
-    memo_slots: usize,
+    pub(super) constants: Vec<ExpressionValue>,
+    pub(super) memo_slots: usize,
     /// Memo slots below this one hold steps whose value is the same for every copy of an
     /// `instance_3d`.
     kept_slots: usize,
@@ -168,23 +168,26 @@ pub(crate) struct EvalPlan {
 }
 
 #[derive(Debug)]
-struct Step {
-    op: Op,
+pub(super) struct Step {
+    pub(super) op: Op,
     /// Where an evaluation keeps the value of the step, when more than one step reads it or it
     /// is kept for every copy.
-    memo: Option<usize>,
+    pub(super) memo: Option<usize>,
+    /// Whether evaluating it again neither reads a node, so it starts no evaluation of its own,
+    /// nor measures text.
+    pub(super) repeatable: bool,
 }
 
 /// What an evaluation of a plan works in: the memo of its steps, and the arguments of the builtin
 /// calls it has open.
 #[derive(Debug)]
-struct Scratch {
+pub(super) struct Scratch {
     memo: Vec<Option<ExpressionValue>>,
     args: Vec<ExpressionValue>,
 }
 
 impl Scratch {
-    fn new(plan: &EvalPlan) -> Self {
+    pub(super) fn new(plan: &EvalPlan) -> Self {
         Self {
             memo: vec![None; plan.memo_slots],
             args: Vec::new(),
@@ -193,7 +196,7 @@ impl Scratch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum Op {
+pub(super) enum Op {
     Literal(Literal),
     /// An index into the plan's constants.
     Constant(usize),
@@ -212,7 +215,7 @@ enum Op {
 
 /// A literal compared by its bits, so that `0` and `-0` stay distinct.
 #[derive(Debug, Clone)]
-struct Literal(ExpressionValue);
+pub(super) struct Literal(pub(super) ExpressionValue);
 
 impl Literal {
     fn key(&self) -> (u8, [u64; 4], &str) {
@@ -331,6 +334,17 @@ impl Op {
         }
     }
 
+    /// Whether it reads a node or measures text.
+    fn reads_nodes_or_text(&self) -> bool {
+        matches!(
+            self,
+            Op::ReadProperty(..)
+                | Op::NodeRef(_)
+                | Op::MeasureNode(..)
+                | Op::Builtin(BuiltinFn::TextWidth | BuiltinFn::TextHeight, _)
+        )
+    }
+
     /// The steps this one reads.
     fn operands(&self) -> impl Iterator<Item = usize> + '_ {
         let (fixed, args): ([Option<usize>; 3], &[usize]) = match self {
@@ -381,6 +395,7 @@ impl EvalPlan {
         // and whether a step that reads the instance scope reads it.
         let mut copied = vec![false; ops.len()];
         let mut impure = vec![false; ops.len()];
+        let mut repeatable = vec![true; ops.len()];
         let mut read_by_copied = vec![false; ops.len()];
         for root in &roots {
             reads[*root] += 1;
@@ -393,6 +408,8 @@ impl EvalPlan {
                 Op::Global(GlobalVar::Instance | GlobalVar::InstanceCount)
             ) || op.operands().any(|operand| copied[operand]);
             impure[index] = op.reads_state() || op.operands().any(|operand| impure[operand]);
+            repeatable[index] =
+                !op.reads_nodes_or_text() && op.operands().all(|operand| repeatable[operand]);
             for operand in op.operands() {
                 reads[operand] += 1;
                 read_by_copied[operand] |= copied[index];
@@ -419,12 +436,14 @@ impl EvalPlan {
         let steps = ops
             .into_iter()
             .zip(&slots)
-            .map(|(op, slot)| Step {
+            .zip(repeatable)
+            .map(|((op, slot), repeatable)| Step {
                 op,
                 memo: slot.map(|class| {
                     next[class as usize] += 1;
                     next[class as usize] - 1
                 }),
+                repeatable,
             })
             .collect();
         Self {
@@ -437,7 +456,7 @@ impl EvalPlan {
         }
     }
 
-    fn evaluate_step(
+    pub(super) fn evaluate_step(
         &self,
         index: usize,
         ctx: &ExpressionContext<'_>,
@@ -593,6 +612,18 @@ fn read_property(
     property: &str,
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<ExpressionValue> {
+    read_property_with(node_id, property, ctx, Expression::evaluate, |value| value)
+}
+
+/// What `node(node_id, 'property')` reads: `evaluate` of its expression, located at the property,
+/// or `literal` of its value.
+pub(super) fn read_property_with<T>(
+    node_id: NodeId,
+    property: &str,
+    ctx: &ExpressionContext<'_>,
+    evaluate: impl FnOnce(&Expression, &ExpressionContext<'_>) -> crate::Result<T>,
+    literal: impl FnOnce(ExpressionValue) -> T,
+) -> crate::Result<T> {
     let graph = ctx.graph.ok_or_else(|| {
         LumenError::evaluate(format!(
             "no graph available to resolve node property reference `{property}`"
@@ -611,10 +642,9 @@ fn read_property(
         ))
     })?;
     match prop {
-        PropertyRead::Expr(inner_expr) => inner_expr
-            .evaluate(&ctx.without_scopes())
+        PropertyRead::Expr(inner_expr) => evaluate(inner_expr, &ctx.without_scopes())
             .map_err(|error| error.located(node_id, property)),
-        PropertyRead::Value(value) => value.ok_or_else(|| {
+        PropertyRead::Value(value) => value.map(literal).ok_or_else(|| {
             LumenError::evaluate(format!(
                 "property `{property}` on node {} can't be read in an expression",
                 node_id.0
@@ -623,7 +653,7 @@ fn read_property(
     }
 }
 
-fn unary(op: UnaryOp, value: ExpressionValue) -> crate::Result<ExpressionValue> {
+pub(super) fn unary(op: UnaryOp, value: ExpressionValue) -> crate::Result<ExpressionValue> {
     match op {
         UnaryOp::Neg => match value {
             ExpressionValue::Vec2((x, y)) => Ok(ExpressionValue::Vec2((-x, -y))),
@@ -635,7 +665,7 @@ fn unary(op: UnaryOp, value: ExpressionValue) -> crate::Result<ExpressionValue> 
 }
 
 /// `lhs op rhs`, evaluating `rhs` unless `&&` or `||` is decided by `lhs`.
-fn binary(
+pub(super) fn binary(
     lhs: ExpressionValue,
     op: BinaryOp,
     rhs: impl FnOnce() -> crate::Result<ExpressionValue>,
@@ -671,7 +701,10 @@ fn binary(
     }
 }
 
-fn global_value(global: GlobalVar, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
+pub(super) fn global_value(
+    global: GlobalVar,
+    ctx: &ExpressionContext<'_>,
+) -> crate::Result<ExpressionValue> {
     let in_glyph = |read: fn(&GlyphScope) -> u32| {
         ctx.glyph.as_ref().map(read).map(f64::from).ok_or_else(|| {
             LumenError::evaluate(format!(
