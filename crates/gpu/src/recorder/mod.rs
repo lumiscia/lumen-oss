@@ -358,7 +358,8 @@ impl Recorder {
         self.pool_bytes
     }
 
-    /// Sets the bytes of pooled textures kept once frames no longer use them.
+    /// Sets the bytes of pooled textures kept for later frames. Those the latest frame used and
+    /// those retained don't count toward it.
     pub fn set_pool_budget(&mut self, bytes: u64) {
         self.budget = bytes;
     }

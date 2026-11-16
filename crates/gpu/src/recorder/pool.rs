@@ -498,11 +498,19 @@ impl Recorder {
         self.entries[tex.0 as usize].as_ref().expect("texture")
     }
 
-    /// Ends the frame, dropping textures and bind groups idle past their limit and, when over
-    /// budget, the unused textures in rotation that were used least recently.
+    /// Ends the frame, dropping textures and bind groups idle past their limit and, when the
+    /// textures this frame left unused are over budget, those used least recently.
     pub fn end_frame(&mut self) {
         self.evict_dynamic_programs(MAX_DYNAMIC_PROGRAMS);
-        let over_budget = self.pool_bytes > self.budget;
+        // Retained textures are out of rotation, and budgeted by whoever retains them.
+        let mut idle: u64 = self
+            .buckets
+            .iter()
+            .map(|(key, bucket)| {
+                (bucket.textures.len() - bucket.next) as u64 * pool_entry_bytes(*key)
+            })
+            .sum();
+        let over_budget = idle > self.budget;
         if !over_budget && !self.frame.is_multiple_of(SWEEP_FRAMES) {
             return;
         }
@@ -524,6 +532,7 @@ impl Recorder {
                 }
                 bucket.textures.pop();
                 removed.insert(tail);
+                idle -= pool_entry_bytes(*key);
             }
         }
         for tex in removed.clone() {
@@ -532,17 +541,18 @@ impl Recorder {
         // Over budget: textures not used this frame go oldest first.
         surplus.sort_unstable_by_key(|(last_used, _)| *last_used);
         let mut surplus = surplus.into_iter();
-        while self.pool_bytes > self.budget {
+        while idle > self.budget {
             let Some((_, key)) = surplus.next() else {
                 break;
             };
-            while self.pool_bytes > self.budget {
+            while idle > self.budget {
                 let bucket = self.buckets.get_mut(&key).expect("bucket");
                 if bucket.textures.len() <= bucket.next {
                     break;
                 }
                 let tail = bucket.textures.pop().expect("tail");
                 removed.insert(tail);
+                idle -= pool_entry_bytes(key);
                 self.remove_entry(tail);
             }
         }

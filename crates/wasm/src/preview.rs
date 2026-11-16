@@ -13,7 +13,7 @@ use wasm_bindgen::prelude::*;
 use crate::{
     install_panic_hook,
     media::{WasmMediaStore, file_kind},
-    renderer::SurfaceCompositionRenderer,
+    renderer::{SubmittedWorkDone, SurfaceCompositionRenderer},
     utils::{
         composition_json_to_composition, js_error, js_parse_error, raw_frame_from_rgba,
         validate_rgba_len,
@@ -473,10 +473,10 @@ impl LumenPreviewController {
         Ok(())
     }
 
-    /// Renders the latest state to the most recently requested canvas. The GPU device is
-    /// requested without holding the state borrow; if `clear` ran meanwhile the new device is
-    /// destroyed and nothing is rendered. Nothing is rendered either while another call is still
-    /// creating the device.
+    /// Renders the latest state to the most recently requested canvas, resolving once the GPU
+    /// has finished the frame. The GPU device is requested without holding the state borrow; if
+    /// `clear` ran meanwhile the new device is destroyed and nothing is rendered. Nothing is
+    /// rendered either while another call is still creating the device.
     async fn render_current_frame(&self, canvas: &JsValue) -> Result<(), JsValue> {
         let pending_generation = {
             let mut state = self.state_mut()?;
@@ -506,6 +506,16 @@ impl LumenPreviewController {
             };
         }
 
+        // Frames submitted faster than the GPU finishes them queue up in the browser, which
+        // then blocks for seconds at a time. Waiting here holds a playing preview to the GPU's pace.
+        if let Some(done) = self.submit_current_frame(canvas)? {
+            done.await;
+        }
+        Ok(())
+    }
+
+    /// Renders the latest state with the device that is ready, if one is.
+    fn submit_current_frame(&self, canvas: &JsValue) -> Result<Option<SubmittedWorkDone>, JsValue> {
         let mut guard = self.state_mut()?;
         let frame = guard.current_frame;
         let canvas = guard
@@ -514,7 +524,7 @@ impl LumenPreviewController {
             .unwrap_or_else(|| canvas.clone());
         let state = &mut *guard;
         let GpuSlot::Ready(renderer) = &mut state.gpu else {
-            return Ok(());
+            return Ok(None);
         };
         let composition = state
             .composition
@@ -531,7 +541,7 @@ impl LumenPreviewController {
             height = state.height,
             "rendered preview frame"
         );
-        Ok(())
+        Ok(Some(renderer.submitted_work_done()))
     }
 }
 

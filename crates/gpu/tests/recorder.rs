@@ -194,6 +194,40 @@ const DRAW_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMENT
     .union(wgpu::TextureUsages::TEXTURE_BINDING)
     .union(wgpu::TextureUsages::COPY_SRC);
 
+#[test]
+fn the_pool_budget_counts_only_textures_the_frame_left_unused() {
+    let (_renderer, mut recorder) = setup();
+    let size = Size::new(64, 64);
+    let usage = TextureDesc::storage(size, FORMAT).usage;
+    recorder.set_pool_budget(recorder_texture_bytes(size));
+
+    recorder.begin_frame();
+    let program = program_writing(&mut recorder, 1, 0);
+    let kept = recorder.acquire(size, FORMAT, usage);
+    let spare = recorder.acquire(size, FORMAT, usage);
+    recorder.compute(program, &[(0, Res::Tex(kept))], WHOLE);
+    recorder.compute(program, &[(0, Res::Tex(spare))], WHOLE);
+    recorder.retain(kept);
+    recorder.resolve(kept, None).expect("resolve");
+    recorder.upload().expect("upload");
+    recorder.submit().expect("submit");
+    recorder.end_frame();
+
+    // The retained texture alone fills the budget, and the spare still fits it.
+    recorder.begin_frame();
+    recorder.end_frame();
+    assert_eq!(recorder.stats().textures_destroyed, 0);
+
+    recorder.set_pool_budget(0);
+    recorder.begin_frame();
+    recorder.end_frame();
+    assert_eq!(recorder.stats().textures_destroyed, 1);
+}
+
+fn recorder_texture_bytes(size: Size) -> u64 {
+    u64::from(size.width) * u64::from(size.height) * 4
+}
+
 /// A program covering the target with a red `value` at a depth, both given by its uniform.
 fn draw_program(recorder: &mut Recorder, depth: Option<DepthTest>) -> ProgramRef {
     recorder

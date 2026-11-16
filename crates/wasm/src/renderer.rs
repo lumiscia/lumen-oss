@@ -1,3 +1,10 @@
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
+};
+
 use lumen_engine::{
     composition::Composition,
     gpu::{GpuCompositionRenderer, OutputAlpha, RenderTarget},
@@ -86,6 +93,45 @@ impl SurfaceCompositionRenderer {
             .copy_texture_to_external(&raster.texture, &surface_texture.texture);
         self.renderer.gpu_renderer().queue.present(surface_texture);
         Ok(raster.domain.storage_size)
+    }
+
+    /// Resolves once the GPU has finished every frame submitted so far.
+    pub(crate) fn submitted_work_done(&self) -> SubmittedWorkDone {
+        let done = SubmittedWorkDone::default();
+        let signal = Arc::clone(&done.0);
+        self.gpu.queue.on_submitted_work_done(move || {
+            let waker = {
+                let mut signal = signal.lock().unwrap_or_else(|error| error.into_inner());
+                signal.done = true;
+                signal.waker.take()
+            };
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        });
+        done
+    }
+}
+
+#[derive(Default)]
+struct WorkDoneSignal {
+    done: bool,
+    waker: Option<Waker>,
+}
+
+#[derive(Default)]
+pub(crate) struct SubmittedWorkDone(Arc<Mutex<WorkDoneSignal>>);
+
+impl Future for SubmittedWorkDone {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let mut signal = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if signal.done {
+            return Poll::Ready(());
+        }
+        signal.waker = Some(cx.waker().clone());
+        Poll::Pending
     }
 }
 
