@@ -5,7 +5,9 @@
 use serde_json::{Value, json};
 
 use crate::color::{encode, linear, over, premultiplied, rgba8, scaled, srgb8};
-use crate::support::{BLACK, CLEAR, Case, Expect, Frame, Scene, WHITE, check, scene};
+use crate::support::{
+    BLACK, CLEAR, Case, Expect, Frame, Scene, TestMedia, WHITE, check, gpu, render, scene,
+};
 
 /// A translucent, saturated colour whose straight and premultiplied forms differ.
 const TEAL: [u8; 4] = [60, 120, 200, 128];
@@ -738,4 +740,58 @@ fn color_grade_and_crop_read_a_small_offset_layer() {
             Expect::Probes(vec![(205, 105, CLEAR), (100, 50, CLEAR)]),
         ),
     ]);
+}
+
+/// Fourteen translucent shapes, some covering most of the canvas and some small and apart, so
+/// the stack takes passes of several layers, passes of one, and partial rewrites.
+#[test]
+fn multimerge_of_many_layers_matches_a_chain_of_merges() {
+    let shapes: Vec<Value> = (0..14)
+        .map(|index: u32| {
+            let color = [
+                40 + 15 * index,
+                250 - 16 * index,
+                90 + 11 * (index % 5),
+                150,
+            ];
+            let (position, size) = if index % 3 == 2 {
+                ([10 + 60 * (index % 4), 8 + 4 * index], [12, 10])
+            } else {
+                ([3 * index, 2 * index], [200 - 5 * index, 100 - 3 * index])
+            };
+            json!({ "id": index + 1, "type": "shape", "params": { "position": position,
+                "width": size[0], "height": size[1], "fill_paint": color } })
+        })
+        .collect();
+    let stacked = |blend_mode: &str| {
+        let mut nodes = shapes.clone();
+        nodes.push(json!({ "id": 100, "type": "raster_multimerge",
+            "params": { "opacity": 0.7, "blend_mode": blend_mode },
+            "in": { "layers": (1..=14).collect::<Vec<u32>>() } }));
+        scene((256, 128), json!(nodes))
+    };
+    let chained = |blend_mode: &str| {
+        let mut nodes = shapes.clone();
+        for overlay in 2..=14 {
+            let base = if overlay == 2 { 1 } else { 98 + overlay };
+            nodes.push(json!({ "id": 99 + overlay, "type": "merge",
+                "params": { "opacity": 0.7, "blend_mode": blend_mode },
+                "in": { "base": base, "overlay": overlay } }));
+        }
+        scene((256, 128), json!(nodes))
+    };
+    let gpu = gpu();
+    let media = TestMedia::default();
+    for blend_mode in ["normal", "screen"] {
+        let draw = |scene: Scene| render(&mut gpu.renderer(), &scene.into(), 0.0, &media);
+        let (stacked, chained) = (draw(stacked(blend_mode)), draw(chained(blend_mode)));
+        assert!(stacked.rgba.iter().any(|&byte| byte != 0));
+        let worst = stacked
+            .rgba
+            .iter()
+            .zip(&chained.rgba)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max();
+        assert!(worst <= Some(1), "{blend_mode}: differs by {worst:?}");
+    }
 }
