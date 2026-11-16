@@ -38,9 +38,9 @@
 //! A hold walk uses more stack per level than plain evaluation, so it is charged
 //! `HELD_LEVEL_COST` times the levels of a plain evaluation, and one that does not fit the levels
 //! left is not started: the expression is evaluated plainly and held for its own frame only. The
-//! outermost evaluation that fails in its hold walk is evaluated plainly, and gives that result, as
-//! a plain evaluation nested in a walk has fewer levels left than it would alone. So the errors
-//! and limits are those of plain evaluation, and the levels open never exceed
+//! outermost evaluation whose hold walk fails after running out of levels is evaluated plainly, and
+//! gives that result, as a plain evaluation nested in a walk has fewer levels left than it would
+//! alone. So the errors and limits are those of plain evaluation, and the levels open never exceed
 //! `2 * (held levels) + (plain levels) <= MAX_EVALUATION_LEVELS`, the stack a plain evaluation at
 //! that limit can use.
 //!
@@ -55,7 +55,7 @@ use crate::{
         builtins::{evaluate_builtin, last_key_at, measure_node, progress_ratio, track},
         eval::{
             EvalPlan, EvaluationGuard, Literal, Op, Scratch, binary, global_value, outermost,
-            read_property_with, unary, usable,
+            ran_out_of_levels, read_property_with, unary, usable,
         },
         spec::{NamedEasing, easing_builtins},
     },
@@ -79,12 +79,15 @@ impl Expression {
     /// rest of `ctx` being the same. `ctx` has no glyph or instance scope.
     pub(crate) fn evaluate_held(&self, ctx: &ExpressionContext<'_>) -> crate::Result<Held> {
         let outermost = outermost();
+        if outermost {
+            ran_out_of_levels();
+        }
         let walked = match EvaluationGuard::enter_held(self.depth) {
             Ok(_evaluation) => self.hold_walk(ctx),
             Err(_) => return self.evaluate_at_frame(ctx),
         };
         match walked {
-            Err(_) if outermost => self.evaluate_at_frame(ctx),
+            Err(_) if outermost && ran_out_of_levels() => self.evaluate_at_frame(ctx),
             walked => walked,
         }
     }

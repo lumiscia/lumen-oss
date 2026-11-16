@@ -349,6 +349,26 @@ fn reads_that_nest_across_hold_and_plain_levels_are_held_within_the_stack_of_a_p
 }
 
 #[test]
+fn a_walk_that_fails_within_its_levels_is_not_evaluated_again() {
+    let graph = font_size_graph(&[
+        Some("node(2, 'font_size')".to_owned()),
+        Some("node(9, 'font_size')".to_owned()),
+    ]);
+    let read = Expression::parse("node(1, 'font_size')").unwrap();
+    let ctx = ExpressionContext {
+        graph: Some(&graph),
+        ..base()
+    };
+    let count = |run: &dyn Fn() -> bool| {
+        let before = crate::expr::eval::evaluation_count();
+        assert!(run());
+        crate::expr::eval::evaluation_count() - before
+    };
+    let plain = count(&|| read.evaluate(&ctx).is_err());
+    assert_eq!(count(&|| read.evaluate_held(&ctx).is_err()), plain);
+}
+
+#[test]
 fn a_hold_walk_is_only_started_up_to_the_levels_that_fit_its_stack() {
     let leaf = "tween(0, 1, 30, 20)";
     let leaf_depth = Expression::parse(leaf).unwrap().depth;

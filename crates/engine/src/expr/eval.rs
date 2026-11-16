@@ -123,6 +123,8 @@ const MAX_EVALUATIONS: u32 = 10_000;
 thread_local! {
     /// The levels of the open evaluations and the evaluations started since the outermost one began.
     static EVALUATIONS: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
+    /// Whether an evaluation was refused for its levels since [`ran_out_of_levels`] last ran.
+    static OUT_OF_LEVELS: Cell<bool> = const { Cell::new(false) };
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -140,6 +142,11 @@ pub fn evaluation_count() -> u64 {
 /// Whether no evaluation is open on this thread.
 pub(super) fn outermost() -> bool {
     EVALUATIONS.get().0 == 0
+}
+
+/// Whether an evaluation was refused for its levels since this last ran.
+pub(super) fn ran_out_of_levels() -> bool {
+    OUT_OF_LEVELS.replace(false)
 }
 
 pub(super) struct EvaluationGuard {
@@ -166,6 +173,7 @@ impl EvaluationGuard {
     fn open(levels: u32) -> crate::Result<Self> {
         let (open, started) = EVALUATIONS.get();
         let exhausted = if open.saturating_add(levels) > MAX_EVALUATION_LEVELS {
+            OUT_OF_LEVELS.set(true);
             Some(format!(
                 "node reads nest deeper than {MAX_EVALUATION_LEVELS} levels of evaluation; do they read each other?"
             ))
