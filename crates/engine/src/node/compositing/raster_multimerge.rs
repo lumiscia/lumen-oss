@@ -52,11 +52,21 @@ pub struct RasterMultiMerge {
     pub layers: Vec<NodeId>,
 }
 
+/// Most overlays one pass composites over its base.
+const MAX_PASS_OVERLAYS: usize = 8;
+
 const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
-    lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Texture),
-    lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
-    lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
+    lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(2, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
+    lumen_gpu::LayoutEntry::compute(3, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(4, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(5, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(6, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(7, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(8, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(9, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(10, lumen_gpu::LayoutKind::Texture),
 ];
 const RASTER_MULTIMERGE: ComputeProgram = ComputeProgram {
     label: "raster-multimerge",
@@ -72,11 +82,35 @@ struct RasterMultiMergeUniforms {
     opacity: f32,
     blend_mode: u32,
     /// Output texel of the pass's first invocation, then canvas pixels of the first texels
-    /// of the output, base and overlay.
+    /// of the output, base and each overlay.
     start: [i32; 2],
     origin: [i32; 2],
     base_origin: [i32; 2],
-    overlay_origin: [i32; 2],
+    overlay_origins: [[i32; 4]; MAX_PASS_OVERLAYS],
+    /// Overlays the pass composites, in binding order.
+    count: u32,
+    _pad: [u32; 3],
+}
+
+/// How many of the first `overlays` one pass takes: up to `MAX_PASS_OVERLAYS`, for as long as
+/// the box around them is no larger than their areas together. A pass writes that whole box, so
+/// layers that mostly overlap share a pass and layers scattered over the canvas keep their own.
+fn pass_len(overlays: &[crate::gpu::frame_graph::Raster]) -> usize {
+    let area = |rect: lumen_gpu::RectI| u64::from(rect.width) * u64::from(rect.height);
+    let mut rect = overlays[0].domain.data_rect;
+    let mut total = area(rect);
+    let mut len = 1;
+    for overlay in &overlays[1..overlays.len().min(MAX_PASS_OVERLAYS)] {
+        let next = overlay.domain.data_rect;
+        let union = rect.union(next);
+        total += area(next);
+        if area(union) > total {
+            break;
+        }
+        rect = union;
+        len += 1;
+    }
+    len
 }
 
 impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
@@ -112,28 +146,39 @@ impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
         let program = cx.program(&RASTER_MULTIMERGE)?;
         // Passes alternate between two textures. Each of the first two writes its whole
         // texture; after that a texture still holds the stack from two passes before, which
-        // differs from the stack now only within this overlay's texels and the last one's.
+        // differs from the stack now only within this pass's overlays' texels and the last's.
         let mut targets: [Option<lumen_gpu::TexRef>; 2] = [None; 2];
         let mut current = first;
-        for (index, overlay) in overlays.iter().enumerate() {
-            let tex = match targets[index % 2] {
-                Some(tex) => tex,
-                None => {
-                    let tex = cx.storage_target(domain.storage_size);
-                    targets[index % 2] = Some(tex);
-                    tex
-                }
-            };
-            let changed = if index < 2 {
+        let mut rest = overlays;
+        let mut last_rect = lumen_gpu::RectI::new(0, 0, 0, 0);
+        for pass in 0.. {
+            if rest.is_empty() {
+                break;
+            }
+            let (taken, after) = rest.split_at(pass_len(rest));
+            rest = after;
+            let tex =
+                *targets[pass % 2].get_or_insert_with(|| cx.storage_target(domain.storage_size));
+            let rect = taken
+                .iter()
+                .fold(lumen_gpu::RectI::new(0, 0, 0, 0), |union, overlay| {
+                    union.union(overlay.domain.data_rect)
+                });
+            let changed = if pass < 2 {
                 domain.data_rect
             } else {
-                overlay
-                    .domain
-                    .data_rect
-                    .union(overlays[index - 1].domain.data_rect)
-                    .intersection(domain.data_rect)
+                rect.union(last_rect).intersection(domain.data_rect)
             };
-            let params = RasterMultiMergeUniforms {
+            last_rect = rect;
+            let mut overlay_origins = [[0; 4]; MAX_PASS_OVERLAYS];
+            // Bindings past the pass's overlays are never read.
+            let mut textures = [current.tex; MAX_PASS_OVERLAYS];
+            for (index, overlay) in taken.iter().enumerate() {
+                let [x, y] = overlay.origin();
+                overlay_origins[index] = [x, y, 0, 0];
+                textures[index] = overlay.tex;
+            }
+            let uniform = cx.rec.uniform(&RasterMultiMergeUniforms {
                 opacity: evaluated.opacity as f32,
                 blend_mode: evaluated.blend_mode as u32,
                 start: [
@@ -142,19 +187,22 @@ impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
                 ],
                 origin: [domain.data_rect.x, domain.data_rect.y],
                 base_origin: current.origin(),
-                overlay_origin: overlay.origin(),
-            };
-            let uniform = cx.rec.uniform(&params);
-            cx.dispatch(
-                program,
-                &[
-                    (0, lumen_gpu::Res::Tex(current.tex)),
-                    (1, lumen_gpu::Res::Tex(overlay.tex)),
-                    (2, uniform),
-                    (3, lumen_gpu::Res::Tex(tex)),
-                ],
-                dispatch_for(changed.size()),
+                overlay_origins,
+                count: taken.len() as u32,
+                _pad: [0; 3],
+            });
+            let mut bindings = vec![
+                (0, lumen_gpu::Res::Tex(current.tex)),
+                (1, uniform),
+                (2, lumen_gpu::Res::Tex(tex)),
+            ];
+            bindings.extend(
+                textures
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &tex)| (3 + index as u32, lumen_gpu::Res::Tex(tex))),
             );
+            cx.dispatch(program, &bindings, dispatch_for(changed.size()));
             current = crate::gpu::frame_graph::Raster {
                 tex,
                 domain,

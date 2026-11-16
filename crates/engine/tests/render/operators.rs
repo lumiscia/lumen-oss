@@ -5,7 +5,9 @@
 use serde_json::{Value, json};
 
 use crate::color::{encode, linear, over, premultiplied, rgba8, scaled, srgb8};
-use crate::support::{BLACK, CLEAR, Case, Expect, Frame, Scene, WHITE, check, scene};
+use crate::support::{
+    BLACK, CLEAR, Case, Expect, Frame, Scene, TestMedia, WHITE, check, gpu, render, scene,
+};
 
 /// A translucent, saturated colour whose straight and premultiplied forms differ.
 const TEAL: [u8; 4] = [60, 120, 200, 128];
@@ -738,4 +740,76 @@ fn color_grade_and_crop_read_a_small_offset_layer() {
             Expect::Probes(vec![(205, 105, CLEAR), (100, 50, CLEAR)]),
         ),
     ]);
+}
+
+/// Translucent shapes stacked by one `raster_multimerge` and by a chain of `merge`s. The first
+/// set mixes shapes covering most of the canvas with small ones apart from them. The second is
+/// a base, eight small shapes on one spot, one elsewhere and eight on a third spot, so the
+/// stack takes passes of eight, one and eight layers, the last rewriting part of a texture
+/// that holds the stack from before the lone shape.
+#[test]
+fn multimerge_of_many_layers_matches_a_chain_of_merges() {
+    let shape = |index: u32, position: [u32; 2], size: [u32; 2]| {
+        let color = [
+            40 + 11 * index,
+            250 - 12 * index,
+            90 + 11 * (index % 5),
+            150,
+        ];
+        json!({ "id": index + 1, "type": "shape", "params": { "position": position,
+            "width": size[0], "height": size[1], "fill_paint": color } })
+    };
+    let mixed: Vec<Value> = (0..14)
+        .map(|index: u32| {
+            if index % 3 == 2 {
+                shape(index, [10 + 60 * (index % 4), 8 + 4 * index], [12, 10])
+            } else {
+                shape(
+                    index,
+                    [3 * index, 2 * index],
+                    [200 - 5 * index, 100 - 3 * index],
+                )
+            }
+        })
+        .collect();
+    let spots: Vec<Value> = (0..18)
+        .map(|index: u32| match index {
+            0 => shape(index, [0, 0], [256, 128]),
+            1..=8 => shape(index, [20, 20], [16, 16]),
+            9 => shape(index, [120, 90], [16, 16]),
+            _ => shape(index, [220, 30], [16, 16]),
+        })
+        .collect();
+    let gpu = gpu();
+    let media = TestMedia::default();
+    for (shapes, blend_mode) in [(&mixed, "normal"), (&mixed, "screen"), (&spots, "normal")] {
+        let count = shapes.len() as u32;
+        let params = json!({ "opacity": 0.7, "blend_mode": blend_mode });
+        let mut stacked = shapes.clone();
+        stacked.push(
+            json!({ "id": 100, "type": "raster_multimerge", "params": params,
+            "in": { "layers": (1..=count).collect::<Vec<u32>>() } }),
+        );
+        let mut chained = shapes.clone();
+        for overlay in 2..=count {
+            let base = if overlay == 2 { 1 } else { 98 + overlay };
+            chained.push(
+                json!({ "id": 99 + overlay, "type": "merge", "params": params,
+                "in": { "base": base, "overlay": overlay } }),
+            );
+        }
+        let draw = |nodes: Vec<Value>| {
+            let scene = scene((256, 128), json!(nodes));
+            render(&mut gpu.renderer(), &scene.into(), 0.0, &media)
+        };
+        let (stacked, chained) = (draw(stacked), draw(chained));
+        assert!(stacked.rgba.iter().any(|&byte| byte != 0));
+        let worst = stacked
+            .rgba
+            .iter()
+            .zip(&chained.rgba)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max();
+        assert!(worst <= Some(1), "{blend_mode}: differs by {worst:?}");
+    }
 }
