@@ -11,15 +11,15 @@ use lumen_gpu::TextureDomain;
 
 use super::{
     FrameCx, MemoKey, Raster, RecordNode, Staticness,
-    state::{Retained, Slot},
+    state::{HeldValues, NodeValues, Retained, Slot},
 };
 use crate::{
     composition::SceneId,
     error::RenderError,
-    expr::ExpressionValue,
+    expr::{EVERY_FRAME, ExpressionValue, frames_contain, intersect_frames},
     media::{AssetKind, MediaIdentity, MediaStore},
     node::{Node, NodeId, NodeKind, required_input},
-    scope::{FrameTime, MAX_GRAPH_DEPTH},
+    scope::{FrameTime, MAX_GRAPH_DEPTH, PropValues},
 };
 
 /// The frames a kept output stays correct for, and what it drew.
@@ -134,19 +134,70 @@ impl Retention {
 /// Whether `a` and `b` are the same values to every param, which tells `0` from `-0` and holds for
 /// two NaNs of the same bits, as the same inputs give the same output.
 fn same_values(a: &[ExpressionValue], b: &[ExpressionValue]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_value(a, b))
+}
+
+fn same_value(a: &ExpressionValue, b: &ExpressionValue) -> bool {
     fn same_bits(a: &[f64], b: &[f64]) -> bool {
         a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
     }
+    match (a, b) {
+        (ExpressionValue::Number(a), ExpressionValue::Number(b)) => a.to_bits() == b.to_bits(),
+        (ExpressionValue::Vec2((ax, ay)), ExpressionValue::Vec2((bx, by))) => {
+            same_bits(&[*ax, *ay], &[*bx, *by])
+        }
+        (ExpressionValue::Vec3(a), ExpressionValue::Vec3(b)) => same_bits(a, b),
+        (ExpressionValue::Color(a), ExpressionValue::Color(b)) => same_bits(a, b),
+        (a, b) => a == b,
+    }
+}
+
+/// [`same_values`] node by node, where values shared from one evaluation are the same.
+fn same_frame_values(a: &[NodeValues], b: &[NodeValues]) -> bool {
     a.len() == b.len()
-        && a.iter().zip(b).all(|pair| match pair {
-            (ExpressionValue::Number(a), ExpressionValue::Number(b)) => a.to_bits() == b.to_bits(),
-            (ExpressionValue::Vec2((ax, ay)), ExpressionValue::Vec2((bx, by))) => {
-                same_bits(&[*ax, *ay], &[*bx, *by])
+        && a.iter()
+            .zip(b)
+            .all(|(a, b)| Arc::ptr_eq(a, b) || same_values(a, b))
+}
+
+/// Whether expressions read the same props from `a` and `b`, by [`same_value`].
+fn same_props(a: Option<&Arc<PropValues>>, b: Option<&Arc<PropValues>>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            Arc::ptr_eq(a, b)
+                || (a.len() == b.len()
+                    && a.iter()
+                        .zip(b.iter())
+                        .all(|((a_name, a), (b_name, b))| a_name == b_name && same_value(a, b)))
+        }
+        _ => false,
+    }
+}
+
+/// The frames `centre` can move to while `centre + offset`, which is `at`, stays in `frames`.
+fn centred(frames: (f64, f64), offset: f64, at: f64, centre: f64) -> (f64, f64) {
+    if offset == 0.0 {
+        return frames;
+    }
+    let inside = |frame: f64| frames_contain(frames, frame + offset);
+    debug_assert!(at.to_bits() == (centre + offset).to_bits() && inside(centre));
+    // `end - offset` is rounded, so it is moved toward `centre` until it lands inside.
+    let toward = |end: f64, up: bool| {
+        let mut moved = end - offset;
+        for _ in 0..4 {
+            if inside(moved) {
+                return moved;
             }
-            (ExpressionValue::Vec3(a), ExpressionValue::Vec3(b)) => same_bits(a, b),
-            (ExpressionValue::Color(a), ExpressionValue::Color(b)) => same_bits(a, b),
-            (a, b) => a == b,
-        })
+            moved = if up {
+                moved.next_down()
+            } else {
+                moved.next_up()
+            };
+        }
+        centre
+    };
+    (toward(frames.0, false), toward(frames.1, true))
 }
 
 /// The frames either side of `frame` among those a composition has.
@@ -276,7 +327,7 @@ impl FrameCx<'_> {
             && let Some(slot) = self.st.retained.slots.get_mut(&(graph, node_id))
             && slot.frames.0 <= frame
             && frame <= slot.frames.1
-            && same_values(&slot.values, &values)
+            && same_frame_values(&slot.values, &values)
         {
             slot.last_used = self.st.tick;
             self.st.retained.skipped_passes += slot.passes;
@@ -332,7 +383,7 @@ impl FrameCx<'_> {
         passes: u64,
         frames: (f64, f64),
         models: Vec<String>,
-        values: Vec<ExpressionValue>,
+        values: Vec<NodeValues>,
     ) {
         // A slot kept for other frames makes way.
         self.st.retained.release(self.rec, (graph, node));
@@ -366,7 +417,7 @@ impl FrameCx<'_> {
         raster: Raster,
         passes: u64,
         track: HoldTrack,
-        values: Vec<ExpressionValue>,
+        values: Vec<NodeValues>,
     ) {
         let ((graph, _, node), _) = key;
         self.retention.absorb(&track);
@@ -375,7 +426,7 @@ impl FrameCx<'_> {
         let at_root = self.retention.at_root();
         let kept = track.keeps(frame, at_root, |other| {
             self.frame_values(node, other.into())
-                .is_some_and(|elsewhere| same_values(&elsewhere, &values))
+                .is_some_and(|elsewhere| same_frame_values(&elsewhere, &values))
         });
         if kept {
             self.retain(
@@ -391,10 +442,10 @@ impl FrameCx<'_> {
     }
 
     /// The values that the params reading the frame take at `frame`: those of `node` and of each
-    /// node it reads that is kept while they hold, in the same order on every frame. A node that
-    /// blurs its own motion adds their values at either end of its shutter, where it evaluates
-    /// them too. `None` when one fails to evaluate.
-    fn frame_values(&mut self, node: NodeId, frame: FrameTime) -> Option<Vec<ExpressionValue>> {
+    /// node it reads that is kept while they hold, node by node in the same order on every frame.
+    /// A node that blurs its own motion adds their values at either end of its shutter, where it
+    /// evaluates them too. `None` when one fails to evaluate.
+    fn frame_values(&mut self, node: NodeId, frame: FrameTime) -> Option<Vec<NodeValues>> {
         let graph = self.scope.id;
         let mut values = Vec::new();
         let mut pending = vec![node];
@@ -403,7 +454,7 @@ impl FrameCx<'_> {
             if !seen.insert(id) {
                 continue;
             }
-            values.extend_from_slice(&self.own_values(id, frame)?);
+            values.push(self.own_values(id, frame)?);
             let held = |input: &NodeId| {
                 self.st.statics.get(&(graph, *input)) == Some(&Staticness::WhileEqual)
             };
@@ -413,50 +464,90 @@ impl FrameCx<'_> {
         Some(values)
     }
 
-    /// The values the params of `id` itself that read the frame take at `frame`, evaluated once
-    /// per frame for every node that reads it with the same props, which can differ between two
-    /// reads of one frame.
-    fn own_values(&mut self, id: NodeId, frame: FrameTime) -> Option<Arc<[ExpressionValue]>> {
+    /// The values the params of `id` itself that read the frame take at `frame`, evaluated again
+    /// only once those found for a frame near it no longer hold, or for other props, which can
+    /// differ between two reads of one frame.
+    fn own_values(&mut self, id: NodeId, frame: FrameTime) -> Option<NodeValues> {
+        let key = (self.scope.id, self.path, id);
+        let at = frame.value();
+        let analytic = self.analytic_motion_blur();
+        let tick = self.st.tick;
         let props = self.scope.props.as_ref();
-        let key = (
-            (self.scope.id, self.path, id),
-            frame.value().to_bits(),
-            props.map_or(0, |props| Arc::as_ptr(props) as usize),
-        );
-        if let Some((_, values)) = self.st.frame_values.get(&key) {
-            return values.clone();
+        let found = self.st.frame_values.get_mut(&key).and_then(|held| {
+            held.iter_mut().find(|held| {
+                held.analytic == analytic
+                    && frames_contain(held.frames, at)
+                    && same_props(held.props.as_ref(), props)
+            })
+        });
+        if let Some(held) = found {
+            held.last_used = tick;
+            // Equal props of a later read are kept, so that the next read finds them as they are.
+            held.props.clone_from(&self.scope.props);
+            return held.values.clone();
         }
-        let values = self.evaluate_own_values(id, frame);
-        let entry = (self.scope.props.clone(), values.clone());
-        self.st.frame_values.insert(key, entry);
+        #[cfg(feature = "test-hooks")]
+        {
+            self.st.value_evaluations += 1;
+        }
+        let (values, frames) = match self.evaluate_own_values(id, frame) {
+            Some((values, frames)) => (Some(values), frames),
+            None => (None, (at, at)),
+        };
+        self.st
+            .frame_values
+            .entry(key)
+            .or_default()
+            .push(HeldValues {
+                props: self.scope.props.clone(),
+                analytic,
+                frames,
+                values: values.clone(),
+                last_used: tick,
+            });
         values
     }
 
-    fn evaluate_own_values(&self, id: NodeId, frame: FrameTime) -> Option<Arc<[ExpressionValue]>> {
+    /// The values of `id`'s params that read the frame at `frame`, and the frames they hold on.
+    fn evaluate_own_values(
+        &self,
+        id: NodeId,
+        frame: FrameTime,
+    ) -> Option<(NodeValues, (f64, f64))> {
         let expr = self.scope.expr_context(frame, self.media);
         let node = self.scope.node(id)?;
-        let mut contexts = vec![expr];
+        let mut contexts = vec![(expr, 0.0)];
+        let mut frames = EVERY_FRAME;
         if self.analytic_motion_blur()
             && let Some(shutter) = node.analytic_shutter()
-            && let Some(offset) =
-                crate::node::motion::shutter_offset(shutter.eval(id, "motion_blur", &expr).ok()?)
         {
-            contexts.extend([expr.at_subframe(-offset), expr.at_subframe(offset)]);
+            let (angle, holds) = shutter.eval_held(id, "motion_blur", &expr).ok()?;
+            frames = holds;
+            if let Some(offset) = crate::node::motion::shutter_offset(angle) {
+                contexts.extend([
+                    (expr.at_subframe(-offset), -offset),
+                    (expr.at_subframe(offset), offset),
+                ]);
+            }
         }
         let mut values = Vec::new();
         let mut failed = false;
-        for expr in &contexts {
+        for (expr, offset) in &contexts {
             node.for_each_expression(&mut |expression| {
                 if !expression.is_frame_dependent() {
                     return;
                 }
-                match expression.evaluate(expr) {
-                    Ok(value) => values.push(value),
+                match expression.evaluate_held(expr) {
+                    Ok(held) => {
+                        values.push(held.value);
+                        let centred = centred(held.frames, *offset, expr.frame, frame.value());
+                        frames = intersect_frames(frames, centred);
+                    }
                     Err(_) => failed = true,
                 }
             });
         }
-        (!failed).then(|| values.into())
+        (!failed).then(|| (values.into(), frames))
     }
 
     /// Records `node_id` stored at its full display size, for readers that read texel for texel.

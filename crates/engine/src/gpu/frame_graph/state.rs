@@ -28,10 +28,21 @@ const MAX_SHADERS: usize = 64;
 #[cfg(feature = "ffmpeg")]
 const VIDEO_IMPORT_IDLE_FRAMES: u64 = 600;
 
-pub(super) type FrameValues = (
-    Option<Arc<crate::scope::PropValues>>,
-    Option<Arc<[crate::expr::ExpressionValue]>>,
-);
+/// The values a node's params that read the frame took, in their order.
+pub(super) type NodeValues = Arc<[crate::expr::ExpressionValue]>;
+
+/// The values a node's params that read the frame took, and where they hold.
+pub(super) struct HeldValues {
+    /// The props of the scope they were evaluated in.
+    pub(super) props: Option<Arc<crate::scope::PropValues>>,
+    /// Whether they include the values at either end of the node's shutter.
+    pub(super) analytic: bool,
+    /// The frames they hold on, both ends included and ordered by `f64::total_cmp`.
+    pub(super) frames: (f64, f64),
+    /// `None` when one failed to evaluate, which holds only on its own frame.
+    pub(super) values: Option<NodeValues>,
+    pub(super) last_used: u64,
+}
 
 /// A warning's place, kind and [`crate::error::WarningKind::identity`].
 pub(super) type WarningKey = (
@@ -47,9 +58,11 @@ pub(super) struct RecordState {
     pub(super) tick: u64,
     pub(super) paths: HashMap<(PathId, NodeId), PathId>,
     pub(super) memo: HashMap<MemoKey, Raster>,
-    /// What `FrameCx::own_values` found this frame, by node, frame and the address of the props
-    /// of its scope. Each entry holds those props, which keeps their address theirs.
-    pub(super) frame_values: HashMap<(InstanceKey, u64, usize), FrameValues>,
+    /// What `FrameCx::own_values` found in the last frames, by node.
+    pub(super) frame_values: HashMap<InstanceKey, Vec<HeldValues>>,
+    /// How many times `FrameCx::own_values` evaluated a node's params.
+    #[cfg(feature = "test-hooks")]
+    pub(super) value_evaluations: u64,
     pub(super) full_frames: HashMap<(TexRef, u32, u32), Raster>,
     pub(super) statics: HashMap<GraphNodeKey, Staticness>,
     /// The textures of external targets, by the address of the texture.
@@ -77,7 +90,13 @@ impl RecordState {
     pub(super) fn begin_frame(&mut self) {
         self.tick += 1;
         self.memo.clear();
-        self.frame_values.clear();
+        // Animated props are new on every frame, so what they were evaluated with goes once the
+        // last two frames haven't read it.
+        let tick = self.tick;
+        self.frame_values.retain(|_, held| {
+            held.retain(|held| held.last_used + 2 >= tick);
+            !held.is_empty()
+        });
         self.full_frames.clear();
         self.media.begin_frame();
         self.retained.begin_frame();
@@ -149,8 +168,8 @@ pub(super) struct Slot {
     /// The models and environment maps it drew, which the scene cache keeps while it is kept.
     pub(super) models: Vec<String>,
     /// The values the params reading the frame took when it was recorded, which a read must find
-    /// again. Empty for an output that doesn't read the frame.
-    pub(super) values: Vec<crate::expr::ExpressionValue>,
+    /// again, node by node. Empty for an output that doesn't read the frame.
+    pub(super) values: Vec<NodeValues>,
 }
 
 /// The outputs of static subtrees kept across frames, and what they read.

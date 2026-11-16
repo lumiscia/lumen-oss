@@ -419,6 +419,8 @@ impl FrameGraph {
                 || self.state.retained.sources_changed(media)
             {
                 self.state.retained.drop_all(&mut self.recorder);
+                // Values measured with the fonts before are evaluated again.
+                self.state.frame_values.clear();
                 self.state.font_generation = generation;
             }
             self.state.begin_frame();
@@ -757,6 +759,11 @@ impl FrameGraph {
 
     pub(crate) fn skipped_passes(&self) -> u64 {
         self.state.retained.skipped_passes
+    }
+
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn value_evaluations(&self) -> u64 {
+        self.state.value_evaluations
     }
 
     fn drop_pending(&mut self) {
