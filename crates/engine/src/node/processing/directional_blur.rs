@@ -23,7 +23,7 @@ pub const MAX_SWEEP_TAPS: usize = 64;
 const TWO_PASS_STREAKS: [f64; 2] = [64.0, 256.0];
 /// Canvases' worth of texels, and fractions of the largest texture side, that a full-frame first
 /// pass would take, over which two passes hand back to every tap at once.
-const TWO_PASS_CANVASES: [f64; 2] = [2.0, 3.0];
+const TWO_PASS_CANVASES: [f64; 2] = [3.0, 4.0];
 const TWO_PASS_EXTENTS: [f64; 2] = [0.75, 1.0];
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -287,6 +287,25 @@ impl Sweep {
             }
         }
     }
+
+    /// Bounds past which a short box of the moves of `|u| <= half` stays as it is at the bound,
+    /// along each axis, for reads that clamp to the middle of `canvas`'s edge pixels. A line's
+    /// taps there all read the edge, and the bound sits a texel further out, so that bilinear
+    /// reads of stored boxes at it take in only boxes past it. Other paths change everywhere.
+    fn unchanging_past(&self, canvas: Bounds, half: f64) -> Bounds {
+        match self.path {
+            Path::Line { direction } if self.edge == EdgeMode::Clamp => {
+                let [x, y] = direction.map(|axis| axis.abs() * half + 0.5);
+                [canvas[0] - x, canvas[1] - y, canvas[2] + x, canvas[3] + y]
+            }
+            _ => [
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+                f64::INFINITY,
+                f64::INFINITY,
+            ],
+        }
+    }
 }
 
 /// Midpoints of `count` equal parts of `u` in `-range / 2..range / 2`.
@@ -314,6 +333,15 @@ fn tap_counts(longest_streak: f64) -> (usize, usize) {
     (total.div_ceil(comb), comb)
 }
 
+/// At least half the span of the short box `tap_counts` gives a streak, as its comb takes at least
+/// the square root of the streak's taps. Unlike that half, it is continuous in the streak.
+fn short_half(span: f64, longest_streak: f64) -> f64 {
+    let taps = longest_streak
+        .min((MAX_SWEEP_TAPS * MAX_SWEEP_TAPS) as f64)
+        .max(1.0);
+    span / (2.0 * taps.sqrt())
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
 #[shader_layout(wgsl = "SweepTap", source = SHADER)]
@@ -336,6 +364,9 @@ struct GpuSweepParams {
     origins: [i32; 4],
     /// How much of the output the comb of stored short boxes makes, against every tap at once.
     blend: [f32; 4],
+    /// Canvas bounds the comb clamps its reads of the stored short boxes to, past which they stay
+    /// the same.
+    unchanging: [f32; 4],
     taps: [GpuSweepTap; MAX_SWEEP_TAPS],
     comb: [GpuSweepTap; MAX_SWEEP_TAPS],
 }
@@ -376,12 +407,12 @@ fn programs(programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Resu
 
 /// How much of a blur the comb of stored short boxes takes, against every tap at once: none for
 /// streaks up to the first of `TWO_PASS_STREAKS` pixels long, all from the second, and back to
-/// none as `read`, the first pass a full-frame output reads, grows through `TWO_PASS_CANVASES`
-/// canvases or `TWO_PASS_EXTENTS` of the largest texture side, measured unrounded. It is
-/// continuous in the blur's params, and depends only on them and the canvas.
-fn two_pass_weight(longest: f64, read: Bounds, display: lumen_gpu::Size, max_extent: u32) -> f32 {
+/// none as `stored`, the first pass of a full-frame source and output, grows through
+/// `TWO_PASS_CANVASES` canvases or `TWO_PASS_EXTENTS` of the largest texture side, measured
+/// unrounded. It is continuous in the blur's params, and depends only on them and the canvas.
+fn two_pass_weight(longest: f64, stored: Bounds, display: lumen_gpu::Size, max_extent: u32) -> f32 {
     let rise = |value: f64, [from, to]: [f64; 2]| ((value - from) / (to - from)).clamp(0.0, 1.0);
-    let [width, height] = [read[2] - read[0], read[3] - read[1]];
+    let [width, height] = [stored[2] - stored[0], stored[3] - stored[1]];
     if !(width.abs() < MAX_BOUNDED_MAGNITUDE && height.abs() < MAX_BOUNDED_MAGNITUDE) {
         return 0.0;
     }
@@ -436,45 +467,53 @@ fn record(
     ];
     let longest = sweep.longest_streak(canvas);
     let (inner, comb) = tap_counts(longest);
-    let inner_half = sweep.span / (2 * comb) as f64;
+    let inner_half = short_half(sweep.span, longest);
     let comb_half = sweep.span / 2.0;
     let clamps = sweep.edge == EdgeMode::Clamp;
 
-    // What the source reads as: clamped edges continue it past the canvas, as far as any tap of
-    // a canvas pixel reaches.
-    let data = source.domain.data_rect;
-    let mut extended = bounds_of(data);
-    if clamps && !data.is_empty() {
-        let reach = longest + 2.0;
-        for side in 0..2 {
-            if extended[side] <= 0.0 {
-                extended[side] -= reach;
-            }
-            if extended[side + 2] >= canvas[side + 2] {
-                extended[side + 2] += reach;
+    // What a source of `data` reads as: clamped edges continue it past the canvas, as far as any
+    // tap of a canvas pixel reaches.
+    let extended = |mut data: Bounds| {
+        if clamps && data[0] < data[2] && data[1] < data[3] {
+            let reach = longest + 2.0;
+            for side in 0..2 {
+                if data[side] <= 0.0 {
+                    data[side] -= reach;
+                }
+                if data[side + 2] >= canvas[side + 2] {
+                    data[side + 2] += reach;
+                }
             }
         }
-    }
+        data
+    };
     // Each bound takes in the bilinear footprint of the taps that read into it.
-    let inner_bounds = grow(sweep.swept(grow(extended, 1.0), inner_half), 1.0);
-    let output_bounds = grow(sweep.swept(grow(inner_bounds, 1.0), comb_half), 1.0);
+    let inner_of = |data: Bounds| grow(sweep.swept(grow(extended(data), 1.0), inner_half), 1.0);
+    let data = source.domain.data_rect;
+    let output_bounds = grow(
+        sweep.swept(grow(inner_of(bounds_of(data)), 1.0), comb_half),
+        1.0,
+    );
     let domain = cx.domain_within(
         display,
         cx.bounds_of(Some(output_bounds.map(|value| value as f32))),
     );
 
-    // The short boxes are stored wherever the comb reads them, off the canvas too, as only the
-    // source's reads clamp.
-    let read_of = |bounds: Bounds| grow(sweep.swept(bounds, comb_half), 1.0);
+    // The short boxes are stored where the comb of `output` reads them, off the canvas too as
+    // only the source's reads clamp, but not where a source of `data` leaves them empty or past
+    // where they stop changing.
+    let unchanging = sweep.unchanging_past(canvas, inner_half);
+    let stored = |output: Bounds, data: Bounds| {
+        let read = grow(sweep.swept(output, comb_half), 1.0);
+        intersect(
+            intersect(read, grow(inner_of(data), 1.0)),
+            grow(unchanging, 1.0),
+        )
+    };
     let max_extent = cx.rec.device().limits().max_texture_dimension_2d;
-    let blend = two_pass_weight(longest, read_of(canvas), display, max_extent);
+    let blend = two_pass_weight(longest, stored(canvas, canvas), display, max_extent);
     let boxes = (blend > 0.0)
-        .then(|| {
-            rect_covering(intersect(
-                read_of(bounds_of(domain.data_rect)),
-                grow(inner_bounds, 1.0),
-            ))
-        })
+        .then(|| rect_covering(stored(bounds_of(domain.data_rect), bounds_of(data))))
         .flatten()
         .map(|rect| {
             let size = lumen_gpu::Size::new(
@@ -494,6 +533,7 @@ fn record(
             domain.data_rect.y,
         ],
         blend: [if boxes.is_some() { blend } else { 0.0 }, 0.0, 0.0, 0.0],
+        unchanging: unchanging.map(|value| value.clamp(f32::MIN.into(), f32::MAX.into()) as f32),
         taps: taps(&sweep, inner, sweep.span / comb as f64),
         comb: taps(&sweep, comb, sweep.span),
     });
@@ -623,6 +663,69 @@ mod tests {
             let (inner, comb) = tap_counts(streak);
             assert_eq!((inner, comb), expected, "streak {streak}");
             assert!(inner * comb >= streak.min(4096.0) as usize);
+        }
+    }
+
+    #[test]
+    fn short_half_covers_the_short_box() {
+        for streak in [0.0, 0.5, 10.0, 10.4, 63.0, 1000.0, 4096.0, 9000.0, f64::NAN] {
+            let (_, comb) = tap_counts(streak);
+            assert!(
+                short_half(3.0, streak) >= 3.0 / (2 * comb) as f64,
+                "streak {streak}"
+            );
+        }
+    }
+
+    /// A clamped line's short boxes past `unchanging_past` read what they read at it, as do the
+    /// stored boxes on either side of it that a bilinear read there takes in.
+    #[test]
+    fn clamped_lines_stop_changing_past_the_canvas() {
+        let canvas = [0.0, 0.0, 40.0, 30.0];
+        let sweep = Sweep {
+            path: Path::Line {
+                direction: [0.6, -0.8],
+            },
+            span: 500.0,
+            edge: EdgeMode::Clamp,
+        };
+        let (inner, comb) = tap_counts(sweep.span);
+        let half = short_half(sweep.span, sweep.span);
+        let bound = sweep.unchanging_past(canvas, half);
+        let reads = |[x, y]: [f64; 2]| {
+            let taps = taps(&sweep, inner, sweep.span / comb as f64);
+            taps[..inner]
+                .iter()
+                .map(|tap| {
+                    let at = [x + f64::from(tap.t[0]), y + f64::from(tap.t[1])];
+                    [
+                        at[0].clamp(0.5, canvas[2] - 0.5),
+                        at[1].clamp(0.5, canvas[3] - 0.5),
+                    ]
+                })
+                .collect::<Vec<_>>()
+        };
+        for point in [
+            [-300.0_f64, 15.0],
+            [20.0, 400.0],
+            [95.0, -60.0],
+            [-8.0, -9.0],
+        ] {
+            // The texel centres either side of where the point is held, on each axis it moves.
+            let texels = |axis: usize| {
+                let held = point[axis].clamp(bound[axis], bound[axis + 2]);
+                if held == point[axis] {
+                    vec![held]
+                } else {
+                    let below = (held - 0.5).floor() + 0.5;
+                    vec![below, below + 1.0]
+                }
+            };
+            for x in texels(0) {
+                for y in texels(1) {
+                    assert_eq!(reads([x, y]), reads(point), "{point:?} at ({x}, {y})");
+                }
+            }
         }
     }
 
