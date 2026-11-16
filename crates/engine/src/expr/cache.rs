@@ -97,7 +97,9 @@ impl fmt::Debug for HeldValues<'_> {
 
 impl HeldValues<'_> {
     /// `expression` in `ctx`: the value it was found to hold on `ctx.frame` with the same props, or
-    /// else evaluated and kept with the frames it holds on. Errors are not kept.
+    /// else evaluated and kept with the frames it holds on. An expression that reads no node and
+    /// measures no text, and last held for a single frame, is evaluated plainly and kept for its
+    /// own frame, unless that gives its last value again. Errors are not kept.
     pub(super) fn evaluate(
         self,
         expression: &Expression,
@@ -112,24 +114,49 @@ impl HeldValues<'_> {
         let shared = self
             .props
             .filter(|props| ctx.props.is_some_and(|read| std::ptr::eq(&***props, read)));
-        if let Some(kept) = self.cache.entries.borrow_mut().get_mut(&key)
-            && let Some(held) = kept.held.iter_mut().rev().find(|held| {
-                contains(held.frames, ctx.frame) && same_props(held.props.as_deref(), ctx.props)
-            })
-        {
-            held.last_used = tick;
-            // The props found equal are taken as they are now, so the next read finds them by address.
-            if let Some(props) = shared
-                && !held
-                    .props
-                    .as_ref()
-                    .is_some_and(|held| Arc::ptr_eq(held, props))
+        let mut changed_last = None;
+        if let Some(kept) = self.cache.entries.borrow_mut().get_mut(&key) {
+            let same = |held: &Held| same_props(held.props.as_deref(), ctx.props);
+            if let Some(held) = kept
+                .held
+                .iter_mut()
+                .rev()
+                .find(|held| contains(held.frames, ctx.frame) && same(held))
             {
-                held.props = Some(Arc::clone(props));
+                held.last_used = tick;
+                // The props found equal are taken as they are now, so the next read finds them by address.
+                if let Some(props) = shared
+                    && !held
+                        .props
+                        .as_ref()
+                        .is_some_and(|held| Arc::ptr_eq(held, props))
+                {
+                    held.props = Some(Arc::clone(props));
+                }
+                return Ok(held.value.clone());
             }
-            return Ok(held.value.clone());
+            changed_last = kept
+                .held
+                .iter()
+                .rev()
+                .find(|held| held.frames.0 == held.frames.1 && same(held))
+                .map(|held| held.value.clone());
         }
-        let found = expression.evaluate_held(ctx)?;
+        let (value, frames, measured) = match changed_last {
+            Some(last) if expression.plan.steps[expression.plan.roots[0]].repeatable => {
+                let value = expression.evaluate_now(ctx)?;
+                if same_value(&value, &last) {
+                    let found = expression.evaluate_held(ctx)?;
+                    (found.value, found.frames, found.measured)
+                } else {
+                    (value, (ctx.frame, ctx.frame), false)
+                }
+            }
+            _ => {
+                let found = expression.evaluate_held(ctx)?;
+                (found.value, found.frames, found.measured)
+            }
+        };
         let props = match shared {
             Some(props) => Some(Arc::clone(props)),
             None => ctx.props.map(|props| Arc::new(props.clone())),
@@ -145,12 +172,12 @@ impl HeldValues<'_> {
             .held
             .push(Held {
                 props,
-                frames: found.frames,
-                value: found.value.clone(),
-                measured: found.measured,
+                frames,
+                value: value.clone(),
+                measured,
                 last_used: tick,
             });
-        Ok(found.value)
+        Ok(value)
     }
 }
 

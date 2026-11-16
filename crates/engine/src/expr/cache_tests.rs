@@ -153,3 +153,28 @@ fn a_value_that_measured_text_is_kept_for_its_own_frame_only() {
     assert_eq!(at(&measuring), 1);
     assert_eq!(at(&holding), 0);
 }
+
+#[test]
+fn a_value_that_changed_last_frame_is_the_value_evaluating_gives() {
+    let cache = HeldCache::default();
+    let at = |expression: &Expression, frame: f64| {
+        let ctx = ExpressionContext {
+            frame,
+            held: Some(cache.scope(SceneId::Root, 0, None)),
+            ..base()
+        };
+        evaluate(expression, &ctx).1
+    };
+    let changing = Expression::parse("sin(frame)").unwrap();
+    for frame in 0..8 {
+        assert_eq!(at(&changing, f64::from(frame)), 1);
+    }
+
+    let settling = Expression::parse("min(frame, 3)").unwrap();
+    for frame in 0..=4 {
+        at(&settling, f64::from(frame));
+    }
+    for frame in 5..8 {
+        assert_eq!(at(&settling, f64::from(frame)), 0);
+    }
+}
