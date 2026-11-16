@@ -269,3 +269,75 @@ fn held_values_hold_for_their_whole_step() {
     assert_eq!(frames_at(keys, 50.0).0, 40.0);
     assert!((59.75..60.0).contains(&frames_at(keys, 50.0).1));
 }
+
+/// Text nodes `1..=3`, node 3 with the font size 12 and each other with `font_size` where
+/// `{next}` is the id of the next node.
+fn chained_graph(font_size: &str) -> Graph {
+    let mut graph = Graph::new();
+    for id in 1..=3 {
+        let mut params = crate::node::source::text::TextParamsDelegate::default();
+        params.layout.font_size = if id < 3 {
+            Deferred::Expr(
+                Expression::parse(&font_size.replace("{next}", &(id + 1).to_string())).unwrap(),
+            )
+        } else {
+            Deferred::Value(12.0)
+        };
+        graph.nodes.insert(
+            NodeId::new(id),
+            NodeKind::Text(Text {
+                id: NodeId::new(id),
+                params,
+            }),
+        );
+    }
+    graph
+}
+
+fn nested_additions(levels: usize, leaf: &str) -> String {
+    format!("{}{leaf}{}", "1 + (".repeat(levels), ")".repeat(levels))
+}
+
+/// Runs `run` on a thread with a stack of `bytes`.
+fn on_stack(bytes: usize, run: impl FnOnce() + Send + 'static) {
+    std::thread::Builder::new()
+        .stack_size(bytes)
+        .spawn(run)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn reads_that_nest_deeply_are_held_within_the_stack_of_a_plain_evaluation() {
+    // Evaluating these reads plainly charges 81 of its 96 levels.
+    let graph = chained_graph(&nested_additions(36, "node({next}, 'font_size')"));
+    let read = Expression::parse("node(1, 'font_size')").unwrap();
+    on_stack(1 << 20, move || {
+        let ctx = ExpressionContext {
+            graph: Some(&graph),
+            ..base()
+        };
+        let held = read.evaluate_held(&ctx).unwrap();
+        assert_eq!(held.value, ExpressionValue::Number(84.0));
+    });
+}
+
+#[test]
+fn a_hold_walk_is_only_started_up_to_the_levels_that_fit_its_stack() {
+    let leaf = "tween(0, 1, 30, 20)";
+    let leaf_depth = Expression::parse(leaf).unwrap().depth;
+    let levels = MAX_HELD_LEVELS as usize - 2 - leaf_depth;
+    // The first holds, and the second, a level deeper, is held for its own frame.
+    let expressions = [levels, levels + 1]
+        .map(|levels| Expression::parse(&nested_additions(levels, leaf)).unwrap());
+    assert_eq!(expressions[0].depth + 2, MAX_HELD_LEVELS as usize);
+    assert_eq!(expressions[1].depth + 2, MAX_HELD_LEVELS as usize + 1);
+    on_stack(768 * 1024, move || {
+        for (expression, wide) in expressions.iter().zip([true, false]) {
+            let held = expression.evaluate_held(&base()).unwrap();
+            assert_eq!(held.value, expression.evaluate(&base()).unwrap());
+            assert_eq!(held.frames != (0.0, 0.0), wide, "{:?}", held.frames);
+        }
+    });
+}

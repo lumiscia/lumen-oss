@@ -45,7 +45,7 @@ use crate::{
         ast::{BinaryOp, BuiltinFn, Easing, Expression, ExpressionValue, GlobalVar, UnaryOp},
         builtins::{evaluate_builtin, last_key_at, measure_node, progress_ratio, track},
         eval::{
-            EvalPlan, EvaluationGuard, Literal, Op, Scratch, binary, global_value,
+            EvalPlan, EvaluationGuard, Literal, MAX_HELD_LEVELS, Op, Scratch, binary, global_value,
             read_property_with, unary, usable,
         },
         spec::{NamedEasing, easing_builtins},
@@ -66,6 +66,12 @@ impl Expression {
     /// [`Expression::evaluate`], with the frames around `ctx.frame` on which the value holds, the
     /// rest of `ctx` being the same. `ctx` has no glyph or instance scope.
     pub(crate) fn evaluate_held(&self, ctx: &ExpressionContext<'_>) -> crate::Result<Held> {
+        if EvaluationGuard::levels_with(self.depth) > MAX_HELD_LEVELS {
+            return Ok(Held {
+                value: self.evaluate_now(ctx)?,
+                frames: (ctx.frame, ctx.frame),
+            });
+        }
         let _evaluation = EvaluationGuard::enter(self.depth)?;
         let root = self.plan.roots[0];
         let held = |checks: bool| {

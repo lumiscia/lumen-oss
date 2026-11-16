@@ -25,7 +25,10 @@ impl Expression {
         }
     }
 
-    fn evaluate_now(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
+    pub(super) fn evaluate_now(
+        &self,
+        ctx: &ExpressionContext<'_>,
+    ) -> crate::Result<ExpressionValue> {
         let _evaluation = EvaluationGuard::enter(self.depth)?;
         let mut scratch = Scratch::new(&self.plan);
         usable(
@@ -108,6 +111,10 @@ impl InstanceEvaluator {
 /// expression inside the reader's, so this bounds the stack that nodes reading through each other
 /// use. It is sized for the largest frames, on a 1 MiB stack.
 const MAX_EVALUATION_LEVELS: u32 = 96;
+/// Most levels of evaluation that may be open when a hold walk starts. A hold walk open to this
+/// many levels fits a 768 KiB stack in a debug build; an expression that would take it past this
+/// is evaluated plainly and held for its own frame only.
+pub(super) const MAX_HELD_LEVELS: u32 = 48;
 /// Levels charged to every evaluation on top of its expression's depth, for the read or
 /// measurement that starts it.
 const EVALUATION_OVERHEAD: u32 = 2;
@@ -141,10 +148,19 @@ pub(super) struct EvaluationGuard {
 }
 
 impl EvaluationGuard {
-    pub(super) fn enter(depth: usize) -> crate::Result<Self> {
-        let levels = u32::try_from(depth)
+    fn charge(depth: usize) -> u32 {
+        u32::try_from(depth)
             .unwrap_or(u32::MAX)
-            .saturating_add(EVALUATION_OVERHEAD);
+            .saturating_add(EVALUATION_OVERHEAD)
+    }
+
+    /// The levels open if an evaluation of an expression of `depth` were entered now.
+    pub(super) fn levels_with(depth: usize) -> u32 {
+        EVALUATIONS.get().0.saturating_add(Self::charge(depth))
+    }
+
+    pub(super) fn enter(depth: usize) -> crate::Result<Self> {
+        let levels = Self::charge(depth);
         let (open, started) = EVALUATIONS.get();
         let exhausted = if open.saturating_add(levels) > MAX_EVALUATION_LEVELS {
             Some(format!(
