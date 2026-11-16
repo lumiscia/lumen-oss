@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     hash::{BuildHasher, Hash, Hasher},
+    sync::Arc,
 };
 
 pub use lumen_macros::StructuralHash;
@@ -57,6 +58,12 @@ impl StructuralHash for f64 {
 }
 
 impl<T: StructuralHash + ?Sized> StructuralHash for Box<T> {
+    fn structural_hash<H: Hasher>(&self, state: &mut H) {
+        (**self).structural_hash(state);
+    }
+}
+
+impl<T: StructuralHash + ?Sized> StructuralHash for Arc<T> {
     fn structural_hash<H: Hasher>(&self, state: &mut H) {
         (**self).structural_hash(state);
     }

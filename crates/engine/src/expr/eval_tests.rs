@@ -279,7 +279,7 @@ fn keys_ease_by_their_own_easing_or_the_default() {
 #[test]
 fn text_keys_switch_where_they_hold() {
     let text_at = |source: &str, frame: u32| match evaluate(source, frame) {
-        Ok(ExpressionValue::String(text)) => text,
+        Ok(ExpressionValue::String(text)) => text.to_string(),
         other => panic!("{source}: {other:?}"),
     };
     for track in [
@@ -328,12 +328,12 @@ fn path_data_keys_still_interpolate_and_hold() {
     let path = "keyframes(frame, key(0, 'M 0 0 L 10 0'), key(10, 'M 0 0 L 20 0'))";
     assert_eq!(
         evaluate(path, 5).unwrap(),
-        ExpressionValue::String("M 0 0 L 15 0".to_string())
+        ExpressionValue::String("M 0 0 L 15 0".into())
     );
     let hold = "keyframes(frame, 'hold', key(0, 'M 0 0 L 10 0'), key(10, 'M 0 0 Q 1 1 2 2'))";
     assert_eq!(
         evaluate(hold, 5).unwrap(),
-        ExpressionValue::String("M 0 0 L 10 0".to_string())
+        ExpressionValue::String("M 0 0 L 10 0".into())
     );
 }
 
@@ -587,14 +587,14 @@ fn format_writes_fixed_decimals_and_pads() {
     ] {
         assert_eq!(
             evaluate(source, 45).unwrap(),
-            ExpressionValue::String(expected.to_string()),
+            ExpressionValue::String(expected.into()),
             "{source}"
         );
     }
     let ExpressionValue::String(widest) = evaluate("format(1, 0, 64, '0')", 0).unwrap() else {
         panic!("expected a string");
     };
-    assert_eq!(widest, format!("{}1", "0".repeat(63)));
+    assert_eq!(&*widest, format!("{}1", "0".repeat(63)));
     // The width counts characters, not bytes.
     let ExpressionValue::String(wide) = evaluate("format(1, 0, 5, '日')", 0).unwrap() else {
         panic!("expected a string");
@@ -703,7 +703,7 @@ fn concat_joins_strings_and_numbers_like_a_text_param() {
     ] {
         assert_eq!(
             evaluate(source, 30).unwrap(),
-            ExpressionValue::String(expected.to_string()),
+            ExpressionValue::String(expected.into()),
             "{source}"
         );
     }

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     error::LumenError,
     expr::{
@@ -129,8 +131,12 @@ pub fn evaluate_builtin(
             args.get(3).map(ExpressionValue::as_string),
             ctx,
         ),
-        BuiltinFn::Uppercase => Ok(ExpressionValue::String(args[0].as_string().to_uppercase())),
-        BuiltinFn::Lowercase => Ok(ExpressionValue::String(args[0].as_string().to_lowercase())),
+        BuiltinFn::Uppercase => Ok(ExpressionValue::String(
+            args[0].as_string().to_uppercase().into(),
+        )),
+        BuiltinFn::Lowercase => Ok(ExpressionValue::String(
+            args[0].as_string().to_lowercase().into(),
+        )),
         BuiltinFn::Format => {
             let value = checked(0, number(0)?)?;
             let decimals = checked(1, optional(1, 0.0)?)? as usize;
@@ -148,11 +154,9 @@ pub fn evaluate_builtin(
                     )));
                 }
             };
-            Ok(ExpressionValue::String(pad(
-                fixed(value, decimals),
-                width,
-                fill,
-            )))
+            Ok(ExpressionValue::String(
+                pad(fixed(value, decimals), width, fill).into(),
+            ))
         }
         BuiltinFn::Concat => {
             let mut text = String::new();
@@ -165,7 +169,7 @@ pub fn evaluate_builtin(
                 }
                 text.push_str(&part);
             }
-            Ok(ExpressionValue::String(text))
+            Ok(ExpressionValue::String(text.into()))
         }
         BuiltinFn::Vec2 => Ok(ExpressionValue::Vec2((number(0)?, number(1)?))),
         BuiltinFn::Vec3 => Ok(ExpressionValue::Vec3([number(0)?, number(1)?, number(2)?])),
@@ -232,7 +236,7 @@ pub fn evaluate_builtin(
                 return Err(named(key_value_error(value.kind())));
             }
             let ease = args.get(2).map(easing).transpose().map_err(named)?;
-            Ok(ExpressionValue::Key(Box::new(Key { at, value, ease })))
+            Ok(ExpressionValue::Key(Arc::new(Key { at, value, ease })))
         }
         BuiltinFn::Keyframes => keyframes(number(0)?, &args[1..]).map_err(named),
         BuiltinFn::Prop => {
@@ -534,7 +538,7 @@ fn interpolate(
     let mix = |from: f64, to: f64| from + (to - from) * t;
     Ok(match (from, to) {
         (ExpressionValue::String(from), ExpressionValue::String(to)) => {
-            Some(ExpressionValue::String(morph(from, to, t)?))
+            Some(ExpressionValue::String(morph(from, to, t)?.into()))
         }
         (ExpressionValue::Vec2(from), ExpressionValue::Vec2(to)) => Some(ExpressionValue::Vec2((
             mix(from.0, to.0),

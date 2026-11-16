@@ -488,7 +488,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::String(value) => self
                 .budget
-                .push(ExprNode::Literal(ExpressionValue::String(value))),
+                .push(ExprNode::Literal(ExpressionValue::String(value.into()))),
             TokenKind::Color(value) => self
                 .budget
                 .push(ExprNode::Literal(ExpressionValue::color_from_u8(value))),
@@ -613,7 +613,7 @@ impl<'a> Parser<'a> {
         }
 
         let property_path = match &args[1] {
-            ExprNode::Literal(ExpressionValue::String(value)) => value.clone(),
+            ExprNode::Literal(ExpressionValue::String(value)) => value.to_string(),
             _ => {
                 return Err(ExpressionError::Parse {
                     details: "node(.., property_path) second argument must be a string".to_string(),
@@ -823,7 +823,7 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
                 }
                 let interpolates = match key.get(2).or(default_ease) {
                     None => true,
-                    Some(ExprNode::Literal(ExpressionValue::String(name))) => name != "hold",
+                    Some(ExprNode::Literal(ExpressionValue::String(name))) => &**name != "hold",
                     Some(_) => false,
                 };
                 previous_path = path
