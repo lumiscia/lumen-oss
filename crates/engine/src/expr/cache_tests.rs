@@ -178,3 +178,22 @@ fn a_value_that_changed_last_frame_is_the_value_evaluating_gives() {
         assert_eq!(at(&settling, f64::from(frame)), 0);
     }
 }
+
+#[test]
+fn a_value_that_repeats_but_holds_for_one_frame_is_not_walked_again() {
+    let mut cache = HeldCache::default();
+    let repeating = Expression::parse("if(frame % 100 < 50, 1, 0)").unwrap();
+    let mut started = Vec::new();
+    for frame in 0..10 {
+        let ctx = ExpressionContext {
+            frame: f64::from(frame),
+            held: Some(cache.scope(SceneId::Root, 0, None)),
+            ..base()
+        };
+        let (value, count) = evaluate(&repeating, &ctx);
+        assert_eq!(value, ExpressionValue::Number(1.0));
+        started.push(count);
+        cache.begin_frame();
+    }
+    assert_eq!(started[1..], [1; 9]);
+}

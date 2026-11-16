@@ -10,7 +10,7 @@ use crate::{
         ExpressionContext,
         ast::{Expression, ExpressionValue},
         eval::EvalPlan,
-        hold::contains,
+        hold::{Held as Found, contains},
     },
     scope::PropValues,
 };
@@ -41,6 +41,8 @@ struct Held {
     value: ExpressionValue,
     /// Whether the value measured text, in which case it is kept until the next frame starts.
     measured: bool,
+    /// Whether a hold walk found the value to hold for a single frame only.
+    tracked: bool,
     last_used: u64,
 }
 
@@ -99,7 +101,8 @@ impl HeldValues<'_> {
     /// `expression` in `ctx`: the value it was found to hold on `ctx.frame` with the same props, or
     /// else evaluated and kept with the frames it holds on. An expression that reads no node and
     /// measures no text, and last held for a single frame, is evaluated plainly and kept for its
-    /// own frame, unless that gives its last value again. Errors are not kept.
+    /// own frame, and walked for the frames it holds on only when that gives its last value again
+    /// and no walk found that value to hold for a single frame. Errors are not kept.
     pub(super) fn evaluate(
         self,
         expression: &Expression,
@@ -140,22 +143,24 @@ impl HeldValues<'_> {
                 .iter()
                 .rev()
                 .find(|held| held.frames.0 == held.frames.1 && same(held))
-                .map(|held| held.value.clone());
+                .map(|held| (held.value.clone(), held.tracked));
         }
-        let (value, frames, measured) = match changed_last {
-            Some(last) if expression.plan.steps[expression.plan.roots[0]].repeatable => {
+        let walked = |found: Found| {
+            let tracked = found.frames.0 == found.frames.1;
+            (found.value, found.frames, found.measured, tracked)
+        };
+        let (value, frames, measured, tracked) = match changed_last {
+            Some((last, tracked)) if expression.plan.steps[expression.plan.roots[0]].repeatable => {
                 let value = expression.evaluate_now(ctx)?;
-                if same_value(&value, &last) {
-                    let found = expression.evaluate_held(ctx)?;
-                    (found.value, found.frames, found.measured)
+                if !same_value(&value, &last) {
+                    (value, (ctx.frame, ctx.frame), false, false)
+                } else if tracked {
+                    (value, (ctx.frame, ctx.frame), false, true)
                 } else {
-                    (value, (ctx.frame, ctx.frame), false)
+                    walked(expression.evaluate_held(ctx)?)
                 }
             }
-            _ => {
-                let found = expression.evaluate_held(ctx)?;
-                (found.value, found.frames, found.measured)
-            }
+            _ => walked(expression.evaluate_held(ctx)?),
         };
         let props = match shared {
             Some(props) => Some(Arc::clone(props)),
@@ -175,6 +180,7 @@ impl HeldValues<'_> {
                 frames,
                 value: value.clone(),
                 measured,
+                tracked,
                 last_used: tick,
             });
         Ok(value)
