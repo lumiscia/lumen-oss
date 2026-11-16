@@ -297,6 +297,14 @@ impl DrawableCopies {
             .fold(f64::MAX, f64::min)
     }
 
+    /// Whether every copy scales both axes by the same amount, under every transform that draws
+    /// it.
+    pub(crate) fn has_uniform_scale(&self) -> bool {
+        self.copies
+            .iter()
+            .all(|copy| copy.motion.has_uniform_scale(&copy.frame))
+    }
+
     /// The copies, the taps of those that move, and the union of their bounds, for geometry
     /// within the untransformed box from `min` to `max`. Each copy's box is grown by `reach` of
     /// its smallest absolute scale component, in untransformed units, and its canvas bounds by
@@ -359,6 +367,42 @@ impl Drawn<'_> {
             Self::Once(transform, motion) => motion.smallest_scale(transform),
             Self::Copies(copies) => copies.smallest_scale(),
         }
+    }
+
+    /// Whether every transform it is drawn under scales both axes by the same amount.
+    pub(crate) fn has_uniform_scale(&self) -> bool {
+        match self {
+            Self::Once(transform, motion) => motion.has_uniform_scale(transform),
+            Self::Copies(copies) => copies.has_uniform_scale(),
+        }
+    }
+
+    /// The untransformed box around every point that a canvas pixel within `size` maps back to
+    /// under the transforms the shaders draw it with, or `None` where one maps to no finite point.
+    pub(crate) fn local_bounds(&self, size: [f32; 2]) -> Option<([f64; 2], [f64; 2])> {
+        let (mut min, mut max) = ([f64::MAX; 2], [f64::MIN; 2]);
+        let mut finite = true;
+        let mut add = |transform: GpuDrawableTransform| {
+            for corner in [[0.0, 0.0], [size[0], 0.0], [0.0, size[1]], size] {
+                let point = transform.to_local(corner).map(f64::from);
+                finite &= point.iter().all(|value| value.is_finite());
+                for axis in 0..2 {
+                    min[axis] = min[axis].min(point[axis]);
+                    max[axis] = max[axis].max(point[axis]);
+                }
+            }
+        };
+        match self {
+            Self::Once(transform, motion) => {
+                motion.gpu_drawn(transform.to_gpu()).for_each(&mut add)
+            }
+            Self::Copies(copies) => {
+                for copy in &copies.copies {
+                    copy.motion.gpu_drawn(copy.gpu).for_each(&mut add);
+                }
+            }
+        }
+        finite.then_some((min, max))
     }
 }
 

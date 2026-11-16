@@ -77,6 +77,14 @@ pub(crate) struct PathUniforms {
     pub(crate) band_count: u32,
     /// Untransformed distance beyond which a segment cannot cover a pixel.
     pub(crate) reach: f32,
+    /// Untransformed point, relative to `position`, where the grid's first cell starts.
+    pub(crate) grid_origin: [f32; 2],
+    /// Cells per untransformed pixel along each axis.
+    pub(crate) grid_scale: [f32; 2],
+    pub(crate) grid_size: [u32; 2],
+    /// Index in the bands buffer of the grid's first `(start, count)` pair.
+    pub(crate) grid_start: u32,
+    pub(crate) _grid_pad: u32,
     /// Canvas pixel of the output's first texel.
     pub(crate) origin: [i32; 2],
     pub(crate) _origin_pad: [i32; 2],
