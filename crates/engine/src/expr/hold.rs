@@ -103,6 +103,7 @@ impl Expression {
     }
 
     fn hold_walk(&self, ctx: &ExpressionContext<'_>) -> crate::Result<Held> {
+        self.plan.load();
         let root = self.plan.roots[0];
         let held = |checks: bool| {
             let mut holding = Holding {
