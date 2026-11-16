@@ -35,6 +35,15 @@
 //!   node and measures no text is evaluated again, so the evaluations started, which
 //!   `EvaluationGuard` counts, are those `evaluate` starts.
 //!
+//! A hold walk uses more stack per level than plain evaluation, so it is charged
+//! `HELD_LEVEL_COST` times the levels of a plain evaluation, and one that does not fit the levels
+//! left is not started: the expression is evaluated plainly and held for its own frame only. The
+//! outermost evaluation that fails in its hold walk is evaluated plainly, and gives that result, as
+//! a plain evaluation nested in a walk has fewer levels left than it would alone. So the errors
+//! and limits are those of plain evaluation, and the levels open never exceed
+//! `2 * (held levels) + (plain levels) <= MAX_EVALUATION_LEVELS`, the stack a plain evaluation at
+//! that limit can use.
+//!
 //! An expression that reads no node is first evaluated without the checks, which can only widen
 //! ranges, and evaluated again with them only when that leaves more than its own frame.
 
@@ -45,7 +54,7 @@ use crate::{
         ast::{BinaryOp, BuiltinFn, Easing, Expression, ExpressionValue, GlobalVar, UnaryOp},
         builtins::{evaluate_builtin, last_key_at, measure_node, progress_ratio, track},
         eval::{
-            EvalPlan, EvaluationGuard, Literal, MAX_HELD_LEVELS, Op, Scratch, binary, global_value,
+            EvalPlan, EvaluationGuard, Literal, Op, Scratch, binary, global_value, outermost,
             read_property_with, unary, usable,
         },
         spec::{NamedEasing, easing_builtins},
@@ -69,15 +78,28 @@ impl Expression {
     /// [`Expression::evaluate`], with the frames around `ctx.frame` on which the value holds, the
     /// rest of `ctx` being the same. `ctx` has no glyph or instance scope.
     pub(crate) fn evaluate_held(&self, ctx: &ExpressionContext<'_>) -> crate::Result<Held> {
-        if EvaluationGuard::levels_with(self.depth) > MAX_HELD_LEVELS {
-            return Ok(Held {
-                value: self.evaluate_now(ctx)?,
-                frames: (ctx.frame, ctx.frame),
-                // Without a walk it can't see whether a step measured, unless none can.
-                measured: !self.plan.steps[self.plan.roots[0]].repeatable,
-            });
+        let outermost = outermost();
+        let walked = match EvaluationGuard::enter_held(self.depth) {
+            Ok(_evaluation) => self.hold_walk(ctx),
+            Err(_) => return self.evaluate_at_frame(ctx),
+        };
+        match walked {
+            Err(_) if outermost => self.evaluate_at_frame(ctx),
+            walked => walked,
         }
-        let _evaluation = EvaluationGuard::enter(self.depth)?;
+    }
+
+    /// The plain value, held for `ctx.frame` only.
+    fn evaluate_at_frame(&self, ctx: &ExpressionContext<'_>) -> crate::Result<Held> {
+        Ok(Held {
+            value: self.evaluate_now(ctx)?,
+            frames: (ctx.frame, ctx.frame),
+            // Without a walk it can't see whether a step measured, unless none can.
+            measured: !self.plan.steps[self.plan.roots[0]].repeatable,
+        })
+    }
+
+    fn hold_walk(&self, ctx: &ExpressionContext<'_>) -> crate::Result<Held> {
         let root = self.plan.roots[0];
         let held = |checks: bool| {
             let mut holding = Holding {

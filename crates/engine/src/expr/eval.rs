@@ -110,14 +110,13 @@ impl InstanceEvaluator {
 /// evaluation that is open. Reading another node's property or measuring its text evaluates its
 /// expression inside the reader's, so this bounds the stack that nodes reading through each other
 /// use. It is sized for the largest frames, on a 1 MiB stack.
-const MAX_EVALUATION_LEVELS: u32 = 96;
-/// Most levels of evaluation that may be open when a hold walk starts. A hold walk open to this
-/// many levels fits a 768 KiB stack in a debug build; an expression that would take it past this
-/// is evaluated plainly and held for its own frame only.
-pub(super) const MAX_HELD_LEVELS: u32 = 48;
+pub(super) const MAX_EVALUATION_LEVELS: u32 = 96;
+/// A level of a hold walk uses up to this many times the stack of a level of plain evaluation, so
+/// it is charged this many levels.
+pub(super) const HELD_LEVEL_COST: u32 = 2;
 /// Levels charged to every evaluation on top of its expression's depth, for the read or
 /// measurement that starts it.
-const EVALUATION_OVERHEAD: u32 = 2;
+pub(super) const EVALUATION_OVERHEAD: u32 = 2;
 /// Most evaluations that one outermost evaluation may start, including all it reads through.
 const MAX_EVALUATIONS: u32 = 10_000;
 
@@ -139,7 +138,7 @@ pub fn evaluation_count() -> u64 {
 }
 
 /// Whether no evaluation is open on this thread.
-fn outermost() -> bool {
+pub(super) fn outermost() -> bool {
     EVALUATIONS.get().0 == 0
 }
 
@@ -154,13 +153,17 @@ impl EvaluationGuard {
             .saturating_add(EVALUATION_OVERHEAD)
     }
 
-    /// The levels open if an evaluation of an expression of `depth` were entered now.
-    pub(super) fn levels_with(depth: usize) -> u32 {
-        EVALUATIONS.get().0.saturating_add(Self::charge(depth))
+    pub(super) fn enter(depth: usize) -> crate::Result<Self> {
+        Self::open(Self::charge(depth))
     }
 
-    pub(super) fn enter(depth: usize) -> crate::Result<Self> {
-        let levels = Self::charge(depth);
+    /// Enters a hold walk of an expression of `depth`, which is charged [`HELD_LEVEL_COST`] times
+    /// the levels of a plain evaluation.
+    pub(super) fn enter_held(depth: usize) -> crate::Result<Self> {
+        Self::open(Self::charge(depth).saturating_mul(HELD_LEVEL_COST))
+    }
+
+    fn open(levels: u32) -> crate::Result<Self> {
         let (open, started) = EVALUATIONS.get();
         let exhausted = if open.saturating_add(levels) > MAX_EVALUATION_LEVELS {
             Some(format!(
