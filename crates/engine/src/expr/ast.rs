@@ -309,14 +309,13 @@ fn frame_dependent(ast: &ExprNode) -> bool {
             ExprNode::Global(global) => matches!(global, GlobalVar::Frame | GlobalVar::Time),
             ExprNode::Node(_) | ExprNode::PropertyValue(..) | ExprNode::Param(_) => true,
             // These count from a frame given implicitly, or read what isn't the arguments.
-            ExprNode::Builtin(builtin, _) => matches!(
-                builtin,
-                BuiltinFn::Progress
-                    | BuiltinFn::Tween
-                    | BuiltinFn::Prop
-                    | BuiltinFn::TextWidth
-                    | BuiltinFn::TextHeight
-            ),
+            ExprNode::Builtin(builtin, _) => {
+                builtin.reads_frame()
+                    || matches!(
+                        builtin,
+                        BuiltinFn::Prop | BuiltinFn::TextWidth | BuiltinFn::TextHeight
+                    )
+            }
             ExprNode::Literal(_)
             | ExprNode::Binary(..)
             | ExprNode::Unary(..)
