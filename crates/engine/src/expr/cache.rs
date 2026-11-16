@@ -15,6 +15,10 @@ use crate::{
     scope::PropValues,
 };
 
+/// The most values kept for one expression in one scope. An expression asked at more frames or
+/// props than this within the frames entries live for loses its least recently used value.
+const MAX_HELD_PER_EXPRESSION: usize = 8;
+
 /// A scope instance (its graph and the path that reaches it) and an expression's plan, by address.
 type HeldKey = (SceneId, u32, usize);
 
@@ -166,23 +170,25 @@ impl HeldValues<'_> {
             Some(props) => Some(Arc::clone(props)),
             None => ctx.props.map(|props| Arc::new(props.clone())),
         };
-        self.cache
-            .entries
-            .borrow_mut()
-            .entry(key)
-            .or_insert_with(|| Kept {
-                _plan: Arc::clone(&expression.plan),
-                held: Vec::new(),
-            })
-            .held
-            .push(Held {
-                props,
-                frames,
-                value: value.clone(),
-                measured,
-                tracked,
-                last_used: tick,
-            });
+        let mut entries = self.cache.entries.borrow_mut();
+        let kept = entries.entry(key).or_insert_with(|| Kept {
+            _plan: Arc::clone(&expression.plan),
+            held: Vec::new(),
+        });
+        if kept.held.len() >= MAX_HELD_PER_EXPRESSION
+            && let Some(least_used) =
+                (0..kept.held.len()).min_by_key(|&index| kept.held[index].last_used)
+        {
+            kept.held.remove(least_used);
+        }
+        kept.held.push(Held {
+            props,
+            frames,
+            value: value.clone(),
+            measured,
+            tracked,
+            last_used: tick,
+        });
         Ok(value)
     }
 }

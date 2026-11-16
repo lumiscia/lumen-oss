@@ -197,3 +197,28 @@ fn a_value_that_repeats_but_holds_for_one_frame_is_not_walked_again() {
     }
     assert_eq!(started[1..], [1; 9]);
 }
+
+#[test]
+fn the_values_kept_for_one_expression_are_capped() {
+    let cache = HeldCache::default();
+    let changing = Expression::parse("sin(frame)").unwrap();
+    let at = |frame: u32| {
+        let ctx = ExpressionContext {
+            frame: f64::from(frame),
+            held: Some(cache.scope(SceneId::Root, 0, None)),
+            ..base()
+        };
+        evaluate(&changing, &ctx).1
+    };
+    for frame in 0..20 {
+        assert_eq!(at(frame), 1);
+    }
+    assert_eq!(at(19), 0);
+    let kept: Vec<_> = cache
+        .entries
+        .borrow()
+        .values()
+        .map(|kept| kept.held.len())
+        .collect();
+    assert_eq!(kept, [MAX_HELD_PER_EXPRESSION]);
+}
