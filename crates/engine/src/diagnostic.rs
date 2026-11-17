@@ -218,7 +218,7 @@ pub const CODE_DOCS: &[CodeDoc] = &[
     CodeDoc {
         code: "connection.wrong_kind",
         found_by: FoundBy::Check,
-        meaning: "A connection wires a scene into an input that takes a raster, or a raster into one that takes a scene.",
+        meaning: "A connection wires a node into an input of another kind: a scene into an input that takes a raster, a raster into one that takes a scene, or a material anywhere but a `material` input.",
     },
     CodeDoc {
         code: "graph.node_id_mismatch",

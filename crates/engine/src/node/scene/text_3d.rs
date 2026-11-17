@@ -1,6 +1,6 @@
 //! `text_3d`: text shaped as the 2D `text` node shapes it, extruded into a solid.
 
-use super::{Material3d, Placement3d};
+use super::Placement3d;
 use crate::node::source::text::{
     TextAlignmentHorizontal, TextAlignmentVertical, TextFontStyle, TextTransform,
 };
@@ -115,8 +115,6 @@ pub struct Text3dParams {
     pub bevel_segments: u32,
     #[meta(flatten)]
     pub placement: Placement3d,
-    #[meta(flatten)]
-    pub material: Material3d,
 }
 
 #[cfg(feature = "3d")]
@@ -169,13 +167,12 @@ impl Default for Text3dParams {
             bevel_size: 0.0,
             bevel_segments: 4,
             placement: Placement3d::default(),
-            material: Material3d::default(),
         }
     }
 }
 
-/// Text from its font's outlines, extruded into a solid with the material params of a
-/// `shape_3d`. The text is shaped as a `text` node with the same font, size and layout shapes
+/// Text from its font's outlines, extruded into a solid, lit, single-sided and white unless
+/// a `material_3d` is wired into `material`. The text is shaped as a `text` node with the same font, size and layout shapes
 /// it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing
 /// +Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the
 /// point of its box at `position`. Its geometry is built again only when the text, font, layout or
@@ -193,6 +190,9 @@ pub struct Text3d {
     pub id: NodeId,
     #[params]
     pub params: Text3dParamsDelegate,
+
+    #[input(material, optional)]
+    pub material: Option<NodeId>,
 }
 
 #[cfg(all(test, feature = "3d"))]

@@ -1,13 +1,15 @@
-//! How the frame graph records the nodes that output a scene. `render_3d` reads its scene without
-//! recording it, and validation keeps a scene out of every raster input, so recording one fails.
-//! Each builds the programs that drawing it adds to its scene's.
+//! How the frame graph records the nodes that output a scene or a material. `render_3d` reads its
+//! scene without recording it, and validation keeps a scene or a material out of every raster
+//! input, so recording one fails. Each builds the programs that drawing it adds to its scene's.
 
 #[cfg(not(feature = "3d"))]
 use super::Render3d;
 #[cfg(feature = "3d")]
 use super::render::{catcher_programs, light_programs};
 use super::text_3d::{check_length, check_weight};
-use super::{Camera3d, ImagePlane3d, Instance3d, Light3d, Merge3d, Model3d, Shape3d, Text3d};
+use super::{
+    Camera3d, ImagePlane3d, Instance3d, Light3d, Material3d, Merge3d, Model3d, Shape3d, Text3d,
+};
 use crate::{
     error::{LumenError, RenderError},
     gpu::frame_graph::{FrameCx, Programs, Raster, RecordNode, Staticness, held},
@@ -34,9 +36,19 @@ fn catcher_programs(_: &crate::node::Deferred<bool>, _: &mut Programs<'_>) -> cr
     Ok(())
 }
 
-impl RecordNode for Shape3d {
+impl RecordNode for Material3d {
     fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
-        catcher_programs(&self.params.material.shadow_catcher, programs)
+        catcher_programs(&self.params.shadow_catcher, programs)
+    }
+
+    fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
+        Err(not_a_raster::<Material3d>(self.id))
+    }
+}
+
+impl RecordNode for Shape3d {
+    fn programs(&self, _: &mut Programs<'_>) -> crate::Result<()> {
+        Ok(())
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
@@ -45,8 +57,8 @@ impl RecordNode for Shape3d {
 }
 
 impl RecordNode for ImagePlane3d {
-    fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
-        catcher_programs(&self.params.material.shadow_catcher, programs)
+    fn programs(&self, _: &mut Programs<'_>) -> crate::Result<()> {
+        Ok(())
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
@@ -55,8 +67,8 @@ impl RecordNode for ImagePlane3d {
 }
 
 impl RecordNode for Text3d {
-    fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
-        catcher_programs(&self.params.material.shadow_catcher, programs)
+    fn programs(&self, _: &mut Programs<'_>) -> crate::Result<()> {
+        Ok(())
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {

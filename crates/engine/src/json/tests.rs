@@ -1435,14 +1435,14 @@ fn a_gradient_where_3d_needs_a_solid_color_is_reported_at_its_param() {
     let diagnostics = check_value(
         &scene_document(
             serde_json::json!([
-                { "id": 4, "type": "shape_3d", "params": { "color": gradient } },
+                { "id": 4, "type": "material_3d", "params": { "color": gradient } },
                 { "id": 5, "type": "light_3d", "params": { "color": gradient } },
                 { "id": 6, "type": "render_3d", "params": { "fog_color": gradient } },
-                { "id": 7, "type": "image_plane_3d", "params": { "color": gradient } },
-                { "id": 8, "type": "shape_3d", "params": { "color": "=rgb(1, 2, 3)" } },
+                { "id": 7, "type": "material_3d", "params": { "color": gradient } },
+                { "id": 8, "type": "material_3d", "params": { "color": "=rgb(1, 2, 3)" } },
                 { "id": 9, "type": "light_3d", "params": { "color": "#ff0000" } }
             ]),
-            serde_json::json!([{ "from_node": 3, "to_node": 7, "to_port": "source" }]),
+            serde_json::json!([]),
         ),
         None,
         None,

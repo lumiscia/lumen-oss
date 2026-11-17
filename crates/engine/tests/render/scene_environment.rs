@@ -6,8 +6,8 @@ use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
 use crate::support::scene::{
-    CENTER, GroundView, environment_file, every_pixel, frame_of, light, lit_by, render_3d_with,
-    sphere,
+    CENTER, GroundView, environment_file, every_pixel, frame_of, light, lit_by, material,
+    render_3d_with, sphere, with_material,
 };
 use crate::support::{CLEAR, Case, Expect, Frame, TestMedia, check, gpu, render};
 
@@ -40,7 +40,7 @@ fn a_sphere_in_a_uniform_environment_reflects_no_more_light_than_it_receives() {
     for (metallic, roughness) in [(0, 1.0), (0, 0.3), (1, 0.0)] {
         let material = json!({ "metallic": metallic, "roughness": roughness });
         let frame = frame_of(
-            render_3d_with(lit_by("grey.hdr", json!({})), vec![sphere(material)]),
+            render_3d_with(lit_by("grey.hdr", json!({})), sphere(material)),
             &media,
         );
         // Out to where the surface is seen within about 20° of edge on.
@@ -58,7 +58,7 @@ fn a_sphere_in_a_uniform_environment_reflects_no_more_light_than_it_receives() {
     let frame = frame_of(
         render_3d_with(
             lit_by("grey.hdr", json!({})),
-            vec![sphere(json!({ "metallic": 1, "roughness": 1 }))],
+            sphere(json!({ "metallic": 1, "roughness": 1 })),
         ),
         &media,
     );
@@ -77,7 +77,7 @@ fn a_diffuse_sphere_is_lit_from_where_the_environment_is_bright() {
             "sky.hdr",
             environment_file(64, 32, |d| Vec3::splat(f32::from(u8::from(d.y > 0.0)))),
         );
-    let diffuse = || vec![sphere(json!({ "roughness": 1 }))];
+    let diffuse = || sphere(json!({ "roughness": 1 }));
     // Green in linear light.
     let luma = |frame: &Frame, x: u32, y: u32| (f32::from(frame.pixel(x, y)[1]) / 255.0).powf(2.2);
     let east = frame_of(
@@ -122,7 +122,7 @@ fn patches() -> TestMedia {
     )
 }
 
-fn mirror(roughness: f64) -> Value {
+fn mirror(roughness: f64) -> Vec<Value> {
     sphere(json!({ "metallic": 1, "roughness": roughness }))
 }
 
@@ -132,8 +132,7 @@ fn a_mirror_reflects_the_environment_from_the_right_direction_as_it_turns() {
     let green = [0, srgb8(0.8), 0, 255];
     let red = [srgb8(0.8), 0, 0, 255];
     let blue = [0, 0, srgb8(0.8), 255];
-    let mirror_with =
-        |params: Value| render_3d_with(lit_by("patches.hdr", params), vec![mirror(0.0)]);
+    let mirror_with = |params: Value| render_3d_with(lit_by("patches.hdr", params), mirror(0.0));
     // Where the surface faces 45° to the west, it reflects the view to the west.
     let west = (CENTER - 13, CENTER);
     check(vec![
@@ -162,7 +161,7 @@ fn a_mirror_reflects_the_environment_from_the_right_direction_as_it_turns() {
 
     let smooth = frame_of(mirror_with(json!({})), &media).pixel(CENTER, CENTER);
     let rough = frame_of(
-        render_3d_with(lit_by("patches.hdr", json!({})), vec![mirror(0.7)]),
+        render_3d_with(lit_by("patches.hdr", json!({})), mirror(0.7)),
         &media,
     )
     .pixel(CENTER, CENTER);
@@ -231,7 +230,7 @@ fn the_background_shows_the_environment_opaquely_behind_the_scene() {
     );
 
     let behind = frame_of(
-        background(lit_by("patches.hdr", json!({})), vec![mirror(0.0)]),
+        background(lit_by("patches.hdr", json!({})), mirror(0.0)),
         &media,
     );
     assert!(opaque(&behind));
@@ -263,8 +262,12 @@ fn a_shadow_catcher_darkens_the_background_by_the_light_its_shadow_takes_away() 
         .environment("grey.hdr", environment_file(64, 32, |_| Vec3::splat(0.5)));
     let objects = vec![
         json!({ "id": 1, "type": "shape_3d", "params": { "size": [1, 0.2, 1], "position": [0, 1, 0] } }),
-        json!({ "id": 2, "type": "shape_3d", "params": {
-            "shape": "plane", "size": [6, 1, 6], "shadow_catcher": true, "position": [0, 0.01, 0] } }),
+        material(3, json!({ "shadow_catcher": true })),
+        with_material(
+            json!({ "id": 2, "type": "shape_3d", "params": {
+                "shape": "plane", "size": [6, 1, 6], "position": [0, 0.01, 0] } }),
+            3,
+        ),
         light(
             60,
             json!({ "light": "directional", "intensity": 1, "rotation": [-90, 0, 0],
@@ -318,7 +321,7 @@ fn malformed_and_oversized_environment_maps_are_errors_and_unusable_texels_dark(
         gpu()
             .renderer()
             .render(
-                &render_3d_with(lit_by("map.hdr", json!({})), vec![sphere(json!({}))]).into(),
+                &render_3d_with(lit_by("map.hdr", json!({})), sphere(json!({}))).into(),
                 0.0,
                 &media,
                 RenderTarget::Owned,
@@ -350,7 +353,7 @@ fn malformed_and_oversized_environment_maps_are_errors_and_unusable_texels_dark(
     let frame = frame_of(
         render_3d_with(
             lit_by("odd.exr", json!({})),
-            vec![sphere(json!({ "roughness": 1 }))],
+            sphere(json!({ "roughness": 1 })),
         ),
         &media,
     );
@@ -372,7 +375,7 @@ fn an_environment_lit_render_is_kept_and_turning_its_map_redraws_without_reloadi
                 "patches.hdr",
                 json!({ "environment_rotation": rotation, "environment_background": true }),
             ),
-            vec![mirror(0.0)],
+            mirror(0.0),
         )
         .frames(4)
         .fps(4.0)

@@ -192,6 +192,7 @@ node_kinds! {
     DisplacementMap(processing::displacement_map::DisplacementMap),
     WgslShader(processing::wgsl_shader::WgslShader),
     MediaOutput(media_output::MediaOutput),
+    Material3d(scene::Material3d),
     Shape3d(scene::Shape3d),
     ImagePlane3d(scene::ImagePlane3d),
     Text3d(scene::Text3d),

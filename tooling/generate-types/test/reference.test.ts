@@ -38,10 +38,18 @@ test("lists every node kind with its ports and params, the same every time", asy
   const schema = await loadSchema();
   const reference = renderNodeReference(schema);
 
-  for (const kind of ["render_3d", "model_3d", "image_plane_3d", "instance_3d", "text_3d"]) {
+  for (const kind of [
+    "render_3d",
+    "model_3d",
+    "image_plane_3d",
+    "instance_3d",
+    "text_3d",
+    "material_3d",
+  ]) {
     expect(reference).toContain(`## \`${kind}\``);
   }
   expect(reference).toContain("- `texture`: raster, optional");
+  expect(reference).toContain("- `material`: material, optional");
   expect(reference).toContain("- `objects`: scene, optional, takes several connections");
   expect(reference).toMatch(/- \*\*`tone_mapping`\*\* \([^)]*literal only\)/u);
   expect(reference).toMatch(

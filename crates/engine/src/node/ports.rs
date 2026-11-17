@@ -14,10 +14,18 @@ pub enum PortKind {
     Geometry,
     /// Styled 2D drawables in order, the first lowest, which a `render_2d` rasterizes.
     Drawing,
+    /// How a 3D object's surface responds to light, from a `material_3d`.
+    Material,
 }
 
 impl PortKind {
-    pub const ALL: [Self; 4] = [Self::Raster, Self::Scene, Self::Geometry, Self::Drawing];
+    pub const ALL: [Self; 5] = [
+        Self::Raster,
+        Self::Scene,
+        Self::Geometry,
+        Self::Drawing,
+        Self::Material,
+    ];
 
     /// The kind's name in the generated definitions.
     pub fn name(self) -> &'static str {
@@ -26,6 +34,7 @@ impl PortKind {
             Self::Scene => "scene",
             Self::Geometry => "geometry",
             Self::Drawing => "drawing",
+            Self::Material => "material",
         }
     }
 }

@@ -415,8 +415,9 @@ pub(crate) const NO_3D_SUPPORT: &str =
 
 /// What to do about wiring a node that outputs `actual` into an input that takes `expected`.
 fn wrong_kind_hint(expected: PortKind, actual: PortKind) -> &'static str {
-    use PortKind::{Drawing, Geometry, Raster, Scene};
+    use PortKind::{Drawing, Geometry, Material, Raster, Scene};
     match (expected, actual) {
+        (Material, _) | (_, Material) => "connect a material_3d to the object's `material` input",
         (Raster, Drawing) => "draw the drawing into a raster through a render_2d, and wire that in",
         (Raster, Geometry) => {
             "style the geometry with a fill_2d or stroke_2d, and draw that into a raster through a render_2d"

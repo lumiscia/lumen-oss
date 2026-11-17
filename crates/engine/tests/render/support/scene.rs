@@ -24,12 +24,36 @@ pub fn render_3d_with(params: Value, scene_nodes: Vec<Value>) -> Scene {
     scene(SIZE, json!(nodes))
 }
 
-/// An unlit shape, which shows its colour exactly wherever it is drawn.
-pub fn flat(id: u32, params: Value, color: [u8; 4]) -> Value {
-    let mut params = params;
-    params["color"] = json!(color);
-    params["unlit"] = json!(true);
-    json!({ "id": id, "type": "shape_3d", "params": params })
+/// A `material_3d` of `params`.
+pub fn material(id: u32, params: Value) -> Value {
+    json!({ "id": id, "type": "material_3d", "params": params })
+}
+
+/// `object` with the `material_3d` `material` wired into its `material` input.
+pub fn with_material(mut object: Value, material: u32) -> Value {
+    object["in"]["material"] = json!(material);
+    object
+}
+
+/// An unlit shape, which shows its colour exactly wherever it is drawn, and its `material_3d` of
+/// id `material_id`, in that order. `material_params` set the colour and anything else of the
+/// material.
+pub fn flat(id: u32, material_id: u32, params: Value, material_params: Value) -> [Value; 2] {
+    let mut material_params = material_params;
+    material_params["unlit"] = json!(true);
+    [
+        material(material_id, material_params),
+        with_material(
+            json!({ "id": id, "type": "shape_3d", "params": params }),
+            material_id,
+        ),
+    ]
+}
+
+/// The nodes of each of `groups`, such as the pairs `flat` makes, then `last`, the node that
+/// outputs the scene.
+pub fn listed(groups: &[[Value; 2]], last: Value) -> Vec<Value> {
+    groups.iter().flatten().cloned().chain([last]).collect()
 }
 
 pub fn merge(id: u32, objects: &[u32], params: Value) -> Value {
@@ -279,8 +303,12 @@ impl GroundView {
     pub fn nodes(&self, objects: Vec<Value>, render: Value) -> Vec<Value> {
         let [x, z] = self.center;
         let mut nodes = vec![
-            json!({ "id": 50, "type": "shape_3d", "params": {
-                "shape": "plane", "size": [6, 1, 6], "roughness": 1 } }),
+            material(52, json!({ "roughness": 1 })),
+            with_material(
+                json!({ "id": 50, "type": "shape_3d", "params": {
+                    "shape": "plane", "size": [6, 1, 6] } }),
+                52,
+            ),
             json!({ "id": 51, "type": "camera_3d", "params": {
                 "projection": "orthographic", "ortho_height": self.height, "position": [x, 4, z],
                 "rotation": [-90, 0, 0], "near": 3.95, "far": 10 } }),
@@ -291,7 +319,7 @@ impl GroundView {
             .filter(|node| {
                 node["type"]
                     .as_str()
-                    .is_some_and(|kind| kind.ends_with("_3d"))
+                    .is_some_and(|kind| kind.ends_with("_3d") && kind != "material_3d")
             })
             .map(|node| node["id"].as_u64().unwrap() as u32)
             .collect();
@@ -350,13 +378,16 @@ pub fn environment_file(width: u32, height: u32, radiance: impl Fn(Vec3) -> Vec3
     crate::support::hdr_file(width, height, &texels)
 }
 
-/// A sphere of radius 1 at the origin, about 18 pixels across its radius from the default camera.
-pub fn sphere(material: Value) -> Value {
-    let mut params = json!({ "shape": "sphere", "size": [2, 2, 2] });
-    for (name, value) in material.as_object().expect("material") {
-        params[name] = value.clone();
-    }
-    json!({ "id": 1, "type": "shape_3d", "params": params })
+/// A sphere of radius 1 at the origin, about 18 pixels across its radius from the default camera,
+/// with the id 1, and its `material_3d` of `params`, with the id 2, in that order.
+pub fn sphere(params: Value) -> Vec<Value> {
+    vec![
+        material(2, params),
+        with_material(
+            json!({ "id": 1, "type": "shape_3d", "params": { "shape": "sphere", "size": [2, 2, 2] } }),
+            2,
+        ),
+    ]
 }
 
 pub fn lit_by(map: &str, params: Value) -> Value {

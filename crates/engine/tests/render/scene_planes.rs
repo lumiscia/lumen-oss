@@ -5,8 +5,8 @@ use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
 use crate::support::scene::{
-    CENTER, SIZE, covered, environment_file, flat, framed, half_blue, image, light, lit_by, merge,
-    ortho, plane, plate, render_3d, render_3d_with, sphere,
+    CENTER, SIZE, covered, environment_file, flat, framed, half_blue, image, light, lit_by,
+    material, merge, ortho, plane, plate, render_3d, render_3d_with, sphere, with_material,
 };
 use crate::support::{BLUE, CLEAR, Case, Expect, GREEN, RED, Scene, TestMedia, check, gpu, render};
 
@@ -92,21 +92,23 @@ fn a_clip_content_is_padded_or_cropped_to_the_canvas_it_declares() {
 #[test]
 fn a_planes_transparent_texels_show_what_is_behind_without_hiding_it() {
     let behind = |plane_first: bool| {
-        let objects: Vec<Value> = vec![
+        let mut objects: Vec<Value> = vec![
             plate(10),
             plane(1, 10, json!({ "width": 4 })),
             ortho(2, json!({})),
-            flat(
-                4,
-                json!({ "size": [4, 4, 0.2], "position": [0, 0, -2] }),
-                RED,
-            ),
-            flat(
-                5,
-                json!({ "size": [1, 1, 0.2], "position": [1, 0, -1], "opacity": 0.5 }),
-                GREEN,
-            ),
         ];
+        objects.extend(flat(
+            4,
+            14,
+            json!({ "size": [4, 4, 0.2], "position": [0, 0, -2] }),
+            json!({ "color": RED }),
+        ));
+        objects.extend(flat(
+            5,
+            15,
+            json!({ "size": [1, 1, 0.2], "position": [1, 0, -1] }),
+            json!({ "color": GREEN, "opacity": 0.5 }),
+        ));
         let order: &[u32] = if plane_first {
             &[1, 2, 4, 5]
         } else {
@@ -170,17 +172,15 @@ fn plane_through_a_box(plane_params: Value) -> Scene {
     for (name, value) in plane_params.as_object().expect("params") {
         params[name] = value.clone();
     }
-    render_3d(vec![
-        plate(10),
-        plane(1, 10, params),
-        ortho(2, json!({})),
-        flat(
-            3,
-            json!({ "size": [3, 1, 0.1], "position": [0, 0, 0.5], "opacity": 0.5 }),
-            GREEN,
-        ),
-        merge(4, &[1, 2, 3], json!({})),
-    ])
+    let mut nodes = vec![plate(10), plane(1, 10, params), ortho(2, json!({}))];
+    nodes.extend(flat(
+        3,
+        13,
+        json!({ "size": [3, 1, 0.1], "position": [0, 0, 0.5] }),
+        json!({ "color": GREEN, "opacity": 0.5 }),
+    ));
+    nodes.push(merge(4, &[1, 2, 3], json!({})));
+    render_3d(nodes)
 }
 
 #[test]
@@ -223,12 +223,16 @@ fn an_opaque_plane_is_ordered_by_depth_against_the_blended_objects_it_crosses() 
 
 #[test]
 fn an_opaque_plane_shows_transparent_texels_in_their_colour_at_full_opacity() {
-    let framed_plane = |params: Value| {
+    let framed_plane = |params: Value, material_params: Value| {
         let mut params = params;
         params["width"] = json!(4);
+        let mut material_params = material_params;
+        material_params["unlit"] = json!(true);
+        material_params["double_sided"] = json!(true);
         render_3d(vec![
             plate(10),
-            plane(1, 10, params),
+            material(11, material_params),
+            with_material(plane(1, 10, params), 11),
             ortho(2, json!({})),
             merge(3, &[1, 2], json!({})),
         ])
@@ -236,13 +240,13 @@ fn an_opaque_plane_shows_transparent_texels_in_their_colour_at_full_opacity() {
     check(vec![
         Case::new(
             "blended, the transparent half shows nothing",
-            framed_plane(json!({})),
+            framed_plane(json!({}), json!({})),
             Expect::Probes(vec![(16, CENTER, BLUE), (48, CENTER, CLEAR)]),
         )
         .media(half_blue()),
         Case::new(
             "opaque, the transparent half is opaque black and opacity is ignored",
-            framed_plane(json!({ "opaque": true, "opacity": 0.2 })),
+            framed_plane(json!({ "opaque": true }), json!({ "opacity": 0.2 })),
             Expect::Probes(vec![(16, CENTER, BLUE), (48, CENTER, [0, 0, 0, 255])]),
         )
         .media(half_blue()),
@@ -255,7 +259,8 @@ fn a_lit_plane_is_coloured_by_its_source_and_responds_to_light() {
     let lit_by = |rotation: [i32; 3]| {
         let mut nodes = vec![plate(10)];
         nodes.extend([
-            plane(1, 10, json!({ "width": 4, "unlit": false, "roughness": 1 })),
+            material(11, json!({ "double_sided": true, "roughness": 1 })),
+            with_material(plane(1, 10, json!({ "width": 4 })), 11),
             ortho(2, json!({})),
             json!({ "id": 3, "type": "light_3d", "params": { "rotation": rotation } }),
             merge(4, &[1, 2, 3], json!({})),
@@ -385,8 +390,12 @@ fn compiling_reaches_the_programs_of_a_planes_source_through_the_scene_nodes() {
         plane(1, 11, json!({ "width": 4 })),
         // Shadows, and a catcher from the second frame on, that only an expression turns on.
         json!({ "id": 3, "type": "shape_3d", "params": { "size": [0.5, 0.5, 0.5], "position": [0, 0, 1] } }),
-        json!({ "id": 4, "type": "shape_3d", "params": {
-            "shape": "plane", "size": [6, 1, 6], "position": [0, -1, 0], "shadow_catcher": "=frame > 0" } }),
+        material(6, json!({ "shadow_catcher": "=frame > 0" })),
+        with_material(
+            json!({ "id": 4, "type": "shape_3d", "params": {
+                "shape": "plane", "size": [6, 1, 6], "position": [0, -1, 0] } }),
+            6,
+        ),
         light(
             5,
             json!({ "light": "directional", "rotation": [-60, 0, 0], "cast_shadows": true }),
@@ -410,7 +419,7 @@ fn compiling_reaches_the_programs_of_a_planes_source_through_the_scene_nodes() {
     let media = TestMedia::default().environment("sky.hdr", environment_file(16, 8, |_| Vec3::ONE));
     let composition = Composition::from(render_3d_with(
         lit_by("sky.hdr", json!({ "environment_background": true })),
-        vec![sphere(json!({}))],
+        sphere(json!({})),
     ));
     let mut renderer = gpu.renderer();
     renderer.compile(&composition).expect("the scene compiles");

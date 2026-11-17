@@ -4,8 +4,8 @@ use lumen_engine::composition::Composition;
 use serde_json::{Value, json};
 
 use crate::support::scene::{
-    GroundView, SIZE, every_pixel, flat, fox, fox_media, frame_of, half_blue, image, light, merge,
-    model, plane, plate, quads, render_3d_with,
+    GroundView, SIZE, every_pixel, flat, fox, fox_media, frame_of, half_blue, image, light,
+    material, merge, model, plane, plate, quads, render_3d_with, with_material,
 };
 use crate::support::{CLEAR, Case, Expect, Frame, RED, TestMedia, check, gpu, render, scene};
 
@@ -291,14 +291,18 @@ fn a_shadow_catcher_darkens_what_is_under_it_by_the_light_its_shadows_take_away(
     // A slab a unit over the middle of a catcher, lit from straight above, and with as much
     // light again from all around, so that its shadow takes half the light away.
     let nodes = |render: Value, catcher: Value| {
-        let mut catcher_params = json!({
-            "shape": "plane", "size": [6, 1, 6], "shadow_catcher": true, "position": [0, 0.01, 0] });
+        let mut catcher_material = json!({ "shadow_catcher": true });
         for (name, value) in catcher.as_object().expect("catcher") {
-            catcher_params[name] = value.clone();
+            catcher_material[name] = value.clone();
         }
         let objects = vec![
             json!({ "id": 1, "type": "shape_3d", "params": { "size": [1, 0.2, 1], "position": [0, 1, 0] } }),
-            json!({ "id": 2, "type": "shape_3d", "params": catcher_params }),
+            material(3, catcher_material),
+            with_material(
+                json!({ "id": 2, "type": "shape_3d", "params": {
+                    "shape": "plane", "size": [6, 1, 6], "position": [0, 0.01, 0] } }),
+                3,
+            ),
             light(
                 60,
                 json!({ "light": "directional", "intensity": 1, "rotation": [-90, 0, 0],
@@ -365,14 +369,22 @@ fn a_shadow_catcher_darkens_what_is_under_it_by_the_light_its_shadows_take_away(
 fn shadow_catchers_hide_what_is_behind_them() {
     let view = GroundView::WHOLE;
     // A red box sunk below a catcher shows nowhere.
-    let scene = view.scene(
-        vec![
-            flat(1, json!({ "position": [0, -0.6, 0] }), RED),
+    let mut objects = flat(
+        1,
+        3,
+        json!({ "position": [0, -0.6, 0] }),
+        json!({ "color": RED }),
+    )
+    .to_vec();
+    objects.extend([
+        material(4, json!({ "shadow_catcher": true })),
+        with_material(
             json!({ "id": 2, "type": "shape_3d", "params": {
-                "shape": "plane", "size": [6, 1, 6], "shadow_catcher": true, "position": [0, 0.01, 0] } }),
-        ],
-        json!({}),
-    );
+                "shape": "plane", "size": [6, 1, 6], "position": [0, 0.01, 0] } }),
+            4,
+        ),
+    ]);
+    let scene = view.scene(objects, json!({}));
     check(vec![Case::new(
         "a box under a catcher",
         scene,
@@ -467,12 +479,20 @@ fn an_image_plane_catches_shadows_where_its_raster_covers_it_and_shows_none_of_i
             plate(10),
         ];
         if catcher {
-            objects.push(plane(
-                2,
-                10,
-                json!({ "width": 6, "rotation": [-90, 0, 0], "position": [0, 0.01, 0],
-                        "shadow_catcher": true }),
-            ));
+            objects.extend([
+                material(
+                    3,
+                    json!({ "unlit": true, "double_sided": true, "shadow_catcher": true }),
+                ),
+                with_material(
+                    plane(
+                        2,
+                        10,
+                        json!({ "width": 6, "rotation": [-90, 0, 0], "position": [0, 0.01, 0] }),
+                    ),
+                    3,
+                ),
+            ]);
         }
         view.scene(objects, json!({}))
     };
@@ -547,12 +567,17 @@ fn shadows_of_small_objects_on_a_floor_far_wider_than_the_view_are_kept() {
         let shadow = |half: f64| {
             let frame = |cast: bool| {
                 let nodes = vec![
-                    json!({ "id": 1, "type": "shape_3d", "params": {
-                        "shape": "plane", "size": [2.0 * half, 1, 2.0 * half], "roughness": 1,
-                        "cast_shadows": false } }),
-                    json!({ "id": 6, "type": "shape_3d", "params": {
-                        "shape": "plane", "size": [6, 1, 6], "position": [0, 0.02, 0],
-                        "roughness": 1, "cast_shadows": false } }),
+                    material(7, json!({ "roughness": 1, "cast_shadows": false })),
+                    with_material(
+                        json!({ "id": 1, "type": "shape_3d", "params": {
+                            "shape": "plane", "size": [2.0 * half, 1, 2.0 * half] } }),
+                        7,
+                    ),
+                    with_material(
+                        json!({ "id": 6, "type": "shape_3d", "params": {
+                            "shape": "plane", "size": [6, 1, 6], "position": [0, 0.02, 0] } }),
+                        7,
+                    ),
                     json!({ "id": 2, "type": "shape_3d", "params": {
                         "size": [0.6, 0.6, 0.6], "position": [0, 0.32, 0] } }),
                     json!({ "id": 3, "type": "camera_3d", "params": {
@@ -611,6 +636,7 @@ fn point_and_wide_spot_lights_shadow_casters_off_their_views_axes() {
                 ],
                 json!({}),
             );
+            // The ground's material, which `GroundView` lists first.
             nodes[0]["params"]["cast_shadows"] = json!(false);
             frame_of(scene(SIZE, json!(nodes)), &TestMedia::default())
         };
@@ -655,8 +681,13 @@ fn how_far_directional_shadows_reach_doesnt_depend_on_their_softness() {
     // Boxes at increasing distances along a floor to the horizon, which casts nothing.
     let frame = |softness: f64, cast: bool| {
         let mut nodes = vec![
-            json!({ "id": 1, "type": "shape_3d", "params": {
-                "shape": "plane", "size": [10000, 1, 10000], "roughness": 1, "cast_shadows": false } }),
+            material(6, json!({ "roughness": 1, "cast_shadows": false })),
+            material(7, json!({ "receive_shadows": false })),
+            with_material(
+                json!({ "id": 1, "type": "shape_3d", "params": {
+                    "shape": "plane", "size": [10000, 1, 10000] } }),
+                6,
+            ),
             json!({ "id": 3, "type": "camera_3d", "params": {
                 "position": [0, 10, 12], "look_at": true, "target": [0, 0, -25] } }),
             light(
@@ -669,8 +700,11 @@ fn how_far_directional_shadows_reach_doesnt_depend_on_their_softness() {
         for (index, z) in [-10, -18, -26, -34].into_iter().enumerate() {
             let id = 10 + index as u32;
             let x = if index % 2 == 0 { 5 } else { -5 };
-            nodes.push(json!({ "id": id, "type": "shape_3d", "params": {
-                "size": [2, 1, 2], "position": [x, 0.5, z], "receive_shadows": false } }));
+            nodes.push(with_material(
+                json!({ "id": id, "type": "shape_3d", "params": {
+                    "size": [2, 1, 2], "position": [x, 0.5, z] } }),
+                7,
+            ));
             ids.push(id);
         }
         nodes.push(merge(5, &ids, json!({})));

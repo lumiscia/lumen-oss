@@ -33,7 +33,7 @@ export type DiagnosticCode =
   | "connection.unknown_port"
   /** A single input is connected twice. */
   | "connection.input_already_connected"
-  /** A connection wires a scene into an input that takes a raster, or a raster into one that takes a scene. */
+  /** A connection wires a node into an input of another kind: a scene into an input that takes a raster, a raster into one that takes a scene, or a material anywhere but a `material` input. */
   | "connection.wrong_kind"
   /** A node is stored under another id. Only builders made in Rust can do this. */
   | "graph.node_id_mismatch"
@@ -124,7 +124,7 @@ export const diagnosticCodes = [
   { code: "connection.missing_target_node", severity: "error", foundBy: "check", meaning: "A connection writes to a node that doesn't exist." },
   { code: "connection.unknown_port", severity: "error", foundBy: "check", meaning: "A connection writes to an input its node doesn't have." },
   { code: "connection.input_already_connected", severity: "error", foundBy: "check", meaning: "A single input is connected twice." },
-  { code: "connection.wrong_kind", severity: "error", foundBy: "check", meaning: "A connection wires a scene into an input that takes a raster, or a raster into one that takes a scene." },
+  { code: "connection.wrong_kind", severity: "error", foundBy: "check", meaning: "A connection wires a node into an input of another kind: a scene into an input that takes a raster, a raster into one that takes a scene, or a material anywhere but a `material` input." },
   { code: "graph.node_id_mismatch", severity: "error", foundBy: "check", meaning: "A node is stored under another id. Only builders made in Rust can do this." },
   { code: "graph.missing_required_input", severity: "error", foundBy: "check", meaning: "A required input is not connected." },
   { code: "graph.missing_media_output", severity: "error", foundBy: "check", meaning: "A graph has no `media_output` node." },

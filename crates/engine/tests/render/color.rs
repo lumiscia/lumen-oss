@@ -779,7 +779,8 @@ fn emissive_light_past_a_half_float_stays_finite() {
                     crate::support::scene::render_3d_with(
                         json!({ "tone_mapping": tone_mapping }),
                         vec![
-                            json!({ "id": 1, "type": "shape_3d", "params": { "emissive": 1e30 } }),
+                            json!({ "id": 2, "type": "material_3d", "params": { "emissive": 1e30 } }),
+                            json!({ "id": 1, "type": "shape_3d", "in": { "material": 2 } }),
                         ],
                     ),
                     Expect::Custom(Box::new(|_| {})),

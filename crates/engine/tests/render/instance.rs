@@ -12,6 +12,11 @@ fn shape(id: u32, params: Value) -> Value {
     json!({ "id": id, "type": "shape_3d", "params": params })
 }
 
+fn with_material(mut object: Value, material: u32) -> Value {
+    object["in"]["material"] = json!(material);
+    object
+}
+
 fn instance(id: u32, scene: u32, params: Value) -> Value {
     json!({ "id": id, "type": "instance_3d", "params": params, "in": { "scene": scene } })
 }
@@ -35,9 +40,10 @@ fn render_3d(scene_nodes: Vec<Value>) -> crate::support::Scene {
 /// on it, of which the nodes `shown` are in the scene.
 fn on_ground(objects: Vec<Value>, shown: &[u32]) -> crate::support::Scene {
     let mut nodes = vec![
-        shape(
-            50,
-            json!({ "shape": "plane", "size": [8, 1, 8], "roughness": 1 }),
+        json!({ "id": 53, "type": "material_3d", "params": { "roughness": 1 } }),
+        with_material(
+            shape(50, json!({ "shape": "plane", "size": [8, 1, 8] })),
+            53,
         ),
         json!({ "id": 51, "type": "camera_3d", "params": {
             "position": [0, 5, 5], "look_at": true, "fov": 35 } }),
@@ -509,7 +515,8 @@ fn placements_kept_across_frames_draw_as_placements_evaluated_every_frame() {
             ""
         };
         let mut template = render_3d(vec![
-            shape(1, json!({ "size": [0.2, 0.3, 0.2], "unlit": true })),
+            json!({ "id": 9, "type": "material_3d", "params": { "unlit": true } }),
+            with_material(shape(1, json!({ "size": [0.2, 0.3, 0.2] })), 9),
             instance(
                 2,
                 1,

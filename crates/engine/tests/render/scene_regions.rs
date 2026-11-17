@@ -4,8 +4,8 @@ use lumen_engine::composition::Composition;
 use serde_json::{Value, json};
 
 use crate::support::scene::{
-    CENTER, SIZE, covered, framed, gradient, image, merge, ortho, plane, plate, render_3d,
-    render_3d_with,
+    CENTER, SIZE, covered, framed, gradient, image, material, merge, ortho, plane, plate,
+    render_3d, render_3d_with, with_material,
 };
 use crate::support::{
     BLUE, Case, Expect, Frame, GREEN, RED, Scene, TestMedia, check, gpu, render, scene,
@@ -536,7 +536,11 @@ fn a_planes_silhouette_is_antialiased_without_a_seam_at_the_default_supersample(
 fn opacity_scales_the_alpha_of_a_source() {
     let mut nodes = vec![plate(10)];
     nodes.extend([
-        plane(1, 10, json!({ "width": 4, "opacity": 0.5 })),
+        material(
+            11,
+            json!({ "unlit": true, "double_sided": true, "opacity": 0.5 }),
+        ),
+        with_material(plane(1, 10, json!({ "width": 4 })), 11),
         ortho(2, json!({})),
         merge(3, &[1, 2], json!({})),
     ]);

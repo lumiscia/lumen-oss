@@ -688,32 +688,23 @@ Params:
 
 ## `image_plane_3d`
 
-Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by default, so it looks as it does in 2D while it faces the camera. A plane is drawn blended, ordered by its centre among blended objects, so its transparent parts show what is behind it. Planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers separated in depth, and opaque shapes in front of or behind planes, are ordered correctly. `opaque` draws a plane that has no transparent pixels with the opaque objects instead. A source keeps its detail when it is shown at its own size or larger; shown smaller, it is filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample` averages it, unless `sampling` is `nearest`.
+Shows a raster, such as text or video, on a flat rectangle facing +Z. With no `material_3d` wired into `material` it is unlit and double-sided, so it looks as it does in 2D while it faces the camera. A `material_3d` applies exactly as it is set, so a default one makes the plane lit and single-sided; set its `unlit` and `double_sided` to keep the plane as it looks unwired. A plane is drawn blended, ordered by its centre among blended objects, so its transparent parts show what is behind it. Planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers separated in depth, and opaque shapes in front of or behind planes, are ordered correctly. `opaque` draws a plane that has no transparent pixels with the opaque objects instead. A source keeps its detail when it is shown at its own size or larger; shown smaller, it is filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample` averages it, unless `sampling` is `nearest`.
 
 Category: scene. Output: scene.
 
 Inputs:
 
 - `source`: raster, required
+- `material`: material, optional
 
 Params:
 
-- **`cast_shadows`** (boolean; default `true`) Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light, such as a bulb around a point light, needs this off.
-- **`color`** ([color](#type-color); default `[255,255,255,255]`) Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient fails `check`.
-- **`double_sided`** (boolean; default `true`) Draws the back of each face too.
-- **`emissive`** (number, at least 0; default `0`) Light the surface gives off on its own, as a multiple of its base colour.
-- **`metallic`** (number, 0 to 1; default `0`) 0 is a dielectric such as plastic, 1 a bare metal.
-- **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.
 - **`opaque`** (boolean; default `false`) Draws the plane with the opaque objects, writing depth, rather than blended. For a source with no transparent pixels, this orders the plane correctly against any geometry it intersects or crosses in depth. Alpha is then ignored: the colour's alpha, `opacity` and the source's alpha. A source pixel that is transparent shows its colour at full opacity, which is black for a fully transparent one, and a half-transparent one shows its colour undimmed. It casts a shadow over its whole rectangle. A shadow catcher is always drawn as one, so this has no effect on it.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
-- **`receive_shadows`** (boolean; default `true`) Darkens where shadows fall on it. An unlit surface shows none.
 - **`region`** ([region](#type-region); literal as a whole) Shows only this part of the source, `[x, y, width, height]` in the source's pixels from its top left, on a plane that covers just that part, so a plane showing a region is where it would be and as big as it would be with the whole source on it: it looks as a plane showing a `crop` of that region does, where `width` is still the width of the whole source, and `position`, `rotation` and `scale` pivot about the whole source's centre. Cut off at the source's edges as `crop` cuts its region, and a region with no pixel left shows nothing. Each of the four numbers takes an integer or an expression, which is truncated toward zero as `crop`'s are; the whole region cannot be an expression. Unset shows the whole source. Planes showing parts of one source share its texture and mip levels and draw together, so a region costs nothing beyond the plane, where a `crop` costs a raster the size of the source and a draw of its own. Sampling is kept inside the region, so what is outside it isn't meant to show. To keep it so under strong minification, the band along each edge of the region that is inside the source, and all of a narrow region, is sampled from a sharper mip level than its footprint, since a texel of a shared level can hold pixels from both sides of the edge: it can alias or shimmer there where a `crop` would be smooth, across the whole of a piece drawn much smaller than its pixels.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
-- **`roughness`** (number, 0 to 1; default `0.5`) 0 is a mirror finish, 1 fully diffuse.
 - **`sampling`** (`"nearest"` | `"linear"`; default `"linear"`) `nearest` gives each pixel the one source texel under it at any size, for pixel art: magnified, texels stay hard-edged squares; shown smaller, a pixel picks one texel instead of averaging the ones it covers, so it aliases and shimmers where `linear` is smooth. `render_3d`'s `supersample` still averages its samples within each pixel.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z, applied before the rotation.
-- **`shadow_catcher`** (boolean; default `false`) Shows nothing but the shadows falling on it, as transparent black that darkens what the render is composited over by as much light as the shadows take away, times the colour's alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D footage behind it.
-- **`unlit`** (boolean; default `true`) Shows the base colour as is, ignoring lights.
 - **`width`** (number, at least 0; default `1`) Width in world units, 1 being as wide as a default `shape_3d` box; the height follows the aspect ratio of the source's full display size.
 
 ## `instance_3d`
@@ -754,6 +745,25 @@ Params:
 - **`shadow_softness`** (number, at least 0; default `0.02`) Width in world units over which shadow edges blur, up to 16 texels of the light's shadow map, which is up to 4096 texels across and shared among the shadow-casting lights.
 - **`spot_angle`** (number, 0 to 179; default `45`) Full angle of a spot light's cone in degrees.
 - **`spot_softness`** (number, 0 to 1; default `0.2`) Fraction of a spot light's cone, from its edge, that fades out.
+
+## `material_3d`
+
+How a surface responds to light, for the 3D objects it is wired into through their `material` input. One `material_3d` can be wired to any number of objects, which then share its params, so changing it changes them all. Each param takes an expression as it does on any node. Objects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses an unlit, double-sided one.
+
+Category: scene. Output: material.
+
+Params:
+
+- **`cast_shadows`** (boolean; default `true`) Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light, such as a bulb around a point light, needs this off.
+- **`color`** ([color](#type-color); default `[255,255,255,255]`) Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient fails `check`.
+- **`double_sided`** (boolean; default `false`) Draws the back of each face too.
+- **`emissive`** (number, at least 0; default `0`) Light the surface gives off on its own, as a multiple of its base colour.
+- **`metallic`** (number, 0 to 1; default `0`) 0 is a dielectric such as plastic, 1 a bare metal.
+- **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.
+- **`receive_shadows`** (boolean; default `true`) Darkens where shadows fall on it. An unlit surface shows none.
+- **`roughness`** (number, 0 to 1; default `0.5`) 0 is a mirror finish, 1 fully diffuse.
+- **`shadow_catcher`** (boolean; default `false`) Shows nothing but the shadows falling on it, as transparent black that darkens what the render is composited over by as much light as the shadows take away, times the colour's alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D footage behind it.
+- **`unlit`** (boolean; default `false`) Shows the base colour as is, ignoring lights.
 
 ## `merge_3d`
 
@@ -827,33 +837,31 @@ Params:
 
 ## `shape_3d`
 
-A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position.
+A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit, single-sided and white unless a `material_3d` is wired into `material`.
 
 Category: scene. Output: scene.
+
+Inputs:
+
+- `material`: material, optional
 
 Params:
 
-- **`cast_shadows`** (boolean; default `true`) Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light, such as a bulb around a point light, needs this off.
-- **`color`** ([color](#type-color); default `[255,255,255,255]`) Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient fails `check`.
-- **`double_sided`** (boolean; default `false`) Draws the back of each face too.
-- **`emissive`** (number, at least 0; default `0`) Light the surface gives off on its own, as a multiple of its base colour.
-- **`metallic`** (number, 0 to 1; default `0`) 0 is a dielectric such as plastic, 1 a bare metal.
-- **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
-- **`receive_shadows`** (boolean; default `true`) Darkens where shadows fall on it. An unlit surface shows none.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
-- **`roughness`** (number, 0 to 1; default `0.5`) 0 is a mirror finish, 1 fully diffuse.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z, applied before the rotation.
-- **`shadow_catcher`** (boolean; default `false`) Shows nothing but the shadows falling on it, as transparent black that darkens what the render is composited over by as much light as the shadows take away, times the colour's alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D footage behind it.
 - **`shape`** (`"box"` | `"sphere"` | `"plane"` | `"cylinder"` | `"torus"` | `"cone"`; default `"box"`; literal only) Primitive to build.
 - **`size`** ([number, number, number]; default `[1,1,1]`) Width, height and depth in world units, along X, Y and Z before the rotation.
-- **`unlit`** (boolean; default `false`) Shows the base colour as is, ignoring lights.
 
 ## `text_3d`
 
-Text from its font's outlines, extruded into a solid with the material params of a `shape_3d`. The text is shaped as a `text` node with the same font, size and layout shapes it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing +Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the point of its box at `position`. Its geometry is built again only when the text, font, layout or bevel change, or its size or depth do with a bevel, so animating its transform or material costs no more than for a `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the `glyph_*` params of a `text` node have no counterpart.
+Text from its font's outlines, extruded into a solid, lit, single-sided and white unless a `material_3d` is wired into `material`. The text is shaped as a `text` node with the same font, size and layout shapes it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing +Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the point of its box at `position`. Its geometry is built again only when the text, font, layout or bevel change, or its size or depth do with a bevel, so animating its transform or material costs no more than for a `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the `glyph_*` params of a `text` node have no counterpart.
 
 Category: scene. Output: scene.
+
+Inputs:
+
+- `material`: material, optional
 
 Params:
 
@@ -861,12 +869,8 @@ Params:
 - **`alignment_vertical`** (`"top"` | `"middle"` | `"bottom"`; default `"middle"`; literal only) Which point of the text's box sits at `position` vertically: the top of its first line, its middle, or the bottom of its last line.
 - **`bevel_segments`** (integer, 0 to 16; default `4`) Steps of the bevel's quarter-round profile, up to 16: 1 is a flat 45° chamfer, and 0 is no bevel.
 - **`bevel_size`** (number, at least 0; default `0`) How far the bevel rounds off each glyph's edges in world units, in from the outline and in from the front and back, up to half of `depth`; 0 is none. The outline keeps its size where the sides meet the bevel. A glyph whose strokes are too thin for the bevel gets the widest one that fits it, so at regular weights bevels past about 0.04 of the font size stop growing on most glyphs.
-- **`cast_shadows`** (boolean; default `true`) Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light, such as a bulb around a point light, needs this off.
-- **`color`** ([color](#type-color); default `[255,255,255,255]`) Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient fails `check`.
 - **`content`** (string; default `"Text"`) Text to extrude, in one style. Line breaks start new lines. Whitespace is not drawn, and glyphs that their font draws from colour or bitmap tables, such as emoji, have no outline and are left out with a `font.no_outlines` warning. A node extrudes at most as many glyphs as the host's text glyph limit lets a `text` node draw, 16384 unless the host sets another, and at most 4000000 vertices and 12000000 indices; more is a render error. One glyph builds from an outline of at most 4096 commands, 64 contours and 8192 flattened points, and takes at most 262144 vertices and 786432 indices, and 3072 points where it is bevelled; a font with a glyph past any of these fails the render rather than the glyph being left out.
 - **`depth`** (number, at least 0; default `0.25`) Thickness along Z in world units, centred on `position`, so the front faces +Z at half of it. 0 is flat.
-- **`double_sided`** (boolean; default `false`) Draws the back of each face too.
-- **`emissive`** (number, at least 0; default `0`) Light the surface gives off on its own, as a multiple of its base colour.
 - **`font_family`** (string; default `"Roboto"`) Font family name, or `asset:<id>` for a font asset of the host's. A family no font answers to falls back as a `text` node's does.
 - **`font_features`** ([fontFeatures](#type-fontfeatures); default `{}`; literal as a whole) OpenType features by four-character tag, such as `{ "tnum": 1, "liga": 0 }`. 0 turns a feature off, 1 turns it on and larger values select an alternate. Values take literals or expressions, but the whole map cannot be an expression.
 - **`font_size`** (number, at least 0; default `1`) Font size in world units: the height of the font's em square, so capitals are about 0.7 of it tall. At 1, the default, a word is about as tall as a default `shape_3d` box is wide. 0 draws nothing, and so does anything under 0.000001. At most 1000000; `depth`, `bevel_size`, `max_width`, `letter_spacing` and `line_height` may be at most 100000 times it, and at most 1000000 themselves.
@@ -875,16 +879,10 @@ Params:
 - **`letter_spacing`** (number; default `0`) Extra space after every glyph in world units. Negative values tighten the text.
 - **`line_height`** (number, at least 0; default `0`) Distance between lines in world units. Use 0 for 1.2 × the font size.
 - **`max_width`** (number, at least 0; default `0`) Maximum line width in world units, at which lines wrap. Use 0 for automatic width.
-- **`metallic`** (number, 0 to 1; default `0`) 0 is a dielectric such as plastic, 1 a bare metal.
-- **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
-- **`receive_shadows`** (boolean; default `true`) Darkens where shadows fall on it. An unlit surface shows none.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
-- **`roughness`** (number, 0 to 1; default `0.5`) 0 is a mirror finish, 1 fully diffuse.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z, applied before the rotation.
-- **`shadow_catcher`** (boolean; default `false`) Shows nothing but the shadows falling on it, as transparent black that darkens what the render is composited over by as much light as the shadows take away, times the colour's alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D footage behind it.
 - **`text_transform`** (`"none"` | `"uppercase"` | `"lowercase"` | `"capitalize"`; default `"none"`) Case applied to the text.
-- **`unlit`** (boolean; default `false`) Shows the base colour as is, ignoring lights.
 
 ## `media_output`
 
