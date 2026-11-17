@@ -8,6 +8,7 @@ mod clips;
 mod color;
 mod depth;
 mod displacement;
+mod drawing;
 mod edits;
 mod effects;
 mod frame_graph;

@@ -936,9 +936,19 @@ impl<'a> FrameCx<'a> {
         self.frame
     }
 
-    #[cfg(feature = "3d")]
     pub(crate) fn node(&self, id: NodeId) -> Option<&'a NodeKind> {
         self.scope.node(id)
+    }
+
+    /// The scene being recorded, the frame count `tick` gives, and the paths `render_2d` keeps.
+    pub(crate) fn drawing_cache(
+        &mut self,
+    ) -> (
+        crate::composition::SceneId,
+        u64,
+        &mut crate::node::vector::drawing::DrawingCache,
+    ) {
+        (self.scope.id, self.st.tick, &mut self.st.drawings)
     }
 
     /// Counts frames recorded, for caches that keep what recent frames used.

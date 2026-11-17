@@ -62,6 +62,7 @@ pub(super) struct RecordState {
     pub(super) luts: crate::node::processing::color_grade::LutCache,
     /// Mip chains of the rasters nodes show smaller than their size.
     pub(super) mips: crate::gpu::mips::MipCache,
+    pub(super) drawings: crate::node::vector::drawing::DrawingCache,
 }
 
 impl RecordState {
@@ -72,6 +73,7 @@ impl RecordState {
         self.full_frames.clear();
         self.media.begin_frame();
         self.retained.begin_frame();
+        self.drawings.begin_frame(self.tick);
         #[cfg(feature = "3d")]
         self.scene.begin_frame(self.tick);
     }
@@ -103,6 +105,7 @@ impl RecordState {
         }
         self.statics.clear();
         self.paths.clear();
+        self.drawings.clear();
         #[cfg(feature = "3d")]
         self.scene.reset();
         self.shaders.clear();

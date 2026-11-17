@@ -12,7 +12,7 @@ pub(crate) const DRAWABLE_SHADER: &str = include_str!("drawable.wgsl");
 // Bit of `GpuDrawableTransform::flags`; keep in sync with `drawable.wgsl`.
 const TRANSFORM_LINEAR: u32 = 1;
 // Scales closer to zero than this hide the drawable, like the `transform` node's clamp.
-const MIN_SCALE: f64 = 0.000001;
+pub(super) const MIN_SCALE: f64 = 0.000001;
 // Times a text layer's scale is lowered to fit its layer, and the lowest factor it reaches.
 const MAX_LAYER_FITS: usize = 4;
 const MIN_LAYER_FACTOR: f64 = 1.0 / 1024.0;

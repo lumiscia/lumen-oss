@@ -3,22 +3,29 @@ use std::fmt;
 use super::ids::NodeId;
 use crate::error::GraphValidationError;
 
-/// What a node outputs and an input takes: a raster image, or a scene of objects, lights and a
-/// camera.
+/// What a node outputs and an input takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortKind {
+    /// A raster image.
     Raster,
+    /// A 3D scene of objects, lights and a camera.
     Scene,
+    /// A 2D outline without paint, which a fill or stroke styles.
+    Geometry,
+    /// Styled 2D drawables in order, the first lowest, which a `render_2d` rasterizes.
+    Drawing,
 }
 
 impl PortKind {
-    pub const ALL: [Self; 2] = [Self::Raster, Self::Scene];
+    pub const ALL: [Self; 4] = [Self::Raster, Self::Scene, Self::Geometry, Self::Drawing];
 
     /// The kind's name in the generated definitions.
     pub fn name(self) -> &'static str {
         match self {
             Self::Raster => "raster",
             Self::Scene => "scene",
+            Self::Geometry => "geometry",
+            Self::Drawing => "drawing",
         }
     }
 }

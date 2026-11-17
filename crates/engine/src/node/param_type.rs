@@ -153,6 +153,12 @@ impl NodeParamType for super::vector::dash::DashPattern {
     }
 }
 
+impl NodeParamType for super::vector::drawing::Shadows {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Custom(&super::vector::drawing::SHADOWS)
+    }
+}
+
 impl NodeParamType for super::scene::Region {
     fn property_kind() -> PropertyKind {
         PropertyKind::Custom(&super::scene::REGION)
