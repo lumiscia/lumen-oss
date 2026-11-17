@@ -3,7 +3,7 @@ use std::{fs, path::Path, time::Duration};
 use anyhow::{Context, Result};
 use clap::Parser;
 use lumen_engine::render::{
-    CancelToken, CheckReport, ImageRender, LocalMediaStore, Mp4Render, RenderOutput,
+    CancelToken, CheckReport, ImageRender, LocalMediaStore, Mp4Render, NodeTiming, RenderOutput,
     RenderProgress, RenderReport,
 };
 use lumen_engine::{
@@ -127,6 +127,7 @@ fn run(args: &RenderArgs) -> Result<()> {
                 choice,
                 &plan.output,
                 args.max_text_glyphs,
+                args.profile_nodes,
             )
         });
     }
@@ -136,6 +137,7 @@ fn run(args: &RenderArgs) -> Result<()> {
         &args.output,
         &plan,
         args.max_text_glyphs,
+        args.profile_nodes,
     )
 }
 
@@ -154,9 +156,11 @@ fn render_images(
     output: &Path,
     plan: &OutputPlan,
     max_text_glyphs: u32,
+    profile_nodes: bool,
 ) -> Result<()> {
     let mut render = ImageRender::open(composition, media_store, &plan.output, CancelToken::new())?;
     render.set_max_text_glyphs(max_text_glyphs as usize);
+    render.set_profile_nodes(profile_nodes);
     let last_frame = render.frames().end - 1;
     if let Some(frames) = &plan.only {
         render.render_only(frames.clone())?;
@@ -194,6 +198,7 @@ fn render_images(
             report.frames
         ),
     }
+    print_node_timing(&report);
     Ok(())
 }
 
@@ -216,6 +221,7 @@ fn render_mp4(
     choice: VideoEncoderChoice,
     render_output: &RenderOutput,
     max_text_glyphs: u32,
+    profile_nodes: bool,
 ) -> Result<()> {
     let mut render = Mp4Render::open(
         composition,
@@ -226,6 +232,7 @@ fn render_mp4(
         CancelToken::new(),
     )?;
     render.set_max_text_glyphs(max_text_glyphs as usize);
+    render.set_profile_nodes(profile_nodes);
     println!(
         "video_encoder name={} path={}",
         render.encoder(),
@@ -234,7 +241,49 @@ fn render_mp4(
     let report = render.run(&mut print_progress)?;
     print_warnings(&report.diagnostics);
     println!("{}", render_summary(&report));
+    print_node_timing(&report);
     Ok(())
+}
+
+/// How many nodes the breakdown by node lists.
+const NODES_PRINTED: usize = 10;
+
+/// The slowest nodes' own bind time per frame, then what all nodes took against the whole bind,
+/// when the render profiled nodes.
+fn print_node_timing(report: &RenderReport) {
+    if report.node_timing.is_empty() {
+        return;
+    }
+    let per_frame =
+        |duration: Duration| duration.as_secs_f64() * 1000.0 / f64::from(report.frames.max(1));
+    let shown = &report.node_timing[..report.node_timing.len().min(NODES_PRINTED)];
+    let width = |text: fn(&NodeTiming) -> usize| shown.iter().map(text).max().unwrap_or(0);
+    let (id_width, kind_width, template_width) = (
+        width(|node| node.node.to_string().len()),
+        width(|node| node.kind.len()),
+        width(|node| node.template.as_deref().map_or(0, str::len)),
+    );
+    println!("bind by node (ms per frame, top {NODES_PRINTED})");
+    for node in shown {
+        let template = node.template.as_deref().unwrap_or("");
+        let template = if template_width == 0 {
+            String::new()
+        } else {
+            format!("  {template:<template_width$}")
+        };
+        println!(
+            "  {:>id_width$}  {:<kind_width$}{template}  {:.2}",
+            node.node.to_string(),
+            node.kind,
+            per_frame(node.bind),
+        );
+    }
+    let nodes: Duration = report.node_timing.iter().map(|node| node.bind).sum();
+    println!(
+        "  all nodes {:.2} of bind_ms {:.2}",
+        per_frame(nodes),
+        per_frame(report.timing.bind),
+    );
 }
 
 /// The summary line, with passes per frame: those skipped because their output was kept from an

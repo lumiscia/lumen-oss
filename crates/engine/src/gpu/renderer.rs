@@ -175,6 +175,7 @@ pub struct GpuCompositionRenderer {
     single_tile_repeats: bool,
     max_text_glyphs: usize,
     max_image_side: u32,
+    profile_nodes: bool,
     cache_budgets: super::CacheBudgets,
     media_texture_cache: MediaTextureCache,
     #[cfg(feature = "ffmpeg")]
@@ -221,6 +222,7 @@ impl GpuCompositionRenderer {
             single_tile_repeats: false,
             max_text_glyphs: DEFAULT_MAX_TEXT_GLYPHS,
             max_image_side: u32::MAX,
+            profile_nodes: false,
             cache_budgets: super::CacheBudgets::default(),
             media_texture_cache: MediaTextureCache::new(),
             #[cfg(feature = "ffmpeg")]
@@ -234,6 +236,19 @@ impl GpuCompositionRenderer {
     /// before rendering: frames kept from before are not checked again.
     pub fn set_max_text_glyphs(&mut self, glyphs: usize) {
         self.max_text_glyphs = glyphs.min(MAX_TEXT_GLYPHS_CEILING);
+    }
+
+    /// Times each node's own bind from now on, which [`take_node_timing`](Self::take_node_timing)
+    /// returns. Off by default, and nothing is timed while it is off.
+    pub fn set_profile_nodes(&mut self, profile: bool) {
+        self.profile_nodes = profile;
+    }
+
+    /// The time nodes have spent binding since the last call, slowest first. A node's own time
+    /// leaves out the nodes it evaluates inside it. Empty unless [`set_profile_nodes`](Self::set_profile_nodes)
+    /// is on.
+    pub fn take_node_timing(&mut self) -> Vec<super::NodeTiming> {
+        self.graph.take_node_timing()
     }
 
     /// Sets the longest side an image is decoded at where its uses let it be reduced (only literal
@@ -538,6 +553,7 @@ impl GpuCompositionRenderer {
                 max_rebinds: max_font_rebinds(composition),
                 max_text_glyphs: self.max_text_glyphs,
                 max_image_side: self.max_image_side,
+                profile_nodes: self.profile_nodes,
             },
             media_cache: &mut self.media_texture_cache,
             text_atlas: &self.text_atlas,

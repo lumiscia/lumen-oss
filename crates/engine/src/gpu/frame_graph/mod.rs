@@ -44,6 +44,7 @@ pub(crate) use targets::{quantized_domain, size_class};
 mod ingest;
 #[cfg(test)]
 pub(crate) use ingest::YUV_TO_RGBA_SHADER;
+mod profile;
 mod retention;
 mod state;
 mod targets;
@@ -364,6 +365,8 @@ pub(crate) struct RecordSettings {
     pub(crate) max_text_glyphs: usize,
     /// The longest side an image is decoded at, below the device's own limit.
     pub(crate) max_image_side: u32,
+    /// Whether to time each node's own recording, which `take_node_timing` returns.
+    pub(crate) profile_nodes: bool,
 }
 
 pub(crate) struct RecordInput<'a> {
@@ -413,6 +416,9 @@ impl FrameGraph {
         if self.state.fingerprint != Some(fingerprint) {
             self.reset();
             self.state.fingerprint = Some(fingerprint);
+        }
+        if settings.profile_nodes {
+            self.state.profile.begin_frame();
         }
         let mut rebinds = 0;
         loop {
@@ -739,6 +745,11 @@ impl FrameGraph {
         std::mem::take(&mut self.state.diagnostics)
     }
 
+    /// The time nodes have spent recording since the last call, slowest first.
+    pub(crate) fn take_node_timing(&mut self) -> Vec<crate::gpu::types::NodeTiming> {
+        self.state.profile.take()
+    }
+
     /// Sets what each cache recording fills keeps, which takes effect as frames trim them.
     pub(crate) fn set_budgets(&mut self, budgets: super::CacheBudgets) {
         self.budgets = budgets;
@@ -849,6 +860,18 @@ fn internal(details: &str) -> crate::error::LumenError {
 }
 
 impl<'a> FrameCx<'a> {
+    /// Runs `run`, which evaluates `node`, and with node profiling on, counts the time it takes
+    /// less that of the nodes it evaluates inside it as `node`'s own.
+    pub(crate) fn time_node<T>(&mut self, node: &NodeKind, run: impl FnOnce(&mut Self) -> T) -> T {
+        if !self.settings.profile_nodes {
+            return run(self);
+        }
+        let timer = self.st.profile.start(self.scope.id);
+        let result = run(self);
+        self.st.profile.finish(timer, node, self.composition);
+        result
+    }
+
     pub(crate) fn expr(&self) -> ExpressionContext<'_> {
         self.expr_at(self.frame)
     }
@@ -1337,8 +1360,8 @@ pub(crate) fn ensure_texture_fits(
 /// `node` is in.
 fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
     let outer = cx.rec.replace_largest_acquired_texture(Size::new(0, 0));
-    let raster = node
-        .record(cx)
+    let raster = cx
+        .time_node(node, |cx| node.record(cx))
         .map_err(|error| locate_media_failure(node, &cx.scope, error));
     let largest = cx.rec.replace_largest_acquired_texture(outer);
     let raster = raster.and_then(|raster| {

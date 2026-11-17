@@ -100,6 +100,12 @@ impl<'a> ImageRender<'a> {
         self.renderer.set_max_text_glyphs(glyphs);
     }
 
+    /// Times each node's own bind, as [`GpuCompositionRenderer::set_profile_nodes`] does, and
+    /// reports it in [`RenderReport::node_timing`].
+    pub fn set_profile_nodes(&mut self, profile: bool) {
+        self.renderer.set_profile_nodes(profile);
+    }
+
     /// The range this render draws from.
     pub fn frames(&self) -> Range<u32> {
         self.frames.clone()
@@ -198,6 +204,7 @@ impl<'a> ImageRender<'a> {
             submitted_passes: self.renderer.submitted_pass_count(),
             skipped_passes: self.renderer.skipped_pass_count(),
             timing,
+            node_timing: self.renderer.take_node_timing(),
         })
     }
 }

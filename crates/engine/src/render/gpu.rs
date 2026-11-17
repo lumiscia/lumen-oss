@@ -6,7 +6,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{composition::Composition, gpu::GpuCompositionRenderer, media::VideoFrameResolver};
+use crate::{
+    composition::Composition,
+    gpu::{GpuCompositionRenderer, NodeTiming},
+    media::VideoFrameResolver,
+};
 use anyhow::Context;
 use lumen_ffmpeg::{EncodeCodec, QualityConfig, QualityRequest, VideoEncoderChoice};
 
@@ -194,6 +198,8 @@ pub struct RenderReport {
     pub submitted_passes: u64,
     pub skipped_passes: u64,
     pub timing: RenderTiming,
+    /// Each node's own bind time, slowest first. Empty unless the render profiled nodes.
+    pub node_timing: Vec<NodeTiming>,
 }
 
 /// Time spent per step, summed over the render.
@@ -318,6 +324,12 @@ impl<'a> Mp4Render<'a> {
         self.renderer.set_max_text_glyphs(glyphs);
     }
 
+    /// Times each node's own bind, as [`GpuCompositionRenderer::set_profile_nodes`] does, and
+    /// reports it in [`RenderReport::node_timing`].
+    pub fn set_profile_nodes(&mut self, profile: bool) {
+        self.renderer.set_profile_nodes(profile);
+    }
+
     /// The encoder that opened, which is a later candidate when an earlier one wouldn't.
     pub fn encoder(&self) -> &str {
         &self.encoder
@@ -376,6 +388,7 @@ impl<'a> Mp4Render<'a> {
             submitted_passes: self.renderer.submitted_pass_count(),
             skipped_passes: self.renderer.skipped_pass_count(),
             timing,
+            node_timing: self.renderer.take_node_timing(),
         })
     }
 }

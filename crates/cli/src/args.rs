@@ -120,6 +120,13 @@ pub(super) struct RenderArgs {
     )]
     pub(super) max_text_glyphs: u32,
 
+    /// Print each node's own bind time per frame, slowest first, after the summary
+    ///
+    /// Counts a node's own evaluation, not that of the nodes it takes as input. Timing is only
+    /// taken with this flag.
+    #[arg(long)]
+    pub(super) profile_nodes: bool,
+
     #[command(flatten)]
     pub(super) video: VideoArgs,
 

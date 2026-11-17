@@ -27,6 +27,7 @@ mod minify;
 #[cfg(feature = "3d")]
 mod model_features;
 mod motion;
+mod node_timing;
 mod noise;
 mod operators;
 mod paint;

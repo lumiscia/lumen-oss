@@ -63,6 +63,7 @@ pub(super) struct RecordState {
     /// Mip chains of the rasters nodes show smaller than their size.
     pub(super) mips: crate::gpu::mips::MipCache,
     pub(super) drawings: crate::node::vector::drawing::DrawingCache,
+    pub(super) profile: super::profile::NodeProfile,
 }
 
 impl RecordState {

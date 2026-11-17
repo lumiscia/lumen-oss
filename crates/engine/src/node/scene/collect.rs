@@ -942,7 +942,11 @@ impl Collected {
                     ),
                 ));
             }
-            if let Some(children) = self.add_node(cx, node_id, parent)? {
+            let children = match cx.node(node_id) {
+                Some(node) => cx.time_node(node, |cx| self.add_node(cx, node_id, parent)),
+                None => self.add_node(cx, node_id, parent),
+            };
+            if let Some(children) = children? {
                 pending.extend(children.into_iter().rev());
             }
         }
