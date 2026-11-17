@@ -739,6 +739,7 @@ impl Collected {
                 morph: None,
                 bounds: Bounds::EMPTY,
                 part: None,
+                instanced: None,
             },
             Extent::Local(local),
         );
