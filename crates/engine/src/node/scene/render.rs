@@ -148,6 +148,7 @@ const SCENE_3D_RESOLVE: ComputeProgram =
     ComputeProgram::spatial("scene-3d-resolve", RESOLVE_SHADER);
 
 const CLAMP_SAMPLER: u64 = 0x3d00_0001;
+const NEAREST_SAMPLER: u64 = 0x3d00_0006;
 const SHADOW_SAMPLER: u64 = 0x3d00_0002;
 const ENVIRONMENT_SAMPLER: u64 = 0x3d00_0003;
 /// Map samplers' keys are this with their settings in the low byte.
@@ -711,7 +712,7 @@ impl Render3d {
                 (3, Res::Buffer(run.key.mesh.indices)),
                 (5, rows),
                 (6, Res::Tex(run.key.texture.unwrap_or(unread))),
-                (7, Res::Sampler(clamp)),
+                (7, Res::Sampler(plain_raster_sampler(cx, &run.key, clamp))),
                 (8, tables.joints),
                 (
                     9,
@@ -1009,9 +1010,16 @@ impl RecordNode for Render3d {
                 (6, Res::Tex(run.key.texture.unwrap_or(unread))),
                 (
                     7,
-                    Res::Sampler(match run.key.texture {
-                        Some(texture) if mipped.contains(&texture) => mipped_sampler,
-                        _ => clamp,
+                    Res::Sampler(if run.key.nearest {
+                        nearest_sampler(cx)
+                    } else if run
+                        .key
+                        .texture
+                        .is_some_and(|texture| mipped.contains(&texture))
+                    {
+                        mipped_sampler
+                    } else {
+                        clamp
                     }),
                 ),
                 (8, joints),
@@ -1130,7 +1138,7 @@ fn shadow_pass(
                     (3, Res::Buffer(run.key.mesh.indices)),
                     (5, rows),
                     (6, Res::Tex(run.key.texture.unwrap_or(unread))),
-                    (7, Res::Sampler(clamp)),
+                    (7, Res::Sampler(plain_raster_sampler(cx, &run.key, clamp))),
                     (8, joints),
                     (
                         9,
@@ -1345,6 +1353,34 @@ impl Tables {
     }
 }
 
+/// The sampler a run reads its raster with outside the colour pass: `clamp`, or the nearest
+/// sampler for a raster shown unfiltered.
+fn plain_raster_sampler(
+    cx: &mut FrameCx<'_>,
+    key: &DrawKey<GpuMesh, TexRef>,
+    clamp: lumen_gpu::SamplerRef,
+) -> lumen_gpu::SamplerRef {
+    if key.nearest {
+        nearest_sampler(cx)
+    } else {
+        clamp
+    }
+}
+
+/// Reads only a raster's full-size level, at its nearest texel.
+fn nearest_sampler(cx: &mut FrameCx<'_>) -> lumen_gpu::SamplerRef {
+    cx.rec.sampler(NEAREST_SAMPLER, || wgpu::SamplerDescriptor {
+        label: Some("lumen 3d nearest raster sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        lod_max_clamp: 0.0,
+        ..wgpu::SamplerDescriptor::default()
+    })
+}
+
 fn clamp_sampler(cx: &mut FrameCx<'_>) -> lumen_gpu::SamplerRef {
     cx.rec.sampler(CLAMP_SAMPLER, || wgpu::SamplerDescriptor {
         label: Some("lumen 3d raster sampler"),
@@ -1410,7 +1446,7 @@ fn mip_rasters(
     // The most texels of each raster any object shows in a pixel.
     let mut worst: std::collections::HashMap<TexRef, f32> = Default::default();
     for object in &collected.scene.objects {
-        let Some(tex) = object.surface.texture else {
+        let Some(tex) = object.surface.texture.filter(|_| !object.surface.nearest) else {
             continue;
         };
         let Some(&(_, raster)) = rasters.get(&tex) else {

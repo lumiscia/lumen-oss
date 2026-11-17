@@ -20,6 +20,7 @@ use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
 use crate::gpu::evictions;
 use crate::gpu::frame_graph::{FrameCx, Raster};
 use crate::media::{AssetKind, MediaIdentity, ModelResolver, resolve_as};
+use crate::node::processing::RasterSampling;
 use crate::node::vector::paint::Paint;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, required_input};
 
@@ -577,6 +578,7 @@ fn model_surface(
     Surface {
         base_color: material.base_color,
         texture: None,
+        nearest: false,
         // Reading checked that every map names one of the model's textures.
         maps: material.maps.map(|&texture| textures[texture]),
         map_uvs: material.map_uvs,
@@ -829,6 +831,7 @@ impl Collected {
                     Blending::Blend
                 };
                 surface.texture = Some(source.tex);
+                surface.nearest = params.sampling == RasterSampling::Nearest;
                 let (rec, cache) = cx.scene_cache();
                 let (mesh, index_count) = cache.quad(rec);
                 self.quad = Some(mesh);
