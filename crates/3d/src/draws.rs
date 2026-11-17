@@ -8,7 +8,7 @@ use std::hash::Hash;
 use foldhash::HashMap;
 use glam::{Mat3, Mat4};
 
-use crate::{Blending, MAX_SCENE_NODES, Maps, Object, mirrors, normal_matrix};
+use crate::{Blending, MAX_SCENE_NODES, Maps, Object, normal_matrix};
 
 /// What objects drawn together share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -17,7 +17,7 @@ pub struct DrawKey<M, T> {
     pub shadow_catcher: bool,
     pub cast_shadows: bool,
     pub double_sided: bool,
-    /// Whether the object's world matrix mirrors it, which turns the faces that point away.
+    /// Whether the object's placement mirrors it, which turns the faces that point away.
     pub mirrored: bool,
     pub mesh: M,
     pub texture: Option<T>,
@@ -32,7 +32,7 @@ impl<M: Copy, T: Copy> DrawKey<M, T> {
             shadow_catcher: object.surface.shadow_catcher,
             cast_shadows: object.surface.cast_shadows && !object.surface.shadow_catcher,
             double_sided: object.surface.double_sided,
-            mirrored: mirrors(&object.world),
+            mirrored: object.mirrored(),
             mesh: object.mesh,
             texture: object.surface.texture,
             nearest: object.surface.nearest,
@@ -52,7 +52,8 @@ pub struct Row {
     pub normal: Mat3,
 }
 
-/// One draw: `count` rows from `first`, whose `vertices` start at `base` among all the table's.
+/// One draw: `count` rows from `first`, whose `vertices` start at `base` among all the table's,
+/// drawn `instances` times. A run of an instanced object holds its row alone, drawn once a copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Run<M, T> {
     pub key: DrawKey<M, T>,
@@ -60,6 +61,7 @@ pub struct Run<M, T> {
     pub count: u32,
     pub base: u32,
     pub vertices: u32,
+    pub instances: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,8 +100,9 @@ impl<M: Copy, T: Copy> DrawKey<M, T> {
 
 impl<M: Copy + Eq + Hash, T: Copy + Eq + Hash> Draws<M, T> {
     /// Shadow catchers first, then opaque objects, each grouped by what they bind and otherwise in
-    /// scene order, then blended ones from back to front as `view` sees them. Objects that draw nothing are left out: those
-    /// without indices, and those whose world matrix has no [`normal_matrix`].
+    /// scene order, then blended ones from back to front as `view` sees them. Objects that draw
+    /// nothing are left out: those without indices or copies, and those whose world matrix, or
+    /// copies' parent, has no [`normal_matrix`].
     pub fn new(objects: &[Object<M, T>], view: &Mat4) -> Result<Self, DrawError> {
         if objects.len() > MAX_SCENE_NODES {
             return Err(DrawError::TooManyObjects);
@@ -117,7 +120,12 @@ impl<M: Copy + Eq + Hash, T: Copy + Eq + Hash> Draws<M, T> {
         let mut order: Vec<(usize, Mat3)> = objects
             .iter()
             .enumerate()
-            .filter(|(_, object)| object.index_count > 0)
+            .filter(|(_, object)| {
+                object.index_count > 0
+                    && object.instanced.is_none_or(|copies| {
+                        copies.count > 0 && normal_matrix(&copies.parent).is_some()
+                    })
+            })
             .filter_map(|(index, object)| Some((index, normal_matrix(&object.world)?)))
             .collect();
         order.sort_by(|&(a, _), &(b, _)| {
@@ -146,8 +154,15 @@ impl<M: Copy + Eq + Hash, T: Copy + Eq + Hash> Draws<M, T> {
                 first_vertex,
                 normal,
             });
+            let instances = objects[index].instanced.map(|copies| copies.count);
+            let alone = |run: &Run<M, T>| {
+                instances.is_some()
+                    || objects[draws.rows[run.first as usize].object]
+                        .instanced
+                        .is_some()
+            };
             match draws.runs.last_mut() {
-                Some(run) if run.key == keys[index] => {
+                Some(run) if run.key == keys[index] && !alone(run) => {
                     run.count += 1;
                     run.vertices += count;
                 }
@@ -157,6 +172,7 @@ impl<M: Copy + Eq + Hash, T: Copy + Eq + Hash> Draws<M, T> {
                     count: 1,
                     base: first_vertex,
                     vertices: count,
+                    instances: instances.unwrap_or(1),
                 }),
             }
         }
@@ -186,6 +202,7 @@ mod tests {
             morph: None,
             bounds: crate::Bounds::EMPTY,
             part: None,
+            instanced: None,
         }
     }
 
@@ -214,6 +231,7 @@ mod tests {
                     count,
                     base,
                     vertices,
+                    ..
                 } = *run;
                 (key.mesh, key.blend, first, count, base, vertices)
             })
@@ -258,6 +276,43 @@ mod tests {
             .map(|row| (row.object, row.first_vertex))
             .collect();
         assert_eq!(rows, [(2, 0)]);
+    }
+
+    #[test]
+    fn instanced_objects_draw_in_runs_of_their_own_once_a_copy() {
+        let copies = |count, orientation| crate::Instanced {
+            list: 0,
+            first: 0,
+            count,
+            parent: Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0)),
+            orientation,
+        };
+        let mut upright = object(1, Blending::Opaque, 0.0);
+        upright.instanced = Some(copies(5, crate::Orientation::Upright));
+        let mut mirrored = upright.clone();
+        mirrored.instanced = Some(copies(2, crate::Orientation::Mirrored));
+        let mut none = upright.clone();
+        none.instanced = Some(copies(0, crate::Orientation::Upright));
+        let objects = [
+            object(1, Blending::Opaque, 0.0),
+            upright.clone(),
+            object(1, Blending::Opaque, 0.0),
+            upright,
+            mirrored,
+            none,
+        ];
+        let draws = Draws::new(&objects, &Mat4::IDENTITY).unwrap();
+        let runs: Vec<(u32, u32, bool)> = draws
+            .runs
+            .iter()
+            .map(|run| (run.count, run.instances, run.key.mirrored))
+            .collect();
+        // The parent mirrors the upright copies and turns the mirrored ones back, which group with
+        // the objects drawn once.
+        assert_eq!(
+            runs,
+            [(2, 1, false), (1, 2, false), (1, 5, true), (1, 5, true)]
+        );
     }
 
     #[test]

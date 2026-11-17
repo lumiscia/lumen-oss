@@ -251,6 +251,57 @@ pub struct Object<M, T> {
     /// from its top left, where they are and with the texture coordinates they have there. Its
     /// raster is read only from within the part. `None` draws the whole mesh.
     pub part: Option<[f32; 4]>,
+    /// For an object drawn once for each of a run of copies, which take their placements from a
+    /// list the drawer holds. `None` draws the object once, placed by `world`.
+    pub instanced: Option<Instanced>,
+}
+
+/// How the copies of an instanced object face, from the sign of their placements' determinant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Orientation {
+    Upright,
+    /// Flattened along one axis, which leaves faces across it their area.
+    Flat,
+    /// Turned inside out, as a negative scale on one axis does.
+    Mirrored,
+}
+
+impl Orientation {
+    fn sign(self) -> f64 {
+        match self {
+            Self::Upright => 1.0,
+            Self::Flat => 0.0,
+            Self::Mirrored => -1.0,
+        }
+    }
+}
+
+/// Copies of an object drawn at once. Copy `i` is placed by `parent * placement(first + i) *
+/// world`, where `placement` reads the drawer's list `list`, whose placements from `first` on all
+/// face as `orientation` says. Copies draw in no order among themselves, so blended surfaces are
+/// drawn as objects of their own instead.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Instanced {
+    pub list: u32,
+    pub first: u32,
+    pub count: u32,
+    pub parent: Mat4,
+    pub orientation: Orientation,
+}
+
+impl<M, T> Object<M, T> {
+    /// Whether the object's copies, or the object, are turned inside out, so that each face's
+    /// vertices wind the other way round.
+    pub fn mirrored(&self) -> bool {
+        match &self.instanced {
+            None => crate::mirrors(&self.world),
+            Some(copies) => {
+                // In f64, as `mirrors` works it out.
+                let det = |matrix: &Mat4| glam::Mat3::from_mat4(*matrix).as_dmat3().determinant();
+                det(&copies.parent) * det(&self.world) * copies.orientation.sign() < 0.0
+            }
+        }
+    }
 }
 
 /// What a scene holds at one frame.

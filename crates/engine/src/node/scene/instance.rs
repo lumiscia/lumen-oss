@@ -102,7 +102,10 @@ impl Default for Instance3dParams {
 /// scales about the origin of the scene's own coordinates.
 ///
 /// Copies share the input's meshes, textures, materials and joint matrices on the GPU, so every
-/// copy of a skinned model plays the same animation at the same time. Only the objects are copied:
+/// copy of a skinned model plays the same animation at the same time. Opaque surfaces draw all
+/// their copies at once from placements kept on the GPU, so a moving camera or parent costs nothing
+/// per copy, and neither does a frame when the params don't read the frame. Blended surfaces, and
+/// those showing a raster, are copied one by one, which costs more. Only the objects are copied:
 /// the input's lights and camera appear once, placed as they would be without the node, so
 /// copies don't multiply a scene's lighting. Shadows, fog and the environment treat a copy as any
 /// other object. An `instance_3d` may hold another, which multiplies their counts, up to 8 deep.

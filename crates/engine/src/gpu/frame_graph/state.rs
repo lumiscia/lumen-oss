@@ -82,6 +82,8 @@ impl RecordState {
     pub(super) fn trim(&mut self, recorder: &mut Recorder, budgets: &CacheBudgets) {
         self.luts.trim(recorder, self.tick, budgets.luts);
         #[cfg(feature = "3d")]
+        self.scene.trim(recorder, self.tick);
+        #[cfg(feature = "3d")]
         self.scene
             .cache
             .trim(recorder, self.tick, self.retained.models(), budgets);
@@ -107,7 +109,7 @@ impl RecordState {
         self.paths.clear();
         self.drawings.clear();
         #[cfg(feature = "3d")]
-        self.scene.reset();
+        self.scene.reset(recorder);
         self.shaders.clear();
         self.memo.clear();
         self.full_frames.clear();
@@ -120,6 +122,8 @@ impl RecordState {
     pub(super) fn release(&mut self, recorder: &mut Recorder) {
         self.transparent = None;
         self.dummy_float = None;
+        #[cfg(feature = "3d")]
+        self.scene.reset(recorder);
         #[cfg(feature = "3d")]
         self.scene.cache.release(recorder);
         self.luts.release(recorder);
@@ -409,15 +413,46 @@ impl ShaderCache {
 #[derive(Default)]
 pub(super) struct SceneState {
     pub(super) cache: crate::node::scene::collect::SceneCache,
-    /// The copies' local matrices of each `instance_3d` whose params don't read the frame.
+    /// The copies' placements of each `instance_3d` whose params don't read the frame.
     pub(super) placements: HashMap<GraphNodeKey, KeptPlacements>,
+    /// Copies of copies an `instance_3d` holds, by the node and which of its lists they are.
+    pub(super) flattened: HashMap<CopyListKey, KeptFlattened>,
+    /// The instance buffers of lists later frames draw again, by the node and list.
+    pub(super) buffers: HashMap<CopyListKey, KeptBuffer>,
 }
 
-/// The local matrix of each copy an `instance_3d` placed, for the count it placed.
+/// An `instance_3d` in a graph, and which of the lists of copies it draws from.
+#[cfg(feature = "3d")]
+pub(super) type CopyListKey = (GraphNodeKey, u32);
+
+#[cfg(feature = "3d")]
+type Placements = Arc<crate::node::scene::collect::Placements>;
+
+/// The placements of each copy an `instance_3d` placed, for the count it placed.
 #[cfg(feature = "3d")]
 pub(super) struct KeptPlacements {
     pub(super) count: u32,
-    pub(super) locals: Arc<[lumen_3d::glam::Mat4]>,
+    pub(super) placements: Placements,
+    pub(super) last_used: u64,
+}
+
+/// The placements of `outer`'s copies of the copies `inner` places from `first` on, `count` of
+/// them, placed by `between` within each outer copy.
+#[cfg(feature = "3d")]
+pub(super) struct KeptFlattened {
+    pub(super) outer: Placements,
+    pub(super) between: lumen_3d::glam::Mat4,
+    pub(super) inner: Placements,
+    pub(super) range: (u32, u32),
+    pub(super) placements: Placements,
+    pub(super) last_used: u64,
+}
+
+/// An instance buffer holding `placements`.
+#[cfg(feature = "3d")]
+pub(super) struct KeptBuffer {
+    pub(super) placements: Placements,
+    pub(super) buffer: lumen_gpu::BufRef,
     pub(super) last_used: u64,
 }
 
@@ -427,9 +462,26 @@ impl SceneState {
     fn begin_frame(&mut self, tick: u64) {
         self.placements
             .retain(|_, kept| kept.last_used.saturating_add(1) >= tick);
+        self.flattened
+            .retain(|_, kept| kept.last_used.saturating_add(1) >= tick);
     }
 
-    fn reset(&mut self) {
+    /// Frees the instance buffers that neither this frame nor the last one drew.
+    fn trim(&mut self, recorder: &mut Recorder, tick: u64) {
+        self.buffers.retain(|_, kept| {
+            let used = kept.last_used.saturating_add(1) >= tick;
+            if !used {
+                recorder.forget_buffer(kept.buffer);
+            }
+            used
+        });
+    }
+
+    fn reset(&mut self, recorder: &mut Recorder) {
         self.placements.clear();
+        self.flattened.clear();
+        for (_, kept) in self.buffers.drain() {
+            recorder.forget_buffer(kept.buffer);
+        }
     }
 }

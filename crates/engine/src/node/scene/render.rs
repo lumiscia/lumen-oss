@@ -6,7 +6,7 @@
 use bytemuck::{Pod, Zeroable};
 use lumen_3d::{
     Blending, Bounds, Camera, DrawKey, Draws, Filter, LightKind, Lighting, Map, MapUv, Object,
-    Projection, Row, Sampler, Scene, ShadowAtlas, Wrap,
+    Projection, Row, Sampler, ShadowAtlas, Wrap,
 };
 use lumen_gpu::{
     DEPTH_FORMAT, DepthTest, LayoutEntry, LayoutKind, RenderTargetSpec, Res, Size, TargetLoad,
@@ -62,6 +62,7 @@ const LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(27, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
     LayoutEntry::staged(28, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
     LayoutEntry::staged(29, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
+    LayoutEntry::staged(30, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
 ];
 /// What drawing depth or normals binds: the vertices, what cuts out masked and blended surfaces,
 /// and the normal map.
@@ -81,6 +82,7 @@ const DATA_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(17, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
     LayoutEntry::staged(28, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
     LayoutEntry::staged(29, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
+    LayoutEntry::staged(30, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
 ];
 /// What drawing the environment behind the scene binds.
 const BACKGROUND_LAYOUT: &[LayoutEntry] = &[
@@ -106,6 +108,7 @@ const SHADOW_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(20, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
     LayoutEntry::staged(28, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
     LayoutEntry::staged(29, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
+    LayoutEntry::staged(30, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
 ];
 
 const SCENE_3D: RenderProgram = RenderProgram {
@@ -302,7 +305,42 @@ pub(crate) struct GpuRun {
     pub(crate) first: u32,
     pub(crate) count: u32,
     pub(crate) base: u32,
-    _pad: u32,
+    /// Where the run's copies start in the instance buffer, or [`NO_INSTANCES`] for a run of
+    /// objects drawn once.
+    pub(crate) first_instance: u32,
+    /// What places a run's copies.
+    pub(crate) parent: [[f32; 4]; 4],
+    /// The shadow views each object or copy is drawn into, one draw instance each.
+    pub(crate) views: u32,
+    _pad: [u32; 3],
+}
+
+pub(crate) const NO_INSTANCES: u32 = u32::MAX;
+
+/// One copy's row of an instance buffer, 64 bytes; keep in sync with `Instance` in `scene.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Instance", source = SHADER)]
+pub(crate) struct GpuInstance {
+    /// The rows of the copy's placement, which is affine.
+    pub(crate) rows: [[f32; 4]; 3],
+    /// Reserved for a colour per copy; white.
+    pub(crate) tint: [f32; 4],
+}
+
+/// The rows of `placements`' instance buffer.
+fn gpu_instances(placements: &super::collect::Placements) -> Vec<GpuInstance> {
+    placements
+        .matrices()
+        .iter()
+        .map(|placement| {
+            let rows = placement.transpose();
+            GpuInstance {
+                rows: [rows.x_axis, rows.y_axis, rows.z_axis].map(Into::into),
+                tint: [1.0; 4],
+            }
+        })
+        .collect()
 }
 
 #[repr(C)]
@@ -454,7 +492,7 @@ fn gpu_object(
             flags |= flag;
         }
     }
-    if lumen_3d::mirrors(&object.world) {
+    if object.mirrored() {
         flags |= FLAG_MIRRORED;
     }
     if surface.receive_shadows {
@@ -693,7 +731,7 @@ impl Render3d {
         let globals = cx.rec.uniform(&globals(
             &camera, aspect, 0, &no_lights, params, [0.0; 4], 1,
         ));
-        let tables = Tables::new(cx, scene, &draws);
+        let tables = Tables::new(cx, collected, &draws, 1);
         let target = cx.rec.acquire(
             size,
             COLOR_FORMAT,
@@ -703,9 +741,10 @@ impl Render3d {
             .rec
             .acquire(size, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
         let clamp = clamp_sampler(cx);
-        for (drawn, (run, &rows)) in draws.runs.iter().zip(&tables.runs).enumerate() {
+        for (drawn, (run, &(rows, instances))) in draws.runs.iter().zip(&tables.runs).enumerate() {
             let program = cx.render_program(data_program, data_spec(cull(&run.key)), 0)?;
             let mut bindings = vec![
+                (30, instances),
                 (0, globals),
                 (1, tables.objects),
                 (2, Res::Buffer(run.key.mesh.vertices)),
@@ -749,7 +788,7 @@ impl Render3d {
                 depth,
                 load,
                 run.vertices,
-                1,
+                run.instances,
             );
         }
         cx.spatial_pass(&SCENE_3D_DATA, target, &data, output, size)?;
@@ -933,7 +972,8 @@ impl RecordNode for Render3d {
             supersample,
         ));
         let lights = cx.rec.storage_parts(&[bytemuck::cast_slice(&lights)]);
-        let tables = Tables::new(cx, scene, &draws);
+        let views = atlas.as_ref().map_or(1, |atlas| atlas.views.len() as u32);
+        let tables = Tables::new(cx, &collected, &draws, views);
 
         let color = cx.rec.acquire(
             target_size,
@@ -979,7 +1019,7 @@ impl RecordNode for Render3d {
             runs,
         } = tables;
 
-        for (drawn, (run, &rows)) in draws.runs.iter().zip(&runs).enumerate() {
+        for (drawn, (run, &(rows, instances))) in draws.runs.iter().zip(&runs).enumerate() {
             let depth_test = if run.key.blend {
                 DepthTest::Read
             } else {
@@ -1036,6 +1076,7 @@ impl RecordNode for Render3d {
                 (27, environment_brdf),
                 (28, weights),
                 (29, map_uvs),
+                (30, instances),
             ];
             for (slot, map) in (0..).zip(maps) {
                 let (texture, sampler) = match map {
@@ -1062,7 +1103,7 @@ impl RecordNode for Render3d {
                 depth,
                 load,
                 run.vertices,
-                1,
+                run.instances,
             );
         }
 
@@ -1122,7 +1163,8 @@ fn shadow_pass(
             )?;
             let views = atlas.views.len() as u32;
             let casting = draws.runs.iter().zip(runs);
-            for (cast, (run, &rows)) in casting.filter(|(run, _)| run.key.cast_shadows).enumerate()
+            for (cast, (run, &(rows, instances))) in
+                casting.filter(|(run, _)| run.key.cast_shadows).enumerate()
             {
                 let (base_color, base_color_sampler) = match run.key.maps.base_color {
                     Some(Map { texture, sampler }) => (
@@ -1149,14 +1191,21 @@ fn shadow_pass(
                     (20, shadow_views),
                     (28, weights),
                     (29, map_uvs),
+                    (30, instances),
                 ];
                 let load = if cast == 0 {
                     TargetLoad::Clear
                 } else {
                     TargetLoad::Load
                 };
-                cx.rec
-                    .draw_depth(program, &bindings, map, load, run.vertices, views);
+                cx.rec.draw_depth(
+                    program,
+                    &bindings,
+                    map,
+                    load,
+                    run.vertices,
+                    views * run.instances,
+                );
             }
             map
         }
@@ -1290,21 +1339,25 @@ fn resolve(
 }
 
 /// The storage both of `render_3d`'s ways of drawing `draws` bind: the object table and the
-/// tables it points into, and each run's uniform.
+/// tables it points into, and each run's uniform with the instance buffer it draws copies from.
 struct Tables {
     objects: Res,
     map_uvs: Res,
     weights: Res,
     joints: Res,
-    runs: Vec<Res>,
+    runs: Vec<(Res, Res)>,
 }
 
 impl Tables {
+    /// The tables of `collected`'s objects that `draws` draws, into `views` shadow views when
+    /// they are drawn into the shadow atlas.
     fn new(
         cx: &mut FrameCx<'_>,
-        scene: &Scene<GpuMesh, TexRef>,
+        collected: &Collected,
         draws: &Draws<GpuMesh, TexRef>,
+        views: u32,
     ) -> Self {
+        let scene = &collected.scene;
         let mut map_uvs = Vec::new();
         let objects: Vec<GpuObject> = draws
             .rows
@@ -1331,16 +1384,31 @@ impl Tables {
             joints.push([[0.0; 4]; 4]);
         }
         let joints = cx.rec.storage_parts(&[bytemuck::cast_slice(&joints)]);
+        let mut lists: Vec<Option<Res>> = vec![None; collected.lists.len()];
         let runs = draws
             .runs
             .iter()
             .map(|run| {
-                cx.rec.uniform(&GpuRun {
+                let copies = scene.objects[draws.rows[run.first as usize].object].instanced;
+                let instances = match copies {
+                    // Runs drawn once read no copy, and bind the object table in place of one.
+                    None => objects,
+                    Some(copies) => *lists[copies.list as usize].get_or_insert_with(|| {
+                        instance_buffer(cx, &collected.lists[copies.list as usize])
+                    }),
+                };
+                let uniform = cx.rec.uniform(&GpuRun {
                     first: run.first,
                     count: run.count,
                     base: run.base,
-                    _pad: 0,
-                })
+                    first_instance: copies.map_or(NO_INSTANCES, |copies| copies.first),
+                    parent: copies
+                        .map_or(lumen_3d::glam::Mat4::IDENTITY, |copies| copies.parent)
+                        .to_cols_array_2d(),
+                    views,
+                    _pad: [0; 3],
+                });
+                (uniform, instances)
             })
             .collect();
         Self {
@@ -1351,6 +1419,20 @@ impl Tables {
             runs,
         }
     }
+}
+
+/// The instance buffer of `list`: kept on the GPU while frames draw the same placements, else
+/// uploaded for this frame.
+fn instance_buffer(cx: &mut FrameCx<'_>, list: &super::collect::CopyList) -> Res {
+    if list.kept
+        && let Some(buffer) = cx.copy_buffer(list.key, &list.placements, || {
+            gpu_instances(&list.placements)
+        })
+    {
+        return Res::Buffer(buffer);
+    }
+    let records = gpu_instances(&list.placements);
+    cx.rec.storage_parts(&[bytemuck::cast_slice(&records)])
 }
 
 /// The sampler a run reads its raster with outside the colour pass: `clamp`, or the nearest
