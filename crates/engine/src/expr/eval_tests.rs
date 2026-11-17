@@ -16,6 +16,7 @@ fn test_context() -> ExpressionContext<'static> {
         glyph: None,
         instance: None,
         props: None,
+        held: None,
     }
 }
 

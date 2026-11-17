@@ -4,8 +4,6 @@
 //! their models hold a pose or their params' values hold. The `FrameCx` methods here read a node
 //! through what is kept and keep what it records.
 
-use std::sync::Arc;
-
 use foldhash::HashSet;
 use lumen_gpu::TextureDomain;
 
@@ -16,7 +14,7 @@ use super::{
 use crate::{
     composition::SceneId,
     error::RenderError,
-    expr::ExpressionValue,
+    expr::{ExpressionValue, same_value},
     media::{AssetKind, MediaIdentity, MediaStore},
     node::{Node, NodeId, NodeKind, required_input},
     scope::{FrameTime, MAX_GRAPH_DEPTH},
@@ -131,22 +129,9 @@ impl Retention {
     }
 }
 
-/// Whether `a` and `b` are the same values to every param, which tells `0` from `-0` and holds for
-/// two NaNs of the same bits, as the same inputs give the same output.
+/// Whether `a` and `b` are the same values to every param, by [`same_value`].
 fn same_values(a: &[ExpressionValue], b: &[ExpressionValue]) -> bool {
-    fn same_bits(a: &[f64], b: &[f64]) -> bool {
-        a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
-    }
-    a.len() == b.len()
-        && a.iter().zip(b).all(|pair| match pair {
-            (ExpressionValue::Number(a), ExpressionValue::Number(b)) => a.to_bits() == b.to_bits(),
-            (ExpressionValue::Vec2((ax, ay)), ExpressionValue::Vec2((bx, by))) => {
-                same_bits(&[*ax, *ay], &[*bx, *by])
-            }
-            (ExpressionValue::Vec3(a), ExpressionValue::Vec3(b)) => same_bits(a, b),
-            (ExpressionValue::Color(a), ExpressionValue::Color(b)) => same_bits(a, b),
-            (a, b) => a == b,
-        })
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_value(a, b))
 }
 
 /// The frames either side of `frame` among those a composition has.
@@ -403,7 +388,7 @@ impl FrameCx<'_> {
             if !seen.insert(id) {
                 continue;
             }
-            values.extend_from_slice(&self.own_values(id, frame)?);
+            self.own_values(id, frame, &mut values)?;
             let held = |input: &NodeId| {
                 self.st.statics.get(&(graph, *input)) == Some(&Staticness::WhileEqual)
             };
@@ -413,27 +398,15 @@ impl FrameCx<'_> {
         Some(values)
     }
 
-    /// The values the params of `id` itself that read the frame take at `frame`, evaluated once
-    /// per frame for every node that reads it with the same props, which can differ between two
-    /// reads of one frame.
-    fn own_values(&mut self, id: NodeId, frame: FrameTime) -> Option<Arc<[ExpressionValue]>> {
-        let props = self.scope.props.as_ref();
-        let key = (
-            (self.scope.id, self.path, id),
-            frame.value().to_bits(),
-            props.map_or(0, |props| Arc::as_ptr(props) as usize),
-        );
-        if let Some((_, values)) = self.st.frame_values.get(&key) {
-            return values.clone();
-        }
-        let values = self.evaluate_own_values(id, frame);
-        let entry = (self.scope.props.clone(), values.clone());
-        self.st.frame_values.insert(key, entry);
-        values
-    }
-
-    fn evaluate_own_values(&self, id: NodeId, frame: FrameTime) -> Option<Arc<[ExpressionValue]>> {
-        let expr = self.scope.expr_context(frame, self.media);
+    /// Adds to `values` those the params of `id` itself that read the frame take at `frame`,
+    /// which are evaluated again only once they may have changed.
+    fn own_values(
+        &self,
+        id: NodeId,
+        frame: FrameTime,
+        values: &mut Vec<ExpressionValue>,
+    ) -> Option<()> {
+        let expr = self.expr_at(frame);
         let node = self.scope.node(id)?;
         let mut contexts = vec![expr];
         if self.analytic_motion_blur()
@@ -443,7 +416,6 @@ impl FrameCx<'_> {
         {
             contexts.extend([expr.at_subframe(-offset), expr.at_subframe(offset)]);
         }
-        let mut values = Vec::new();
         let mut failed = false;
         for expr in &contexts {
             node.for_each_expression(&mut |expression| {
@@ -456,7 +428,7 @@ impl FrameCx<'_> {
                 }
             });
         }
-        (!failed).then(|| values.into())
+        (!failed).then_some(())
     }
 
     /// Records `node_id` stored at its full display size, for readers that read texel for texel.

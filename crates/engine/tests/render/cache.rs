@@ -3,6 +3,7 @@
 
 use lumen_engine::{
     composition::Composition,
+    expr::evaluation_count,
     gpu::{GpuCompositionRenderer, RenderTarget},
 };
 use lumen_gpu::wgpu;
@@ -735,5 +736,108 @@ fn a_held_clip_whose_props_differ_between_blur_samples_is_drawn_for_each() {
         let actual = at(&mut renderer, &composition, frame);
         let expected = uncached(&mut reference, &composition, frame);
         assert!(actual == expected, "frame {frame}");
+    }
+}
+
+#[test]
+fn params_that_hold_are_not_evaluated_again_while_their_output_is_kept() {
+    let layers = |position: Value| -> Composition {
+        canvas(vec![
+            background(1, [200, 30, 30, 255]),
+            square(2, position, 8, [20, 40, 220, 255]),
+            merge(3, &[1, 2]),
+        ])
+        .into()
+    };
+    let composition = layers(json!(
+        "=tween(vec2(4, 4), vec2(12, 4), 20, 4, 'out_expo') + vec2(clamp(frame - 30, 0, 1), 0)"
+    ));
+    let kept = layers(json!([4, 4]));
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    let mut literal = gpu.renderer();
+    at(&mut renderer, &composition, 0.0);
+    at(&mut literal, &kept, 0.0);
+    for frame in 1..6 {
+        let evaluations = evaluation_count();
+        let pixels = at(&mut renderer, &composition, f64::from(frame));
+        assert_eq!(evaluation_count(), evaluations, "frame {frame}");
+        let expected = uncached(&mut reference, &composition, f64::from(frame));
+        assert!(pixels == expected, "frame {frame}");
+        at(&mut literal, &kept, f64::from(frame));
+        assert_eq!(
+            renderer.recorded_pass_count(),
+            literal.recorded_pass_count(),
+            "frame {frame}"
+        );
+    }
+}
+
+#[test]
+fn a_template_read_with_other_props_in_one_frame_gets_their_values() {
+    // The blur's samples around frame 2.5 give the clip both props, each of which holds.
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": {"fps": 10, "duration_frames": 10},
+        "render_settings": {"width": 4, "height": 4},
+        "compositions": {"tile": {
+            "timeline": {"fps": 10, "duration_frames": 1},
+            "render_settings": {"width": 4, "height": 4},
+            "props": {"g": {"type": "number", "default": 0}},
+            "nodes": [
+                {"id": 1, "type": "background", "params": {
+                    "paint": "=rgba(prop('g'), tween(0, 255, 4, 2), 0, 255)"
+                }},
+                {"id": 2, "type": "media_output"}
+            ],
+            "connections": [{"from_node": 1, "to_node": 2, "to_port": "source"}]
+        }},
+        "nodes": [
+            {"id": 1, "type": "clip", "params": {
+                "composition": "tile", "duration": 1, "end": "hold",
+                "props": {"g": "=if(frame < 2.5, 40, 200)"}
+            }},
+            {"id": 2, "type": "motion_blur"},
+            {"id": 3, "type": "media_output"}
+        ],
+        "connections": [
+            {"from_node": 1, "to_node": 2, "to_port": "source"},
+            {"from_node": 2, "to_node": 3, "to_port": "source"}
+        ]
+    }))
+    .unwrap();
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    reference.set_static_output_reuse(false);
+    for frame in [1.0, 2.0, 2.5, 3.0, 2.0, 5.0] {
+        let actual = at(&mut renderer, &composition, frame);
+        let expected = uncached(&mut reference, &composition, frame);
+        assert!(actual == expected, "frame {frame}");
+    }
+}
+
+#[test]
+fn a_node_evaluates_again_only_its_moving_param_and_binds_with_the_values_found() {
+    let composition: Composition = canvas(vec![
+        background(1, [200, 30, 30, 255]),
+        json!({ "id": 2, "type": "shape", "params": {
+            "position": "=vec2(frame, 4)",
+            "width": "=tween(8, 4, 40, 4)",
+            "height": "=tween(8, 4, 40, 4, 'out_expo')",
+            "fill_paint": "=rgba(20, 40, tween(220, 0, 40, 4), 255)"
+        } }),
+        merge(3, &[1, 2]),
+    ])
+    .into();
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    at(&mut renderer, &composition, 0.0);
+    for frame in 1..6 {
+        let evaluations = evaluation_count();
+        let pixels = at(&mut renderer, &composition, f64::from(frame));
+        // The position, at the next frame, where retention looks to see whether the square holds.
+        // This frame's was found then, and both retention and the square's bind reuse it.
+        assert_eq!(evaluation_count() - evaluations, 1, "frame {frame}");
+        let expected = uncached(&mut reference, &composition, f64::from(frame));
+        assert!(pixels == expected, "frame {frame}");
     }
 }

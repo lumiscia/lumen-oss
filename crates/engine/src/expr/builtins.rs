@@ -420,6 +420,28 @@ pub(crate) fn mixed_keys_error(first: ValueKind, other: ValueKind) -> String {
 
 /// The value at `t` of a track of keys, which may be preceded by the default easing.
 fn keyframes(t: f64, args: &[ExpressionValue]) -> Result<ExpressionValue, String> {
+    let (default, keys) = track(args)?;
+    let Some(index) = last_key_at(t, &keys) else {
+        return Ok(keys[0].value.clone());
+    };
+    let key = keys[index];
+    let Some(next) = keys.get(index + 1) else {
+        return Ok(key.value.clone());
+    };
+    let ease = key.ease.unwrap_or(default);
+    // A hold doesn't interpolate, so it can switch between strings of any kind.
+    if ease == Easing::Named(NamedEasing::Hold) {
+        return Ok(key.value.clone());
+    }
+    let eased = ease.apply((t - key.at) / (next.at - key.at));
+    interpolate(&key.value, &next.value, eased)
+        .map_err(|error| key_morph_error(&error, [&key_name(key.at), &key_name(next.at)]))?
+        .ok_or_else(|| mixed_keys_error(key.value.kind(), next.value.kind()))
+}
+
+/// The default easing and the keys of `keyframes`' arguments after `t`, checked to be at least
+/// one, of one kind and in order.
+pub(super) fn track(args: &[ExpressionValue]) -> Result<(Easing, Vec<&Key>), String> {
     let (default, keys) = match args.split_first() {
         Some((ease, keys)) if !matches!(ease, ExpressionValue::Key(_)) => (easing(ease)?, keys),
         _ => (Easing::LINEAR, args),
@@ -443,24 +465,16 @@ fn keyframes(t: f64, args: &[ExpressionValue]) -> Result<ExpressionValue, String
             return Err(details);
         }
     }
-    if t.is_nan() || t < first.at {
-        return Ok(first.value.clone());
+    Ok((default, keys))
+}
+
+/// The last of `keys`, in order of `at`, at or before `t`, so of keys at the same `at` the later
+/// one, or `None` before the first or when `t` is NaN.
+pub(super) fn last_key_at(t: f64, keys: &[&Key]) -> Option<usize> {
+    if t.is_nan() || t < keys[0].at {
+        return None;
     }
-    // The last key at or before `t`, so of keys at the same `at`, the later one is reached.
-    let index = keys.partition_point(|key| key.at <= t) - 1;
-    let key = keys[index];
-    let Some(next) = keys.get(index + 1) else {
-        return Ok(key.value.clone());
-    };
-    let ease = key.ease.unwrap_or(default);
-    // A hold doesn't interpolate, so it can switch between strings of any kind.
-    if ease == Easing::Named(NamedEasing::Hold) {
-        return Ok(key.value.clone());
-    }
-    let eased = ease.apply((t - key.at) / (next.at - key.at));
-    interpolate(&key.value, &next.value, eased)
-        .map_err(|error| key_morph_error(&error, [&key_name(key.at), &key_name(next.at)]))?
-        .ok_or_else(|| mixed_keys_error(key.value.kind(), next.value.kind()))
+    Some(keys.partition_point(|key| key.at <= t) - 1)
 }
 
 /// Why the strings of two neighbouring keys don't interpolate. A string that isn't path data keys
@@ -526,7 +540,12 @@ fn progress(ctx: &ExpressionContext<'_>, start: f64, end: f64) -> f64 {
     if end <= start {
         return if frame >= start { 1.0 } else { 0.0 };
     }
-    ((frame - start) / (end - start)).clamp(0.0, 1.0)
+    progress_ratio(frame, start, end).clamp(0.0, 1.0)
+}
+
+/// Progress through frames `start..end` at `frame` before it is clamped, for `end > start`.
+pub(super) fn progress_ratio(frame: f64, start: f64, end: f64) -> f64 {
+    (frame - start) / (end - start)
 }
 
 /// `from` and `to` mixed by `t`, or `None` if they are values of kinds that don't mix.

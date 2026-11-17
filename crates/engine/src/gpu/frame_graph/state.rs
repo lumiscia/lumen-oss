@@ -28,11 +28,6 @@ const MAX_SHADERS: usize = 64;
 #[cfg(feature = "ffmpeg")]
 const VIDEO_IMPORT_IDLE_FRAMES: u64 = 600;
 
-pub(super) type FrameValues = (
-    Option<Arc<crate::scope::PropValues>>,
-    Option<Arc<[crate::expr::ExpressionValue]>>,
-);
-
 /// A warning's place, kind and [`crate::error::WarningKind::identity`].
 pub(super) type WarningKey = (
     crate::error::At,
@@ -47,9 +42,6 @@ pub(super) struct RecordState {
     pub(super) tick: u64,
     pub(super) paths: HashMap<(PathId, NodeId), PathId>,
     pub(super) memo: HashMap<MemoKey, Raster>,
-    /// What `FrameCx::own_values` found this frame, by node, frame and the address of the props
-    /// of its scope. Each entry holds those props, which keeps their address theirs.
-    pub(super) frame_values: HashMap<(InstanceKey, u64, usize), FrameValues>,
     pub(super) full_frames: HashMap<(TexRef, u32, u32), Raster>,
     pub(super) statics: HashMap<GraphNodeKey, Staticness>,
     /// The textures of external targets, by the address of the texture.
@@ -77,7 +69,6 @@ impl RecordState {
     pub(super) fn begin_frame(&mut self) {
         self.tick += 1;
         self.memo.clear();
-        self.frame_values.clear();
         self.full_frames.clear();
         self.media.begin_frame();
         self.retained.begin_frame();
@@ -116,7 +107,6 @@ impl RecordState {
         self.scene.reset();
         self.shaders.clear();
         self.memo.clear();
-        self.frame_values.clear();
         self.full_frames.clear();
         self.output = None;
         self.warned.clear();
