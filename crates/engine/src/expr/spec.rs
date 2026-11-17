@@ -262,6 +262,11 @@ impl BuiltinFn {
     pub fn name(self) -> &'static str {
         self.spec().name
     }
+
+    /// Whether it counts from the frame being evaluated without taking it as an argument.
+    pub(crate) const fn reads_frame(self) -> bool {
+        matches!(self, Self::Progress | Self::Tween)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

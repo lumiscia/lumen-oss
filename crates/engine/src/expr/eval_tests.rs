@@ -279,7 +279,7 @@ fn keys_ease_by_their_own_easing_or_the_default() {
 #[test]
 fn text_keys_switch_where_they_hold() {
     let text_at = |source: &str, frame: u32| match evaluate(source, frame) {
-        Ok(ExpressionValue::String(text)) => text,
+        Ok(ExpressionValue::String(text)) => text.to_string(),
         other => panic!("{source}: {other:?}"),
     };
     for track in [
@@ -328,12 +328,12 @@ fn path_data_keys_still_interpolate_and_hold() {
     let path = "keyframes(frame, key(0, 'M 0 0 L 10 0'), key(10, 'M 0 0 L 20 0'))";
     assert_eq!(
         evaluate(path, 5).unwrap(),
-        ExpressionValue::String("M 0 0 L 15 0".to_string())
+        ExpressionValue::String("M 0 0 L 15 0".into())
     );
     let hold = "keyframes(frame, 'hold', key(0, 'M 0 0 L 10 0'), key(10, 'M 0 0 Q 1 1 2 2'))";
     assert_eq!(
         evaluate(hold, 5).unwrap(),
-        ExpressionValue::String("M 0 0 L 10 0".to_string())
+        ExpressionValue::String("M 0 0 L 10 0".into())
     );
 }
 
@@ -587,14 +587,14 @@ fn format_writes_fixed_decimals_and_pads() {
     ] {
         assert_eq!(
             evaluate(source, 45).unwrap(),
-            ExpressionValue::String(expected.to_string()),
+            ExpressionValue::String(expected.into()),
             "{source}"
         );
     }
     let ExpressionValue::String(widest) = evaluate("format(1, 0, 64, '0')", 0).unwrap() else {
         panic!("expected a string");
     };
-    assert_eq!(widest, format!("{}1", "0".repeat(63)));
+    assert_eq!(&*widest, format!("{}1", "0".repeat(63)));
     // The width counts characters, not bytes.
     let ExpressionValue::String(wide) = evaluate("format(1, 0, 5, '日')", 0).unwrap() else {
         panic!("expected a string");
@@ -703,7 +703,7 @@ fn concat_joins_strings_and_numbers_like_a_text_param() {
     ] {
         assert_eq!(
             evaluate(source, 30).unwrap(),
-            ExpressionValue::String(expected.to_string()),
+            ExpressionValue::String(expected.into()),
             "{source}"
         );
     }
@@ -1632,4 +1632,67 @@ fn node_reads_in_later_copies_count_against_the_evaluation_budget() {
             );
         }
     }
+}
+
+#[test]
+fn folded_constants_give_the_values_of_the_unfolded_expression() {
+    let number = ExpressionValue::Number;
+    for (source, frame, expected) in [
+        ("(1190 + (-1 * 1260)) + frame", 0, number(-70.0)),
+        ("(1190 + (-1 * 1260)) + frame", 30, number(-40.0)),
+        (
+            "keyframes(frame, key(0, 0), key(5 + 5, 5 * 4, 'hold'))",
+            5,
+            number(10.0),
+        ),
+        (
+            "keyframes(frame, key(0, 0), key(5 + 5, 5 * 4, 'hold'))",
+            10,
+            number(20.0),
+        ),
+        (
+            "keyframes(frame, 'hold', key(0, 'a'), key(10, 'b'))",
+            9,
+            ExpressionValue::String("a".into()),
+        ),
+        ("tween(0, 10 * 2, 0, 5 + 5)", 0, number(0.0)),
+        ("tween(0, 10 * 2, 0, 5 + 5)", 5, number(10.0)),
+        ("tween(0, 10 * 2, 0, 5 + 5)", 12, number(20.0)),
+        ("if(1 > 0, 3, 4) + if(frame > 1, 10, 20)", 2, number(13.0)),
+        (
+            "vec2(atan2(0 * -1, -1), atan2(0, -1))",
+            0,
+            ExpressionValue::Vec2((-std::f64::consts::PI, std::f64::consts::PI)),
+        ),
+    ] {
+        assert_eq!(evaluate(source, frame).unwrap(), expected, "{source}");
+    }
+}
+
+#[test]
+fn a_failing_constant_subtree_fails_only_where_it_is_evaluated() {
+    assert!(Expression::parse("1 / 0").is_ok());
+    let error = evaluate("1 / 0", 0).unwrap_err().to_string();
+    assert!(error.contains("division by zero"), "{error}");
+    let error = evaluate("1 / (0 * -1)", 0).unwrap_err().to_string();
+    assert!(error.contains("division by zero"), "{error}");
+
+    let source = "if(frame > 5, 1 / 0, 2)";
+    assert_eq!(evaluate(source, 0).unwrap(), ExpressionValue::Number(2.0));
+    let error = evaluate(source, 6).unwrap_err().to_string();
+    assert!(error.contains("division by zero"), "{error}");
+}
+
+#[test]
+fn a_constant_subtree_is_one_step() {
+    let expression = Expression::parse("(1190 + (-1 * 1260)) + frame").unwrap();
+    let plan = &expression.plan;
+    let Op::Binary(lhs, BinaryOp::Add, _) = &plan.steps[plan.roots[0]].op else {
+        panic!("expected a sum at the root");
+    };
+    let Op::Constant(index) = &plan.steps[*lhs].op else {
+        panic!("expected a constant, got {:?}", plan.steps[*lhs].op);
+    };
+    assert_eq!(plan.constants[*index], ExpressionValue::Number(-70.0));
+    assert_eq!(plan.steps[*lhs].memo, None);
 }

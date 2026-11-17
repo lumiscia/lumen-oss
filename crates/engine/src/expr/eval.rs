@@ -146,14 +146,17 @@ impl Drop for EvaluationGuard {
 }
 
 /// An expression's AST with each distinct subtree as one step, so a subtree it repeats, as
-/// expanded easing curves repeat their progress, is evaluated once per evaluation. Steps are
-/// evaluated in the AST's order and only where it evaluates them, so `&&`, `||` and conditional
-/// branches stay lazy.
+/// expanded easing curves repeat their progress, is evaluated once per evaluation. A subtree that
+/// reads no global, node or frame is evaluated once when the plan is built, unless that fails.
+/// Steps are evaluated in the AST's order and only where it evaluates them, so `&&`, `||` and
+/// conditional branches stay lazy.
 #[derive(Debug)]
 pub(crate) struct EvalPlan {
     steps: Vec<Step>,
     /// The step of each expression the plan evaluates.
     roots: Vec<usize>,
+    /// The values of the steps that were evaluated when the plan was built.
+    constants: Vec<ExpressionValue>,
     memo_slots: usize,
     /// Memo slots below this one hold steps whose value is the same for every copy of an
     /// `instance_3d`.
@@ -192,6 +195,8 @@ impl Scratch {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Op {
     Literal(Literal),
+    /// An index into the plan's constants.
+    Constant(usize),
     Global(GlobalVar),
     Unary(UnaryOp, usize),
     Binary(usize, BinaryOp, usize),
@@ -247,6 +252,7 @@ impl Op {
         match self {
             Op::ReadProperty(..) | Op::NodeRef(_) | Op::MeasureNode(..) => true,
             Op::Literal(_)
+            | Op::Constant(_)
             | Op::Global(_)
             | Op::Unary(..)
             | Op::Binary(..)
@@ -335,6 +341,7 @@ impl Op {
                 ([Some(*condition), Some(*when_true), Some(*when_false)], &[])
             }
             Op::Literal(_)
+            | Op::Constant(_)
             | Op::Global(_)
             | Op::ReadProperty(..)
             | Op::NodeRef(_)
@@ -354,7 +361,7 @@ enum Slots {
 
 /// Whether `op` is cheaper to evaluate than to remember.
 fn is_leaf(op: &Op) -> bool {
-    matches!(op, Op::Literal(_) | Op::Global(_))
+    matches!(op, Op::Literal(_) | Op::Constant(_) | Op::Global(_))
 }
 
 impl EvalPlan {
@@ -368,7 +375,7 @@ impl EvalPlan {
     fn build(asts: &[&ExprNode], per_copy: bool) -> Self {
         let mut builder = PlanBuilder::default();
         let roots: Vec<usize> = asts.iter().map(|ast| builder.add(ast)).collect();
-        let ops = builder.ops;
+        let (ops, constants) = (builder.ops, builder.constants);
         let mut reads = vec![0_u32; ops.len()];
         // Whether a step reads the instance scope, whether it reads something that is not pure,
         // and whether a step that reads the instance scope reads it.
@@ -423,6 +430,7 @@ impl EvalPlan {
         Self {
             steps,
             roots,
+            constants,
             memo_slots: next[Slots::Local as usize],
             kept_slots,
             shared_slots,
@@ -443,6 +451,7 @@ impl EvalPlan {
         }
         let value = match &step.op {
             Op::Literal(Literal(value)) => value.clone(),
+            Op::Constant(index) => self.constants[*index].clone(),
             Op::Global(global) => global_value(*global, ctx)?,
             Op::Unary(op, value) => unary(*op, self.evaluate_step(*value, ctx, scratch)?)?,
             Op::Binary(lhs, op, rhs) => {
@@ -491,6 +500,7 @@ impl EvalPlan {
 #[derive(Default)]
 struct PlanBuilder {
     ops: Vec<Op>,
+    constants: Vec<ExpressionValue>,
     interned: foldhash::HashMap<Op, usize>,
 }
 
@@ -530,9 +540,50 @@ impl PlanBuilder {
         if let Some(&step) = self.interned.get(&op) {
             return step;
         }
-        self.ops.push(op.clone());
+        let folded = self.fold(&op).map(|value| {
+            self.constants.push(value);
+            Op::Constant(self.constants.len() - 1)
+        });
+        self.ops.push(folded.unwrap_or_else(|| op.clone()));
         self.interned.insert(op, self.ops.len() - 1);
         self.ops.len() - 1
+    }
+
+    /// The value of `op` when it reads nothing but values known now and evaluating it succeeds.
+    /// A failure is left for the evaluation, which may never reach it.
+    fn fold(&self, op: &Op) -> Option<ExpressionValue> {
+        let value = |step: &usize| match &self.ops[*step] {
+            Op::Literal(Literal(value)) => Some(value),
+            Op::Constant(index) => Some(&self.constants[*index]),
+            _ => None,
+        };
+        match op {
+            Op::Unary(unary_op, operand) => unary(*unary_op, value(operand)?.clone()).ok(),
+            Op::Binary(lhs, binary_op, rhs) => {
+                let (lhs, rhs) = (value(lhs)?.clone(), value(rhs)?.clone());
+                binary(lhs, *binary_op, || Ok(rhs)).ok()
+            }
+            Op::Conditional(condition, when_true, when_false) => {
+                let (condition, when_true, when_false) =
+                    (value(condition)?, value(when_true)?, value(when_false)?);
+                Some(
+                    if condition.as_bool() {
+                        when_true
+                    } else {
+                        when_false
+                    }
+                    .clone(),
+                )
+            }
+            Op::Builtin(builtin, args) if !op.reads_state() && !builtin.reads_frame() => {
+                let args: Vec<ExpressionValue> = args
+                    .iter()
+                    .map(|arg| value(arg).cloned())
+                    .collect::<Option<_>>()?;
+                evaluate_builtin(*builtin, &args, &ExpressionContext::default()).ok()
+            }
+            _ => None,
+        }
     }
 }
 

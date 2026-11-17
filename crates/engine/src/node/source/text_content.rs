@@ -470,10 +470,11 @@ impl DelegateEvaluable for TextContentDelegate {
     fn read(&self) -> Option<PropertyRead<'_>> {
         match self {
             Self::Text(text) => text.read(),
-            Self::Spans(_) => Some(PropertyRead::Value(
-                self.literal_text()
-                    .map(crate::expr::ExpressionValue::String),
-            )),
+            Self::Spans(_) => {
+                Some(PropertyRead::Value(self.literal_text().map(|text| {
+                    crate::expr::ExpressionValue::String(text.into())
+                })))
+            }
         }
     }
 }

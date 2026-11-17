@@ -113,7 +113,7 @@ impl PropKind {
     /// The value of this kind a prop without a default holds.
     pub fn zero(self) -> ExpressionValue {
         match self {
-            Self::String => ExpressionValue::String(String::new()),
+            Self::String => ExpressionValue::String("".into()),
             Self::Number => ExpressionValue::Number(0.0),
             Self::Color => ExpressionValue::Color([0.0; 4]),
             Self::Vec2 => ExpressionValue::Vec2((0.0, 0.0)),
@@ -149,7 +149,7 @@ impl PropKind {
         match self {
             Self::String => value
                 .as_str()
-                .map(|text| ExpressionValue::String(text.to_string()))
+                .map(|text| ExpressionValue::String(text.into()))
                 .ok_or_else(invalid),
             Self::Number => value
                 .as_f64()
@@ -631,7 +631,7 @@ pub(crate) fn prop_problem(
                     )
                 });
             }
-            Some(props) if !props.contains_key(name) => {
+            Some(props) if !props.contains_key(&**name) => {
                 problem.get_or_insert_with(|| {
                     format!(
                         "unknown prop `{name}` in `={source}`; {}",

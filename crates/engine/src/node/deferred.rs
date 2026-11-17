@@ -200,7 +200,7 @@ pub fn enum_value(value: ExpressionValue, def: &EnumDef) -> crate::Result<i64> {
         && let Some(option) = def
             .options
             .iter()
-            .find(|option| option.name == name || option.aliases.contains(&name.as_str()))
+            .find(|option| option.name == &**name || option.aliases.contains(&&**name))
     {
         return Ok(option.value);
     }
@@ -385,7 +385,7 @@ impl ParamValue for String {
     }
 
     fn to_expression(&self) -> Option<ExpressionValue> {
-        Some(ExpressionValue::String(self.clone()))
+        Some(ExpressionValue::String(self.as_str().into()))
     }
 }
 

@@ -10,14 +10,14 @@ pub use super::spec::{BuiltinFn, GlobalVar};
 pub enum ExpressionValue {
     Number(f64),
     Boolean(bool),
-    String(String),
+    String(Arc<str>),
     Vec2((f64, f64)),
     Vec3([f64; 3]),
     /// Straight-alpha RGBA with components in `0..=1`.
     Color([f64; 4]),
     /// Only builtins take easings and keys; no param does.
     Easing(Easing),
-    Key(Box<Key>),
+    Key(Arc<Key>),
 }
 
 /// A keyframe made by `key(at, value, ease?)`.
@@ -100,7 +100,7 @@ impl ExpressionValue {
 
     pub fn as_string(&self) -> String {
         match self {
-            Self::String(s) => s.clone(),
+            Self::String(s) => s.to_string(),
             Self::Number(n) => n.to_string(),
             Self::Boolean(b) => b.to_string(),
             Self::Vec2((x, y)) => format!("[{x}, {y}]"),
@@ -309,14 +309,13 @@ fn frame_dependent(ast: &ExprNode) -> bool {
             ExprNode::Global(global) => matches!(global, GlobalVar::Frame | GlobalVar::Time),
             ExprNode::Node(_) | ExprNode::PropertyValue(..) | ExprNode::Param(_) => true,
             // These count from a frame given implicitly, or read what isn't the arguments.
-            ExprNode::Builtin(builtin, _) => matches!(
-                builtin,
-                BuiltinFn::Progress
-                    | BuiltinFn::Tween
-                    | BuiltinFn::Prop
-                    | BuiltinFn::TextWidth
-                    | BuiltinFn::TextHeight
-            ),
+            ExprNode::Builtin(builtin, _) => {
+                builtin.reads_frame()
+                    || matches!(
+                        builtin,
+                        BuiltinFn::Prop | BuiltinFn::TextWidth | BuiltinFn::TextHeight
+                    )
+            }
             ExprNode::Literal(_)
             | ExprNode::Binary(..)
             | ExprNode::Unary(..)

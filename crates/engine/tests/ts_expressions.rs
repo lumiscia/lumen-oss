@@ -95,7 +95,7 @@ fn matches(value: &ExpressionValue, expected: &Value) -> bool {
             json::parse_color(expected)
                 == Some(color.map(|channel| (channel * 255.0).round() as u8))
         }
-        (ExpressionValue::String(text), Value::String(expected)) => text == expected,
+        (ExpressionValue::String(text), Value::String(expected)) => **text == **expected,
         _ => false,
     }
 }

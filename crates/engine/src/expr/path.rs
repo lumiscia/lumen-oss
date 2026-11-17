@@ -571,7 +571,7 @@ mod tests {
             .evaluate(&ctx)
             .map_err(|error| error.to_string())?
         {
-            ExpressionValue::String(data) => Ok(data),
+            ExpressionValue::String(data) => Ok(data.to_string()),
             other => panic!("{source} is not a string: {other:?}"),
         }
     }
