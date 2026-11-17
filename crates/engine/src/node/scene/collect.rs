@@ -114,6 +114,7 @@ pub(crate) struct SceneCache {
     no_shadows: Option<TexRef>,
     pub(super) environments: super::environment::EnvironmentCache,
     pub(super) texts: super::text_mesh::TextMeshes,
+    pub(super) solids: super::solid_mesh::SolidMeshes,
 }
 
 impl SceneCache {
@@ -132,14 +133,16 @@ impl SceneCache {
         self.model_bytes = 0;
         self.environments.release(rec);
         self.texts.release(rec);
+        self.solids.release(rec);
     }
 
-    /// The bytes of models, environment maps and text meshes held.
+    /// The bytes of models, environment maps and extruded meshes held, which are those of text,
+    /// extruded outlines and lathed profiles.
     pub(crate) fn held_bytes(&self) -> (u64, u64, u64) {
         (
             self.model_bytes,
             self.environments.bytes(),
-            self.texts.bytes(),
+            self.texts.bytes() + self.solids.bytes(),
         )
     }
 
@@ -156,8 +159,9 @@ impl SceneCache {
     }
 
     /// Frees models, least recently drawn first, while the cache holds more than the models'
-    /// budget, keeping those frame `tick` drew and those `kept` names, and frees text meshes the
-    /// same way.
+    /// budget, keeping those frame `tick` drew and those `kept` names, and frees text meshes and
+    /// the meshes of extruded and lathed outlines the same way, which share the text meshes'
+    /// budget.
     pub(crate) fn trim<'k>(
         &mut self,
         rec: &mut Recorder,
@@ -167,6 +171,8 @@ impl SceneCache {
     ) {
         let kept: std::collections::HashSet<&String> = kept.into_iter().collect();
         self.texts.trim(rec, tick, &kept, budgets.text_meshes);
+        let solid_budget = budgets.text_meshes.saturating_sub(self.texts.bytes());
+        self.solids.trim(rec, tick, &kept, solid_budget);
         if self.model_bytes <= budgets.models {
             return;
         }
@@ -710,6 +716,31 @@ impl Collected {
         self.extents.push(extent);
     }
 
+    /// Adds the object that draws `solid`, placed by `world`.
+    fn push_solid(
+        &mut self,
+        world: Mat4,
+        surface: Surface<TexRef>,
+        solid: super::solid_mesh::SolidMesh,
+    ) {
+        let local = solid.bounds;
+        self.push(
+            Object {
+                world,
+                mesh: solid.mesh,
+                first_index: 0,
+                index_count: solid.index_count,
+                surface,
+                center: world.transform_point3((local.min + local.max) * 0.5),
+                first_joint: None,
+                morph: None,
+                bounds: Bounds::EMPTY,
+                part: None,
+            },
+            Extent::Local(local),
+        );
+    }
+
     /// Sets every object's bounds in the world, which only shadows need: each skin's from the
     /// joints that move its vertices, once for every object it moves, and an instanced object's
     /// around all its copies.
@@ -863,6 +894,37 @@ impl Collected {
                         },
                         Extent::Local(local),
                     );
+                }
+            }
+            NodeKind::Extrude3d(extrude) => {
+                let params = extrude.params.eval(&ctx)?;
+                let geometry = required_input(node_id, "geometry", extrude.geometry)?;
+                let world = parent * placement(&params.placement).matrix();
+                let surface = material_surface::<super::Extrude3d>(
+                    cx,
+                    node_id,
+                    extrude.material,
+                    Material3dParams::default(),
+                )?;
+                if let Some(solid) =
+                    super::solid_mesh::extrude_mesh(cx, node_id, geometry, &params)?
+                {
+                    self.push_solid(world, surface, solid);
+                }
+            }
+            NodeKind::Lathe3d(lathe) => {
+                let params = lathe.params.eval(&ctx)?;
+                let geometry = required_input(node_id, "geometry", lathe.geometry)?;
+                let world = parent * placement(&params.placement).matrix();
+                let surface = material_surface::<super::Lathe3d>(
+                    cx,
+                    node_id,
+                    lathe.material,
+                    Material3dParams::default(),
+                )?;
+                if let Some(solid) = super::solid_mesh::lathe_mesh(cx, node_id, geometry, &params)?
+                {
+                    self.push_solid(world, surface, solid);
                 }
             }
             NodeKind::ImagePlane3d(plane) => {

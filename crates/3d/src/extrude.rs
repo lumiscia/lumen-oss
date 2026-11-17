@@ -91,7 +91,11 @@ impl ExtrudeLimits {
         max_indices: usize::MAX,
     };
 
-    fn check(max: usize, count: usize, limit: ExtrudeLimit) -> Result<(), LimitExceeded> {
+    pub(crate) fn check(
+        max: usize,
+        count: usize,
+        limit: ExtrudeLimit,
+    ) -> Result<(), LimitExceeded> {
         if count > max {
             Err(LimitExceeded { limit, max })
         } else {

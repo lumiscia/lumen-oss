@@ -46,6 +46,8 @@ mod scene_regions;
 #[cfg(feature = "3d")]
 mod scene_shadows;
 mod shaders;
+#[cfg(feature = "3d")]
+mod solids_3d;
 mod support;
 mod sweep_blurs;
 #[cfg(feature = "3d")]

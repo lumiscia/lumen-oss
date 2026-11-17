@@ -5,6 +5,8 @@
 
 mod build;
 mod collect;
+#[cfg(feature = "3d")]
+mod outline;
 mod record;
 mod tiles;
 
@@ -21,6 +23,10 @@ use crate::node::{
 };
 
 pub(crate) use build::DrawingCache;
+#[cfg(feature = "3d")]
+pub(crate) use collect::{Outline, Source, resolve_outline};
+#[cfg(feature = "3d")]
+pub(crate) use outline::{Contour, flatten};
 
 /// Where an outline or a merged drawing sits. Scale and rotation pivot about
 /// `position + anchor`.

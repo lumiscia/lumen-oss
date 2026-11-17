@@ -5,7 +5,7 @@
 use foldhash::HashMap;
 
 use super::super::dash::GpuDash;
-use super::super::drawable::GpuDrawableTransform;
+use super::super::drawable::{DrawableTransform, GpuDrawableTransform};
 use super::super::paint::{GpuPaint, Paint};
 use super::super::path::{MAX_PATH_COORDINATE, normalized_trim_range};
 use super::super::shape::ShapeGeometryKind;
@@ -24,7 +24,8 @@ const MAX_DRAWABLES: usize = 16384;
 const SHADOW_FADE_PER_SIGMA: f64 = 3.7599;
 
 /// What a drawing's outlines are drawn from.
-pub(super) enum Source {
+#[derive(Clone)]
+pub(crate) enum Source {
     Path {
         node: NodeId,
         data: String,
@@ -43,6 +44,85 @@ pub(super) struct Geometry {
     pub(super) position: [f32; 2],
     pub(super) transform: GpuDrawableTransform,
     pub(super) offset: f32,
+}
+
+/// What a chain of geometry nodes outputs: the outline of its source, placed by `transform`, and
+/// the offset that its `offset_2d` nodes grow it by, in untransformed pixels.
+pub(crate) struct Outline {
+    pub(crate) source: Source,
+    /// `position` is where the source is laid out from.
+    pub(crate) transform: DrawableTransform,
+    pub(crate) offset: f32,
+    /// Whether the chain holds an `offset_2d`, whatever its offset.
+    #[cfg_attr(not(feature = "3d"), expect(dead_code))]
+    pub(crate) offsets: bool,
+}
+
+/// The outline the geometry node `node_id` outputs, following `offset_2d` nodes to their source.
+/// `node_of` finds each node the walk reaches; a node of another kind fails as `N`.
+pub(crate) fn resolve_outline<'e, N: JsonNode>(
+    expr: &ExpressionContext<'_>,
+    node_id: NodeId,
+    mut node_of: impl FnMut(NodeId) -> crate::Result<&'e NodeKind>,
+) -> crate::Result<Outline> {
+    let mut offset = 0.0_f64;
+    let mut offsets = false;
+    let mut at = node_id;
+    loop {
+        let node = node_of(at)?;
+        let ctx = DelegateEvalContext { node_id: at, expr };
+        let (source, transform) = match node {
+            NodeKind::Offset2d(node) => {
+                let params = node.params.eval(&ctx)?;
+                offset += f64::from(number::<Offset2d>(
+                    at,
+                    "offset",
+                    params.offset,
+                    -MAX_PATH_COORDINATE,
+                )?);
+                offsets = true;
+                at = crate::node::required_input(at, "geometry", node.geometry)?;
+                continue;
+            }
+            NodeKind::Path2d(path) => {
+                let params = path.params.eval(&ctx)?;
+                (
+                    Source::Path {
+                        node: at,
+                        data: params.data,
+                    },
+                    params.transform.drawable(),
+                )
+            }
+            NodeKind::Shape2d(shape) => {
+                let params = shape.params.eval(&ctx)?;
+                // `max` also turns NaN to 0, which draws nothing.
+                let size = [params.width, params.height].map(|side| side.max(0.0) as f32);
+                (
+                    Source::Shape {
+                        kind: params.geometry_kind,
+                        size,
+                        border_radius: params.border_radius.max(0.0) as f32,
+                    },
+                    params.transform.drawable(),
+                )
+            }
+            // Validation keeps other kinds out of geometry inputs.
+            _ => {
+                return Err(RenderError::evaluating::<N>(
+                    at,
+                    "a geometry input takes path_2d, shape_2d and offset_2d nodes",
+                )
+                .into());
+            }
+        };
+        return Ok(Outline {
+            source,
+            transform,
+            offset: offset.clamp(-MAX_PATH_COORDINATE, MAX_PATH_COORDINATE) as f32,
+            offsets,
+        });
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -174,20 +254,32 @@ fn number<N: JsonNode>(node_id: NodeId, name: &str, value: f64, min: f64) -> cra
     Ok(value.clamp(min, MAX_PATH_COORDINATE) as f32)
 }
 
+/// The node `node_id`, counted among the `reached` nodes of a drawing.
+fn reach_node<'e>(
+    cx: &crate::gpu::frame_graph::FrameCx<'e>,
+    reached: &mut usize,
+    render_id: NodeId,
+    node_id: NodeId,
+) -> crate::Result<&'e NodeKind> {
+    *reached += 1;
+    if *reached > MAX_DRAWING_NODES {
+        return Err(RenderError::evaluating::<Render2d>(
+            render_id,
+            format!("the drawing reaches more than {MAX_DRAWING_NODES} nodes"),
+        )
+        .into());
+    }
+    cx.node(node_id).ok_or_else(|| {
+        RenderError::MissingNode {
+            at: At::node(node_id),
+        }
+        .into()
+    })
+}
+
 impl<'e> Collector<'_, 'e> {
     fn reach(&mut self, node_id: NodeId) -> crate::Result<&'e NodeKind> {
-        self.reached += 1;
-        if self.reached > MAX_DRAWING_NODES {
-            return Err(self.too_large(format!(
-                "the drawing reaches more than {MAX_DRAWING_NODES} nodes"
-            )));
-        }
-        self.cx.node(node_id).ok_or_else(|| {
-            RenderError::MissingNode {
-                at: At::node(node_id),
-            }
-            .into()
-        })
+        reach_node(self.cx, &mut self.reached, self.render_id, node_id)
     }
 
     fn too_large(&self, details: String) -> crate::error::LumenError {
@@ -308,70 +400,17 @@ impl<'e> Collector<'_, 'e> {
         if let Some(&index) = self.geometries.get(&node_id) {
             return Ok(index);
         }
-        let mut offset = 0.0_f64;
-        let mut at = node_id;
-        let (source, position, transform) = loop {
-            let node = self.reach(at)?;
-            let ctx = DelegateEvalContext {
-                node_id: at,
-                expr: &self.expr,
-            };
-            match node {
-                NodeKind::Offset2d(node) => {
-                    let params = node.params.eval(&ctx)?;
-                    offset += f64::from(number::<Offset2d>(
-                        at,
-                        "offset",
-                        params.offset,
-                        -MAX_PATH_COORDINATE,
-                    )?);
-                    at = crate::node::required_input(at, "geometry", node.geometry)?;
-                }
-                NodeKind::Path2d(path) => {
-                    let params = path.params.eval(&ctx)?;
-                    let transform = params.transform.drawable();
-                    let (x, y) = transform.position;
-                    break (
-                        Source::Path {
-                            node: at,
-                            data: params.data,
-                        },
-                        [x as f32, y as f32],
-                        transform.to_gpu(),
-                    );
-                }
-                NodeKind::Shape2d(shape) => {
-                    let params = shape.params.eval(&ctx)?;
-                    let transform = params.transform.drawable();
-                    let (x, y) = transform.position;
-                    // `max` also turns NaN to 0, which draws nothing.
-                    let size = [params.width, params.height].map(|side| side.max(0.0) as f32);
-                    break (
-                        Source::Shape {
-                            kind: params.geometry_kind,
-                            size,
-                            border_radius: params.border_radius.max(0.0) as f32,
-                        },
-                        [x as f32, y as f32],
-                        transform.to_gpu(),
-                    );
-                }
-                // Validation keeps other kinds out of geometry inputs.
-                _ => {
-                    return Err(RenderError::evaluating::<Render2d>(
-                        at,
-                        "a geometry input takes path_2d, shape_2d and offset_2d nodes",
-                    )
-                    .into());
-                }
-            }
-        };
+        let (cx, reached, render_id) = (self.cx, &mut self.reached, self.render_id);
+        let outline = resolve_outline::<Render2d>(&self.expr, node_id, |at| {
+            reach_node(cx, reached, render_id, at)
+        })?;
+        let (x, y) = outline.transform.position;
         let index = self.record.geometries.len();
         self.record.geometries.push(Geometry {
-            source,
-            position,
-            transform,
-            offset: offset.clamp(-MAX_PATH_COORDINATE, MAX_PATH_COORDINATE) as f32,
+            source: outline.source,
+            position: [x as f32, y as f32],
+            transform: outline.transform.to_gpu(),
+            offset: outline.offset,
         });
         self.geometries.insert(node_id, index);
         Ok(index)

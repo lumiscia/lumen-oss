@@ -1427,6 +1427,34 @@ fn scenes_and_rasters_only_wire_into_inputs_of_their_kind() {
 }
 
 #[test]
+fn a_raster_wired_into_a_solid_s_geometry_points_at_the_2d_geometry_nodes() {
+    let document = scene_document(
+        serde_json::json!([
+            { "id": 4, "type": "extrude_3d" },
+            { "id": 5, "type": "background" },
+            { "id": 6, "type": "lathe_3d" }
+        ]),
+        serde_json::json!([
+            { "from_node": 5, "to_node": 4, "to_port": "geometry" },
+            { "from_node": 5, "to_node": 6, "to_port": "geometry" }
+        ]),
+    );
+    let diagnostics = check_value(&document, None, None);
+    let wrong: Vec<&str> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "connection.wrong_kind")
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect();
+    assert_eq!(
+        wrong,
+        [
+            "node 4: input `geometry` takes a geometry, but node 5 outputs a raster: build the outline from path_2d, shape_2d and offset_2d nodes",
+            "node 6: input `geometry` takes a geometry, but node 5 outputs a raster: build the outline from path_2d, shape_2d and offset_2d nodes",
+        ]
+    );
+}
+
+#[test]
 fn a_gradient_where_3d_needs_a_solid_color_is_reported_at_its_param() {
     let gradient = serde_json::json!({
         "type": "linear",

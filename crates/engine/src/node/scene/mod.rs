@@ -8,13 +8,17 @@
 pub(crate) mod collect;
 #[cfg(feature = "3d")]
 mod environment;
+mod extrude_3d;
 mod instance;
+mod lathe_3d;
 #[cfg(feature = "3d")]
 pub(crate) mod mips;
 mod record;
 mod region;
 #[cfg(feature = "3d")]
 pub(crate) mod render;
+#[cfg(feature = "3d")]
+mod solid_mesh;
 mod text_3d;
 #[cfg(feature = "3d")]
 mod text_mesh;
@@ -23,6 +27,8 @@ mod text_mesh;
 pub use collect::check_model;
 #[cfg(feature = "3d")]
 pub use environment::check_environment;
+pub use extrude_3d::{Extrude3d, Extrude3dParams, Extrude3dParamsDelegate};
+pub use lathe_3d::{Lathe3d, Lathe3dParams, Lathe3dParamsDelegate};
 pub use text_3d::{Text3d, Text3dParams, Text3dParamsDelegate};
 
 pub use instance::{Instance3d, Instance3dParams, InstanceCount, MAX_INSTANCES};
