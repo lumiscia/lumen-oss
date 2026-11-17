@@ -164,6 +164,13 @@ fn writes_stills_sequences_and_ranged_videos() {
     });
     run(&[
         "--output",
+        out.join("list/shot_%d.png").to_str().unwrap(),
+        "--frame",
+        "8,5",
+    ]);
+    assert_eq!(names(&out.join("list")), ["shot_0005.png", "shot_0008.png"]);
+    run(&[
+        "--output",
         out.join("jseq/%03d.jpg").to_str().unwrap(),
         "--frames",
         "..3",

@@ -158,6 +158,9 @@ fn render_images(
     let mut render = ImageRender::open(composition, media_store, &plan.output, CancelToken::new())?;
     render.set_max_text_glyphs(max_text_glyphs as usize);
     let last_frame = render.frames().end - 1;
+    if let Some(frames) = &plan.only {
+        render.render_only(frames.clone())?;
+    }
     let directory = output
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty());

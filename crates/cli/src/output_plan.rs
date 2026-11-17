@@ -11,6 +11,8 @@ use crate::args::RenderArgs;
 pub(super) struct OutputPlan {
     pub(super) output: RenderOutput,
     pub(super) files: Files,
+    /// The frames of the output's range to render, in this order, when `--frame` lists them.
+    pub(super) only: Option<Vec<u32>>,
 }
 
 pub(super) enum Files {
@@ -111,11 +113,29 @@ impl RenderArgs {
                 output.display()
             ),
         };
-        if format.is_video() && self.image.frame.is_some() {
+        let frame_list = self.image.frame.as_deref().unwrap_or_default();
+        if format.is_video() && !frame_list.is_empty() {
             bail!("--frame is only supported when output is an image; use --frames for a video");
         }
-        if format.is_sequence() && self.image.frame.is_some() {
-            bail!("--frame renders one image; use --frames START..END for a sequence");
+        if !format.is_sequence() && frame_list.len() > 1 {
+            bail!(
+                "--frame {} renders {} frames, but {} is one image; name the output like frames/shot_%d.{} for a list",
+                frame_list
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                frame_list.len(),
+                output.display(),
+                extension
+            );
+        }
+        if let Some(duplicate) = frame_list
+            .iter()
+            .enumerate()
+            .find_map(|(at, frame)| frame_list[..at].contains(frame).then_some(frame))
+        {
+            bail!("--frame lists frame {duplicate} more than once");
         }
         if self.image.jpeg_quality.is_some() && !format.is_jpeg() {
             bail!("--jpeg-quality is only supported when output is .jpg");
@@ -135,13 +155,27 @@ impl RenderArgs {
                 extension
             );
         }
-        let frames = match (self.frames, self.image.frame) {
-            (Some(frames), _) => frames,
-            (None, Some(frame)) => FrameRange {
-                start: Some(frame),
-                end: None,
-            },
-            (None, None) => FrameRange::default(),
+        let (frames, only) = match (self.frames, frame_list) {
+            (Some(frames), _) => (frames, None),
+            (None, [frame]) if !format.is_sequence() => (
+                FrameRange {
+                    start: Some(*frame),
+                    end: None,
+                },
+                None,
+            ),
+            (None, [_, ..]) => {
+                let start = frame_list.iter().copied().min();
+                let last = frame_list.iter().copied().max().unwrap_or_default();
+                (
+                    FrameRange {
+                        start,
+                        end: last.checked_add(1),
+                    },
+                    Some(frame_list.to_vec()),
+                )
+            }
+            (None, []) => (FrameRange::default(), None),
         };
         Ok(OutputPlan {
             output: RenderOutput {
@@ -150,6 +184,7 @@ impl RenderArgs {
                 jpeg_quality: self.image.jpeg_quality,
             },
             files: pattern.map_or(Files::One, Files::Sequence),
+            only,
         })
     }
 
@@ -237,7 +272,15 @@ mod tests {
             message(&["--output", "o.mp4", "--frame", "3"])
                 .contains("--frame is only supported when output is an image")
         );
-        assert!(message(&["--output", "o_%d.png", "--frame", "3"]).contains("use --frames"));
+        assert!(
+            message(&["--output", "o.png", "--frame", "0,30"]).contains(
+                "--frame 0,30 renders 2 frames, but o.png is one image; name the output like frames/shot_%d.png for a list"
+            )
+        );
+        assert!(
+            message(&["--output", "o_%d.png", "--frame", "3,7,3"])
+                .contains("--frame lists frame 3 more than once")
+        );
         assert!(
             message(&["--output", "o.png", "--jpeg-quality", "80"])
                 .contains("only supported when output is .jpg")
@@ -279,6 +322,19 @@ mod tests {
         assert_eq!(video.format, OutputFormat::Mp4);
         assert_eq!(video.resolve(10).unwrap(), 0..4);
         assert_eq!(output(&["--output", "o.mp4"]).resolve(10).unwrap(), 0..10);
+    }
+
+    #[test]
+    fn a_frame_list_renders_exactly_those_frames_of_a_sequence() {
+        let plan = |flags: &[&str]| parse(flags).unwrap().plan().unwrap();
+        let listed = plan(&["--output", "f_%d.png", "--frame", "20,2,9"]);
+        assert_eq!(listed.only, Some(vec![20, 2, 9]));
+        assert_eq!(listed.output.resolve(30).unwrap(), 2..21);
+        let single = plan(&["--output", "f_%d.png", "--frame", "5"]);
+        assert_eq!(single.only, Some(vec![5]));
+        assert_eq!(single.output.resolve(30).unwrap(), 5..6);
+        assert_eq!(plan(&["--output", "f_%d.png"]).only, None);
+        assert_eq!(plan(&["--output", "o.png", "--frame", "5"]).only, None);
     }
 
     #[test]
