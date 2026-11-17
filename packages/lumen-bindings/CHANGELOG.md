@@ -1,5 +1,23 @@
 # @lumiscia/lumen-bindings
 
+## 0.6.0-beta.4
+
+### Patch Changes
+
+- 57bad86: Expressions evaluate faster because constant subexpressions are folded once and string values are shared instead of copied.
+- 9e27b2f: Animated params are evaluated again only on frames where their value can change, so compositions whose animations rest between moves render faster.
+- e0e29e1: `raster_multimerge` composites up to eight overlapping layers in one pass instead of one pass per layer, so a stack of large layers costs about a third of the GPU time it did.
+- 81b6cb4: Paths with a large fill offset or feather render several times faster: each pixel now measures only the segments that can decide its coverage, and skips that work entirely where the fill is known to cover all or none of it. Rendered output is unchanged.
+- f6d486e: The WebGPU preview no longer freezes for seconds on compositions whose frames the GPU can't finish in a frame's time, or that use many intermediate textures.
+
+  - `renderNow`, and so a playing preview, resolves once the GPU has finished the frame instead of as soon as it is submitted. Playback follows the GPU's pace and skips frames when it falls behind, where before the browser queued the work and then blocked. `renderMs` in `onStats` now includes the GPU's time.
+  - Intermediate textures are render attachments, so a browser zeroes a new one on the GPU instead of uploading a buffer of zeros for it.
+  - The `pooled_textures` budget of `CacheBudgets` counts only the textures the latest frame left unused. It used to count retained outputs and the frame's own textures too, so a composition holding more than the budget in those kept no spares and created its intermediate textures again every frame. The renderer can now hold up to that budget more than before.
+
+- d95fccc: Wide radial blurs about the canvas centre and long directional blurs render about ten times faster: a 1080p spin of several hundred degrees, or a line blur thousands of pixels long, now takes around 10 ms on an integrated GPU instead of 130–180 ms. Output stays the same, apart from up to a pixel of softening on the edges of shapes that the spin leaves in place, such as circles about its centre.
+- Updated dependencies [f6d486e]
+  - @lumiscia/lumen-preview@0.6.0-beta.4
+
 ## 0.6.0-beta.3
 
 ### Minor Changes
