@@ -15,6 +15,7 @@ pub(crate) const PATH_SHADER: &str = concat!(
     include_str!("paint/paint.wgsl"),
     include_str!("drawable.wgsl"),
     include_str!("vector_common.wgsl"),
+    include_str!("path_geometry.wgsl"),
     include_str!("path_renderer.wgsl")
 );
 
@@ -274,14 +275,14 @@ const PATH_FLATTENING_TOLERANCE: f32 = 0.25;
 const PATH_MAX_FLATTENING_ATTEMPTS: usize = 12;
 /// f32 loses whole pixels above this, and the limit keeps relative sums and arc arithmetic
 /// finite without tracking the current point. Fill offsets and feathers are clamped to it.
-const MAX_PATH_COORDINATE: f64 = 1e7;
+pub(super) const MAX_PATH_COORDINATE: f64 = 1e7;
 // Bits of `PathPoint::flags`; keep in sync with `path_renderer.wgsl`.
 pub(super) const POINT_END: u32 = 1;
 pub(super) const POINT_CLOSED: u32 = 2;
 /// The segment from the point is no edge of the fill, though it counts toward its crossings.
 pub(super) const POINT_FILL_HIDDEN: u32 = 4;
 
-fn flattening_tolerance(scale: (f64, f64)) -> f32 {
+pub(super) fn flattening_tolerance(scale: (f64, f64)) -> f32 {
     (f64::from(PATH_FLATTENING_TOLERANCE) / largest_scale(scale)) as f32
 }
 
@@ -549,7 +550,7 @@ fn axis_line(a: [f32; 2], b: [f32; 2]) -> Option<(usize, u32)> {
 /// or vertical ones on the same line, which are split where the others end first. Segments
 /// that only close an open contour for the fill are not split, as splitting them would stroke
 /// them. Splitting is skipped if it would take the path past `max_points`.
-fn hide_cancelled_edges(points: &mut Vec<PathPoint>, max_points: usize) {
+pub(super) fn hide_cancelled_edges(points: &mut Vec<PathPoint>, max_points: usize) {
     use std::collections::HashMap;
 
     let closes_open = |flags: u32| flags & (POINT_END | POINT_CLOSED) == POINT_END;
@@ -680,7 +681,7 @@ fn point_distance(from: [f32; 2], to: [f32; 2]) -> f32 {
     (to[0] - from[0]).hypot(to[1] - from[1])
 }
 
-fn normalized_trim_range(start: f64, end: f64) -> (f32, f32) {
+pub(super) fn normalized_trim_range(start: f64, end: f64) -> (f32, f32) {
     (start.clamp(0.0, 1.0) as f32, end.clamp(0.0, 1.0) as f32)
 }
 
@@ -716,7 +717,7 @@ fn normalize_contour_offsets(points: &mut [PathPoint]) {
 /// Sets each point's place in `dash`, measuring along its contour in f64 so that it stays
 /// precise however long the contour is. A contour's first point takes the place where the
 /// contour ends, after its closing segment.
-fn set_dash_phases(points: &mut [PathPoint], dash: &GpuDash) {
+pub(super) fn set_dash_phases(points: &mut [PathPoint], dash: &GpuDash) {
     let mut distance = 0.0;
     for index in 0..points.len() {
         let start = points[index].contour_start as usize;

@@ -16,8 +16,8 @@ const BAND_ENTRIES_PER_POINT: usize = 8;
 
 // Bits of a cell's count; keep in sync with `path_renderer.wgsl`. The fill covers all or none of
 // the cell, as `CELL_INSIDE` says, so the shader neither counts crossings nor measures fill edges.
-const CELL_FILL_DECIDED: u32 = 1 << 31;
-const CELL_INSIDE: u32 = 1 << 30;
+pub(super) const CELL_FILL_DECIDED: u32 = 1 << 31;
+pub(super) const CELL_INSIDE: u32 = 1 << 30;
 
 /// Length in `u32`s of the bands buffer for a path of up to `point_capacity` points.
 pub(super) fn band_capacity(point_capacity: usize) -> usize {
@@ -44,149 +44,284 @@ pub(super) fn band_capacity(point_capacity: usize) -> usize {
 pub(super) fn bin_path(
     uniforms: &mut PathUniforms,
     points: &[PathPoint],
-    (min, max): ([f32; 2], [f32; 2]),
+    bounds: ([f32; 2], [f32; 2]),
     drawn: &Drawn<'_>,
     canvas: [f32; 2],
     capacity: usize,
 ) -> Vec<u32> {
-    uniforms.screen_bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
-    uniforms.band_count = 0;
-    uniforms.grid_size = [0, 0];
-    // Untransformed size of a canvas pixel, at its largest.
-    let pixel = 1.0 / drawn.smallest_scale();
-    let offset = f64::from(uniforms.fill_offset);
-    let half_feather = f64::from(uniforms.fill_feather) * 0.5;
-    // No point inside the fill is deeper than half the box's smaller side, so a fill shrunk
-    // by more, past its fade and a pixel, covers nothing.
-    let max_depth = f64::from((max[0] - min[0]).min(max[1] - min[1])) * 0.5;
-    if offset + half_feather + pixel <= -max_depth {
-        uniforms.flags &= !STYLE_FILL_ENABLED;
-    }
-    let fill = uniforms.flags & STYLE_FILL_ENABLED != 0;
-    let stroke = uniforms.flags & STYLE_STROKE_ENABLED != 0;
-    let segments = path_segments(points, fill, stroke);
-    if segments.is_empty() || !(fill || stroke) || !drawn.is_visible() {
+    let Some(reach) = GridReach::new(uniforms, bounds, drawn) else {
         return Vec::new();
-    }
-
-    // The depth inside the outline within which the fill's coverage still varies.
-    let fill_depth = if fill {
-        (half_feather - offset).min(max_depth)
-    } else {
-        f64::NEG_INFINITY
     };
-    let extent = segment_extent(uniforms, drawn.smallest_scale());
-    let reach = extent.max(pixel + fill_depth);
-    let largest = [min, max]
-        .iter()
-        .flatten()
-        .fold(0.0, |largest: f64, value| {
-            largest.max(f64::from(*value).abs())
-        });
-    // Covers rounding differences between this binning and the shader's lookups and measures.
-    let margin = 1e-4 * (1.0 + largest + reach);
-    let (min, max) = (min.map(f64::from), max.map(f64::from));
-
-    let mut data = Vec::new();
-    let bands = if fill {
-        let budget = capacity.saturating_sub(2 + segments.len());
-        Bands::new(
-            &segments,
-            [min[1], max[1]],
-            pixel,
-            margin,
-            budget,
-            &mut data,
-        )
-    } else {
-        Bands::default()
-    };
-    let soft = offset != 0.0 || half_feather > 0.0;
-    let measure = Measure {
-        segments: &segments,
+    let bins = PathBins::new(
         points,
-        bands: &bands,
-        data: &data,
-        margin,
-        fill,
-        soft,
-        uniform: drawn.has_uniform_scale(),
-        reach,
-        fill_reach: if soft {
-            [pixel + fill_depth, pixel + offset + half_feather]
-        } else {
-            [pixel, pixel]
-        },
-        stroke_reach: if stroke {
-            f64::from(uniforms.stroke_width).max(0.0) * 0.5 + pixel
-        } else {
-            f64::NEG_INFINITY
-        },
-        covered_within: if soft {
-            offset - half_feather - pixel - margin
-        } else {
-            f64::NEG_INFINITY
-        },
-        empty_within: if soft {
-            -offset - half_feather - pixel - margin
-        } else {
-            f64::NEG_INFINITY
-        },
-    };
-    let pad = reach + margin;
-    let mut grid = Rect {
-        min: [min[0] - pad, min[1] - pad],
-        max: [max[0] + pad, max[1] + pad],
-    };
-    // Every pixel the shader draws lies on the canvas.
-    if let Some((low, high)) = drawn.local_bounds(canvas) {
-        let largest = low
-            .iter()
-            .chain(&high)
-            .fold(0.0, |largest: f64, value| largest.max(value.abs()));
-        let slack = margin + 1e-4 * largest;
-        let position = uniforms.position.map(f64::from);
-        for axis in 0..2 {
-            grid.min[axis] = grid.min[axis].max(low[axis] - position[axis] - slack);
-            grid.max[axis] = grid.max[axis].min(high[axis] - position[axis] + slack);
-        }
-        if grid.min[0] >= grid.max[0] || grid.min[1] >= grid.max[1] {
-            return Vec::new();
-        }
-    }
-    let grid_start = data.len();
-    let (size, cells) = measure.grid(
-        &grid,
-        pixel,
-        grid_start,
-        capacity.saturating_sub(grid_start),
+        bounds,
+        [reach.fill, reach.stroke],
+        reach.pixel,
+        reach.reach,
+        capacity,
     );
+    let start = bins.data.len();
+    let Some((_, cells)) = bins.grid(uniforms, &reach, points, drawn, canvas, start, capacity)
+    else {
+        return Vec::new();
+    };
+    let mut data = bins.data;
     data.extend(cells);
-
     if let Drawn::Once(_, motion) = drawn {
-        let extent = extent as f32;
-        let [x, y] = uniforms.position;
-        let (min, max) = (min.map(|value| value as f32), max.map(|value| value as f32));
-        uniforms.screen_bounds = motion.canvas_bounds(
-            uniforms.transform,
+        let (low, high) = reach.drawn_box(uniforms.position, bounds);
+        uniforms.screen_bounds = motion.canvas_bounds(uniforms.transform, low, high);
+    }
+    data
+}
+
+/// What a grid is binned for: the style fields of the uniforms it is measured from, in
+/// untransformed pixels, and how far its segments reach.
+pub(super) struct GridReach {
+    /// Untransformed size of a canvas pixel, at its largest.
+    pixel: f64,
+    fill: bool,
+    stroke: bool,
+    /// The depth inside the outline within which the fill's coverage still varies.
+    fill_depth: f64,
+    offset: f64,
+    half_feather: f64,
+    /// How far past the outline a segment can still cover part of a pixel.
+    extent: f64,
+    /// The shader's `reach`, within which it measures a segment.
+    reach: f64,
+}
+
+impl GridReach {
+    /// Measures a grid for the style of `uniforms`, turning off a fill shrunk past nothing.
+    /// `None` when nothing is drawn. `min` and `max` are the box around the path's points.
+    pub(super) fn new(
+        uniforms: &mut PathUniforms,
+        (min, max): ([f32; 2], [f32; 2]),
+        drawn: &Drawn<'_>,
+    ) -> Option<Self> {
+        uniforms.screen_bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        uniforms.band_count = 0;
+        uniforms.grid_size = [0, 0];
+        let pixel = 1.0 / drawn.smallest_scale();
+        let offset = f64::from(uniforms.fill_offset);
+        let half_feather = f64::from(uniforms.fill_feather) * 0.5;
+        // No point inside the fill is deeper than half the box's smaller side, so a fill shrunk
+        // by more, past its fade and a pixel, covers nothing.
+        let max_depth = f64::from((max[0] - min[0]).min(max[1] - min[1])) * 0.5;
+        if offset + half_feather + pixel <= -max_depth {
+            uniforms.flags &= !STYLE_FILL_ENABLED;
+        }
+        let fill = uniforms.flags & STYLE_FILL_ENABLED != 0;
+        let stroke = uniforms.flags & STYLE_STROKE_ENABLED != 0;
+        if !(fill || stroke) || !drawn.is_visible() {
+            return None;
+        }
+        let fill_depth = if fill {
+            (half_feather - offset).min(max_depth)
+        } else {
+            f64::NEG_INFINITY
+        };
+        let extent = segment_extent(uniforms, drawn.smallest_scale());
+        Some(Self {
+            pixel,
+            fill,
+            stroke,
+            fill_depth,
+            offset,
+            half_feather,
+            extent,
+            reach: extent.max(pixel + fill_depth),
+        })
+    }
+
+    /// The fill and stroke this grid measures.
+    pub(super) fn draws(&self) -> [bool; 2] {
+        [self.fill, self.stroke]
+    }
+
+    pub(super) fn reach(&self) -> f64 {
+        self.reach
+    }
+
+    /// The untransformed box, laid out at `position`, past which nothing of the path is drawn.
+    pub(super) fn drawn_box(
+        &self,
+        [x, y]: [f32; 2],
+        (min, max): ([f32; 2], [f32; 2]),
+    ) -> ([f32; 2], [f32; 2]) {
+        let extent = self.extent as f32;
+        (
             [min[0] - extent + x, min[1] - extent + y],
             [max[0] + extent + x, max[1] + extent + y],
-        );
+        )
     }
-    uniforms.band_origin = bands.origin as f32;
-    uniforms.band_scale = if bands.count > 0 {
-        (bands.count as f64 / bands.height) as f32
-    } else {
-        0.0
-    };
-    uniforms.band_count = bands.count as u32;
-    uniforms.grid_origin = grid.min.map(|value| value as f32);
-    uniforms.grid_scale =
-        [0, 1].map(|axis| (f64::from(size[axis]) / (grid.max[axis] - grid.min[axis])) as f32);
-    uniforms.grid_size = size;
-    uniforms.grid_start = grid_start as u32;
-    uniforms.reach = reach as f32;
-    data
+}
+
+/// A path's segments and bands, which every grid binned over it shares.
+pub(super) struct PathBins {
+    segments: Vec<Segment>,
+    bands: Bands,
+    /// A `(start, count)` pair per band, then each band's list, its starts counted from the
+    /// first pair.
+    pub(super) data: Vec<u32>,
+    /// The box around the points, and its largest absolute coordinate.
+    bounds: ([f64; 2], [f64; 2]),
+    largest: f64,
+}
+
+impl PathBins {
+    /// Lists the segments that `draws`, a fill and a stroke, read, and bins them into bands
+    /// when there is a fill. `pixel` and `reach` are the largest of every grid to be binned.
+    pub(super) fn new(
+        points: &[PathPoint],
+        (min, max): ([f32; 2], [f32; 2]),
+        [fill, stroke]: [bool; 2],
+        pixel: f64,
+        reach: f64,
+        capacity: usize,
+    ) -> Self {
+        let segments = path_segments(points, fill, stroke);
+        let largest = [min, max]
+            .iter()
+            .flatten()
+            .fold(0.0, |largest: f64, value| {
+                largest.max(f64::from(*value).abs())
+            });
+        let mut data = Vec::new();
+        let bands = if fill && !segments.is_empty() {
+            let budget = capacity.saturating_sub(2 + segments.len());
+            Bands::new(
+                &segments,
+                [f64::from(min[1]), f64::from(max[1])],
+                pixel,
+                margin(largest, reach),
+                budget,
+                &mut data,
+            )
+        } else {
+            Bands::default()
+        };
+        Self {
+            segments,
+            bands,
+            data,
+            bounds: (min.map(f64::from), max.map(f64::from)),
+            largest,
+        }
+    }
+
+    /// Entries the bands' `(start, count)` pairs take at the start of `data`.
+    pub(super) fn band_pairs(&self) -> usize {
+        2 * self.bands.count
+    }
+
+    /// Bins the grid `reach` measures over the bands, and fills in the band and grid fields of
+    /// `uniforms`. Returns the grid's side lengths in cells and its buffer: a pair per cell, its
+    /// starts counted from index `start` of the buffer the bands begin, then each cell's list.
+    /// `None` when nothing is drawn.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn grid(
+        &self,
+        uniforms: &mut PathUniforms,
+        reach: &GridReach,
+        points: &[PathPoint],
+        drawn: &Drawn<'_>,
+        canvas: [f32; 2],
+        start: usize,
+        capacity: usize,
+    ) -> Option<([u32; 2], Vec<u32>)> {
+        if self.segments.is_empty() {
+            return None;
+        }
+        let GridReach {
+            pixel,
+            fill,
+            offset,
+            half_feather,
+            fill_depth,
+            reach,
+            ..
+        } = *reach;
+        // Covers rounding differences between this binning and the shader's lookups and measures.
+        let margin = margin(self.largest, reach);
+        let soft = offset != 0.0 || half_feather > 0.0;
+        let measure = Measure {
+            segments: &self.segments,
+            points,
+            bands: &self.bands,
+            data: &self.data,
+            margin,
+            fill,
+            soft,
+            uniform: drawn.has_uniform_scale(),
+            reach,
+            fill_reach: if soft {
+                [pixel + fill_depth, pixel + offset + half_feather]
+            } else {
+                [pixel, pixel]
+            },
+            stroke_reach: if uniforms.flags & STYLE_STROKE_ENABLED != 0 {
+                f64::from(uniforms.stroke_width).max(0.0) * 0.5 + pixel
+            } else {
+                f64::NEG_INFINITY
+            },
+            covered_within: if soft {
+                offset - half_feather - pixel - margin
+            } else {
+                f64::NEG_INFINITY
+            },
+            empty_within: if soft {
+                -offset - half_feather - pixel - margin
+            } else {
+                f64::NEG_INFINITY
+            },
+        };
+        let pad = reach + margin;
+        let (min, max) = self.bounds;
+        let mut grid = Rect {
+            min: [min[0] - pad, min[1] - pad],
+            max: [max[0] + pad, max[1] + pad],
+        };
+        // Every pixel the shader draws lies on the canvas.
+        if let Some((low, high)) = drawn.local_bounds(canvas) {
+            let largest = low
+                .iter()
+                .chain(&high)
+                .fold(0.0, |largest: f64, value| largest.max(value.abs()));
+            let slack = margin + 1e-4 * largest;
+            let position = uniforms.position.map(f64::from);
+            for axis in 0..2 {
+                grid.min[axis] = grid.min[axis].max(low[axis] - position[axis] - slack);
+                grid.max[axis] = grid.max[axis].min(high[axis] - position[axis] + slack);
+            }
+            if grid.min[0] >= grid.max[0] || grid.min[1] >= grid.max[1] {
+                return None;
+            }
+        }
+        let budget = capacity.saturating_sub(start);
+        let (size, cells) = measure.grid(&grid, pixel, start, budget);
+        let bands = &self.bands;
+        uniforms.band_origin = bands.origin as f32;
+        uniforms.band_scale = if bands.count > 0 {
+            (bands.count as f64 / bands.height) as f32
+        } else {
+            0.0
+        };
+        uniforms.band_count = bands.count as u32;
+        uniforms.grid_origin = grid.min.map(|value| value as f32);
+        uniforms.grid_scale =
+            [0, 1].map(|axis| (f64::from(size[axis]) / (grid.max[axis] - grid.min[axis])) as f32);
+        uniforms.grid_size = size;
+        uniforms.grid_start = start as u32;
+        uniforms.reach = reach as f32;
+        Some((size, cells))
+    }
+}
+
+/// Covers rounding differences between binning and the shader's lookups and measures, for a
+/// path whose box reaches `largest` and whose segments reach `reach`.
+fn margin(largest: f64, reach: f64) -> f64 {
+    1e-4 * (1.0 + largest + reach)
 }
 
 /// Untransformed distance past the outline within which a segment can still cover part of a

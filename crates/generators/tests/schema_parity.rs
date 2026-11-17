@@ -5,6 +5,10 @@ const SOURCE_ID: i64 = 100;
 const OUTPUT_ID: i64 = 101;
 const SCENE_SOURCE_ID: i64 = 102;
 const RENDER_ID: i64 = 103;
+const GEOMETRY_SOURCE_ID: i64 = 104;
+const DRAWING_SOURCE_ID: i64 = 105;
+const STYLE_ID: i64 = 106;
+const RENDER_2D_ID: i64 = 107;
 
 fn schema() -> Value {
     let schema_json = lumen_generators::render_composition_schema_json().unwrap();
@@ -47,8 +51,10 @@ fn composition(nodes: Vec<Value>, connections: Vec<Value>) -> Value {
 }
 
 /// A renderable composition containing `node` with `params`, its required inputs fed by a
-/// background node or, for scene inputs, a shape, and its output wired to the media output,
-/// through a `render_3d` when it is a scene.
+/// background node or, for scene inputs, a shape, for geometry inputs a `path_2d` and for
+/// drawing inputs its `fill_2d`, and its output wired to the media output, through a
+/// `render_3d` when it is a scene and a `render_2d` when it is a drawing, which a geometry
+/// reaches through a `fill_2d`.
 fn composition_with_node(node: &NodeSchemaDef, params: Value) -> Value {
     let mut nodes = vec![json!({ "id": 1, "type": node.kind, "params": params })];
     let mut connections = Vec::new();
@@ -56,14 +62,21 @@ fn composition_with_node(node: &NodeSchemaDef, params: Value) -> Value {
         let source = match input.kind {
             PortKind::Raster => SOURCE_ID,
             PortKind::Scene => SCENE_SOURCE_ID,
+            PortKind::Geometry => GEOMETRY_SOURCE_ID,
+            PortKind::Drawing => DRAWING_SOURCE_ID,
         };
         connections.push(json!({ "from_node": source, "to_node": 1, "to_port": input.name }));
     }
-    if connections
-        .iter()
-        .any(|c| c["from_node"] == SCENE_SOURCE_ID)
-    {
+    let feeds = |id: i64| connections.iter().any(|c| c["from_node"] == id);
+    if feeds(SCENE_SOURCE_ID) {
         nodes.push(json!({ "id": SCENE_SOURCE_ID, "type": "shape_3d" }));
+    }
+    if feeds(GEOMETRY_SOURCE_ID) || feeds(DRAWING_SOURCE_ID) {
+        nodes.push(json!({ "id": GEOMETRY_SOURCE_ID, "type": "path_2d" }));
+    }
+    if feeds(DRAWING_SOURCE_ID) {
+        nodes.push(json!({ "id": DRAWING_SOURCE_ID, "type": "fill_2d" }));
+        connections.push(json!({ "from_node": GEOMETRY_SOURCE_ID, "to_node": DRAWING_SOURCE_ID, "to_port": "geometry" }));
     }
     let output = match node.output {
         PortKind::Raster => 1,
@@ -71,6 +84,20 @@ fn composition_with_node(node: &NodeSchemaDef, params: Value) -> Value {
             nodes.push(json!({ "id": RENDER_ID, "type": "render_3d" }));
             connections.push(json!({ "from_node": 1, "to_node": RENDER_ID, "to_port": "scene" }));
             RENDER_ID
+        }
+        PortKind::Geometry | PortKind::Drawing => {
+            let mut drawing = 1;
+            if node.output == PortKind::Geometry {
+                nodes.push(json!({ "id": STYLE_ID, "type": "fill_2d" }));
+                connections
+                    .push(json!({ "from_node": 1, "to_node": STYLE_ID, "to_port": "geometry" }));
+                drawing = STYLE_ID;
+            }
+            nodes.push(json!({ "id": RENDER_2D_ID, "type": "render_2d" }));
+            connections.push(
+                json!({ "from_node": drawing, "to_node": RENDER_2D_ID, "to_port": "drawing" }),
+            );
+            RENDER_2D_ID
         }
     };
     connections.push(json!({ "from_node": output, "to_node": OUTPUT_ID, "to_port": "source" }));

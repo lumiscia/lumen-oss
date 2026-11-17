@@ -301,12 +301,14 @@ mod tests {
 
     const RASTER: NodeId = NodeId::new(1);
     const SCENE: NodeId = NodeId::new(2);
+    const DRAWING: NodeId = NodeId::new(5);
     const MISSING: NodeId = NodeId::new(9);
 
     fn errors(node: &dyn Node) -> Vec<String> {
         let output_kind = |id| match id {
             RASTER => Some(PortKind::Raster),
             SCENE => Some(PortKind::Scene),
+            DRAWING => Some(PortKind::Drawing),
             _ => None,
         };
         let mut errors = Vec::new();
@@ -340,6 +342,17 @@ mod tests {
                 "connection.wrong_kind: node 4: input `texture` takes a raster, but node 2 outputs a scene: draw the scene into a raster through a render_3d, and wire that in"
             ]
         );
+        let scene = TestScene {
+            id: NodeId::new(4),
+            texture: Some(DRAWING),
+            ..TestScene::default()
+        };
+        assert_eq!(
+            errors(&scene),
+            [
+                "connection.wrong_kind: node 4: input `texture` takes a raster, but node 5 outputs a drawing: draw the drawing into a raster through a render_2d, and wire that in"
+            ]
+        );
     }
 
     #[test]
@@ -371,6 +384,13 @@ mod tests {
         assert_eq!(unsupported(merge(), true), Vec::<String>::new());
         assert_eq!(
             unsupported(NodeKind::Opacity(Opacity::default()), false),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            unsupported(
+                NodeKind::Render2d(crate::node::vector::drawing::Render2d::default()),
+                false
+            ),
             Vec::<String>::new()
         );
     }

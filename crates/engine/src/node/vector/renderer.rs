@@ -84,7 +84,8 @@ pub(crate) struct PathUniforms {
     pub(crate) grid_size: [u32; 2],
     /// Index in the bands buffer of the grid's first `(start, count)` pair.
     pub(crate) grid_start: u32,
-    pub(crate) _grid_pad: u32,
+    /// Index in the bands buffer of the first band's `(start, count)` pair.
+    pub(crate) band_start: u32,
     /// Canvas pixel of the output's first texel.
     pub(crate) origin: [i32; 2],
     pub(crate) _origin_pad: [i32; 2],

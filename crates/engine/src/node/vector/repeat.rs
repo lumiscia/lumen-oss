@@ -350,6 +350,9 @@ pub(crate) enum Drawn<'a> {
     Once(&'a DrawableTransform, &'a DrawableMotion),
     /// As the copies of its repeat.
     Copies(&'a DrawableCopies),
+    /// Under each of a set of affine maps that share their scales along their narrowest and
+    /// widest directions, as `render_2d` draws an outline and the shadows it casts.
+    Affine(&'a [GpuDrawableTransform], [f64; 2]),
 }
 
 impl Drawn<'_> {
@@ -358,6 +361,9 @@ impl Drawn<'_> {
         match self {
             Self::Once(transform, motion) => motion.is_visible(transform),
             Self::Copies(copies) => !copies.copies.is_empty(),
+            Self::Affine(transforms, scales) => {
+                scales[0] > 0.0 && transforms.iter().any(|transform| transform.opacity > 0.0)
+            }
         }
     }
 
@@ -366,6 +372,7 @@ impl Drawn<'_> {
         match self {
             Self::Once(transform, motion) => motion.smallest_scale(transform),
             Self::Copies(copies) => copies.smallest_scale(),
+            Self::Affine(_, scales) => scales[0].max(super::drawable::MIN_SCALE),
         }
     }
 
@@ -374,6 +381,7 @@ impl Drawn<'_> {
         match self {
             Self::Once(transform, motion) => motion.has_uniform_scale(transform),
             Self::Copies(copies) => copies.has_uniform_scale(),
+            Self::Affine(_, scales) => scales[0] == scales[1],
         }
     }
 
@@ -401,6 +409,7 @@ impl Drawn<'_> {
                     copy.motion.gpu_drawn(copy.gpu).for_each(&mut add);
                 }
             }
+            Self::Affine(transforms, _) => transforms.iter().copied().for_each(&mut add),
         }
         finite.then_some((min, max))
     }

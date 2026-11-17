@@ -106,7 +106,7 @@ pub(super) struct GpuDash {
 }
 
 impl GpuDash {
-    const SOLID: Self = Self {
+    pub(super) const SOLID: Self = Self {
         count: 0,
         period: 0.0,
         offset: 0.0,
@@ -116,13 +116,22 @@ impl GpuDash {
     /// Checks `pattern` and `offset`, naming the params `stroke_dash` and `stroke_dash_offset`
     /// in errors. A pattern that is empty or all zeros in f32 strokes solidly, as in SVG.
     pub(super) fn new(pattern: &DashPattern, offset: f64) -> Result<Self, String> {
+        Self::named(pattern, offset, ["stroke_dash", "stroke_dash_offset"])
+    }
+
+    /// [`Self::new`], naming the pattern and offset params `names` in errors.
+    pub(super) fn named(
+        pattern: &DashPattern,
+        offset: f64,
+        [pattern_name, offset_name]: [&str; 2],
+    ) -> Result<Self, String> {
         let lengths = &pattern.0;
-        check_count(lengths.len(), "stroke_dash")?;
+        check_count(lengths.len(), pattern_name)?;
         for (index, &length) in lengths.iter().enumerate() {
-            check_length(length, &format!("stroke_dash[{index}]"))?;
+            check_length(length, &format!("{pattern_name}[{index}]"))?;
         }
         if !offset.is_finite() {
-            return Err(format!("`stroke_dash_offset` must be finite, got {offset}"));
+            return Err(format!("`{offset_name}` must be finite, got {offset}"));
         }
         let count = lengths.len() * if lengths.len() % 2 == 1 { 2 } else { 1 };
         let mut gpu = Self {
@@ -139,6 +148,11 @@ impl GpuDash {
         }
         gpu.offset = offset.rem_euclid(gpu.period);
         Ok(gpu)
+    }
+
+    /// What the phases `phase` gives depend on.
+    pub(super) fn phase_key(&self) -> (u64, u64) {
+        (self.period.to_bits(), self.offset.to_bits())
     }
 
     pub(super) fn period(&self) -> f32 {

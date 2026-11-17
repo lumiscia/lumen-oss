@@ -334,7 +334,7 @@ pub enum GraphValidationError {
     InputAlreadyConnected { at: At, port: String },
     /// A connection whose source outputs another kind than the input takes.
     #[code("connection.wrong_kind")]
-    #[error("{at}: input `{port}` takes {expected}, but node {source_node} outputs {actual}: {}", wrong_kind_hint(*.expected))]
+    #[error("{at}: input `{port}` takes {expected}, but node {source_node} outputs {actual}: {}", wrong_kind_hint(*.expected, *.actual))]
     WrongInputKind {
         at: At,
         port: String,
@@ -413,11 +413,23 @@ impl GraphValidationError {
 pub(crate) const NO_3D_SUPPORT: &str =
     "this build of the engine has no 3D support, as it was built without the `3d` feature";
 
-/// What to do about wiring a node of the wrong kind into an input that takes `expected`.
-fn wrong_kind_hint(expected: PortKind) -> &'static str {
-    match expected {
-        PortKind::Raster => "draw the scene into a raster through a render_3d, and wire that in",
-        PortKind::Scene => "show the raster in the scene through an image_plane_3d",
+/// What to do about wiring a node that outputs `actual` into an input that takes `expected`.
+fn wrong_kind_hint(expected: PortKind, actual: PortKind) -> &'static str {
+    use PortKind::{Drawing, Geometry, Raster, Scene};
+    match (expected, actual) {
+        (Raster, Drawing) => "draw the drawing into a raster through a render_2d, and wire that in",
+        (Raster, Geometry) => {
+            "style the geometry with a fill_2d or stroke_2d, and draw that into a raster through a render_2d"
+        }
+        (Drawing, Geometry) => "style the geometry with a fill_2d or stroke_2d, and wire that in",
+        (Raster, _) => "draw the scene into a raster through a render_3d, and wire that in",
+        (Scene, Geometry | Drawing) => {
+            "draw it into a raster through a render_2d, and show that in the scene through an image_plane_3d"
+        }
+        (Scene, _) => "show the raster in the scene through an image_plane_3d",
+        (Geometry, Drawing) => "wire in the geometry the drawing's fill_2d or stroke_2d styles",
+        (Geometry, _) => "build the outline from path_2d, shape_2d and offset_2d nodes",
+        (Drawing, _) => "build the drawing from fill_2d, stroke_2d, shadow_2d and merge_2d nodes",
     }
 }
 

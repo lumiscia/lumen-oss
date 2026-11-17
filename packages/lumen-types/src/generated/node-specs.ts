@@ -198,6 +198,25 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { contrast: 1, exposure: 0, offset: 0 },
   },
   {
+    kind: "fill_2d",
+    name: "Fill 2D",
+    description: "Fills its geometry's outline with a paint, as a drawing of one drawable.",
+    category: "vector",
+    inputs: [
+      { name: "geometry", kind: "geometry", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "drawing" },
+    ],
+    params: [
+      { id: "edge_antialias", name: "Edge Antialias", kind: "bool", description: "Antialiases the fill's edge from its distance. Off, every pixel is covered or not.", defaultValue: true },
+      { id: "feather", name: "Feather", kind: "float", description: "Width in the geometry's untransformed pixels over which the fill's edge fades out,\ncentred on the edge.", defaultValue: 0, constraints: { min: 0, step: 0.5 } },
+      { id: "opacity", name: "Opacity", kind: "float", description: "Opacity multiplier.", defaultValue: 1, constraints: { min: 0, max: 1, step: 0.01 } },
+      { id: "paint", name: "Paint", kind: "paint", description: "Fill paint. Accepts a solid color or gradient, laid out in the geometry's untransformed\npixels.", defaultValue: [255, 255, 255, 255] },
+    ],
+    defaultParams: { edge_antialias: true, feather: 0, opacity: 1, paint: [255, 255, 255, 255] },
+  },
+  {
     kind: "fractal_noise",
     name: "Fractal Noise",
     description: "Generates opaque grey fractal noise, the same for a given seed and evolution.",
@@ -413,6 +432,25 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { blend_mode: "normal", feather: 0, invert: false, mask_mode: "alpha", opacity: 1 },
   },
   {
+    kind: "merge_2d",
+    name: "Merge 2D",
+    description: "Draws drawings one over another in input order, the first lowest, placing them together by\nits transform. The transform applies to everything inside, strokes and shadows included.",
+    category: "vector",
+    inputs: [
+      { name: "drawings", kind: "drawing", optional: true, variadic: true },
+    ],
+    outputs: [
+      { name: "output", kind: "drawing" },
+    ],
+    params: [
+      { id: "anchor", name: "Anchor", kind: "vec2", description: "Pivot for scale and rotation, in pixels relative to `position`.", defaultValue: [0, 0] },
+      { id: "position", name: "Position", kind: "vec2", description: "Origin in pixels.", defaultValue: [0, 0] },
+      { id: "rotation", name: "Rotation", kind: "float", description: "Clockwise rotation in degrees, about the anchor.", defaultValue: 0, constraints: { step: 1 } },
+      { id: "scale", name: "Scale", kind: "vec2", description: "Scale multiplier per axis, about the anchor.", defaultValue: [1, 1] },
+    ],
+    defaultParams: { anchor: [0, 0], position: [0, 0], rotation: 0, scale: [1, 1] },
+  },
+  {
     kind: "merge_3d",
     name: "Merge 3D",
     description: "Groups scenes into one, placed together by its transform.",
@@ -476,6 +514,22 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { samples: 8, shutter: 180 },
   },
   {
+    kind: "offset_2d",
+    name: "Offset 2D",
+    description: "Grows its geometry's outline by `offset`, or shrinks it when negative, rounding the corners\nit grows around; chained offsets add up. Fills and strokes of the result follow the offset\noutline: a stroke is centred on it, so it lies where the signed distance from the original\noutline equals the offset. The offset is taken from the outline the fill covers, so a path's\nopen contours count as closed by their closing segment, and a stroke of an offset path\nstrokes that closed outline. Trim and dash on such a stroke are measured along the original\noutline and carried across to the offset one, so around a corner the offset rounds, the\nstroke keeps the place the corner has.",
+    category: "vector",
+    inputs: [
+      { name: "geometry", kind: "geometry", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "geometry" },
+    ],
+    params: [
+      { id: "offset", name: "Offset", kind: "float", description: "Distance in the geometry's untransformed pixels that the outline grows outward by, or\nshrinks inward by when negative.", defaultValue: 0, constraints: { step: 0.5 } },
+    ],
+    defaultParams: { offset: 0 },
+  },
+  {
     kind: "opacity",
     name: "Opacity",
     description: "Uniformly adjusts raster opacity.",
@@ -525,6 +579,24 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { anchor: [0, 0], data: "M 0 0 L 100 0 L 100 100 L 0 100 Z", edge_antialias: true, feather: 0, fill_enabled: true, fill_paint: [255, 255, 255, 255], motion_blur: 0, offset: 0, opacity: 1, position: [0, 0], rotation: 0, scale: [1, 1], stroke_dash: [], stroke_dash_offset: 0, stroke_enabled: false, stroke_paint: [0, 0, 0, 255], stroke_width: 1, trim_end: 1, trim_start: 0 },
   },
   {
+    kind: "path_2d",
+    name: "Path 2D",
+    description: "The outline of SVG path data, without paint. The fill covers it under the even-odd rule, and\na stroke follows its contours, leaving the closing segment of an open contour unstroked.\nCurves are flattened for the largest scale `render_2d` draws them at.",
+    category: "vector",
+    inputs: [],
+    outputs: [
+      { name: "output", kind: "geometry" },
+    ],
+    params: [
+      { id: "anchor", name: "Anchor", kind: "vec2", description: "Pivot for scale and rotation, in pixels relative to `position`.", defaultValue: [0, 0] },
+      { id: "data", name: "Path data", kind: "string", description: "SVG-style path data, laid out in untransformed pixels from `position`.", defaultValue: "M 0 0 L 100 0 L 100 100 L 0 100 Z", constraints: { format: "path_data", multiline: true, recommendedRows: 5 } },
+      { id: "position", name: "Position", kind: "vec2", description: "Path origin in pixels.", defaultValue: [0, 0] },
+      { id: "rotation", name: "Rotation", kind: "float", description: "Clockwise rotation in degrees, about the anchor.", defaultValue: 0, constraints: { step: 1 } },
+      { id: "scale", name: "Scale", kind: "vec2", description: "Scale multiplier per axis, about the anchor.", defaultValue: [1, 1] },
+    ],
+    defaultParams: { anchor: [0, 0], data: "M 0 0 L 100 0 L 100 100 L 0 100 Z", position: [0, 0], rotation: 0, scale: [1, 1] },
+  },
+  {
     kind: "radial_blur",
     name: "Radial Blur",
     description: "Blurs a raster along circles about a centre, as a spin.",
@@ -558,6 +630,20 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { id: "opacity", name: "Opacity", kind: "float", description: "Opacity of each layer above the first, which is the base and is used as is.", defaultValue: 1, constraints: { min: 0, max: 1, step: 0.05 } },
     ],
     defaultParams: { blend_mode: "normal", opacity: 1 },
+  },
+  {
+    kind: "render_2d",
+    name: "Render 2D",
+    description: "Rasterizes a drawing in one pass over the canvas: each 16 by 16 pixel tile composites the\ndrawables that reach it, in order, with normal blending. Outlines are measured per pixel, so\nthey stay sharp under any transform.",
+    category: "vector",
+    inputs: [
+      { name: "drawing", kind: "drawing", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [],
+    defaultParams: {},
   },
   {
     kind: "render_3d",
@@ -631,6 +717,22 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { color: [0, 0, 0, 255], offset_x: 8, offset_y: 8, opacity: 0.5, radius: 8 },
   },
   {
+    kind: "shadow_2d",
+    name: "Shadow 2D",
+    description: "Casts shadows of every drawable in its drawing, all beneath the drawing's own drawables rather\nthan between them. Each shadow's copies of the drawables are drawn in the drawing's order,\nand the shadows in list order. Shadows of drawables that overlap composite over each other,\nso where they overlap they are darker than one Gaussian shadow of their union would be. A\nshadow of a fill follows the filled outline, a shadow of a stroke the stroked band, and a\nshadow of a shadow combines both: offsets and spreads add up and radii add as Gaussians do.\nLengths are in the drawing's pixels, so a `merge_2d` around this node scales them.\nA shadow is as opaque as the paint it falls from, so a transparent fill casts none.",
+    category: "vector",
+    inputs: [
+      { name: "drawing", kind: "drawing", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "drawing" },
+    ],
+    params: [
+      { id: "shadows", name: "Shadows", kind: "shadows", description: "Shadows cast beneath the whole drawing, the first lowest.", defaultValue: [] },
+    ],
+    defaultParams: { shadows: [] },
+  },
+  {
     kind: "shape",
     name: "Shape",
     description: "Produces a vector shape layer for GPU rasterization.",
@@ -661,6 +763,27 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { anchor: [0, 0], border_radius: 0, edge_antialias: true, fill_enabled: true, fill_paint: [255, 255, 255, 255], geometry_kind: "rectangle", height: 1, motion_blur: 0, opacity: 1, position: [0, 0], rotation: 0, scale: [1, 1], stroke_enabled: false, stroke_paint: [0, 0, 0, 255], stroke_width: 1, width: 1 },
   },
   {
+    kind: "shape_2d",
+    name: "Shape 2D",
+    description: "The outline of a rectangle or ellipse, without paint, measured analytically. A stroke of a\nshape is always whole: `stroke_2d`'s trim and dash apply to paths only.",
+    category: "vector",
+    inputs: [],
+    outputs: [
+      { name: "output", kind: "geometry" },
+    ],
+    params: [
+      { id: "anchor", name: "Anchor", kind: "vec2", description: "Pivot for scale and rotation, in pixels relative to `position`.", defaultValue: [0, 0] },
+      { id: "border_radius", name: "Border Radius", kind: "float", description: "Corner radius for rectangle geometry.", defaultValue: 0, constraints: { min: 0, step: 1 } },
+      { id: "geometry_kind", name: "Geometry Kind", kind: "enum", description: "Geometry primitive the outline follows.", defaultValue: "rectangle", enumOptions: [{ name: "rectangle", label: "Rectangle", value: 0 }, { name: "ellipse", label: "Ellipse", value: 1 }] },
+      { id: "height", name: "Height", kind: "float", description: "Shape height in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel\ntall.", defaultValue: 1, constraints: { min: 0, step: 1 } },
+      { id: "position", name: "Position", kind: "vec2", description: "Shape origin in pixels: its top left corner.", defaultValue: [0, 0] },
+      { id: "rotation", name: "Rotation", kind: "float", description: "Clockwise rotation in degrees, about the anchor.", defaultValue: 0, constraints: { step: 1 } },
+      { id: "scale", name: "Scale", kind: "vec2", description: "Scale multiplier per axis, about the anchor.", defaultValue: [1, 1] },
+      { id: "width", name: "Width", kind: "float", description: "Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel\nwide.", defaultValue: 1, constraints: { min: 0, step: 1 } },
+    ],
+    defaultParams: { anchor: [0, 0], border_radius: 0, geometry_kind: "rectangle", height: 1, position: [0, 0], rotation: 0, scale: [1, 1], width: 1 },
+  },
+  {
     kind: "shape_3d",
     name: "Shape 3D",
     description: "A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position.",
@@ -687,6 +810,28 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { id: "unlit", name: "Unlit", kind: "bool", description: "Shows the base colour as is, ignoring lights.", defaultValue: false },
     ],
     defaultParams: { cast_shadows: true, color: [255, 255, 255, 255], double_sided: false, emissive: 0, metallic: 0, opacity: 1, position: [0, 0, 0], receive_shadows: true, rotation: [0, 0, 0], roughness: 0.5, scale: [1, 1, 1], shadow_catcher: false, shape: "box", size: [1, 1, 1], unlit: false },
+  },
+  {
+    kind: "stroke_2d",
+    name: "Stroke 2D",
+    description: "Strokes its geometry's outline with a paint, as a drawing of one drawable. Caps and joins are\nround. Trim and dash apply to paths; a shape's stroke is always whole.",
+    category: "vector",
+    inputs: [
+      { name: "geometry", kind: "geometry", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "drawing" },
+    ],
+    params: [
+      { id: "dash", name: "Dash", kind: "dash_pattern", description: "Lengths in the geometry's untransformed pixels that the stroke alternately draws and\nskips along each contour of a path, starting with a dash.", defaultValue: [] },
+      { id: "dash_offset", name: "Dash offset", kind: "float", description: "Distance in the geometry's untransformed pixels into the dash pattern at which each\ncontour starts.", defaultValue: 0, constraints: { step: 0.5 } },
+      { id: "opacity", name: "Opacity", kind: "float", description: "Opacity multiplier.", defaultValue: 1, constraints: { min: 0, max: 1, step: 0.01 } },
+      { id: "paint", name: "Paint", kind: "paint", description: "Stroke paint. Accepts a solid color or gradient, laid out in the geometry's untransformed\npixels.", defaultValue: [0, 0, 0, 255] },
+      { id: "trim_end", name: "Trim end", kind: "float", description: "Normalized end of the visible stroke range for each contour of a path.", defaultValue: 1, constraints: { min: 0, max: 1, step: 0.01 } },
+      { id: "trim_start", name: "Trim start", kind: "float", description: "Normalized start of the visible stroke range for each contour of a path.", defaultValue: 0, constraints: { min: 0, max: 1, step: 0.01 } },
+      { id: "width", name: "Width", kind: "float", description: "Stroke width in the geometry's untransformed pixels. Under non-uniform scale the stroke\nstretches with the geometry, so it is wider across the more scaled axis.", defaultValue: 1, constraints: { min: 0, step: 0.5 } },
+    ],
+    defaultParams: { dash: [], dash_offset: 0, opacity: 1, paint: [0, 0, 0, 255], trim_end: 1, trim_start: 0, width: 1 },
   },
   {
     kind: "switch",

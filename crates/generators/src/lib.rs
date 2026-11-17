@@ -127,6 +127,7 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
         },
         vector::{
             dash::{MAX_DASH_LENGTH, MAX_DASH_LENGTHS},
+            drawing::{CastShadowDelegate, MAX_SHADOWS},
             paint::{GradientPaintDelegate, GradientStopDelegate, MAX_GRADIENT_STOPS},
             repeat::{MAX_REPEAT_COUNT, RepeatDelegate},
         },
@@ -207,6 +208,17 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
                     { "$ref": "#/$defs/expression" }
                 ]
             }
+        }),
+    );
+    insert_object_def::<CastShadowDelegate>(&mut defs, "CastShadow", &[])?;
+    insert_def(
+        &mut defs,
+        "Shadows",
+        json!({
+            "description": "Shadows a shadow_2d casts beneath its drawing, the first lowest. Each field takes a literal or an expression.",
+            "type": "array",
+            "maxItems": MAX_SHADOWS,
+            "items": { "$ref": "#/$defs/castShadow" }
         }),
     );
     insert_def(

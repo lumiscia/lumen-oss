@@ -1,0 +1,470 @@
+//! Walks the nodes a `render_2d` reads into a record of what it draws: each outline once, as its
+//! source and the offsets applied to it, and each drawable as an outline, a style and where the
+//! merges around it place it.
+
+use foldhash::HashMap;
+
+use super::super::dash::GpuDash;
+use super::super::drawable::GpuDrawableTransform;
+use super::super::paint::{GpuPaint, Paint};
+use super::super::path::{MAX_PATH_COORDINATE, normalized_trim_range};
+use super::super::shape::ShapeGeometryKind;
+use super::build::{identity, then};
+use super::{CastShadow, Fill2d, Offset2d, Render2d, Shadow2d, Stroke2d};
+use crate::error::{At, PropertyError, RenderError};
+use crate::expr::ExpressionContext;
+use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeKind};
+
+/// Most nodes a drawing may reach, counting a node each time it is reached.
+const MAX_DRAWING_NODES: usize = 4096;
+/// Most drawables a drawing may hold, counting each shadow cast.
+const MAX_DRAWABLES: usize = 16384;
+/// Width of a shadow's fade per sigma of the Gaussian it stands in for, at which the fade's
+/// slope across a straight edge matches the Gaussian's: `1.5 * sqrt(2 * pi)`.
+const SHADOW_FADE_PER_SIGMA: f64 = 3.7599;
+
+/// What a drawing's outlines are drawn from.
+pub(super) enum Source {
+    Path {
+        node: NodeId,
+        data: String,
+    },
+    Shape {
+        kind: ShapeGeometryKind,
+        size: [f32; 2],
+        border_radius: f32,
+    },
+}
+
+/// An outline: its source, laid out from `position` and placed by `transform`, grown by
+/// `offset` untransformed pixels.
+pub(super) struct Geometry {
+    pub(super) source: Source,
+    pub(super) position: [f32; 2],
+    pub(super) transform: GpuDrawableTransform,
+    pub(super) offset: f32,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FillStyle {
+    pub(super) feather: f32,
+    pub(super) edge_antialias: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct StrokeStyle {
+    pub(super) width: f32,
+    pub(super) trim: (f32, f32),
+    pub(super) dash: GpuDash,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Style {
+    Fill(FillStyle),
+    Stroke(StrokeStyle),
+}
+
+/// A shadow cast of a drawable, in canvas pixels.
+#[derive(Clone, Copy)]
+pub(super) struct Cast {
+    pub(super) color: [u8; 4],
+    pub(super) opacity: f32,
+    pub(super) offset: [f32; 2],
+    /// Sigma of the Gaussian the fade stands in for.
+    pub(super) sigma: f64,
+    pub(super) spread: f64,
+}
+
+impl Cast {
+    /// Canvas width the shadow's edge fades over.
+    pub(super) fn softness(&self) -> f64 {
+        SHADOW_FADE_PER_SIGMA * self.sigma
+    }
+
+    /// The shadow `outer` casts of this one.
+    fn under(self, outer: Cast) -> Cast {
+        Cast {
+            color: outer.color,
+            opacity: self.opacity * outer.opacity,
+            offset: [
+                self.offset[0] + outer.offset[0],
+                self.offset[1] + outer.offset[1],
+            ],
+            sigma: self.sigma.hypot(outer.sigma),
+            spread: self.spread + outer.spread,
+        }
+    }
+}
+
+/// One drawable: an outline in a style, placed by the merges around its style node, or a shadow
+/// cast of one.
+#[derive(Clone, Copy)]
+pub(super) struct Use {
+    pub(super) geometry: usize,
+    pub(super) parent: GpuDrawableTransform,
+    pub(super) style: Style,
+    pub(super) paint: GpuPaint,
+    pub(super) opacity: f32,
+    pub(super) shadow: Option<Cast>,
+}
+
+/// A drawing's outlines and its drawables, lowest first.
+#[derive(Default)]
+pub(super) struct Record {
+    pub(super) geometries: Vec<Geometry>,
+    pub(super) uses: Vec<Use>,
+}
+
+enum Step {
+    Draw(NodeId, GpuDrawableTransform),
+    /// Casts `node`'s shadows of the drawables from `start` on, under them.
+    Cast {
+        node: NodeId,
+        parent: GpuDrawableTransform,
+        start: usize,
+    },
+}
+
+struct Collector<'a, 'e> {
+    cx: &'a crate::gpu::frame_graph::FrameCx<'e>,
+    expr: ExpressionContext<'a>,
+    render_id: NodeId,
+    record: Record,
+    geometries: HashMap<NodeId, usize>,
+    styles: HashMap<NodeId, (usize, Style, GpuPaint, f32)>,
+    reached: usize,
+}
+
+/// Evaluates the drawing `root` outputs, walking its nodes depth first in input order so that
+/// earlier inputs are drawn lower. Each node is evaluated once, however often it is reached.
+pub(super) fn collect(
+    cx: &crate::gpu::frame_graph::FrameCx<'_>,
+    render_id: NodeId,
+    root: NodeId,
+) -> crate::Result<Record> {
+    let mut collector = Collector {
+        cx,
+        expr: cx.expr(),
+        render_id,
+        record: Record::default(),
+        geometries: HashMap::default(),
+        styles: HashMap::default(),
+        reached: 0,
+    };
+    let mut pending = vec![Step::Draw(root, identity())];
+    while let Some(step) = pending.pop() {
+        match step {
+            Step::Draw(node_id, parent) => collector.draw(node_id, parent, &mut pending)?,
+            Step::Cast {
+                node,
+                parent,
+                start,
+            } => collector.cast(node, parent, start)?,
+        }
+    }
+    Ok(collector.record)
+}
+
+fn number<N: JsonNode>(node_id: NodeId, name: &str, value: f64, min: f64) -> crate::Result<f32> {
+    if value.is_nan() {
+        return Err(
+            RenderError::evaluating::<N>(node_id, format!("`{name}` is not a number")).into(),
+        );
+    }
+    Ok(value.clamp(min, MAX_PATH_COORDINATE) as f32)
+}
+
+impl<'e> Collector<'_, 'e> {
+    fn reach(&mut self, node_id: NodeId) -> crate::Result<&'e NodeKind> {
+        self.reached += 1;
+        if self.reached > MAX_DRAWING_NODES {
+            return Err(self.too_large(format!(
+                "the drawing reaches more than {MAX_DRAWING_NODES} nodes"
+            )));
+        }
+        self.cx.node(node_id).ok_or_else(|| {
+            RenderError::MissingNode {
+                at: At::node(node_id),
+            }
+            .into()
+        })
+    }
+
+    fn too_large(&self, details: String) -> crate::error::LumenError {
+        RenderError::evaluating::<Render2d>(self.render_id, details).into()
+    }
+
+    fn draw(
+        &mut self,
+        node_id: NodeId,
+        parent: GpuDrawableTransform,
+        pending: &mut Vec<Step>,
+    ) -> crate::Result<()> {
+        let node = self.reach(node_id)?;
+        match node {
+            NodeKind::Merge2d(merge) => {
+                let params = merge.params.eval(&DelegateEvalContext {
+                    node_id,
+                    expr: &self.expr,
+                })?;
+                let placed = params.transform.drawable().to_gpu_from((0.0, 0.0));
+                let world = then(placed, parent);
+                pending.extend(
+                    merge
+                        .drawings
+                        .iter()
+                        .rev()
+                        .map(|&input| Step::Draw(input, world)),
+                );
+            }
+            NodeKind::Shadow2d(shadow) => {
+                let input = crate::node::required_input(node_id, "drawing", shadow.drawing)?;
+                pending.push(Step::Cast {
+                    node: node_id,
+                    parent,
+                    start: self.record.uses.len(),
+                });
+                pending.push(Step::Draw(input, parent));
+            }
+            NodeKind::Fill2d(_) | NodeKind::Stroke2d(_) => {
+                let (geometry, style, paint, opacity) = self.style(node_id)?;
+                self.push(Use {
+                    geometry,
+                    parent,
+                    style,
+                    paint,
+                    opacity,
+                    shadow: None,
+                })?;
+            }
+            // Validation keeps other kinds out of drawing inputs.
+            _ => {
+                return Err(RenderError::evaluating::<Render2d>(
+                    node_id,
+                    "a drawing input takes fill_2d, stroke_2d, shadow_2d and merge_2d nodes",
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    fn push(&mut self, drawable: Use) -> crate::Result<()> {
+        if self.record.uses.len() >= MAX_DRAWABLES {
+            return Err(self.too_large(format!(
+                "the drawing holds more than {MAX_DRAWABLES} drawables"
+            )));
+        }
+        self.record.uses.push(drawable);
+        Ok(())
+    }
+
+    /// The outline, style, paint and opacity of fill or stroke node `node_id`.
+    fn style(&mut self, node_id: NodeId) -> crate::Result<(usize, Style, GpuPaint, f32)> {
+        if let Some(style) = self.styles.get(&node_id) {
+            return Ok(*style);
+        }
+        let ctx = DelegateEvalContext {
+            node_id,
+            expr: &self.expr,
+        };
+        let (input, style, paint, opacity) = match self.cx.node(node_id) {
+            Some(NodeKind::Fill2d(fill)) => {
+                let params = fill.params.eval(&ctx)?;
+                let style = Style::Fill(FillStyle {
+                    feather: number::<Fill2d>(node_id, "feather", params.feather, 0.0)?,
+                    edge_antialias: params.edge_antialias,
+                });
+                (fill.geometry, style, params.paint, params.opacity)
+            }
+            Some(NodeKind::Stroke2d(stroke)) => {
+                let params = stroke.params.eval(&ctx)?;
+                let dash =
+                    GpuDash::named(&params.dash, params.dash_offset, ["dash", "dash_offset"])
+                        .map_err(|details| RenderError::evaluating::<Stroke2d>(node_id, details))?;
+                let style = Style::Stroke(StrokeStyle {
+                    width: number::<Stroke2d>(node_id, "width", params.width, 0.0)?,
+                    trim: normalized_trim_range(params.trim_start, params.trim_end),
+                    dash,
+                });
+                (stroke.geometry, style, params.paint, params.opacity)
+            }
+            _ => unreachable!("only fill and stroke nodes have a style"),
+        };
+        let input = crate::node::required_input(node_id, "geometry", input)?;
+        let geometry = self.geometry(input)?;
+        let styled = (
+            geometry,
+            style,
+            paint.to_gpu(),
+            opacity.clamp(0.0, 1.0) as f32,
+        );
+        self.styles.insert(node_id, styled);
+        Ok(styled)
+    }
+
+    /// The index of the outline `node_id` outputs, following offsets to their source.
+    fn geometry(&mut self, node_id: NodeId) -> crate::Result<usize> {
+        if let Some(&index) = self.geometries.get(&node_id) {
+            return Ok(index);
+        }
+        let mut offset = 0.0_f64;
+        let mut at = node_id;
+        let (source, position, transform) = loop {
+            let node = self.reach(at)?;
+            let ctx = DelegateEvalContext {
+                node_id: at,
+                expr: &self.expr,
+            };
+            match node {
+                NodeKind::Offset2d(node) => {
+                    let params = node.params.eval(&ctx)?;
+                    offset += f64::from(number::<Offset2d>(
+                        at,
+                        "offset",
+                        params.offset,
+                        -MAX_PATH_COORDINATE,
+                    )?);
+                    at = crate::node::required_input(at, "geometry", node.geometry)?;
+                }
+                NodeKind::Path2d(path) => {
+                    let params = path.params.eval(&ctx)?;
+                    let transform = params.transform.drawable();
+                    let (x, y) = transform.position;
+                    break (
+                        Source::Path {
+                            node: at,
+                            data: params.data,
+                        },
+                        [x as f32, y as f32],
+                        transform.to_gpu(),
+                    );
+                }
+                NodeKind::Shape2d(shape) => {
+                    let params = shape.params.eval(&ctx)?;
+                    let transform = params.transform.drawable();
+                    let (x, y) = transform.position;
+                    // `max` also turns NaN to 0, which draws nothing.
+                    let size = [params.width, params.height].map(|side| side.max(0.0) as f32);
+                    break (
+                        Source::Shape {
+                            kind: params.geometry_kind,
+                            size,
+                            border_radius: params.border_radius.max(0.0) as f32,
+                        },
+                        [x as f32, y as f32],
+                        transform.to_gpu(),
+                    );
+                }
+                // Validation keeps other kinds out of geometry inputs.
+                _ => {
+                    return Err(RenderError::evaluating::<Render2d>(
+                        at,
+                        "a geometry input takes path_2d, shape_2d and offset_2d nodes",
+                    )
+                    .into());
+                }
+            }
+        };
+        let index = self.record.geometries.len();
+        self.record.geometries.push(Geometry {
+            source,
+            position,
+            transform,
+            offset: offset.clamp(-MAX_PATH_COORDINATE, MAX_PATH_COORDINATE) as f32,
+        });
+        self.geometries.insert(node_id, index);
+        Ok(index)
+    }
+
+    /// Casts shadow node `node_id`'s shadows of the drawables from `start` on, beneath them.
+    fn cast(
+        &mut self,
+        node_id: NodeId,
+        parent: GpuDrawableTransform,
+        start: usize,
+    ) -> crate::Result<()> {
+        let Some(NodeKind::Shadow2d(node)) = self.cx.node(node_id) else {
+            unreachable!("only shadow nodes cast shadows")
+        };
+        let params = node.params.eval(&DelegateEvalContext {
+            node_id,
+            expr: &self.expr,
+        })?;
+        let mut casts = Vec::with_capacity(params.shadows.0.len());
+        for (index, shadow) in params.shadows.0.iter().enumerate() {
+            if let Some(cast) = canvas_cast(node_id, index, shadow, &parent)? {
+                casts.push(cast);
+            }
+        }
+        let drawn = self.record.uses.len() - start;
+        if self.record.uses.len() + casts.len() * drawn > MAX_DRAWABLES {
+            return Err(self.too_large(format!(
+                "the drawing holds more than {MAX_DRAWABLES} drawables"
+            )));
+        }
+        let cast_uses: Vec<Use> = casts
+            .iter()
+            .flat_map(|&cast| {
+                self.record.uses[start..].iter().map(move |drawable| Use {
+                    shadow: Some(drawable.shadow.map_or(cast, |inner| inner.under(cast))),
+                    ..*drawable
+                })
+            })
+            .collect();
+        self.record.uses.splice(start..start, cast_uses);
+        Ok(())
+    }
+}
+
+/// `shadow`, whose lengths are in the pixels `parent` maps to the canvas, in canvas pixels.
+/// `None` when it is invisible.
+fn canvas_cast(
+    node_id: NodeId,
+    index: usize,
+    shadow: &CastShadow,
+    parent: &GpuDrawableTransform,
+) -> crate::Result<Option<Cast>> {
+    let Paint::SolidColor(r, g, b, a) = shadow.color else {
+        return Err(PropertyError::InvalidType {
+            at: At::param(node_id, format!("shadows[{index}].color")),
+            expected: "a solid color",
+            actual: "a gradient",
+        }
+        .into());
+    };
+    let opacity = shadow.opacity.clamp(0.0, 1.0) as f32 * f32::from(a) / 255.0;
+    if opacity <= 0.0 {
+        return Ok(None);
+    }
+    let [column_x, column_y] = parent.linear.map(|column| column.map(f64::from));
+    // Lengths scale by the parent's area scale; offsets map through it.
+    let length = (column_x[0] * column_y[1] - column_x[1] * column_y[0])
+        .abs()
+        .sqrt();
+    let radius = f64::from(number::<Shadow2d>(
+        node_id,
+        "shadows.radius",
+        shadow.radius,
+        0.0,
+    )?) * length;
+    let spread = f64::from(number::<Shadow2d>(
+        node_id,
+        "shadows.spread",
+        shadow.spread,
+        -MAX_PATH_COORDINATE,
+    )?) * length;
+    let [x, y] = [shadow.offset.0, shadow.offset.1]
+        .map(|value| value.clamp(-MAX_PATH_COORDINATE, MAX_PATH_COORDINATE));
+    let offset = [
+        column_x[0] * x + column_y[0] * y,
+        column_x[1] * x + column_y[1] * y,
+    ];
+    Ok(Some(Cast {
+        color: [r, g, b, 255],
+        opacity,
+        offset: offset.map(|value| value as f32),
+        sigma: (radius * (radius + 1.0) / 3.0).sqrt(),
+        spread,
+    }))
+}
