@@ -112,6 +112,101 @@
       "type": "object",
       "x-lumen-type": "AudioTrack"
     },
+    "castShadow": {
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/paint"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": [0, 0, 0, 255],
+          "description": "Shadow color. Must be a solid color.",
+          "title": "Color",
+          "x-lumen-constraints": {
+            "role": "color"
+          },
+          "x-lumen-kind": "paint"
+        },
+        "offset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/vec2"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": [8.0, 8.0],
+          "description": "Offset of the shadow in the drawing's pixels. With no offset the shadow is a glow.",
+          "title": "Offset",
+          "x-lumen-constraints": {
+            "step": 1.0
+          },
+          "x-lumen-kind": "vec2"
+        },
+        "opacity": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": 0.5,
+          "description": "Shadow opacity.",
+          "title": "Opacity",
+          "x-lumen-constraints": {
+            "max": 1.0,
+            "min": 0.0,
+            "step": 0.05
+          },
+          "x-lumen-kind": "float"
+        },
+        "radius": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": 8.0,
+          "description": "Softness in the drawing's pixels, matching the edge of a `shadow` node of the same\nradius.",
+          "title": "Radius",
+          "x-lumen-constraints": {
+            "min": 0.0,
+            "step": 0.5
+          },
+          "x-lumen-kind": "float"
+        },
+        "spread": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": 0.0,
+          "description": "Pixels of the drawing the outline grows by before it softens, or shrinks by when\nnegative.",
+          "title": "Spread",
+          "x-lumen-constraints": {
+            "step": 0.5
+          },
+          "x-lumen-kind": "float"
+        }
+      },
+      "type": "object",
+      "x-lumen-type": "CastShadow"
+    },
     "clipPropValue": {
       "anyOf": [
         {
@@ -798,6 +893,15 @@
       "description": "Shader uniform values by field name, checked against the shader's uniform struct when the node compiles.",
       "type": "object",
       "x-lumen-type": "ShaderUniforms"
+    },
+    "shadows": {
+      "description": "Shadows a shadow_2d casts beneath its drawing, the first lowest. Each field takes a literal or an expression.",
+      "items": {
+        "$ref": "#/$defs/castShadow"
+      },
+      "maxItems": 8,
+      "type": "array",
+      "x-lumen-type": "Shadows"
     },
     "textContent": {
       "description": "Text to render: a string, or spans that each override the node's text style.",
@@ -2645,6 +2749,108 @@
           },
           {
             "additionalProperties": false,
+            "description": "Fills its geometry's outline with a paint, as a drawing of one drawable.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "edge_antialias": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Antialiases the fill's edge from its distance. Off, every pixel is covered or not.",
+                    "title": "Edge Antialias",
+                    "x-lumen-kind": "bool"
+                  },
+                  "feather": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Width in the geometry's untransformed pixels over which the fill's edge fades out,\ncentred on the edge.",
+                    "title": "Feather",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.5
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "opacity": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Opacity multiplier.",
+                    "title": "Opacity",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "paint": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [255, 255, 255, 255],
+                    "description": "Fill paint. Accepts a solid color or gradient, laid out in the geometry's untransformed\npixels.",
+                    "title": "Paint",
+                    "x-lumen-kind": "paint"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "fill_2d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Fill 2D",
+            "type": "object",
+            "x-lumen-category": "vector",
+            "x-lumen-inputs": [
+              {
+                "kind": "geometry",
+                "name": "geometry",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "drawing",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Generates opaque grey fractal noise, the same for a given seed and evolution.",
             "properties": {
               "id": {
@@ -4384,6 +4590,102 @@
           },
           {
             "additionalProperties": false,
+            "description": "Draws drawings one over another in input order, the first lowest, placing them together by\nits transform. The transform applies to everything inside, strokes and shadows included.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "anchor": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0],
+                    "description": "Pivot for scale and rotation, in pixels relative to `position`.",
+                    "title": "Anchor",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "position": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0],
+                    "description": "Origin in pixels.",
+                    "title": "Position",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "rotation": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Clockwise rotation in degrees, about the anchor.",
+                    "title": "Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0],
+                    "description": "Scale multiplier per axis, about the anchor.",
+                    "title": "Scale",
+                    "x-lumen-kind": "vec2"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "merge_2d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Merge 2D",
+            "type": "object",
+            "x-lumen-category": "vector",
+            "x-lumen-inputs": [
+              {
+                "kind": "drawing",
+                "name": "drawings",
+                "optional": true,
+                "variadic": true
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "drawing",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Groups scenes into one, placed together by its transform.",
             "properties": {
               "id": {
@@ -4787,6 +5089,60 @@
           },
           {
             "additionalProperties": false,
+            "description": "Grows its geometry's outline by `offset`, or shrinks it when negative, rounding the corners\nit grows around; chained offsets add up. Fills and strokes of the result follow the offset\noutline: a stroke is centred on it, so it lies where the signed distance from the original\noutline equals the offset. The offset is taken from the outline the fill covers, so a path's\nopen contours count as closed by their closing segment, and a stroke of an offset path\nstrokes that closed outline. Trim and dash on such a stroke are measured along the original\noutline and carried across to the offset one, so around a corner the offset rounds, the\nstroke keeps the place the corner has.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "offset": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Distance in the geometry's untransformed pixels that the outline grows outward by, or\nshrinks inward by when negative.",
+                    "title": "Offset",
+                    "x-lumen-constraints": {
+                      "step": 0.5
+                    },
+                    "x-lumen-kind": "float"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "offset_2d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Offset 2D",
+            "type": "object",
+            "x-lumen-category": "vector",
+            "x-lumen-inputs": [
+              {
+                "kind": "geometry",
+                "name": "geometry",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "geometry",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Uniformly adjusts raster opacity.",
             "properties": {
               "id": {
@@ -5180,6 +5536,114 @@
           },
           {
             "additionalProperties": false,
+            "description": "The outline of SVG path data, without paint. The fill covers it under the even-odd rule, and\na stroke follows its contours, leaving the closing segment of an open contour unstroked.\nCurves are flattened for the largest scale `render_2d` draws them at.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "anchor": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0],
+                    "description": "Pivot for scale and rotation, in pixels relative to `position`.",
+                    "title": "Anchor",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "data": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "M 0 0 L 100 0 L 100 100 L 0 100 Z",
+                    "description": "SVG-style path data, laid out in untransformed pixels from `position`.",
+                    "title": "Path data",
+                    "x-lumen-constraints": {
+                      "format": "path_data",
+                      "multiline": true,
+                      "recommendedRows": 5
+                    },
+                    "x-lumen-kind": "string"
+                  },
+                  "position": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0],
+                    "description": "Path origin in pixels.",
+                    "title": "Position",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "rotation": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Clockwise rotation in degrees, about the anchor.",
+                    "title": "Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0],
+                    "description": "Scale multiplier per axis, about the anchor.",
+                    "title": "Scale",
+                    "x-lumen-kind": "vec2"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "path_2d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Path 2D",
+            "type": "object",
+            "x-lumen-category": "vector",
+            "x-lumen-inputs": [],
+            "x-lumen-outputs": [
+              {
+                "kind": "geometry",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Blurs a raster along circles about a centre, as a spin.",
             "properties": {
               "id": {
@@ -5443,6 +5907,42 @@
                 "name": "layers",
                 "optional": true,
                 "variadic": true
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "Rasterizes a drawing in one pass over the canvas: each 16 by 16 pixel tile composites the\ndrawables that reach it, in order, with normal blending. Outlines are measured per pixel, so\nthey stay sharp under any transform.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "type": {
+                "const": "render_2d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Render 2D",
+            "type": "object",
+            "x-lumen-category": "vector",
+            "x-lumen-inputs": [
+              {
+                "kind": "drawing",
+                "name": "drawing",
+                "optional": false,
+                "variadic": false
               }
             ],
             "x-lumen-outputs": [
@@ -6049,6 +6549,50 @@
           },
           {
             "additionalProperties": false,
+            "description": "Casts shadows of every drawable in its drawing, all beneath the drawing's own drawables rather\nthan between them. Each shadow's copies of the drawables are drawn in the drawing's order,\nand the shadows in list order. Shadows of drawables that overlap composite over each other,\nso where they overlap they are darker than one Gaussian shadow of their union would be. A\nshadow of a fill follows the filled outline, a shadow of a stroke the stroked band, and a\nshadow of a shadow combines both: offsets and spreads add up and radii add as Gaussians do.\nLengths are in the drawing's pixels, so a `merge_2d` around this node scales them.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "shadows": {
+                    "$ref": "#/$defs/shadows",
+                    "default": [],
+                    "description": "Shadows cast beneath the whole drawing, the first lowest.",
+                    "title": "Shadows",
+                    "x-lumen-kind": "shadows"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "shadow_2d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Shadow 2D",
+            "type": "object",
+            "x-lumen-category": "vector",
+            "x-lumen-inputs": [
+              {
+                "kind": "drawing",
+                "name": "drawing",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "drawing",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Produces a vector shape layer for GPU rasterization.",
             "properties": {
               "id": {
@@ -6339,6 +6883,170 @@
             "x-lumen-outputs": [
               {
                 "kind": "raster",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "The outline of a rectangle or ellipse, without paint, measured analytically. A stroke of a\nshape is always whole: `stroke_2d`'s trim and dash apply to paths only.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "anchor": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0],
+                    "description": "Pivot for scale and rotation, in pixels relative to `position`.",
+                    "title": "Anchor",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "border_radius": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Corner radius for rectangle geometry.",
+                    "title": "Border Radius",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "geometry_kind": {
+                    "default": "rectangle",
+                    "description": "Geometry primitive the outline follows.",
+                    "enum": ["rectangle", "ellipse"],
+                    "title": "Geometry Kind",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Rectangle",
+                        "name": "rectangle",
+                        "value": 0
+                      },
+                      {
+                        "label": "Ellipse",
+                        "name": "ellipse",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "ShapeGeometryKind"
+                  },
+                  "height": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Shape height in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel\ntall.",
+                    "title": "Height",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "position": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0],
+                    "description": "Shape origin in pixels: its top left corner.",
+                    "title": "Position",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "rotation": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Clockwise rotation in degrees, about the anchor.",
+                    "title": "Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0],
+                    "description": "Scale multiplier per axis, about the anchor.",
+                    "title": "Scale",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "width": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel\nwide.",
+                    "title": "Width",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "shape_2d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Shape 2D",
+            "type": "object",
+            "x-lumen-category": "vector",
+            "x-lumen-inputs": [],
+            "x-lumen-outputs": [
+              {
+                "kind": "geometry",
                 "name": "output"
               }
             ]
@@ -6640,6 +7348,156 @@
             "x-lumen-outputs": [
               {
                 "kind": "scene",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "Strokes its geometry's outline with a paint, as a drawing of one drawable. Caps and joins are\nround. Trim and dash apply to paths; a shape's stroke is always whole.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "dash": {
+                    "$ref": "#/$defs/dashPattern",
+                    "default": [],
+                    "description": "Lengths in the geometry's untransformed pixels that the stroke alternately draws and\nskips along each contour of a path, starting with a dash.",
+                    "title": "Dash",
+                    "x-lumen-kind": "dash_pattern"
+                  },
+                  "dash_offset": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Distance in the geometry's untransformed pixels into the dash pattern at which each\ncontour starts.",
+                    "title": "Dash offset",
+                    "x-lumen-constraints": {
+                      "step": 0.5
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "opacity": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Opacity multiplier.",
+                    "title": "Opacity",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "paint": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0, 0, 0, 255],
+                    "description": "Stroke paint. Accepts a solid color or gradient, laid out in the geometry's untransformed\npixels.",
+                    "title": "Paint",
+                    "x-lumen-kind": "paint"
+                  },
+                  "trim_end": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Normalized end of the visible stroke range for each contour of a path.",
+                    "title": "Trim end",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "trim_start": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Normalized start of the visible stroke range for each contour of a path.",
+                    "title": "Trim start",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "width": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Stroke width in the geometry's untransformed pixels. Under non-uniform scale the stroke\nstretches with the geometry, so it is wider across the more scaled axis.",
+                    "title": "Width",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.5
+                    },
+                    "x-lumen-kind": "float"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "stroke_2d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Stroke 2D",
+            "type": "object",
+            "x-lumen-category": "vector",
+            "x-lumen-inputs": [
+              {
+                "kind": "geometry",
+                "name": "geometry",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "drawing",
                 "name": "output"
               }
             ]
@@ -9747,6 +10605,6 @@
     ]
   },
   "x-lumen-lumenSchemaVersion": "0.6",
-  "x-lumen-portKinds": ["raster", "scene"],
+  "x-lumen-portKinds": ["raster", "scene", "geometry", "drawing"],
   "x-lumen-schemaVersion": 1
 }

@@ -98,6 +98,54 @@ Params:
 - **`text_transform`** (`"none"` | `"uppercase"` | `"lowercase"` | `"capitalize"`; default `"none"`) Case applied to the text, and to spans that leave theirs unset.
 - **`underline`** ([textLine](#type-textline); literal as a whole) Line under the text, and under spans that leave theirs unset. Off when absent. Its fields take literals or expressions, but the whole line cannot be an expression.
 
+## `fill_2d`
+
+Fills its geometry's outline with a paint, as a drawing of one drawable.
+
+Category: vector. Output: drawing.
+
+Inputs:
+
+- `geometry`: geometry, required
+
+Params:
+
+- **`edge_antialias`** (boolean; default `true`) Antialiases the fill's edge from its distance. Off, every pixel is covered or not.
+- **`feather`** (number, at least 0; default `0`) Width in the geometry's untransformed pixels over which the fill's edge fades out, centred on the edge.
+- **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier.
+- **`paint`** ([paint](#type-paint); default `[255,255,255,255]`) Fill paint. Accepts a solid color or gradient, laid out in the geometry's untransformed pixels.
+
+## `merge_2d`
+
+Draws drawings one over another in input order, the first lowest, placing them together by its transform. The transform applies to everything inside, strokes and shadows included.
+
+Category: vector. Output: drawing.
+
+Inputs:
+
+- `drawings`: drawing, optional, takes several connections
+
+Params:
+
+- **`anchor`** ([number, number]; default `[0,0]`) Pivot for scale and rotation, in pixels relative to `position`.
+- **`position`** ([number, number]; default `[0,0]`) Origin in pixels.
+- **`rotation`** (number; default `0`) Clockwise rotation in degrees, about the anchor.
+- **`scale`** ([number, number]; default `[1,1]`) Scale multiplier per axis, about the anchor.
+
+## `offset_2d`
+
+Grows its geometry's outline by `offset`, or shrinks it when negative, rounding the corners it grows around; chained offsets add up. Fills and strokes of the result follow the offset outline: a stroke is centred on it, so it lies where the signed distance from the original outline equals the offset. The offset is taken from the outline the fill covers, so a path's open contours count as closed by their closing segment, and a stroke of an offset path strokes that closed outline. Trim and dash on such a stroke are measured along the original outline and carried across to the offset one, so around a corner the offset rounds, the stroke keeps the place the corner has.
+
+Category: vector. Output: geometry.
+
+Inputs:
+
+- `geometry`: geometry, required
+
+Params:
+
+- **`offset`** (number; default `0`) Distance in the geometry's untransformed pixels that the outline grows outward by, or shrinks inward by when negative.
+
 ## `path`
 
 Produces a rasterized vector path source.
@@ -127,6 +175,44 @@ Params:
 - **`trim_end`** (number, 0 to 1; default `1`) Normalized end of the visible stroke range for each contour.
 - **`trim_start`** (number, 0 to 1; default `0`) Normalized start of the visible stroke range for each contour.
 
+## `path_2d`
+
+The outline of SVG path data, without paint. The fill covers it under the even-odd rule, and a stroke follows its contours, leaving the closing segment of an open contour unstroked. Curves are flattened for the largest scale `render_2d` draws them at.
+
+Category: vector. Output: geometry.
+
+Params:
+
+- **`anchor`** ([number, number]; default `[0,0]`) Pivot for scale and rotation, in pixels relative to `position`.
+- **`data`** (string; default `"M 0 0 L 100 0 L 100 100 L 0 100 Z"`) SVG-style path data, laid out in untransformed pixels from `position`.
+- **`position`** ([number, number]; default `[0,0]`) Path origin in pixels.
+- **`rotation`** (number; default `0`) Clockwise rotation in degrees, about the anchor.
+- **`scale`** ([number, number]; default `[1,1]`) Scale multiplier per axis, about the anchor.
+
+## `render_2d`
+
+Rasterizes a drawing in one pass over the canvas: each 16 by 16 pixel tile composites the drawables that reach it, in order, with normal blending. Outlines are measured per pixel, so they stay sharp under any transform.
+
+Category: vector. Output: raster.
+
+Inputs:
+
+- `drawing`: drawing, required
+
+## `shadow_2d`
+
+Casts shadows of every drawable in its drawing, all beneath the drawing's own drawables rather than between them. Each shadow's copies of the drawables are drawn in the drawing's order, and the shadows in list order. Shadows of drawables that overlap composite over each other, so where they overlap they are darker than one Gaussian shadow of their union would be. A shadow of a fill follows the filled outline, a shadow of a stroke the stroked band, and a shadow of a shadow combines both: offsets and spreads add up and radii add as Gaussians do. Lengths are in the drawing's pixels, so a `merge_2d` around this node scales them.
+
+Category: vector. Output: drawing.
+
+Inputs:
+
+- `drawing`: drawing, required
+
+Params:
+
+- **`shadows`** ([shadows](#type-shadows); default `[]`; literal as a whole) Shadows cast beneath the whole drawing, the first lowest.
+
 ## `shape`
 
 Produces a vector shape layer for GPU rasterization.
@@ -152,6 +238,43 @@ Params:
 - **`stroke_paint`** ([paint](#type-paint); default `[0,0,0,255]`) Stroke paint. Accepts a solid color or gradient.
 - **`stroke_width`** (number, at least 0; default `1`) Stroke width in untransformed pixels. Under non-uniform scale the stroke stretches with the shape, so it is wider across the more scaled axis.
 - **`width`** (number, at least 0; default `1`) Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel wide.
+
+## `shape_2d`
+
+The outline of a rectangle or ellipse, without paint, measured analytically. A stroke of a shape is always whole: `stroke_2d`'s trim and dash apply to paths only.
+
+Category: vector. Output: geometry.
+
+Params:
+
+- **`anchor`** ([number, number]; default `[0,0]`) Pivot for scale and rotation, in pixels relative to `position`.
+- **`border_radius`** (number, at least 0; default `0`) Corner radius for rectangle geometry.
+- **`geometry_kind`** (`"rectangle"` | `"ellipse"`; default `"rectangle"`; literal only) Geometry primitive the outline follows.
+- **`height`** (number, at least 0; default `1`) Shape height in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel tall.
+- **`position`** ([number, number]; default `[0,0]`) Shape origin in pixels: its top left corner.
+- **`rotation`** (number; default `0`) Clockwise rotation in degrees, about the anchor.
+- **`scale`** ([number, number]; default `[1,1]`) Scale multiplier per axis, about the anchor.
+- **`width`** (number, at least 0; default `1`) Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel wide.
+
+## `stroke_2d`
+
+Strokes its geometry's outline with a paint, as a drawing of one drawable. Caps and joins are round. Trim and dash apply to paths; a shape's stroke is always whole.
+
+Category: vector. Output: drawing.
+
+Inputs:
+
+- `geometry`: geometry, required
+
+Params:
+
+- **`dash`** ([dashPattern](#type-dashpattern); default `[]`; literal as a whole) Lengths in the geometry's untransformed pixels that the stroke alternately draws and skips along each contour of a path, starting with a dash.
+- **`dash_offset`** (number; default `0`) Distance in the geometry's untransformed pixels into the dash pattern at which each contour starts.
+- **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier.
+- **`paint`** ([paint](#type-paint); default `[0,0,0,255]`) Stroke paint. Accepts a solid color or gradient, laid out in the geometry's untransformed pixels.
+- **`trim_end`** (number, 0 to 1; default `1`) Normalized end of the visible stroke range for each contour of a path.
+- **`trim_start`** (number, 0 to 1; default `0`) Normalized start of the visible stroke range for each contour of a path.
+- **`width`** (number, at least 0; default `1`) Stroke width in the geometry's untransformed pixels. Under non-uniform scale the stroke stretches with the geometry, so it is wider across the more scaled axis.
 
 ## `blur`
 
@@ -775,6 +898,18 @@ Inputs:
 
 ## Types
 
+### Type `castShadow`
+
+Fields:
+
+- **`color`** ([paint](#type-paint); default `[0,0,0,255]`) Shadow color. Must be a solid color.
+- **`offset`** ([number, number]; default `[8,8]`) Offset of the shadow in the drawing's pixels. With no offset the shadow is a glow.
+- **`opacity`** (number, 0 to 1; default `0.5`) Shadow opacity.
+- **`radius`** (number, at least 0; default `8`) Softness in the drawing's pixels, matching the edge of a `shadow` node of the same radius.
+- **`spread`** (number; default `0`) Pixels of the drawing the outline grows by before it softens, or shrinks by when negative.
+
+No other fields.
+
 ### Type `clipProps`
 
 Prop values a `clip` passes to its template, by prop name.
@@ -868,6 +1003,12 @@ Value: map from names to [shaderUniformValue](#type-shaderuniformvalue).
 A shader uniform field value: a number, a 2-4 component vector, an expression, or a hex colour for vec3<f32> and vec4<f32> fields.
 
 Value: number | array of [shaderUniformComponent](#type-shaderuniformcomponent), at least 2, at most 4 items | string hex colour, `#rrggbb` or `#rrggbbaa` | expression.
+
+### Type `shadows`
+
+Shadows a shadow_2d casts beneath its drawing, the first lowest. Each field takes a literal or an expression.
+
+Value: array of [castShadow](#type-castshadow), at most 8 items.
 
 ### Type `textContent`
 

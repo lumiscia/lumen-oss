@@ -4,9 +4,9 @@
 import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js";
 
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
-export type NodePortKind = "raster" | "scene";
-export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "model_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodePortKind = "drawing" | "geometry" | "raster" | "scene";
+export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fill_2d" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1383,6 +1383,24 @@ export type AudioTrack = {
 export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten" | "add" | "difference" | "exclusion" | "color_dodge" | "color_burn" | "hard_light" | "soft_light" | "hue" | "saturation" | "color" | "luminosity";
 export type BooleanOperation = "union" | "intersect" | "subtract" | "xor";
 export type Camera3dProjection = Projection3d;
+export type CastShadow = {
+  /** Shadow color. Must be a solid color. */
+  readonly color?: ExpressionValue<Paint>;
+  /** Offset of the shadow in the drawing's pixels. With no offset the shadow is a glow. */
+  readonly offset?: ExpressionValue<Vec2>;
+  /** Shadow opacity. */
+  readonly opacity?: ExpressionValue<number>;
+  /**
+   * Softness in the drawing's pixels, matching the edge of a `shadow` node of the same
+   * radius.
+   */
+  readonly radius?: ExpressionValue<number>;
+  /**
+   * Pixels of the drawing the outline grows by before it softens, or shrinks by when
+   * negative.
+   */
+  readonly spread?: ExpressionValue<number>;
+};
 export type ClipEnd = "hide" | "hold" | "loop";
 /** A value for a template prop: a literal of the prop's type, or an expression in the clip's time. */
 export type ClipPropValue = number | string | Vec2 | Vec3 | Color;
@@ -1532,6 +1550,9 @@ export type ShaderUniformComponent = ExpressionValue<number>;
 export type ShaderUniformValue = ExpressionValue<number | readonly [ShaderUniformComponent, ShaderUniformComponent] | readonly [ShaderUniformComponent, ShaderUniformComponent, ShaderUniformComponent] | readonly [ShaderUniformComponent, ShaderUniformComponent, ShaderUniformComponent, ShaderUniformComponent] | HexColor>;
 /** Shader uniform values by field name, checked against the shader's uniform struct when the node compiles. */
 export type ShaderUniforms = Readonly<Record<string, ShaderUniformValue>>;
+/** Shadows a shadow_2d casts beneath its drawing, the first lowest. Each field takes a literal or an expression. */
+export type Shadows = readonly CastShadow[];
+export type Shape2dGeometryKind = ShapeGeometryKind;
 export type Shape3dKind = "box" | "sphere" | "plane" | "cylinder" | "torus" | "cone";
 export type Shape3dShape = Shape3dKind;
 export type ShapeGeometryKind = "rectangle" | "ellipse";
@@ -1834,6 +1855,26 @@ export interface ExposureNode extends CompositionNodeBase<"exposure"> {
     readonly exposure?: ExpressionValue<number>;
     /** Offset added to the sRGB-encoded colour, after the exposure and before the contrast. */
     readonly offset?: ExpressionValue<number>;
+  };
+}
+
+/** Fills its geometry's outline with a paint, as a drawing of one drawable. */
+export interface Fill2dNode extends CompositionNodeBase<"fill_2d"> {
+  readonly params?: {
+    /** Antialiases the fill's edge from its distance. Off, every pixel is covered or not. */
+    readonly edge_antialias?: ExpressionValue<boolean>;
+    /**
+     * Width in the geometry's untransformed pixels over which the fill's edge fades out,
+     * centred on the edge.
+     */
+    readonly feather?: ExpressionValue<number>;
+    /** Opacity multiplier. */
+    readonly opacity?: ExpressionValue<number>;
+    /**
+     * Fill paint. Accepts a solid color or gradient, laid out in the geometry's untransformed
+     * pixels.
+     */
+    readonly paint?: ExpressionValue<Paint>;
   };
 }
 
@@ -2151,6 +2192,23 @@ export interface MergeNode extends CompositionNodeBase<"merge"> {
   };
 }
 
+/**
+ * Draws drawings one over another in input order, the first lowest, placing them together by
+ * its transform. The transform applies to everything inside, strokes and shadows included.
+ */
+export interface Merge2dNode extends CompositionNodeBase<"merge_2d"> {
+  readonly params?: {
+    /** Pivot for scale and rotation, in pixels relative to `position`. */
+    readonly anchor?: ExpressionValue<Vec2>;
+    /** Origin in pixels. */
+    readonly position?: ExpressionValue<Vec2>;
+    /** Clockwise rotation in degrees, about the anchor. */
+    readonly rotation?: ExpressionValue<number>;
+    /** Scale multiplier per axis, about the anchor. */
+    readonly scale?: ExpressionValue<Vec2>;
+  };
+}
+
 /** Groups scenes into one, placed together by its transform. */
 export interface Merge3dNode extends CompositionNodeBase<"merge_3d"> {
   readonly params?: {
@@ -2258,6 +2316,26 @@ export interface MotionBlurNode extends CompositionNodeBase<"motion_blur"> {
   };
 }
 
+/**
+ * Grows its geometry's outline by `offset`, or shrinks it when negative, rounding the corners
+ * it grows around; chained offsets add up. Fills and strokes of the result follow the offset
+ * outline: a stroke is centred on it, so it lies where the signed distance from the original
+ * outline equals the offset. The offset is taken from the outline the fill covers, so a path's
+ * open contours count as closed by their closing segment, and a stroke of an offset path
+ * strokes that closed outline. Trim and dash on such a stroke are measured along the original
+ * outline and carried across to the offset one, so around a corner the offset rounds, the
+ * stroke keeps the place the corner has.
+ */
+export interface Offset2dNode extends CompositionNodeBase<"offset_2d"> {
+  readonly params?: {
+    /**
+     * Distance in the geometry's untransformed pixels that the outline grows outward by, or
+     * shrinks inward by when negative.
+     */
+    readonly offset?: ExpressionValue<number>;
+  };
+}
+
 /** Uniformly adjusts raster opacity. */
 export interface OpacityNode extends CompositionNodeBase<"opacity"> {
   readonly params?: {
@@ -2334,6 +2412,26 @@ export interface PathNode extends CompositionNodeBase<"path"> {
   };
 }
 
+/**
+ * The outline of SVG path data, without paint. The fill covers it under the even-odd rule, and
+ * a stroke follows its contours, leaving the closing segment of an open contour unstroked.
+ * Curves are flattened for the largest scale `render_2d` draws them at.
+ */
+export interface Path2dNode extends CompositionNodeBase<"path_2d"> {
+  readonly params?: {
+    /** Pivot for scale and rotation, in pixels relative to `position`. */
+    readonly anchor?: ExpressionValue<Vec2>;
+    /** SVG-style path data, laid out in untransformed pixels from `position`. */
+    readonly data?: ExpressionValue<string>;
+    /** Path origin in pixels. */
+    readonly position?: ExpressionValue<Vec2>;
+    /** Clockwise rotation in degrees, about the anchor. */
+    readonly rotation?: ExpressionValue<number>;
+    /** Scale multiplier per axis, about the anchor. */
+    readonly scale?: ExpressionValue<Vec2>;
+  };
+}
+
 /** Blurs a raster along circles about a centre, as a spin. */
 export interface RadialBlurNode extends CompositionNodeBase<"radial_blur"> {
   readonly params?: {
@@ -2361,6 +2459,15 @@ export interface RasterMultimergeNode extends CompositionNodeBase<"raster_multim
     /** Opacity of each layer above the first, which is the base and is used as is. */
     readonly opacity?: ExpressionValue<number>;
   };
+}
+
+/**
+ * Rasterizes a drawing in one pass over the canvas: each 16 by 16 pixel tile composites the
+ * drawables that reach it, in order, with normal blending. Outlines are measured per pixel, so
+ * they stay sharp under any transform.
+ */
+export interface Render2dNode extends CompositionNodeBase<"render_2d"> {
+  readonly params?: Readonly<Record<string, never>>;
 }
 
 /**
@@ -2463,6 +2570,22 @@ export interface ShadowNode extends CompositionNodeBase<"shadow"> {
   };
 }
 
+/**
+ * Casts shadows of every drawable in its drawing, all beneath the drawing's own drawables rather
+ * than between them. Each shadow's copies of the drawables are drawn in the drawing's order,
+ * and the shadows in list order. Shadows of drawables that overlap composite over each other,
+ * so where they overlap they are darker than one Gaussian shadow of their union would be. A
+ * shadow of a fill follows the filled outline, a shadow of a stroke the stroked band, and a
+ * shadow of a shadow combines both: offsets and spreads add up and radii add as Gaussians do.
+ * Lengths are in the drawing's pixels, so a `merge_2d` around this node scales them.
+ */
+export interface Shadow2dNode extends CompositionNodeBase<"shadow_2d"> {
+  readonly params?: {
+    /** Shadows cast beneath the whole drawing, the first lowest. */
+    readonly shadows?: Shadows;
+  };
+}
+
 /** Produces a vector shape layer for GPU rasterization. */
 export interface ShapeNode extends CompositionNodeBase<"shape"> {
   readonly params?: {
@@ -2507,6 +2630,37 @@ export interface ShapeNode extends CompositionNodeBase<"shape"> {
      * with the shape, so it is wider across the more scaled axis.
      */
     readonly stroke_width?: ExpressionValue<number>;
+    /**
+     * Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel
+     * wide.
+     */
+    readonly width?: ExpressionValue<number>;
+  };
+}
+
+/**
+ * The outline of a rectangle or ellipse, without paint, measured analytically. A stroke of a
+ * shape is always whole: `stroke_2d`'s trim and dash apply to paths only.
+ */
+export interface Shape2dNode extends CompositionNodeBase<"shape_2d"> {
+  readonly params?: {
+    /** Pivot for scale and rotation, in pixels relative to `position`. */
+    readonly anchor?: ExpressionValue<Vec2>;
+    /** Corner radius for rectangle geometry. */
+    readonly border_radius?: ExpressionValue<number>;
+    /** Geometry primitive the outline follows. */
+    readonly geometry_kind?: ShapeGeometryKind;
+    /**
+     * Shape height in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel
+     * tall.
+     */
+    readonly height?: ExpressionValue<number>;
+    /** Shape origin in pixels: its top left corner. */
+    readonly position?: ExpressionValue<Vec2>;
+    /** Clockwise rotation in degrees, about the anchor. */
+    readonly rotation?: ExpressionValue<number>;
+    /** Scale multiplier per axis, about the anchor. */
+    readonly scale?: ExpressionValue<Vec2>;
     /**
      * Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel
      * wide.
@@ -2565,6 +2719,41 @@ export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
     readonly size?: ExpressionValue<Vec3>;
     /** Shows the base colour as is, ignoring lights. */
     readonly unlit?: ExpressionValue<boolean>;
+  };
+}
+
+/**
+ * Strokes its geometry's outline with a paint, as a drawing of one drawable. Caps and joins are
+ * round. Trim and dash apply to paths; a shape's stroke is always whole.
+ */
+export interface Stroke2dNode extends CompositionNodeBase<"stroke_2d"> {
+  readonly params?: {
+    /**
+     * Lengths in the geometry's untransformed pixels that the stroke alternately draws and
+     * skips along each contour of a path, starting with a dash.
+     */
+    readonly dash?: DashPattern;
+    /**
+     * Distance in the geometry's untransformed pixels into the dash pattern at which each
+     * contour starts.
+     */
+    readonly dash_offset?: ExpressionValue<number>;
+    /** Opacity multiplier. */
+    readonly opacity?: ExpressionValue<number>;
+    /**
+     * Stroke paint. Accepts a solid color or gradient, laid out in the geometry's untransformed
+     * pixels.
+     */
+    readonly paint?: ExpressionValue<Paint>;
+    /** Normalized end of the visible stroke range for each contour of a path. */
+    readonly trim_end?: ExpressionValue<number>;
+    /** Normalized start of the visible stroke range for each contour of a path. */
+    readonly trim_start?: ExpressionValue<number>;
+    /**
+     * Stroke width in the geometry's untransformed pixels. Under non-uniform scale the stroke
+     * stretches with the geometry, so it is wider across the more scaled axis.
+     */
+    readonly width?: ExpressionValue<number>;
   };
 }
 
@@ -2914,6 +3103,7 @@ export interface CompositionNodeByKind {
   readonly "directional_blur": DirectionalBlurNode;
   readonly "displacement_map": DisplacementMapNode;
   readonly "exposure": ExposureNode;
+  readonly "fill_2d": Fill2dNode;
   readonly "fractal_noise": FractalNoiseNode;
   readonly "glow": GlowNode;
   readonly "hue_saturation": HueSaturationNode;
@@ -2924,18 +3114,25 @@ export interface CompositionNodeByKind {
   readonly "media_in": MediaInNode;
   readonly "media_output": MediaOutputNode;
   readonly "merge": MergeNode;
+  readonly "merge_2d": Merge2dNode;
   readonly "merge_3d": Merge3dNode;
   readonly "model_3d": Model3dNode;
   readonly "motion_blur": MotionBlurNode;
+  readonly "offset_2d": Offset2dNode;
   readonly "opacity": OpacityNode;
   readonly "path": PathNode;
+  readonly "path_2d": Path2dNode;
   readonly "radial_blur": RadialBlurNode;
   readonly "raster_multimerge": RasterMultimergeNode;
+  readonly "render_2d": Render2dNode;
   readonly "render_3d": Render3dNode;
   readonly "resize": ResizeNode;
   readonly "shadow": ShadowNode;
+  readonly "shadow_2d": Shadow2dNode;
   readonly "shape": ShapeNode;
+  readonly "shape_2d": Shape2dNode;
   readonly "shape_3d": Shape3dNode;
+  readonly "stroke_2d": Stroke2dNode;
   readonly "switch": SwitchNode;
   readonly "text": TextNode;
   readonly "text_3d": Text3dNode;
@@ -2976,6 +3173,9 @@ export interface CompositionNodeInputByKind {
   readonly "exposure": Omit<ExposureNode, "id"> & {
     readonly id?: number;
   };
+  readonly "fill_2d": Omit<Fill2dNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "fractal_noise": Omit<FractalNoiseNode, "id"> & {
     readonly id?: number;
   };
@@ -3006,6 +3206,9 @@ export interface CompositionNodeInputByKind {
   readonly "merge": Omit<MergeNode, "id"> & {
     readonly id?: number;
   };
+  readonly "merge_2d": Omit<Merge2dNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "merge_3d": Omit<Merge3dNode, "id"> & {
     readonly id?: number;
   };
@@ -3015,16 +3218,25 @@ export interface CompositionNodeInputByKind {
   readonly "motion_blur": Omit<MotionBlurNode, "id"> & {
     readonly id?: number;
   };
+  readonly "offset_2d": Omit<Offset2dNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "opacity": Omit<OpacityNode, "id"> & {
     readonly id?: number;
   };
   readonly "path": Omit<PathNode, "id"> & {
     readonly id?: number;
   };
+  readonly "path_2d": Omit<Path2dNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "radial_blur": Omit<RadialBlurNode, "id"> & {
     readonly id?: number;
   };
   readonly "raster_multimerge": Omit<RasterMultimergeNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "render_2d": Omit<Render2dNode, "id"> & {
     readonly id?: number;
   };
   readonly "render_3d": Omit<Render3dNode, "id"> & {
@@ -3036,10 +3248,19 @@ export interface CompositionNodeInputByKind {
   readonly "shadow": Omit<ShadowNode, "id"> & {
     readonly id?: number;
   };
+  readonly "shadow_2d": Omit<Shadow2dNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "shape": Omit<ShapeNode, "id"> & {
     readonly id?: number;
   };
+  readonly "shape_2d": Omit<Shape2dNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "shape_3d": Omit<Shape3dNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "stroke_2d": Omit<Stroke2dNode, "id"> & {
     readonly id?: number;
   };
   readonly "switch": Omit<SwitchNode, "id"> & {
@@ -3076,6 +3297,7 @@ export interface NodeInputPortNameByKind {
   readonly "directional_blur": "source";
   readonly "displacement_map": "map" | "source";
   readonly "exposure": "source";
+  readonly "fill_2d": "geometry";
   readonly "fractal_noise": never;
   readonly "glow": "source";
   readonly "hue_saturation": "source";
@@ -3086,18 +3308,25 @@ export interface NodeInputPortNameByKind {
   readonly "media_in": never;
   readonly "media_output": "source";
   readonly "merge": "base" | "mask" | "overlay";
+  readonly "merge_2d": "drawings";
   readonly "merge_3d": "objects";
   readonly "model_3d": "texture";
   readonly "motion_blur": "source";
+  readonly "offset_2d": "geometry";
   readonly "opacity": "source";
   readonly "path": never;
+  readonly "path_2d": never;
   readonly "radial_blur": "source";
   readonly "raster_multimerge": "layers";
+  readonly "render_2d": "drawing";
   readonly "render_3d": "scene";
   readonly "resize": "source";
   readonly "shadow": "source";
+  readonly "shadow_2d": "drawing";
   readonly "shape": never;
+  readonly "shape_2d": never;
   readonly "shape_3d": never;
+  readonly "stroke_2d": "geometry";
   readonly "switch": "layers";
   readonly "text": never;
   readonly "text_3d": never;
@@ -3118,6 +3347,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "directional_blur": never;
   readonly "displacement_map": never;
   readonly "exposure": never;
+  readonly "fill_2d": never;
   readonly "fractal_noise": never;
   readonly "glow": never;
   readonly "hue_saturation": never;
@@ -3128,18 +3358,25 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "media_in": never;
   readonly "media_output": never;
   readonly "merge": never;
+  readonly "merge_2d": "drawings";
   readonly "merge_3d": "objects";
   readonly "model_3d": never;
   readonly "motion_blur": never;
+  readonly "offset_2d": never;
   readonly "opacity": never;
   readonly "path": never;
+  readonly "path_2d": never;
   readonly "radial_blur": never;
   readonly "raster_multimerge": "layers";
+  readonly "render_2d": never;
   readonly "render_3d": never;
   readonly "resize": never;
   readonly "shadow": never;
+  readonly "shadow_2d": never;
   readonly "shape": never;
+  readonly "shape_2d": never;
   readonly "shape_3d": never;
+  readonly "stroke_2d": never;
   readonly "switch": "layers";
   readonly "text": never;
   readonly "text_3d": never;
@@ -3160,6 +3397,7 @@ export interface NodeOutputKindByKind {
   readonly "directional_blur": "raster";
   readonly "displacement_map": "raster";
   readonly "exposure": "raster";
+  readonly "fill_2d": "drawing";
   readonly "fractal_noise": "raster";
   readonly "glow": "raster";
   readonly "hue_saturation": "raster";
@@ -3170,18 +3408,25 @@ export interface NodeOutputKindByKind {
   readonly "media_in": "raster";
   readonly "media_output": "raster";
   readonly "merge": "raster";
+  readonly "merge_2d": "drawing";
   readonly "merge_3d": "scene";
   readonly "model_3d": "scene";
   readonly "motion_blur": "raster";
+  readonly "offset_2d": "geometry";
   readonly "opacity": "raster";
   readonly "path": "raster";
+  readonly "path_2d": "geometry";
   readonly "radial_blur": "raster";
   readonly "raster_multimerge": "raster";
+  readonly "render_2d": "raster";
   readonly "render_3d": "raster";
   readonly "resize": "raster";
   readonly "shadow": "raster";
+  readonly "shadow_2d": "drawing";
   readonly "shape": "raster";
+  readonly "shape_2d": "geometry";
   readonly "shape_3d": "scene";
+  readonly "stroke_2d": "drawing";
   readonly "switch": "raster";
   readonly "text": "raster";
   readonly "text_3d": "scene";
@@ -3202,6 +3447,7 @@ export interface NodeInputPortKindByKind {
   readonly "directional_blur": { readonly "source": "raster" };
   readonly "displacement_map": { readonly "source": "raster"; readonly "map": "raster" };
   readonly "exposure": { readonly "source": "raster" };
+  readonly "fill_2d": { readonly "geometry": "geometry" };
   readonly "fractal_noise": {};
   readonly "glow": { readonly "source": "raster" };
   readonly "hue_saturation": { readonly "source": "raster" };
@@ -3212,18 +3458,25 @@ export interface NodeInputPortKindByKind {
   readonly "media_in": {};
   readonly "media_output": { readonly "source": "raster" };
   readonly "merge": { readonly "base": "raster"; readonly "overlay": "raster"; readonly "mask": "raster" };
+  readonly "merge_2d": { readonly "drawings": "drawing" };
   readonly "merge_3d": { readonly "objects": "scene" };
   readonly "model_3d": { readonly "texture": "raster" };
   readonly "motion_blur": { readonly "source": "raster" };
+  readonly "offset_2d": { readonly "geometry": "geometry" };
   readonly "opacity": { readonly "source": "raster" };
   readonly "path": {};
+  readonly "path_2d": {};
   readonly "radial_blur": { readonly "source": "raster" };
   readonly "raster_multimerge": { readonly "layers": "raster" };
+  readonly "render_2d": { readonly "drawing": "drawing" };
   readonly "render_3d": { readonly "scene": "scene" };
   readonly "resize": { readonly "source": "raster" };
   readonly "shadow": { readonly "source": "raster" };
+  readonly "shadow_2d": { readonly "drawing": "drawing" };
   readonly "shape": {};
+  readonly "shape_2d": {};
   readonly "shape_3d": {};
+  readonly "stroke_2d": { readonly "geometry": "geometry" };
   readonly "switch": { readonly "layers": "raster" };
   readonly "text": {};
   readonly "text_3d": {};
@@ -3303,6 +3556,8 @@ export const nodeInputPorts = {
   "displacement_map": { "source": { kind: "raster", variadic: false }, "map": { kind: "raster", variadic: false } },
   /** Adjusts raster exposure, contrast, and offset. */
   "exposure": { "source": { kind: "raster", variadic: false } },
+  /** Fills its geometry's outline with a paint, as a drawing of one drawable. */
+  "fill_2d": { "geometry": { kind: "geometry", variadic: false } },
   /** Generates opaque grey fractal noise, the same for a given seed and evolution. */
   "fractal_noise": {},
   /**
@@ -3355,6 +3610,11 @@ export const nodeInputPorts = {
   "media_output": { "source": { kind: "raster", variadic: false } },
   /** Composites an overlay raster over a base raster. */
   "merge": { "base": { kind: "raster", variadic: false }, "overlay": { kind: "raster", variadic: false }, "mask": { kind: "raster", variadic: false } },
+  /**
+   * Draws drawings one over another in input order, the first lowest, placing them together by
+   * its transform. The transform applies to everything inside, strokes and shadows included.
+   */
+  "merge_2d": { "drawings": { kind: "drawing", variadic: true } },
   /** Groups scenes into one, placed together by its transform. */
   "merge_3d": { "objects": { kind: "scene", variadic: true } },
   /**
@@ -3374,14 +3634,37 @@ export const nodeInputPorts = {
    * twice.
    */
   "motion_blur": { "source": { kind: "raster", variadic: false } },
+  /**
+   * Grows its geometry's outline by `offset`, or shrinks it when negative, rounding the corners
+   * it grows around; chained offsets add up. Fills and strokes of the result follow the offset
+   * outline: a stroke is centred on it, so it lies where the signed distance from the original
+   * outline equals the offset. The offset is taken from the outline the fill covers, so a path's
+   * open contours count as closed by their closing segment, and a stroke of an offset path
+   * strokes that closed outline. Trim and dash on such a stroke are measured along the original
+   * outline and carried across to the offset one, so around a corner the offset rounds, the
+   * stroke keeps the place the corner has.
+   */
+  "offset_2d": { "geometry": { kind: "geometry", variadic: false } },
   /** Uniformly adjusts raster opacity. */
   "opacity": { "source": { kind: "raster", variadic: false } },
   /** Produces a rasterized vector path source. */
   "path": {},
+  /**
+   * The outline of SVG path data, without paint. The fill covers it under the even-odd rule, and
+   * a stroke follows its contours, leaving the closing segment of an open contour unstroked.
+   * Curves are flattened for the largest scale `render_2d` draws them at.
+   */
+  "path_2d": {},
   /** Blurs a raster along circles about a centre, as a spin. */
   "radial_blur": { "source": { kind: "raster", variadic: false } },
   /** Composites a variadic stack of raster layers in order. */
   "raster_multimerge": { "layers": { kind: "raster", variadic: true } },
+  /**
+   * Rasterizes a drawing in one pass over the canvas: each 16 by 16 pixel tile composites the
+   * drawables that reach it, in order, with normal blending. Outlines are measured per pixel, so
+   * they stay sharp under any transform.
+   */
+  "render_2d": { "drawing": { kind: "drawing", variadic: false } },
   /**
    * Draws a 3D scene into a raster, with a transparent background unless it shows its environment
    * map; or, by `output`, its depth or normals, for 2D effects such as fog.
@@ -3391,10 +3674,30 @@ export const nodeInputPorts = {
   "resize": { "source": { kind: "raster", variadic: false } },
   /** Composites a blurred alpha shadow behind a raster. */
   "shadow": { "source": { kind: "raster", variadic: false } },
+  /**
+   * Casts shadows of every drawable in its drawing, all beneath the drawing's own drawables rather
+   * than between them. Each shadow's copies of the drawables are drawn in the drawing's order,
+   * and the shadows in list order. Shadows of drawables that overlap composite over each other,
+   * so where they overlap they are darker than one Gaussian shadow of their union would be. A
+   * shadow of a fill follows the filled outline, a shadow of a stroke the stroked band, and a
+   * shadow of a shadow combines both: offsets and spreads add up and radii add as Gaussians do.
+   * Lengths are in the drawing's pixels, so a `merge_2d` around this node scales them.
+   */
+  "shadow_2d": { "drawing": { kind: "drawing", variadic: false } },
   /** Produces a vector shape layer for GPU rasterization. */
   "shape": {},
+  /**
+   * The outline of a rectangle or ellipse, without paint, measured analytically. A stroke of a
+   * shape is always whole: `stroke_2d`'s trim and dash apply to paths only.
+   */
+  "shape_2d": {},
   /** A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. */
   "shape_3d": {},
+  /**
+   * Strokes its geometry's outline with a paint, as a drawing of one drawable. Caps and joins are
+   * round. Trim and dash apply to paths; a shape's stroke is always whole.
+   */
+  "stroke_2d": { "geometry": { kind: "geometry", variadic: false } },
   /** Selects one raster input according to a controlled layer index. */
   "switch": { "layers": { kind: "raster", variadic: true } },
   /** Produces a text source. */
@@ -3451,6 +3754,7 @@ export const nodeMediaSources = {
   "directional_blur": {},
   "displacement_map": {},
   "exposure": {},
+  "fill_2d": {},
   "fractal_noise": {},
   "glow": {},
   "hue_saturation": {},
@@ -3461,18 +3765,25 @@ export const nodeMediaSources = {
   "media_in": { "source": { kinds: ["image", "video"], selectedBy: "kind" } },
   "media_output": {},
   "merge": {},
+  "merge_2d": {},
   "merge_3d": {},
   "model_3d": { "source": { kinds: ["model"] } },
   "motion_blur": {},
+  "offset_2d": {},
   "opacity": {},
   "path": {},
+  "path_2d": {},
   "radial_blur": {},
   "raster_multimerge": {},
+  "render_2d": {},
   "render_3d": { "environment_map": { kinds: ["environment"] } },
   "resize": {},
   "shadow": {},
+  "shadow_2d": {},
   "shape": {},
+  "shape_2d": {},
   "shape_3d": {},
+  "stroke_2d": {},
   "switch": {},
   "text": {},
   "text_3d": {},
