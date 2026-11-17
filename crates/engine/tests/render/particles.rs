@@ -190,19 +190,38 @@ fn a_frame_renders_the_same_alone_as_after_the_frames_before_it() {
     );
 }
 
+/// `count` small boxes scattered over the node `surface` (id 1, with the nodes it needs after it),
+/// seen by `camera`, with the surface left out.
+fn scattered(count: u32, mut surface: Vec<Value>, camera: Value) -> crate::support::Scene {
+    surface.extend([
+        json!({ "id": 3, "type": "material_3d", "params": { "unlit": true } }),
+        json!({ "id": 4, "type": "shape_3d", "params": { "size": [0.15, 0.15, 0.15] },
+            "in": { "material": 3 } }),
+        particles(2, Some(1), 4, json!({ "count": count, "seed": 3 })),
+    ]);
+    render_3d(surface, &[2], camera)
+}
+
 /// `count` small boxes scattered on a 4 × 4 plane, seen from above, with the plane left out.
 fn scatter(count: u32) -> crate::support::Scene {
-    render_3d(
-        vec![
-            shape(1, json!({ "shape": "plane", "size": [4, 1, 4] })),
-            json!({ "id": 3, "type": "material_3d", "params": { "unlit": true } }),
-            json!({ "id": 4, "type": "shape_3d", "params": { "size": [0.15, 0.15, 0.15] },
-                "in": { "material": 3 } }),
-            particles(2, Some(1), 4, json!({ "count": count, "seed": 3 })),
-        ],
-        &[2],
+    scattered(
+        count,
+        vec![shape(1, json!({ "shape": "plane", "size": [4, 1, 4] }))],
         above(),
     )
+}
+
+/// Looks along -Z at the origin, 8 units across: 12 pixels to a unit.
+fn facing() -> Value {
+    json!({ "projection": "orthographic", "ortho_height": 8, "position": [0, 0, 10] })
+}
+
+/// The pixels of `frame` with any coverage, as `(x, y)`.
+fn covered(frame: &Frame) -> Vec<(u32, u32)> {
+    (0..frame.height)
+        .flat_map(|y| (0..frame.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| frame.pixel(x, y)[3] > 0)
+        .collect()
 }
 
 #[test]
@@ -371,4 +390,92 @@ fn particles_refuse_what_they_cant_draw_at_once() {
         copied.contains("can't be copied more than once"),
         "{copied}"
     );
+}
+
+#[test]
+fn a_surface_with_no_thickness_still_emits() {
+    let frame = render(
+        &mut gpu().renderer(),
+        &scattered(
+            400,
+            vec![shape(1, json!({ "shape": "plane", "size": [4, 0, 4] }))],
+            above(),
+        )
+        .into(),
+        0.0,
+        &TestMedia::default(),
+    );
+    let covered = covered(&frame);
+    assert!(
+        covered.len() > 250,
+        "only {} pixels are covered",
+        covered.len()
+    );
+    assert!(
+        covered
+            .iter()
+            .all(|&(x, y)| (22..=74).contains(&x) && (22..=74).contains(&y))
+    );
+}
+
+#[test]
+fn an_extruded_solid_emits_over_its_faces() {
+    // A 2 by 1 slab centred on the origin, 1 unit deep: 36 to 60 by 42 to 54 pixels.
+    let frame = render(
+        &mut gpu().renderer(),
+        &scattered(
+            400,
+            vec![
+                json!({ "id": 6, "type": "shape_2d",
+                    "params": { "width": 200, "height": 100, "position": [-100, -50] } }),
+                json!({ "id": 1, "type": "extrude_3d", "in": { "geometry": 6 } }),
+            ],
+            facing(),
+        )
+        .into(),
+        0.0,
+        &TestMedia::default(),
+    );
+    let covered = covered(&frame);
+    assert!(
+        covered.len() > 150,
+        "only {} pixels are covered",
+        covered.len()
+    );
+    assert!(
+        covered
+            .iter()
+            .all(|&(x, y)| (34..=62).contains(&x) && (40..=56).contains(&y)),
+        "boxes are drawn off the slab"
+    );
+}
+
+#[test]
+fn an_image_plane_emits_only_from_the_region_it_shows() {
+    let pixels = (0..96 * 96).flat_map(|_| [255, 255, 255, 255]).collect();
+    let media = TestMedia::default().image("white", 96, 96, pixels);
+    let frame = render(
+        &mut gpu().renderer(),
+        &scattered(
+            400,
+            vec![
+                json!({ "id": 5, "type": "media_in",
+                    "params": { "kind": "image", "source": "white" } }),
+                json!({ "id": 1, "type": "image_plane_3d",
+                    "params": { "width": 4, "region": [0, 0, 48, 96] }, "in": { "source": 5 } }),
+            ],
+            facing(),
+        )
+        .into(),
+        0.0,
+        &media,
+    );
+    // The plane's left half is 24 to 48 pixels across, and a box sticks out of it by a pixel.
+    let covered = covered(&frame);
+    assert!(
+        covered.len() > 150,
+        "only {} pixels are covered",
+        covered.len()
+    );
+    assert!(covered.iter().all(|&(x, _)| (22..=50).contains(&x)));
 }

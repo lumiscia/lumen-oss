@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use foldhash::HashMap;
-use lumen_3d::glam::{Mat3, Mat4, Vec3};
+use lumen_3d::glam::{Mat3, Mat4, Vec3, Vec4};
 use lumen_3d::{Blending, Bounds, Instanced, Mesh, Orientation};
 use lumen_gpu::{BufRef, Dispatch, LayoutEntry, LayoutKind, Recorder, Res};
 
@@ -100,6 +100,8 @@ enum MeshName {
     Quad,
     /// A text mesh's id among those kept.
     Text(String),
+    /// A solid mesh's id among those kept.
+    Solid(String),
     /// A model's identity.
     Model(String),
 }
@@ -111,7 +113,6 @@ type MeshPart = (MeshName, u32, u32);
 /// those before it.
 struct Triangles {
     triangles: Vec<GpuTriangle>,
-    area: f32,
     bounds: Bounds,
 }
 
@@ -149,11 +150,7 @@ impl Triangles {
                 }
             })
             .collect();
-        Self {
-            triangles,
-            area: total as f32,
-            bounds,
-        }
+        Self { triangles, bounds }
     }
 
     fn of_mesh(mesh: &Mesh, first: u32, count: u32) -> Self {
@@ -185,9 +182,18 @@ struct Output {
     last_used: u64,
 }
 
+/// The world area of each object of a surface, and what placed them.
+struct PlacedAreas {
+    used: Vec<MeshPart>,
+    /// For each object, the table of its mesh part among `used` and its world matrix's rows.
+    placements: Vec<(usize, [[f32; 4]; 3])>,
+    areas: Vec<f64>,
+}
+
 /// What one `particles_3d` in a graph keeps on the GPU.
 #[derive(Default)]
 struct NodeBuffers {
+    areas: Option<PlacedAreas>,
     /// Its surface's mesh parts, one after another, with the buffer holding their triangles.
     surface: Option<(Vec<MeshPart>, BufRef)>,
     /// The buffers its particles were placed into, one for each time a frame collects it.
@@ -397,10 +403,13 @@ fn mesh_name(cache: &SceneCache, mesh: &super::GpuMesh) -> Option<MeshName> {
     {
         return Some(MeshName::Model(identity.clone()));
     }
+    if let Some(id) = cache.texts.id_of(mesh) {
+        return Some(MeshName::Text(id.to_string()));
+    }
     cache
-        .texts
+        .solids
         .id_of(mesh)
-        .map(|id| MeshName::Text(id.to_string()))
+        .map(|id| MeshName::Solid(id.to_string()))
 }
 
 /// The triangles of `part`, built from the mesh `cache` holds for it.
@@ -417,6 +426,12 @@ fn build_triangles(
             Some(mesh) => mesh?,
             None => Mesh::default(),
         },
+        MeshName::Solid(id) => {
+            return Ok(match cache.solids.cpu_mesh(id) {
+                Some(mesh) => Triangles::of_mesh(mesh, *first, *count),
+                None => Triangles::new(|_| None, &[]),
+            });
+        }
         MeshName::Model(identity) => {
             let Some(cached) = cache.models.get(identity) else {
                 return Ok(Triangles::new(|_| None, &[]));
@@ -447,6 +462,30 @@ fn build_triangles(
         }
     };
     Ok(Triangles::of_mesh(&mesh, *first, *count))
+}
+
+/// What takes the textured quad to the part of it that `Object::part`, `[left, top, right,
+/// bottom]` in texture coordinates, shows.
+fn part_of_quad([left, top, right, bottom]: [f32; 4]) -> Mat4 {
+    Mat4::from_translation(Vec3::new(
+        (left + right) * 0.5 - 0.5,
+        (1.0 - top - bottom) * 0.5,
+        0.0,
+    )) * Mat4::from_scale(Vec3::new(right - left, bottom - top, 1.0))
+}
+
+/// The area of `table`'s triangles as `world` places them.
+fn world_area(table: &Triangles, world: &Mat4) -> f64 {
+    let linear = Mat3::from_mat4(*world);
+    table
+        .triangles
+        .iter()
+        .map(|triangle| {
+            let [a, b, c] =
+                [triangle.a, triangle.b, triangle.c].map(|corner| Vec4::from(corner).truncate());
+            f64::from((linear * (b - a)).cross(linear * (c - a)).length()) * 0.5
+        })
+        .sum()
 }
 
 /// The rows of `matrix`'s affine part.
@@ -613,8 +652,10 @@ impl Collected {
             if object.index_count == 0 {
                 continue;
             }
-            let at = |world| Placed {
-                world,
+            // The part of the quad an image plane shows, or the whole mesh.
+            let shown = object.part.map_or(Mat4::IDENTITY, part_of_quad);
+            let at = |world: Mat4| Placed {
+                world: world * shown,
                 mesh: object.mesh,
                 first_index: object.first_index,
                 index_count: object.index_count,
@@ -704,13 +745,36 @@ impl Collected {
             firsts.push(total);
             total += table.triangles.len() as u32;
         }
+        let node = cache.nodes.entry((scope, node_id)).or_default();
+        node.last_used = tick;
+        // The areas are summed again only when what the surface places has changed.
+        let placements: Vec<(usize, [[f32; 4]; 3])> = placed
+            .iter()
+            .zip(&of_placed)
+            .map(|(object, &index)| (index, rows(&object.world)))
+            .collect();
+        let areas = match &node.areas {
+            Some(held) if held.used == used && held.placements == placements => held.areas.clone(),
+            _ => {
+                let areas: Vec<f64> = placed
+                    .iter()
+                    .zip(&of_placed)
+                    .map(|(object, &index)| world_area(&tables[index], &object.world))
+                    .collect();
+                node.areas = Some(PlacedAreas {
+                    used: used.clone(),
+                    placements,
+                    areas: areas.clone(),
+                });
+                areas
+            }
+        };
         let mut parts = Vec::with_capacity(placed.len());
         let mut bounds = Bounds::EMPTY;
         let mut area = 0.0_f64;
-        for (object, &index) in placed.iter().zip(&of_placed) {
+        for ((object, &index), &weight) in placed.iter().zip(&of_placed).zip(&areas) {
             let table = &tables[index];
             let determinant = Mat3::from_mat4(object.world).determinant();
-            let weight = f64::from(table.area) * f64::from(determinant.abs().powf(2.0 / 3.0));
             if !(weight.is_finite() && weight > 0.0) || table.triangles.is_empty() {
                 continue;
             }
@@ -734,8 +798,6 @@ impl Collected {
             last.weight = 1.0;
         }
 
-        let node = cache.nodes.entry((scope, node_id)).or_default();
-        node.last_used = tick;
         let triangles = match &node.surface {
             Some((held, buffer)) if *held == used => *buffer,
             _ => {
@@ -900,7 +962,6 @@ mod tests {
             |index| positions.get(index as usize).copied(),
             &[0, 1, 2, 0, 3, 4, 0, 0, 1],
         );
-        assert_eq!(triangles.area, 2.5);
         let shares: Vec<f32> = triangles.triangles.iter().map(|t| t.a[3]).collect();
         assert_eq!(shares, [0.2, 1.0, 1.0]);
     }

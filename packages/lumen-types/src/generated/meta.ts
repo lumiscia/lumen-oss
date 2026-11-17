@@ -2503,9 +2503,9 @@ export interface OpacityNode extends CompositionNodeBase<"opacity"> {
  * 
  * The surface is taken at rest: a skinned or morphed model emits from its vertices as they are
  * stored, unposed, and an `instance_3d` in it emits from all its copies. Each object of the
- * surface emits in proportion to its area in the world, which is exact under a uniform scale and
- * otherwise scales its area as the uniform scale of the same volume would. Emit points follow the
- * surface where it is at the frame. A surface with no area emits nothing.
+ * surface emits in proportion to its area in the world, so a flat plane or a flattened box still
+ * emits, and an `image_plane_3d` with a `region` emits from the part it shows. Emit points
+ * follow the surface where it is at the frame. A surface with no area emits nothing.
  * 
  * Particles are drawn as `instance_3d` copies are, sharing the object's meshes and materials,
  * with its lights and camera left out. They are drawn at once, with no order among them, so the
@@ -3934,9 +3934,9 @@ export const nodeInputPorts = {
    * 
    * The surface is taken at rest: a skinned or morphed model emits from its vertices as they are
    * stored, unposed, and an `instance_3d` in it emits from all its copies. Each object of the
-   * surface emits in proportion to its area in the world, which is exact under a uniform scale and
-   * otherwise scales its area as the uniform scale of the same volume would. Emit points follow the
-   * surface where it is at the frame. A surface with no area emits nothing.
+   * surface emits in proportion to its area in the world, so a flat plane or a flattened box still
+   * emits, and an `image_plane_3d` with a `region` emits from the part it shows. Emit points
+   * follow the surface where it is at the frame. A surface with no area emits nothing.
    * 
    * Particles are drawn as `instance_3d` copies are, sharing the object's meshes and materials,
    * with its lights and camera left out. They are drawn at once, with no order among them, so the

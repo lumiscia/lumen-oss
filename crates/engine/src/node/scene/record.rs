@@ -11,8 +11,7 @@ use super::render::{catcher_programs, light_programs};
 use super::text_3d::{check_length, check_weight};
 use super::{
     Camera3d, Extrude3d, ImagePlane3d, Instance3d, Lathe3d, Light3d, Material3d, Merge3d, Model3d,
-    Particles3d,
-    Shape3d, Text3d,
+    Particles3d, Shape3d, Text3d,
 };
 use crate::{
     error::{LumenError, RenderError},

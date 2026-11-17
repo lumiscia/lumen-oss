@@ -124,6 +124,9 @@ struct CachedSolid {
     /// Names the mesh among those a kept output holds.
     id: String,
     mesh: Option<SolidMesh>,
+    /// The mesh as built, for what samples its triangles; empty when it draws nothing.
+    cpu: Mesh,
+    /// Bytes of the mesh on the GPU and of `cpu`.
     bytes: u64,
     last_used: u64,
 }
@@ -178,10 +181,28 @@ impl SolidMeshes {
         }
     }
 
+    /// The id of the kept solid whose mesh is `mesh`.
+    pub(super) fn id_of(&self, mesh: &GpuMesh) -> Option<&str> {
+        self.solids
+            .iter()
+            .find(|solid| solid.mesh.is_some_and(|kept| kept.mesh == *mesh))
+            .map(|solid| solid.id.as_str())
+    }
+
+    /// The mesh of the solid kept as `id`, as it was built.
+    pub(super) fn cpu_mesh(&self, id: &str) -> Option<&Mesh> {
+        self.solids
+            .iter()
+            .find(|solid| solid.id == id)
+            .map(|solid| &solid.cpu)
+    }
+
     /// Adds the solid `mesh` built from `key`, drawn in frame `tick`, and returns where it is.
     fn insert(&mut self, rec: &mut Recorder, key: SolidKey, mesh: Mesh, tick: u64) -> usize {
-        let bytes = (std::mem::size_of_val(mesh.vertices.as_slice())
-            + std::mem::size_of_val(mesh.indices.as_slice())) as u64;
+        // Held on the GPU and on the CPU.
+        let bytes = 2
+            * (std::mem::size_of_val(mesh.vertices.as_slice())
+                + std::mem::size_of_val(mesh.indices.as_slice())) as u64;
         let drawn = (!mesh.indices.is_empty()).then(|| SolidMesh {
             mesh: GpuMesh::upload(rec, &mesh),
             index_count: mesh.indices.len() as u32,
@@ -191,13 +212,18 @@ impl SolidMeshes {
                     .map(|vertex| Vec3::from(vertex.position)),
             ),
         });
-        let bytes = if drawn.is_some() { bytes } else { 0 };
+        let (bytes, cpu) = if drawn.is_some() {
+            (bytes, mesh)
+        } else {
+            (0, Mesh::default())
+        };
         self.next_id += 1;
         self.bytes += bytes;
         self.solids.push(CachedSolid {
             key,
             id: format!("solid_3d mesh {}", self.next_id),
             mesh: drawn,
+            cpu,
             bytes,
             last_used: tick,
         });
