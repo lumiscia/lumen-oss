@@ -5,12 +5,12 @@ use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
 use crate::support::scene::{
-    CENTER, SIZE, covered, environment_file, flat, fox, fox_media, framed, listed, lit_by,
-    material, merge, model, plane, plate, quads, render_3d, render_3d_with, sphere, unlit,
+    CENTER, SIZE, covered, environment_file, flat, fox, fox_media, frame_of, framed, image, listed,
+    lit_by, material, merge, model, plane, plate, quads, render_3d, render_3d_with, sphere, unlit,
     with_material,
 };
 use crate::support::{
-    CLEAR, Case, Expect, Frame, GREEN, RED, Scene, TestMedia, check, gpu, render, scene,
+    BLUE, CLEAR, Case, Expect, Frame, GREEN, RED, Scene, TestMedia, check, gpu, render, scene,
 };
 
 /// Asserts that the white box covers `(x, y)` of `frame`, its front lit by the default key light,
@@ -469,6 +469,28 @@ fn one_material_3d_colours_every_object_it_is_wired_to() {
             both(GREEN),
         ),
     ]);
+}
+
+#[test]
+fn a_sphere_wraps_its_materials_texture_from_minus_z_with_its_top_row_at_the_pole() {
+    // Blue in the top three eighths of rows, then red in the left half and green in the right.
+    let media = image(|x, y| match (y < 24, x < CENTER) {
+        (true, _) => BLUE,
+        (false, true) => RED,
+        (false, false) => GREEN,
+    });
+    let mut nodes = sphere(json!({ "unlit": true, "sampling": "nearest" }));
+    nodes.insert(0, plate(10));
+    nodes[1]["in"] = json!({ "texture": 10 });
+    let frame = frame_of(render_3d(nodes), &media);
+    // The camera on +Z sees the texture's middle: the left half of its columns to the left.
+    assert_eq!(frame.pixel(CENTER - 9, CENTER), RED, "left of the middle");
+    assert_eq!(
+        frame.pixel(CENTER + 9, CENTER),
+        GREEN,
+        "right of the middle"
+    );
+    assert_eq!(frame.pixel(CENTER, CENTER - 15), BLUE, "near the top pole");
 }
 
 #[test]

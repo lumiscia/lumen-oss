@@ -1510,6 +1510,7 @@ export type Light3dKind = "directional" | "point" | "spot" | "ambient";
 export type Light3dLight = Light3dKind;
 export type LoopMode = "clamp" | "repeat" | "ping_pong";
 export type MaskMode = "alpha" | "luma";
+export type Material3dSampling = RasterSampling;
 export type MediaInAlpha = AlphaMode;
 export type MediaInKind = MediaInSourceKind;
 export type MediaInLoopMode = LoopMode;
@@ -2268,7 +2269,11 @@ export interface Light3dNode extends CompositionNodeBase<"light_3d"> {
  * input. One `material_3d` can be wired to any number of objects, which then share its params,
  * so changing it changes them all. Each param takes an expression as it does on any node.
  * Objects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses
- * an unlit, double-sided one.
+ * an unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by
+ * `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest
+ * of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.
+ * Its alpha counts where the material blends, through `opacity` or the colour's alpha. Wired
+ * into any other object, a material with a texture fails the render.
  */
 export interface Material3dNode extends CompositionNodeBase<"material_3d"> {
   readonly params?: {
@@ -2279,8 +2284,8 @@ export interface Material3dNode extends CompositionNodeBase<"material_3d"> {
      */
     readonly cast_shadows?: ExpressionValue<boolean>;
     /**
-     * Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient
-     * fails `check`.
+     * Base colour, which multiplies the `texture` on a shape and the raster on an image plane.
+     * Must be a solid color; a gradient fails `check`.
      */
     readonly color?: ExpressionValue<Color>;
     /** Draws the back of each face too. */
@@ -2295,6 +2300,11 @@ export interface Material3dNode extends CompositionNodeBase<"material_3d"> {
     readonly receive_shadows?: ExpressionValue<boolean>;
     /** 0 is a mirror finish, 1 fully diffuse. */
     readonly roughness?: ExpressionValue<number>;
+    /**
+     * How a shape reads its `texture`, as `sampling` on `image_plane_3d`: `nearest` gives each
+     * pixel the one texel under it at any size, for pixel art.
+     */
+    readonly sampling?: ExpressionValue<RasterSampling>;
     /**
      * Shows nothing but the shadows falling on it, as transparent black that darkens what the
      * render is composited over by as much light as the shadows take away, times the colour's
@@ -2941,15 +2951,24 @@ export interface Shape2dNode extends CompositionNodeBase<"shape_2d"> {
 
 /**
  * A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,
- * single-sided and white unless a `material_3d` is wired into `material`.
+ * single-sided and white unless a `material_3d` is wired into `material`. Its material's
+ * `texture` shows upright seen from outside: whole on each face of a box, the top and bottom
+ * faces upright to a camera on +Z tilted to look at them, and whole on a plane seen from above,
+ * its top edge towards -Z. A sphere, cylinder, cone or torus wraps it around Y, its left edge at
+ * -Z and running towards -X, so a camera on +Z sees its middle. A sphere maps it
+ * equirectangularly from the top pole to the bottom one, and a cylinder's or cone's side from
+ * top to bottom, with the circle inscribed in the texture on each cap, upright as on a box. A
+ * torus wraps the texture's height around its tube, from the inner equator over the top, so its
+ * middle row runs around the outer equator.
  * 
  * A box takes a material for each face from `top_material`, `bottom_material`, `left_material`,
  * `right_material`, `front_material` and `back_material`, which are its +Y, -Y, -X, +X, +Z and
  * -Z faces in its own axes before `rotation`; the front faces a camera looking down -Z. A face
- * with none wired uses `material`. A face material wired into any other shape fails the render
- * naming the input. The faces draw as one object each, merged where neighbours share a material,
- * from the same mesh, so a box with face materials costs a draw for each run of faces, and
- * under `instance_3d` each draws all its copies.
+ * with none wired uses `material`, and each face shows its own material's texture. A face
+ * material wired into any other shape fails the render naming the input. The faces draw as one
+ * object each, merged where neighbours share a material, from the same mesh, so a box with face
+ * materials costs a draw for each run of faces, and under `instance_3d` each draws all its
+ * copies.
  */
 export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
   readonly params?: {
@@ -3537,7 +3556,7 @@ export interface NodeInputPortNameByKind {
   readonly "lathe_3d": "geometry" | "material";
   readonly "levels": "source";
   readonly "light_3d": never;
-  readonly "material_3d": never;
+  readonly "material_3d": "texture";
   readonly "media_in": never;
   readonly "media_output": "source";
   readonly "merge": "base" | "mask" | "overlay";
@@ -3699,7 +3718,7 @@ export interface NodeInputPortKindByKind {
   readonly "lathe_3d": { readonly "geometry": "geometry"; readonly "material": "material" };
   readonly "levels": { readonly "source": "raster" };
   readonly "light_3d": {};
-  readonly "material_3d": {};
+  readonly "material_3d": { readonly "texture": "raster" };
   readonly "media_in": {};
   readonly "media_output": { readonly "source": "raster" };
   readonly "merge": { readonly "base": "raster"; readonly "overlay": "raster"; readonly "mask": "raster" };
@@ -3913,9 +3932,13 @@ export const nodeInputPorts = {
    * input. One `material_3d` can be wired to any number of objects, which then share its params,
    * so changing it changes them all. Each param takes an expression as it does on any node.
    * Objects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses
-   * an unlit, double-sided one.
+   * an unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by
+   * `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest
+   * of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.
+   * Its alpha counts where the material blends, through `opacity` or the colour's alpha. Wired
+   * into any other object, a material with a texture fails the render.
    */
-  "material_3d": {},
+  "material_3d": { "texture": { kind: "raster", variadic: false } },
   /** Binds an external image or video frame as a GPU texture. */
   "media_in": {},
   /**
@@ -4040,15 +4063,24 @@ export const nodeInputPorts = {
   "shape_2d": {},
   /**
    * A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,
-   * single-sided and white unless a `material_3d` is wired into `material`.
+   * single-sided and white unless a `material_3d` is wired into `material`. Its material's
+   * `texture` shows upright seen from outside: whole on each face of a box, the top and bottom
+   * faces upright to a camera on +Z tilted to look at them, and whole on a plane seen from above,
+   * its top edge towards -Z. A sphere, cylinder, cone or torus wraps it around Y, its left edge at
+   * -Z and running towards -X, so a camera on +Z sees its middle. A sphere maps it
+   * equirectangularly from the top pole to the bottom one, and a cylinder's or cone's side from
+   * top to bottom, with the circle inscribed in the texture on each cap, upright as on a box. A
+   * torus wraps the texture's height around its tube, from the inner equator over the top, so its
+   * middle row runs around the outer equator.
    * 
    * A box takes a material for each face from `top_material`, `bottom_material`, `left_material`,
    * `right_material`, `front_material` and `back_material`, which are its +Y, -Y, -X, +X, +Z and
    * -Z faces in its own axes before `rotation`; the front faces a camera looking down -Z. A face
-   * with none wired uses `material`. A face material wired into any other shape fails the render
-   * naming the input. The faces draw as one object each, merged where neighbours share a material,
-   * from the same mesh, so a box with face materials costs a draw for each run of faces, and
-   * under `instance_3d` each draws all its copies.
+   * with none wired uses `material`, and each face shows its own material's texture. A face
+   * material wired into any other shape fails the render naming the input. The faces draw as one
+   * object each, merged where neighbours share a material, from the same mesh, so a box with face
+   * materials costs a draw for each run of faces, and under `instance_3d` each draws all its
+   * copies.
    */
   "shape_3d": { "material": { kind: "material", variadic: false }, "top_material": { kind: "material", variadic: false }, "bottom_material": { kind: "material", variadic: false }, "left_material": { kind: "material", variadic: false }, "right_material": { kind: "material", variadic: false }, "front_material": { kind: "material", variadic: false }, "back_material": { kind: "material", variadic: false } },
   /**
