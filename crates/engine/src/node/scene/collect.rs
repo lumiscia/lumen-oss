@@ -550,6 +550,7 @@ fn surface<N: crate::node::JsonNode>(
         double_sided: material.double_sided,
         cast_shadows: material.cast_shadows,
         receive_shadows: material.receive_shadows,
+        unlit_shadows: material.unlit_shadows.clamp(0.0, 1.0) as f32,
         shadow_catcher: material.shadow_catcher,
         ..Surface::default()
     })
@@ -718,6 +719,7 @@ fn model_surface(
         flat_normals: primitive.flat_normals,
         cast_shadows: params.cast_shadows,
         receive_shadows: params.receive_shadows,
+        unlit_shadows: 0.0,
         shadow_catcher: false,
     }
 }

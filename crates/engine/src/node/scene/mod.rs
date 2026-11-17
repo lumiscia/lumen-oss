@@ -113,9 +113,14 @@ pub struct Material3dParams {
     /// such as a bulb around a point light, needs this off.
     #[meta()]
     pub cast_shadows: bool,
-    /// Darkens where shadows fall on it. An unlit surface shows none.
+    /// Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says.
     #[meta()]
     pub receive_shadows: bool,
+    /// How much an unlit surface darkens where shadows fall on it, from 0, which shows none, to
+    /// 1, where a fully shadowed point is black. Lit surfaces ignore it, as do surfaces that
+    /// don't receive shadows.
+    #[meta(min = 0, max = 1, step = 0.05)]
+    pub unlit_shadows: f64,
     /// Shows nothing but the shadows falling on it, as transparent black that darkens what the
     /// render is composited over by as much light as the shadows take away, times the colour's
     /// alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It
@@ -138,6 +143,7 @@ impl Default for Material3dParams {
             double_sided: false,
             cast_shadows: true,
             receive_shadows: true,
+            unlit_shadows: 0.0,
             shadow_catcher: false,
         }
     }

@@ -7,7 +7,9 @@ use crate::support::scene::{
     GroundView, SIZE, every_pixel, flat, fox, fox_media, frame_of, half_blue, image, light,
     material, merge, model, plane, plate, quads, render_3d_with, with_material,
 };
-use crate::support::{CLEAR, Case, Expect, Frame, RED, TestMedia, check, gpu, render, scene};
+use crate::support::{
+    CLEAR, Case, Expect, Frame, RED, Scene, TestMedia, check, gpu, render, scene,
+};
 
 /// `params` with shadows cast or not.
 fn casting(params: &Value, cast: bool) -> Value {
@@ -360,6 +362,73 @@ fn a_shadow_catcher_darkens_what_is_under_it_by_the_light_its_shadows_take_away(
             "composited over a backdrop",
             crate::support::scene(SIZE, json!(over_backdrop)),
             probes(darkened, BACKDROP),
+        )
+        .tolerance(1),
+    ]);
+}
+
+/// A slab a unit over the middle of an unlit plane of [`COLOR`] with `material_params`, lit from
+/// straight above and seen from above, so its shadow falls on the middle of the plane.
+fn unlit_plane_under_a_slab(material_params: Value) -> Scene {
+    let mut params = json!({ "color": COLOR, "unlit": true });
+    for (name, value) in material_params.as_object().expect("params") {
+        params[name] = value.clone();
+    }
+    GroundView::WHOLE.scene(
+        vec![
+            json!({ "id": 1, "type": "shape_3d", "params": { "size": [1, 0.2, 1], "position": [0, 1, 0] } }),
+            material(3, params),
+            with_material(
+                json!({ "id": 2, "type": "shape_3d", "params": {
+                    "shape": "plane", "size": [6, 1, 6], "position": [0, 0.01, 0] } }),
+                3,
+            ),
+            light(
+                60,
+                json!({ "light": "directional", "intensity": 1, "rotation": [-90, 0, 0],
+                        "cast_shadows": true }),
+            ),
+        ],
+        json!({}),
+    )
+}
+
+const COLOR: &str = "#e0c080";
+const COLOR_CODES: [u8; 3] = [0xe0, 0xc0, 0x80];
+
+#[test]
+fn an_unlit_surface_darkens_in_shadow_by_its_unlit_shadows() {
+    let view = GroundView::WHOLE;
+    let (shadow_x, shadow_y) = view.pixel(0.0, 0.0);
+    let (lit_x, lit_y) = view.pixel(2.5, 2.5);
+    let [r, g, b] = COLOR_CODES;
+    let base = [r, g, b, 255];
+    let halved = crate::color::opaque(COLOR_CODES.map(|code| 0.5 * crate::color::linear(code)));
+    let probes =
+        |shadow: [u8; 4]| Expect::Probes(vec![(shadow_x, shadow_y, shadow), (lit_x, lit_y, base)]);
+    check(vec![
+        Case::new(
+            "half dark in the shadow and exact outside it",
+            unlit_plane_under_a_slab(json!({ "unlit_shadows": 0.5 })),
+            probes(halved),
+        )
+        .tolerance(1),
+        Case::new(
+            "black in a full shadow at 1",
+            unlit_plane_under_a_slab(json!({ "unlit_shadows": 1 })),
+            probes([0, 0, 0, 255]),
+        )
+        .tolerance(1),
+        Case::new(
+            "unchanged by default",
+            unlit_plane_under_a_slab(json!({})),
+            probes(base),
+        )
+        .tolerance(1),
+        Case::new(
+            "unchanged where it doesn't receive shadows",
+            unlit_plane_under_a_slab(json!({ "unlit_shadows": 0.5, "receive_shadows": false })),
+            probes(base),
         )
         .tolerance(1),
     ]);

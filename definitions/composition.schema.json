@@ -4468,7 +4468,7 @@
                       }
                     ],
                     "default": true,
-                    "description": "Darkens where shadows fall on it. An unlit surface shows none.",
+                    "description": "Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says.",
                     "title": "Receive Shadows",
                     "x-lumen-kind": "bool"
                   },
@@ -4518,6 +4518,25 @@
                     "description": "Shows the base colour as is, ignoring lights.",
                     "title": "Unlit",
                     "x-lumen-kind": "bool"
+                  },
+                  "unlit_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "How much an unlit surface darkens where shadows fall on it, from 0, which shows none, to\n1, where a fully shadowed point is black. Lit surfaces ignore it, as do surfaces that\ndon't receive shadows.",
+                    "title": "Unlit Shadows",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
                   }
                 },
                 "type": "object"

@@ -282,7 +282,8 @@ pub(crate) struct GpuObject {
     pub(crate) first_weight: u32,
     /// Where the object's five rows of the map coordinates table start.
     pub(crate) first_map_uv: u32,
-    _pad: [u32; 2],
+    pub(crate) unlit_shadows: f32,
+    _pad: u32,
     /// [`Object::part`]'s edges, or the whole quad's.
     pub(crate) part: [f32; 4],
 }
@@ -533,7 +534,8 @@ fn gpu_object(
         morph_targets: object.morph.map_or(0, |(morph, _)| morph.targets),
         first_weight: object.morph.map_or(0, |(_, weight)| weight),
         first_map_uv,
-        _pad: [0; 2],
+        unlit_shadows: surface.unlit_shadows,
+        _pad: 0,
         part: object.part.unwrap_or([0.0, 0.0, 1.0, 1.0]),
     }
 }
@@ -641,7 +643,9 @@ fn shadow_atlas(
         if surface.cast_shadows && !surface.shadow_catcher {
             casters = casters.union(object.bounds);
         }
-        if (surface.receive_shadows && !surface.unlit) || surface.shadow_catcher {
+        if (surface.receive_shadows && (!surface.unlit || surface.unlit_shadows > 0.0))
+            || surface.shadow_catcher
+        {
             receivers = receivers.union(object.bounds);
         }
     }
