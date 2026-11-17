@@ -76,10 +76,10 @@ At most one of `--bitrate`, `--crf` and `--qp` can be given. They and `--preset`
 
 These flags are for an image output:
 
-| Flag                 | Meaning                                                                       |
-| -------------------- | ----------------------------------------------------------------------------- |
+| Flag                 | Meaning                                                                                                          |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `--frame <n[,n...]>` | The frame to render as one image (default 0), or a list of frames for a `%d` sequence. Can't go with `--frames`. |
-| `--jpeg-quality <n>` | `.jpg` only, a single image or a sequence. 1 to 100, default 90.              |
+| `--jpeg-quality <n>` | `.jpg` only, a single image or a sequence. 1 to 100, default 90.                                                 |
 
 Progress and the render summary go to stdout. Warnings and errors go to stderr, including a `warning font.fallback` line for each text family that fell back to the bundled font.
 
