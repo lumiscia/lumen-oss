@@ -89,7 +89,8 @@ pub(super) struct GpuVectorDrawable {
     pub(super) dash_count: u32,
     pub(super) dash_period: f32,
     pub(super) dash_start_phase: f32,
-    pub(super) _pad: u32,
+    /// Index in the paints buffer of a shadow's colour, which `paint`'s alpha scales.
+    pub(super) shadow_paint: u32,
     pub(super) dash: [[f32; 4]; super::super::dash::GPU_DASH_LENGTHS / 4],
 }
 
@@ -514,11 +515,11 @@ impl Drawing {
         };
         let mut transform = instance.measured.transform;
         transform.opacity = drawable.opacity * instance.measured.transform.opacity;
-        let mut paint = drawable.paint;
+        let mut shadow_paint = None;
         if let Some(cast) = drawable.shadow {
             transform = transform.translated(cast.offset);
             transform.opacity *= cast.opacity;
-            paint = GpuPaint::solid(cast.color);
+            shadow_paint = Some(GpuPaint::solid(cast.color));
         }
         let extent = need.extent + (1.0 / instance.scales[0].max(MIN_SCALE)) as f32;
         let [x, y] = path.position;
@@ -537,7 +538,8 @@ impl Drawing {
             [[turn[0][0], turn[1][0]], [turn[0][1], turn[1][1]]]
                 .map(|column| column.map(|value| value as f32))
         });
-        let paint = self.paint(&paint);
+        let paint = self.paint(&drawable.paint);
+        let shadow_paint = shadow_paint.map_or(0, |shadow| self.paint(&shadow));
         self.drawables.push(GpuVectorDrawable {
             transform,
             screen_bounds: transform.canvas_bounds(low, high),
@@ -567,6 +569,7 @@ impl Drawing {
             dash_period: dash.period(),
             dash_start_phase: dash.phase(0.0),
             dash: dash.lengths,
+            shadow_paint,
             ..Zeroable::zeroed()
         });
     }
@@ -584,11 +587,12 @@ impl Drawing {
         }
         let smallest = scales(&transform)[0].max(1e-12);
         let offset = geometry.offset;
-        let (flags, stroke_width, grow) = match drawable.style {
+        let (flags, stroke_width, grow, feather) = match drawable.style {
             Style::Fill(fill) => (
                 style_flags(true, false, fill.edge_antialias),
                 0.0,
-                offset.max(0.0),
+                offset.max(0.0) + fill.feather * 0.5,
+                fill.feather,
             ),
             Style::Stroke(stroke) => {
                 if stroke.width <= 0.0 {
@@ -602,20 +606,22 @@ impl Drawing {
                     style_flags(false, true, true),
                     stroke.width,
                     (offset + half).max(0.0),
+                    0.0,
                 )
             }
         };
-        let mut paint = drawable.paint;
+        let mut shadow_paint = None;
         let (mut shadow_softness, mut shadow_spread, mut shadow_flag, mut reach) =
             (0.0, 0.0, 0, 0.0);
         if let Some(cast) = drawable.shadow {
             transform = transform.translated(cast.offset);
             transform.opacity *= cast.opacity;
-            paint = GpuPaint::solid(cast.color);
-            shadow_softness = cast.softness();
+            shadow_paint = Some(GpuPaint::solid(cast.color));
+            // A feathered fill's shadow fades over the feather too.
+            shadow_softness = cast.softness() + f64::from(feather) * smallest;
             shadow_spread = cast.spread;
             shadow_flag = STYLE_SHADOW;
-            reach = ((cast.spread.max(0.0) + cast.softness() * 0.5) / smallest) as f32;
+            reach = ((cast.spread.max(0.0) + shadow_softness * 0.5) / smallest) as f32;
         }
         let sheared = if measured(transform).turn.is_some() {
             DRAWABLE_SHEARED
@@ -630,7 +636,8 @@ impl Drawing {
             [position[0] - grow, position[1] - grow],
             [position[0] + drawn[0] + grow, position[1] + drawn[1] + grow],
         );
-        let paint = self.paint(&paint);
+        let paint = self.paint(&drawable.paint);
+        let shadow_paint = shadow_paint.map_or(0, |shadow| self.paint(&shadow));
         self.drawables.push(GpuVectorDrawable {
             transform,
             // Antialiasing reaches a canvas pixel beyond the box.
@@ -649,6 +656,8 @@ impl Drawing {
             paint,
             shadow_softness: shadow_softness as f32,
             shadow_spread: shadow_spread as f32,
+            fill_feather: feather,
+            shadow_paint,
             ..Zeroable::zeroed()
         });
     }

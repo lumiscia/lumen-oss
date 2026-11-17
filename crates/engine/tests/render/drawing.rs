@@ -281,6 +281,57 @@ fn shadows_draw_beneath_the_whole_drawing() -> Case {
     )
 }
 
+/// A feathered square fades the same whether it is a shape or a path.
+fn feathered_shapes_fade_as_paths_do() -> Case {
+    let fill = |geometry: Value| {
+        scene(
+            SIZE,
+            json!([
+                geometry,
+                { "id": 2, "type": "fill_2d", "params": { "paint": [255, 255, 255, 255], "feather": 12 }, "in": { "geometry": 1 } },
+                { "id": 3, "type": "render_2d", "in": { "drawing": 2 } }
+            ]),
+        )
+    };
+    let shape = fill(
+        json!({ "id": 1, "type": "shape_2d", "params": { "width": 40, "height": 40, "position": [60, 28] } }),
+    );
+    let path = fill(
+        json!({ "id": 1, "type": "path_2d", "params": { "data": "M 0 0 H 40 V 40 H 0 Z", "position": [60, 28] } }),
+    );
+    Case::new(
+        "a feathered shape fades as the same path does",
+        shape,
+        Expect::Matches(path.into()),
+    )
+}
+
+/// Transparent fills of a shape and a path cast no shadow, where an opaque one beside them does.
+fn transparent_fills_cast_no_shadow() -> Case {
+    let fill = |id: u32, geometry: u32, paint: [u8; 4]| json!({ "id": id, "type": "fill_2d", "params": { "paint": paint }, "in": { "geometry": geometry } });
+    Case::new(
+        "a shadow is as opaque as the paint it falls from",
+        scene(
+            SIZE,
+            json!([
+                { "id": 1, "type": "shape_2d", "params": { "width": 30, "height": 30, "position": [10, 10] } },
+                { "id": 2, "type": "path_2d", "params": { "data": "M 0 0 H 30 V 30 H 0 Z", "position": [70, 10] } },
+                { "id": 3, "type": "shape_2d", "params": { "width": 20, "height": 30, "position": [130, 10] } },
+                fill(4, 1, [255, 0, 0, 0]),
+                fill(5, 2, [255, 0, 0, 0]),
+                fill(6, 3, [255, 255, 255, 255]),
+                { "id": 7, "type": "merge_2d", "in": { "drawings": [4, 5, 6] } },
+                {
+                    "id": 8, "type": "shadow_2d", "in": { "drawing": 7 },
+                    "params": { "shadows": [{ "color": [0, 0, 0, 255], "offset": [0, 45], "radius": 0, "opacity": 1 }] }
+                },
+                { "id": 9, "type": "render_2d", "in": { "drawing": 8 } }
+            ]),
+        ),
+        Expect::Probes(vec![(25, 70, CLEAR), (85, 70, CLEAR), (140, 70, BLACK)]),
+    )
+}
+
 /// Columns of a rotation by `angle` radians, and their product with a vector.
 fn rotation(angle: f64) -> [[f64; 2]; 2] {
     let (sin, cos) = angle.sin_cos();
@@ -349,5 +400,7 @@ fn render_2d() {
     cases.extend(offsets_move_fill_and_stroke_edges());
     cases.push(shadows_draw_beneath_the_whole_drawing());
     cases.push(sheared_merges_draw_as_turned_paths());
+    cases.push(feathered_shapes_fade_as_paths_do());
+    cases.push(transparent_fills_cast_no_shadow());
     check(cases);
 }

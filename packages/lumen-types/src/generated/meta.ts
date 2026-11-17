@@ -2578,6 +2578,7 @@ export interface ShadowNode extends CompositionNodeBase<"shadow"> {
  * shadow of a fill follows the filled outline, a shadow of a stroke the stroked band, and a
  * shadow of a shadow combines both: offsets and spreads add up and radii add as Gaussians do.
  * Lengths are in the drawing's pixels, so a `merge_2d` around this node scales them.
+ * A shadow is as opaque as the paint it falls from, so a transparent fill casts none.
  */
 export interface Shadow2dNode extends CompositionNodeBase<"shadow_2d"> {
   readonly params?: {
@@ -3682,6 +3683,7 @@ export const nodeInputPorts = {
    * shadow of a fill follows the filled outline, a shadow of a stroke the stroked band, and a
    * shadow of a shadow combines both: offsets and spreads add up and radii add as Gaussians do.
    * Lengths are in the drawing's pixels, so a `merge_2d` around this node scales them.
+   * A shadow is as opaque as the paint it falls from, so a transparent fill casts none.
    */
   "shadow_2d": { "drawing": { kind: "drawing", variadic: false } },
   /** Produces a vector shape layer for GPU rasterization. */

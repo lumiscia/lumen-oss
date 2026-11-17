@@ -201,7 +201,7 @@ Inputs:
 
 ## `shadow_2d`
 
-Casts shadows of every drawable in its drawing, all beneath the drawing's own drawables rather than between them. Each shadow's copies of the drawables are drawn in the drawing's order, and the shadows in list order. Shadows of drawables that overlap composite over each other, so where they overlap they are darker than one Gaussian shadow of their union would be. A shadow of a fill follows the filled outline, a shadow of a stroke the stroked band, and a shadow of a shadow combines both: offsets and spreads add up and radii add as Gaussians do. Lengths are in the drawing's pixels, so a `merge_2d` around this node scales them.
+Casts shadows of every drawable in its drawing, all beneath the drawing's own drawables rather than between them. Each shadow's copies of the drawables are drawn in the drawing's order, and the shadows in list order. Shadows of drawables that overlap composite over each other, so where they overlap they are darker than one Gaussian shadow of their union would be. A shadow of a fill follows the filled outline, a shadow of a stroke the stroked band, and a shadow of a shadow combines both: offsets and spreads add up and radii add as Gaussians do. Lengths are in the drawing's pixels, so a `merge_2d` around this node scales them. A shadow is as opaque as the paint it falls from, so a transparent fill casts none.
 
 Category: vector. Output: drawing.
 

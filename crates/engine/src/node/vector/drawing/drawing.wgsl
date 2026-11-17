@@ -42,7 +42,8 @@ struct VectorDrawable {
     dash_count: u32,
     dash_period: f32,
     dash_start_phase: f32,
-    _pad: u32,
+    // Index in `paints` of a shadow's colour, which `paint`'s alpha scales.
+    shadow_paint: u32,
     dash: array<vec4<f32>, 8>,
 }
 
@@ -100,6 +101,28 @@ fn sample_drawable_paint(local: vec2<f32>) -> vec4<f32> {
         vec2<f32>(1.0),
     );
     return sample_paint(paints[params.paint], laid_out, unit);
+}
+
+// The drawable's colour at `local`, or a shadow's colour where its drawable's paint is opaque.
+fn drawable_color(local: vec2<f32>) -> vec4<f32> {
+    let source = sample_drawable_paint(local);
+    if ((params.flags & STYLE_SHADOW) == 0u) {
+        return source;
+    }
+    return sample_paint(paints[params.shadow_paint], local, vec2<f32>(0.0)) * source.a;
+}
+
+// Coverage of a shape's fill, `distance` canvas pixels outside its edge, faded over `fill_feather`
+// untransformed pixels at the transform's mean scale.
+fn shape_fill_coverage(distance: f32, transform: DrawableTransform, edge_antialias: bool) -> f32 {
+    if (params.fill_feather <= 0.0) {
+        return edge_coverage(distance, edge_antialias);
+    }
+    let scale = drawable_axis_scale(transform);
+    let feather = params.fill_feather * sqrt(scale.x * scale.y);
+    let width = feather + select(0.0, 1.0, edge_antialias);
+    let t = clamp(0.5 - distance / width, 0.0, 1.0);
+    return mix(t, t * t * (3.0 - 2.0 * t), feather / width);
 }
 
 // The canvas distance to the stroke centred on an offset path's outline, negative inside it, and
@@ -227,7 +250,7 @@ fn draw_path(pixel: vec2<f32>) -> vec4<f32> {
     if (alpha <= 0.0) {
         return vec4<f32>(0.0);
     }
-    return sample_drawable_paint(local) * alpha * transform.opacity;
+    return drawable_color(local) * alpha * transform.opacity;
 }
 
 // The shape's outline grown by `fill_offset`: the signed canvas distance to its fill, and to its
@@ -267,14 +290,14 @@ fn draw_shape(pixel: vec2<f32>) -> vec4<f32> {
     if ((params.flags & STYLE_SHADOW) != 0u) {
         alpha = shadow_coverage(select(shape.stroke, shape.fill, fill_enabled) - params.shadow_spread);
     } else if (fill_enabled) {
-        alpha = edge_coverage(shape.fill, edge_antialias);
+        alpha = shape_fill_coverage(shape.fill, transform, edge_antialias);
     } else {
         alpha = stroke_coverage(shape.stroke, canvas_stroke_width(transform, params.stroke_width), edge_antialias);
     }
     if (alpha <= 0.0) {
         return vec4<f32>(0.0);
     }
-    return sample_drawable_paint(center + p) * alpha * transform.opacity;
+    return drawable_color(center + p) * alpha * transform.opacity;
 }
 
 @compute @workgroup_size(16, 16, 1)

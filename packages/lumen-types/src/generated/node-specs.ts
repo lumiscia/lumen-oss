@@ -719,7 +719,7 @@ export const nodeSpecs: readonly NodeSpec[] = [
   {
     kind: "shadow_2d",
     name: "Shadow 2D",
-    description: "Casts shadows of every drawable in its drawing, all beneath the drawing's own drawables rather\nthan between them. Each shadow's copies of the drawables are drawn in the drawing's order,\nand the shadows in list order. Shadows of drawables that overlap composite over each other,\nso where they overlap they are darker than one Gaussian shadow of their union would be. A\nshadow of a fill follows the filled outline, a shadow of a stroke the stroked band, and a\nshadow of a shadow combines both: offsets and spreads add up and radii add as Gaussians do.\nLengths are in the drawing's pixels, so a `merge_2d` around this node scales them.",
+    description: "Casts shadows of every drawable in its drawing, all beneath the drawing's own drawables rather\nthan between them. Each shadow's copies of the drawables are drawn in the drawing's order,\nand the shadows in list order. Shadows of drawables that overlap composite over each other,\nso where they overlap they are darker than one Gaussian shadow of their union would be. A\nshadow of a fill follows the filled outline, a shadow of a stroke the stroked band, and a\nshadow of a shadow combines both: offsets and spreads add up and radii add as Gaussians do.\nLengths are in the drawing's pixels, so a `merge_2d` around this node scales them.\nA shadow is as opaque as the paint it falls from, so a transparent fill casts none.",
     category: "vector",
     inputs: [
       { name: "drawing", kind: "drawing", optional: false, variadic: false },

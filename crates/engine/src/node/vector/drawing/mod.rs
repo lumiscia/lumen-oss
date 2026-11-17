@@ -402,6 +402,7 @@ pub struct Shadow2dParams {
 /// shadow of a fill follows the filled outline, a shadow of a stroke the stroked band, and a
 /// shadow of a shadow combines both: offsets and spreads add up and radii add as Gaussians do.
 /// Lengths are in the drawing's pixels, so a `merge_2d` around this node scales them.
+/// A shadow is as opaque as the paint it falls from, so a transparent fill casts none.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "shadow_2d",
