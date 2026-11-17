@@ -11,6 +11,7 @@ pub(super) const SHAPE_SHADER: &str = concat!(
     include_str!("paint/paint.wgsl"),
     include_str!("drawable.wgsl"),
     include_str!("vector_common.wgsl"),
+    include_str!("shape_geometry.wgsl"),
     include_str!("shape_renderer.wgsl")
 );
 
