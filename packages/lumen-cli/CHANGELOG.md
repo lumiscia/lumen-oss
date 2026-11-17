@@ -1,5 +1,11 @@
 # @lumiscia/lumen-cli
 
+## 0.6.0-beta.4
+
+### Patch Changes
+
+- @lumiscia/lumen-types@0.6.0-beta.4
+
 ## 0.6.0-beta.3
 
 ### Minor Changes

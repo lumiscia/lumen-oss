@@ -1,5 +1,9 @@
 # @lumiscia/lumen-cli-linux-x64
 
+## 0.6.0-beta.4
+
+No changes in this release.
+
 ## 0.6.0-beta.3
 
 No changes in this release.
