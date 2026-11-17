@@ -11,6 +11,8 @@ mod displacement;
 mod drawing;
 mod edits;
 mod effects;
+#[cfg(feature = "3d")]
+mod face_materials;
 mod frame_graph;
 mod geometry;
 mod glow;

@@ -63,6 +63,41 @@ pub enum Primitive {
     Cone,
 }
 
+/// A face of the box [`Mesh::primitive`] builds, as its axes stand before any rotation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoxFace {
+    /// +X.
+    Right,
+    /// -X.
+    Left,
+    /// +Y.
+    Top,
+    /// -Y.
+    Bottom,
+    /// +Z, the face toward a camera looking down -Z.
+    Front,
+    /// -Z.
+    Back,
+}
+
+impl BoxFace {
+    /// The faces in the order their indices come in the box's mesh, six to a face.
+    pub const ALL: [Self; 6] = [
+        Self::Right,
+        Self::Left,
+        Self::Top,
+        Self::Bottom,
+        Self::Front,
+        Self::Back,
+    ];
+
+    /// The range of the box's indices that draw this face.
+    pub fn indices(self) -> std::ops::Range<u32> {
+        let first = Self::ALL.iter().position(|&face| face == self).unwrap_or(0) as u32 * 6;
+        first..first + 6
+    }
+}
+
 const SEGMENTS: u32 = 64;
 const RINGS: u32 = 32;
 

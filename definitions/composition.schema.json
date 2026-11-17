@@ -2782,7 +2782,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front\ncap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a\n`material_3d` is wired into `material`. The geometry's pixel coordinates, after its own\nposition, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with\nY flipped, since 2D Y points down and 3D Y up. Pixel (0, 0) is the origin that `placement`\nmoves and turns the solid about, and nothing re-centres the solid on it: the geometry's\n`position` and `anchor` decide where it sits about that origin, so a `shape_2d` at `position`\n(0, 0) lies to the right of and below it on screen, and 100 pixels across it is 1 unit wide.\nThe extrusion is centred on Z = 0. The outline is filled by the nonzero rule, as a `text_3d`\nglyph is, so holes of a path stay open whichever way they wind and overlapping subpaths join;\nopen subpaths are closed by a straight segment. Curves are flattened to within 0.001 world\nunits, so a larger or smaller `units_per_pixel` keeps them as smooth. An ellipse has as many\nsides as that takes, at least 16 and at most 256, and each corner of a rounded rectangle a\nquarter of as many for its own radius, at least 4 and at most 64. A path's flattening\ncoarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,\n262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a\nrender error. An `offset_2d` in the geometry is not supported yet and fails the render. The\nmesh is built again only when the outline, `units_per_pixel` or the bevel change, or the\n`depth` of a bevelled one, so animating the placement, the material or a plain extrusion's\ndepth costs no more than for a `shape_3d`.",
+            "description": "A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front\ncap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a\n`material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the\nside walls and the bevel instead, leaving the caps to `material`. The geometry's pixel coordinates, after its own\nposition, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with\nY flipped, since 2D Y points down and 3D Y up. Pixel (0, 0) is the origin that `placement`\nmoves and turns the solid about, and nothing re-centres the solid on it: the geometry's\n`position` and `anchor` decide where it sits about that origin, so a `shape_2d` at `position`\n(0, 0) lies to the right of and below it on screen, and 100 pixels across it is 1 unit wide.\nThe extrusion is centred on Z = 0. The outline is filled by the nonzero rule, as a `text_3d`\nglyph is, so holes of a path stay open whichever way they wind and overlapping subpaths join;\nopen subpaths are closed by a straight segment. Curves are flattened to within 0.001 world\nunits, so a larger or smaller `units_per_pixel` keeps them as smooth. An ellipse has as many\nsides as that takes, at least 16 and at most 256, and each corner of a rounded rectangle a\nquarter of as many for its own radius, at least 4 and at most 64. A path's flattening\ncoarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,\n262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a\nrender error. An `offset_2d` in the geometry is not supported yet and fails the render. The\nmesh is built again only when the outline, `units_per_pixel` or the bevel change, or the\n`depth` of a bevelled one, so animating the placement, the material or a plain extrusion's\ndepth costs no more than for a `shape_3d`.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -2939,6 +2939,12 @@
               {
                 "kind": "material",
                 "name": "material",
+                "optional": true,
+                "variadic": false
+              },
+              {
+                "kind": "material",
+                "name": "side_material",
                 "optional": true,
                 "variadic": false
               }
@@ -7738,7 +7744,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,\nsingle-sided and white unless a `material_3d` is wired into `material`.",
+            "description": "A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,\nsingle-sided and white unless a `material_3d` is wired into `material`.\n\nA box takes a material for each face from `top_material`, `bottom_material`, `left_material`,\n`right_material`, `front_material` and `back_material`, which are its +Y, -Y, -X, +X, +Z and\n-Z faces in its own axes before `rotation`; the front faces a camera looking down -Z. A face\nwith none wired uses `material`. A face material wired into any other shape fails the render\nnaming the input. The faces draw as one object each, merged where neighbours share a material,\nfrom the same mesh, so a box with face materials costs a draw for each run of faces, and\nunder `instance_3d` each draws all its copies.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -7871,6 +7877,42 @@
               {
                 "kind": "material",
                 "name": "material",
+                "optional": true,
+                "variadic": false
+              },
+              {
+                "kind": "material",
+                "name": "top_material",
+                "optional": true,
+                "variadic": false
+              },
+              {
+                "kind": "material",
+                "name": "bottom_material",
+                "optional": true,
+                "variadic": false
+              },
+              {
+                "kind": "material",
+                "name": "left_material",
+                "optional": true,
+                "variadic": false
+              },
+              {
+                "kind": "material",
+                "name": "right_material",
+                "optional": true,
+                "variadic": false
+              },
+              {
+                "kind": "material",
+                "name": "front_material",
+                "optional": true,
+                "variadic": false
+              },
+              {
+                "kind": "material",
+                "name": "back_material",
                 "optional": true,
                 "variadic": false
               }
@@ -8753,7 +8795,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Text from its font's outlines, extruded into a solid, lit, single-sided and white unless\na `material_3d` is wired into `material`. The text is shaped as a `text` node with the same font, size and layout shapes\nit, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing\n+Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the\npoint of its box at `position`. Its geometry is built again only when the text, font, layout or\nbevel change, or its size or depth do with a bevel, so animating its transform or material\ncosts no more than for a `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the\n`glyph_*` params of a `text` node have no counterpart.",
+            "description": "Text from its font's outlines, extruded into a solid, lit, single-sided and white unless\na `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the\nside walls and the bevel instead, leaving the front and back faces to `material`. The text is\nshaped as a `text` node with the same font, size and layout shapes it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing\n+Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the\npoint of its box at `position`. Its geometry is built again only when the text, font, layout or\nbevel change, or its size or depth do with a bevel, so animating its transform or material\ncosts no more than for a `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the\n`glyph_*` params of a `text` node have no counterpart.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -9147,6 +9189,12 @@
               {
                 "kind": "material",
                 "name": "material",
+                "optional": true,
+                "variadic": false
+              },
+              {
+                "kind": "material",
+                "name": "side_material",
                 "optional": true,
                 "variadic": false
               }

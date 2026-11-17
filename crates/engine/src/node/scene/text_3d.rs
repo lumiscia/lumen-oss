@@ -172,8 +172,9 @@ impl Default for Text3dParams {
 }
 
 /// Text from its font's outlines, extruded into a solid, lit, single-sided and white unless
-/// a `material_3d` is wired into `material`. The text is shaped as a `text` node with the same font, size and layout shapes
-/// it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing
+/// a `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
+/// side walls and the bevel instead, leaving the front and back faces to `material`. The text is
+/// shaped as a `text` node with the same font, size and layout shapes it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing
 /// +Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the
 /// point of its box at `position`. Its geometry is built again only when the text, font, layout or
 /// bevel change, or its size or depth do with a bevel, so animating its transform or material
@@ -193,6 +194,8 @@ pub struct Text3d {
 
     #[input(material, optional)]
     pub material: Option<NodeId>,
+    #[input(material, optional)]
+    pub side_material: Option<NodeId>,
 }
 
 #[cfg(all(test, feature = "3d"))]

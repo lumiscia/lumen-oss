@@ -47,6 +47,9 @@ const LATHE_LIMITS: LatheLimits = LatheLimits {
 pub(super) struct SolidMesh {
     pub(super) mesh: GpuMesh,
     pub(super) index_count: u32,
+    /// For an extrusion, where its caps' indices start, after those of its walls; a lathe has no
+    /// caps, and holds its index count.
+    pub(super) caps_start: u32,
     pub(super) bounds: Bounds,
 }
 
@@ -198,7 +201,13 @@ impl SolidMeshes {
     }
 
     /// Adds the solid `mesh` built from `key`, drawn in frame `tick`, and returns where it is.
-    fn insert(&mut self, rec: &mut Recorder, key: SolidKey, mesh: Mesh, tick: u64) -> usize {
+    fn insert(
+        &mut self,
+        rec: &mut Recorder,
+        key: SolidKey,
+        (mesh, caps_start): (Mesh, Option<u32>),
+        tick: u64,
+    ) -> usize {
         // Held on the GPU and on the CPU.
         let bytes = 2
             * (std::mem::size_of_val(mesh.vertices.as_slice())
@@ -206,6 +215,7 @@ impl SolidMeshes {
         let drawn = (!mesh.indices.is_empty()).then(|| SolidMesh {
             mesh: GpuMesh::upload(rec, &mesh),
             index_count: mesh.indices.len() as u32,
+            caps_start: caps_start.unwrap_or(mesh.indices.len() as u32),
             bounds: Bounds::of(
                 mesh.vertices
                     .iter()
@@ -266,7 +276,7 @@ fn mesh_of<N: JsonNode>(
     cx: &mut FrameCx<'_>,
     node_id: NodeId,
     key: SolidKey,
-    build: impl FnOnce() -> Result<Mesh, String>,
+    build: impl FnOnce() -> Result<(Mesh, Option<u32>), String>,
 ) -> crate::Result<Option<SolidMesh>> {
     let tick = cx.tick();
     let (rec, cache) = cx.scene_cache();
@@ -347,6 +357,7 @@ pub(super) fn extrude_mesh(
             .map(|contour| world_points(contour, units).collect())
             .collect();
         extrude(&outlines, &extrusion, &EXTRUDE_LIMITS)
+            .map(|solid| (solid.mesh, Some(solid.caps_start)))
             .map_err(|limit| format!("the extruded outline has {limit}"))
     })
     .map(|solid| solid.map(|solid| (solid, depth_scale)))
@@ -381,8 +392,10 @@ pub(super) fn lathe_mesh(
                 closed: contour.closed,
             })
             .collect();
-        lathe(&profile, &spin, &LATHE_LIMITS).map_err(|limit| {
-            format!("the spun profile has {limit}; use fewer `segments` or a simpler profile")
-        })
+        lathe(&profile, &spin, &LATHE_LIMITS)
+            .map(|mesh| (mesh, None))
+            .map_err(|limit| {
+                format!("the spun profile has {limit}; use fewer `segments` or a simpler profile")
+            })
     })
 }

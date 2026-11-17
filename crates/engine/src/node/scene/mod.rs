@@ -214,6 +214,14 @@ impl Default for Shape3dParams {
 
 /// A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,
 /// single-sided and white unless a `material_3d` is wired into `material`.
+///
+/// A box takes a material for each face from `top_material`, `bottom_material`, `left_material`,
+/// `right_material`, `front_material` and `back_material`, which are its +Y, -Y, -X, +X, +Z and
+/// -Z faces in its own axes before `rotation`; the front faces a camera looking down -Z. A face
+/// with none wired uses `material`. A face material wired into any other shape fails the render
+/// naming the input. The faces draw as one object each, merged where neighbours share a material,
+/// from the same mesh, so a box with face materials costs a draw for each run of faces, and
+/// under `instance_3d` each draws all its copies.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "shape_3d",
@@ -228,6 +236,18 @@ pub struct Shape3d {
 
     #[input(material, optional)]
     pub material: Option<NodeId>,
+    #[input(material, optional)]
+    pub top_material: Option<NodeId>,
+    #[input(material, optional)]
+    pub bottom_material: Option<NodeId>,
+    #[input(material, optional)]
+    pub left_material: Option<NodeId>,
+    #[input(material, optional)]
+    pub right_material: Option<NodeId>,
+    #[input(material, optional)]
+    pub front_material: Option<NodeId>,
+    #[input(material, optional)]
+    pub back_material: Option<NodeId>,
 }
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
