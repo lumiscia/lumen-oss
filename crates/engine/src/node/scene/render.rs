@@ -324,7 +324,8 @@ pub(crate) const NO_INSTANCES: u32 = u32::MAX;
 pub(crate) struct GpuInstance {
     /// The rows of the copy's placement, which is affine.
     pub(crate) rows: [[f32; 4]; 3],
-    /// Reserved for a colour per copy; white.
+    /// The linear colour that multiplies the copy's base colour and emissive light; white leaves
+    /// them as they are. The shader ignores its alpha.
     pub(crate) tint: [f32; 4],
 }
 
@@ -333,11 +334,13 @@ fn gpu_instances(placements: &super::collect::Placements) -> Vec<GpuInstance> {
     placements
         .matrices()
         .iter()
-        .map(|placement| {
+        .enumerate()
+        .map(|(index, placement)| {
             let rows = placement.transpose();
+            let [r, g, b] = placements.tint(index);
             GpuInstance {
                 rows: [rows.x_axis, rows.y_axis, rows.z_axis].map(Into::into),
-                tint: [1.0; 4],
+                tint: [r, g, b, 1.0],
             }
         })
         .collect()

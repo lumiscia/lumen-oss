@@ -14,11 +14,13 @@ use lumen_gpu::TexRef;
 
 use super::{
     Collected, Extent, GpuMesh, MAX_SCENE_JOINTS, MAX_SCENE_WEIGHTS, PosedSkin, placement,
+    solid_linear,
 };
 use crate::error::{ExpressionError, LumenError, RenderError};
 use crate::expr::{ExpressionContext, InstanceEvaluator, InstanceScope};
 use crate::gpu::frame_graph::FrameCx;
 use crate::node::scene::{Instance3d, MAX_INSTANCES, Placement3d, Pose3d};
+use crate::node::vector::paint::{Paint, PaintDelegate};
 use crate::node::{Deferred, DelegateEvalContext, Node, NodeId, ParamValue, required_input};
 
 const _: () = assert!(MAX_INSTANCES as usize <= MAX_SCENE_NODES);
@@ -48,10 +50,21 @@ fn at_instance(error: LumenError, index: u32) -> LumenError {
 /// Bounds of copies a list keeps, for the objects of different extents drawing from it.
 const KEPT_BOUNDS: usize = 16;
 
-/// The placements of a list of copies: upright ones, then flat ones, then mirrored ones, leaving
-/// out those that draw nothing, which aren't finite or flatten more than one axis.
+/// The linear colour that multiplies a copy's base colour and emissive light.
+pub(crate) type Tint = [f32; 3];
+
+const WHITE: Tint = [1.0; 3];
+
+fn tint_product(a: Tint, b: Tint) -> Tint {
+    [a[0] * b[0], a[1] * b[1], a[2] * b[2]]
+}
+
+/// The placements and tints of a list of copies: upright ones, then flat ones, then mirrored ones,
+/// leaving out those that draw nothing, which aren't finite or flatten more than one axis.
 pub(crate) struct Placements {
     matrices: Vec<Mat4>,
+    /// The tint of each copy, or `None` when all are white.
+    tints: Option<Vec<Tint>>,
     upright: u32,
     flat: u32,
     bounds: Mutex<Vec<CopiesBounds>>,
@@ -85,30 +98,33 @@ fn orientation(matrix: &Mat4) -> Option<Orientation> {
 }
 
 impl Placements {
-    fn new(matrices: Vec<Mat4>) -> Self {
+    /// The placements `matrices`, with their `tints` if any isn't white.
+    fn new(matrices: Vec<Mat4>, tints: Option<Vec<Tint>>) -> Self {
         let orientations: Vec<Option<Orientation>> = matrices.iter().map(orientation).collect();
         let facing = |way| orientations.iter().filter(|&&of| of == Some(way)).count() as u32;
         let (upright, flat) = (facing(Orientation::Upright), facing(Orientation::Flat));
-        let matrices = if upright as usize == matrices.len() {
-            matrices
+        let (matrices, tints) = if upright as usize == matrices.len() {
+            (matrices, tints)
         } else {
-            [
+            let order: Vec<usize> = [
                 Orientation::Upright,
                 Orientation::Flat,
                 Orientation::Mirrored,
             ]
             .into_iter()
             .flat_map(|way| {
-                matrices
-                    .iter()
-                    .zip(&orientations)
-                    .filter(move |&(_, &of)| of == Some(way))
-                    .map(|(matrix, _)| *matrix)
+                let orientations = &orientations;
+                (0..matrices.len()).filter(move |&copy| orientations[copy] == Some(way))
             })
-            .collect()
+            .collect();
+            (
+                order.iter().map(|&copy| matrices[copy]).collect(),
+                tints.map(|tints| order.iter().map(|&copy| tints[copy]).collect()),
+            )
         };
         Self {
             matrices,
+            tints,
             upright,
             flat,
             bounds: Mutex::default(),
@@ -117,6 +133,15 @@ impl Placements {
 
     pub(crate) fn matrices(&self) -> &[Mat4] {
         &self.matrices
+    }
+
+    fn is_tinted(&self) -> bool {
+        self.tints.is_some()
+    }
+
+    /// The tint of copy `copy`, which is white where none is set.
+    pub(crate) fn tint(&self, copy: usize) -> Tint {
+        self.tints.as_ref().map_or(WHITE, |tints| tints[copy])
     }
 
     /// The placements facing each way that some do: where they start, how many there are, and
@@ -172,38 +197,85 @@ fn draws_from_list(object: &Object<GpuMesh, TexRef>) -> bool {
     object.surface.blending != Blending::Blend && object.surface.texture.is_none()
 }
 
+/// How an `instance_3d` tints its copies.
+enum TintSource<'n> {
+    /// Every copy has this tint, evaluated once.
+    Fixed(Tint),
+    /// The tint is the colour expression after the placement's, evaluated for each copy.
+    Colour,
+    /// The tint's red, green and blue, those that are expressions evaluated for each copy after
+    /// the placement's.
+    Channels([&'n Deferred<u8>; 3]),
+}
+
 /// Evaluates the matrix placing each of an `instance_3d`'s copies in its scene's space, from its
-/// `position`, `rotation` and `scale` evaluated together.
+/// `position`, `rotation` and `scale` evaluated together, and the tint of each.
 struct Placer<'n> {
     node_id: NodeId,
-    /// Each param, with where a failure of it is located.
+    /// Each placement param, with where a failure of it is located.
     params: [(&'static str, &'n Deferred<[f64; 3]>); 3],
-    /// The params that are expressions, in their order.
+    tint: TintSource<'n>,
+    /// The params that are expressions, in their order, the tint's last.
     expressions: InstanceEvaluator,
 }
 
 impl<'n> Placer<'n> {
-    fn new(node: &'n Instance3d) -> Self {
+    fn new(node: &'n Instance3d) -> crate::Result<Self> {
         let given = &node.params.placement;
         let params = [
             ("placement.position", &given.pose.position),
             ("placement.rotation", &given.pose.rotation),
             ("placement.scale", &given.scale),
         ];
-        let expressions =
-            InstanceEvaluator::new(params.iter().filter_map(|(_, param)| match param {
-                Deferred::Expr(expression) => Some(expression),
-                Deferred::Value(_) => None,
-            }));
-        Self {
+        let (tint, tint_expressions) = match &node.params.tint {
+            PaintDelegate::SolidColor(r, g, b, _) => match [r, g, b] {
+                [Deferred::Value(r), Deferred::Value(g), Deferred::Value(b)] => (
+                    TintSource::Fixed(linear_tint(node.id, &Paint::SolidColor(*r, *g, *b, 255))?),
+                    Vec::new(),
+                ),
+                channels => (
+                    TintSource::Channels(channels),
+                    channels
+                        .iter()
+                        .filter_map(|channel| match channel {
+                            Deferred::Expr(expression) => Some(expression),
+                            Deferred::Value(_) => None,
+                        })
+                        .collect(),
+                ),
+            },
+            PaintDelegate::Expr(Deferred::Value(paint)) => {
+                (TintSource::Fixed(linear_tint(node.id, paint)?), Vec::new())
+            }
+            PaintDelegate::Expr(Deferred::Expr(expression)) => {
+                (TintSource::Colour, vec![expression])
+            }
+            PaintDelegate::Gradient(_) => {
+                return Err(instance_error(
+                    node.id,
+                    "`tint` must be a solid colour; a gradient can't tint a surface".into(),
+                ));
+            }
+        };
+        let expressions = InstanceEvaluator::new(
+            params
+                .iter()
+                .filter_map(|(_, param)| match param {
+                    Deferred::Expr(expression) => Some(expression),
+                    Deferred::Value(_) => None,
+                })
+                .chain(tint_expressions),
+        );
+        Ok(Self {
             node_id: node.id,
             params,
+            tint,
             expressions,
-        }
+        })
     }
 
-    /// The matrix of copy `index`, in `scoped`, the context scoped to that copy.
-    fn local(&mut self, scoped: &ExpressionContext<'_>, index: u32) -> crate::Result<Mat4> {
+    /// The matrix and tint of copy `index`, in `scoped`, the context scoped to that copy.
+    fn copy(&mut self, scoped: &ExpressionContext<'_>, index: u32) -> crate::Result<(Mat4, Tint)> {
         let mut values = [[0.0; 3]; 3];
         let mut expression = 0;
         for (value, (path, param)) in values.iter_mut().zip(self.params) {
@@ -218,13 +290,53 @@ impl<'n> Placer<'n> {
                 }
             };
         }
+        let tint = match &self.tint {
+            TintSource::Fixed(tint) => *tint,
+            TintSource::Colour => {
+                let paint = self
+                    .expressions
+                    .evaluate(expression, scoped)
+                    .and_then(Paint::from_expression)
+                    .map_err(|error| at_instance(error.located(self.node_id, "tint"), index))?;
+                linear_tint(self.node_id, &paint)?
+            }
+            TintSource::Channels(channels) => {
+                let mut rgb = [0; 3];
+                for (channel, (value, path)) in rgb
+                    .iter_mut()
+                    .zip(channels.iter().zip(["tint.0", "tint.1", "tint.2"]))
+                {
+                    *channel = match value {
+                        Deferred::Value(value) => *value,
+                        Deferred::Expr(_) => {
+                            expression += 1;
+                            self.expressions
+                                .evaluate(expression - 1, scoped)
+                                .and_then(u8::from_expression)
+                                .map_err(|error| {
+                                    at_instance(error.located(self.node_id, path), index)
+                                })?
+                        }
+                    };
+                }
+                let [r, g, b] = rgb;
+                linear_tint(self.node_id, &Paint::SolidColor(r, g, b, 255))?
+            }
+        };
         let [position, rotation, scale] = values;
-        Ok(placement(&Placement3d {
+        let matrix = placement(&Placement3d {
             pose: Pose3d { position, rotation },
             scale,
         })
-        .matrix())
+        .matrix();
+        Ok((matrix, tint))
     }
+}
+
+/// `paint` as the linear colour that multiplies a copy, leaving out its alpha.
+fn linear_tint(node_id: NodeId, paint: &Paint) -> crate::Result<Tint> {
+    let [r, g, b, _] = solid_linear::<Instance3d>(node_id, paint)?;
+    Ok([r, g, b])
 }
 
 impl Collected {
@@ -334,7 +446,8 @@ impl Collected {
     /// `node`'s params give for it, with their joints and morph target weights starting at `bases`
     /// in this scene's. Objects that draw from a list draw from this node's list of placements,
     /// or for the instanced objects of `inner`, from a list of this node's copies of their copies.
-    /// A single copy places the objects of `inner` as a group would.
+    /// A single copy places the objects of `inner` as a group would, unless it is tinted, when the
+    /// input's lists are copied to carry the tint.
     fn place_copies(
         &mut self,
         cx: &mut FrameCx<'_>,
@@ -349,6 +462,7 @@ impl Collected {
             return Ok(());
         };
         let together = count > 1;
+        let tinted = placements.tint(0) != WHITE;
         let from_list = |object: &Object<GpuMesh, TexRef>| {
             object.instanced.is_some() || (together && draws_from_list(object))
         };
@@ -383,7 +497,7 @@ impl Collected {
             };
             let (list, parent) = match object.instanced {
                 // One copy places the input's copies as a group would.
-                Some(copies) if !together => {
+                Some(copies) if !together && !tinted => {
                     let source = (copies.list, 0, 0, Mat4::IDENTITY);
                     let list = self.made_list(&mut made, source, |_| {
                         inner.lists[copies.list as usize].clone()
@@ -436,8 +550,14 @@ impl Collected {
             self.scene.objects.reserve(copied.len() * copies);
             self.extents.reserve(copied.len() * copies);
             self.skins.reserve(inner.skins.len() * copies);
-            for local in placements.matrices() {
-                self.add_copy(inner, &copied, parent * *local, (joint_base, weight_base));
+            for (index, local) in placements.matrices().iter().enumerate() {
+                let tint = placements.tint(index);
+                self.add_copy(
+                    inner,
+                    &copied,
+                    (parent * *local, tint),
+                    (joint_base, weight_base),
+                );
             }
         }
         Ok(())
@@ -461,12 +581,14 @@ impl Collected {
     }
 
     /// Adds a copy of the objects of `inner` that `copied` picks, with its skins, placed by
-    /// `world`, its joints and morph target weights starting at `bases` in this scene's.
+    /// `world` and coloured by `tint`, its joints and morph target weights starting at `bases` in
+    /// this scene's.
     fn add_copy(
         &mut self,
         inner: &Collected,
         copied: &[usize],
-        world: Mat4,
+        (world, tint): (Mat4, Tint),
+
         (joint_base, weight_base): (usize, usize),
     ) {
         let first_skin = self.skins.len();
@@ -480,6 +602,16 @@ impl Collected {
             let mut object = inner.scene.objects[index].clone();
             object.world = world * object.world;
             object.center = world.transform_point3(object.center);
+            let surface = &mut object.surface;
+            for ((base, emissive), tint) in surface
+                .base_color
+                .iter_mut()
+                .zip(&mut surface.emissive)
+                .zip(tint)
+            {
+                *base *= tint;
+                *emissive *= tint;
+            }
             object.first_joint = object.first_joint.map(|joint| joint + joint_base as u32);
             if let Some((_, weight)) = &mut object.morph {
                 *weight += weight_base as u32;
@@ -505,8 +637,8 @@ fn rebased(skin: &PosedSkin, world: Mat4, joint_base: usize) -> PosedSkin {
     }
 }
 
-/// The placements of `node`'s `count` copies: those kept from an earlier frame when its params
-/// don't read the frame, or evaluated, and whether frames draw them again.
+/// The placements and tints of `node`'s `count` copies: those kept from an earlier frame when its
+/// params don't read the frame, or evaluated, and whether frames draw them again.
 fn placements(
     cx: &mut FrameCx<'_>,
     node: &Instance3d,
@@ -516,14 +648,18 @@ fn placements(
     if keep && let Some(kept) = cx.kept_placements(node.id, count) {
         return Ok((kept, true));
     }
-    let mut placer = Placer::new(node);
+    let mut placer = Placer::new(node)?;
     let mut scoped = cx.expr();
     let mut locals = Vec::with_capacity(count as usize);
+    let mut tints = Vec::with_capacity(count as usize);
     for index in 0..count {
         scoped.instance = Some(InstanceScope { index, count });
-        locals.push(placer.local(&scoped, index)?);
+        let (matrix, tint) = placer.copy(&scoped, index)?;
+        locals.push(matrix);
+        tints.push(tint);
     }
-    let placements = Arc::new(Placements::new(locals));
+    let tinted = tints.iter().any(|&tint| tint != WHITE);
+    let placements = Arc::new(Placements::new(locals, tinted.then_some(tints)));
     if keep {
         cx.keep_placements(node.id, count, placements.clone());
     }
@@ -542,17 +678,28 @@ fn flattened(
     let list = &inner.lists[copies.list as usize].placements;
     let range = (copies.first, copies.count);
     let (placements, kept) = cx.flattened(key, outer, (copies.parent, list, range), || {
-        let copied = &list.matrices()[copies.first as usize..][..copies.count as usize];
-        Placements::new(
-            outer
-                .matrices()
-                .iter()
-                .flat_map(|&outer| {
-                    let outer = outer * copies.parent;
-                    copied.iter().map(move |&copy| outer * copy)
+        let copied = copies.first as usize..(copies.first + copies.count) as usize;
+        let matrices = outer
+            .matrices()
+            .iter()
+            .flat_map(|&outer| {
+                let outer = outer * copies.parent;
+                list.matrices()[copied.clone()]
+                    .iter()
+                    .map(move |&copy| outer * copy)
+            })
+            .collect();
+        let tints = (outer.is_tinted() || list.is_tinted()).then(|| {
+            (0..outer.matrices().len())
+                .flat_map(|outer_copy| {
+                    let outer = outer.tint(outer_copy);
+                    copied
+                        .clone()
+                        .map(move |copy| tint_product(outer, list.tint(copy)))
                 })
-                .collect(),
-        )
+                .collect()
+        });
+        Placements::new(matrices, tints)
     });
     CopyList {
         key,

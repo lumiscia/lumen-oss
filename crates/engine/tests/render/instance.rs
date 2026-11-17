@@ -283,6 +283,161 @@ fn nested_instances_multiply_and_each_reads_its_own_index() {
     )]);
 }
 
+fn hex([r, g, b]: [i32; 3]) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+/// Four unlit boxes of `opacity` in a row: copies tinted by their index by an `instance_3d`, or
+/// each with its tint as the colour of its material by hand.
+fn tinted_row(instanced: bool, opacity: f64) -> crate::support::Scene {
+    let tint = |i: i32| [i * 85, 255 - i * 85, 128];
+    let x = |i: i32| (f64::from(i) - 1.5) * 0.4;
+    if instanced {
+        return render_3d(vec![
+            json!({ "id": 9, "type": "material_3d",
+                    "params": { "unlit": true, "opacity": opacity } }),
+            with_material(shape(1, json!({ "size": [0.3, 0.3, 0.3] })), 9),
+            instance(
+                2,
+                1,
+                json!({
+                    "count": 4,
+                    "position": "=vec3((instance - 1.5) * 0.4, 0, 0)",
+                    "tint": "=rgb(instance * 85, 255 - instance * 85, 128)",
+                }),
+            ),
+        ]);
+    }
+    let mut nodes = Vec::new();
+    for i in 0..4 {
+        nodes.push(json!({ "id": 20 + i, "type": "material_3d",
+                    "params": { "unlit": true, "opacity": opacity, "color": hex(tint(i)) } }));
+        nodes.push(with_material(
+            shape(
+                10 + i as u32,
+                json!({ "size": [0.3, 0.3, 0.3], "position": [x(i), 0, 0] }),
+            ),
+            (20 + i) as u32,
+        ));
+    }
+    nodes.push(merge(30, &[10, 11, 12, 13]));
+    render_3d(nodes)
+}
+
+#[test]
+fn tinted_copies_draw_as_the_same_boxes_coloured_by_hand() {
+    check(vec![
+        Case::new(
+            "opaque copies, drawn from the instance buffer",
+            tinted_row(true, 1.0),
+            Expect::Matches(tinted_row(false, 1.0).into()),
+        ),
+        Case::new(
+            "blended copies, drawn one by one",
+            tinted_row(true, 0.5),
+            Expect::Matches(tinted_row(false, 0.5).into()),
+        ),
+    ]);
+}
+
+#[test]
+fn nested_tints_multiply() {
+    // Channels are 0 or 255, so each product is a colour of its own.
+    let nested = |outer_count: u32| {
+        render_3d(vec![
+            json!({ "id": 9, "type": "material_3d", "params": { "unlit": true } }),
+            with_material(shape(1, json!({ "size": [0.3, 0.3, 0.3] })), 9),
+            instance(
+                2,
+                1,
+                json!({
+                    "count": 2,
+                    "position": "=vec3(instance * 0.4 - 0.2, 0, 0)",
+                    "tint": "=rgb(255, 255, instance * 255)",
+                }),
+            ),
+            instance(
+                3,
+                2,
+                json!({
+                    "count": outer_count,
+                    "position": "=vec3(0, instance * 0.4 - 0.2, 0)",
+                    "tint": "=rgb(255 - instance * 255, 255, 255)",
+                }),
+            ),
+        ])
+    };
+    let by_hand = |outer: &[[i32; 3]]| {
+        let mut nodes = Vec::new();
+        let mut ids = Vec::new();
+        for (o, outer) in outer.iter().enumerate() {
+            for i in 0..2_i32 {
+                let inner = [255, 255, i * 255];
+                let id = 10 + (o as u32 * 2 + i as u32) * 2;
+                let color = [0, 1, 2].map(|c| outer[c] * inner[c] / 255);
+                nodes.push(json!({ "id": id, "type": "material_3d",
+                    "params": { "unlit": true, "color": hex(color) } }));
+                nodes.push(with_material(
+                    shape(
+                        id + 1,
+                        json!({ "size": [0.3, 0.3, 0.3],
+                            "position": [f64::from(i) * 0.4 - 0.2, o as f64 * 0.4 - 0.2, 0] }),
+                    ),
+                    id,
+                ));
+                ids.push(id + 1);
+            }
+        }
+        nodes.push(merge(90, &ids));
+        render_3d(nodes)
+    };
+    check(vec![
+        Case::new(
+            "two by two copies, tinted by both nodes",
+            nested(2),
+            Expect::Matches(by_hand(&[[255, 255, 255], [0, 255, 255]]).into()),
+        ),
+        Case::new(
+            "one outer copy, tinted, of two inner ones",
+            nested(1),
+            Expect::Matches(by_hand(&[[255, 255, 255]]).into()),
+        ),
+    ]);
+}
+
+#[test]
+fn a_tint_that_reads_the_frame_renders_every_frame() {
+    let gpu = gpu();
+    let media = TestMedia::default();
+    let skipped = |tint: &str| {
+        let composition: Composition = render_3d(vec![
+            shape(1, json!({})),
+            instance(2, 1, json!({ "count": 4, "tint": tint })),
+        ])
+        .frames(4)
+        .fps(4.0)
+        .into();
+        let mut renderer = gpu.renderer();
+        let frames: Vec<Vec<u8>> = (0..4)
+            .map(|frame| render(&mut renderer, &composition, f64::from(frame), &media).rgba)
+            .collect();
+        (frames, renderer.skipped_pass_count())
+    };
+
+    let (still, skipped_still) = skipped("=rgb(instance * 60, 100, 255)");
+    assert!(still.iter().all(|frame| *frame == still[0]));
+    assert!(
+        skipped_still >= 3 * 2,
+        "frames after the first are kept, skipping {skipped_still} passes"
+    );
+    let (changing, skipped_changing) = skipped("=rgb(frame * 60, 100, 255)");
+    assert_eq!(
+        skipped_changing, 0,
+        "a tint that reads the frame renders every frame"
+    );
+    assert!(changing[0] != changing[1]);
+}
+
 #[test]
 fn no_instances_make_an_empty_scene() {
     check(vec![Case::new(
@@ -594,6 +749,7 @@ fn placements_kept_across_frames_draw_as_placements_evaluated_every_frame() {
                     "count": 3,
                     "position": format!("=vec3((instance - 1) * width / 150 + random(instance) * 0.1{frame}, 0, fps / 100)"),
                     "rotation": format!("=vec3(0, instance * 17{frame}, 0)"),
+                    "tint": format!("=rgb(random(instance + 5) * 255{frame}, 160, 255 - instance * 60)"),
                 }),
             ),
             instance(
@@ -602,6 +758,7 @@ fn placements_kept_across_frames_draw_as_placements_evaluated_every_frame() {
                 json!({
                     "count": format!("=2{frame}"),
                     "position": format!("=vec3(instance * 0.4{frame}, 0, 0)"),
+                    "tint": format!("=rgb(255, instance * 200{frame}, 255)"),
                 }),
             ),
             json!({ "id": 4, "type": "merge_3d", "in": { "objects": [3] },
