@@ -3329,7 +3329,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by\ndefault, so it looks as it does in 2D while it faces the camera. A plane is drawn blended,\nordered by its centre among blended objects, so its transparent parts show what is behind it.\nPlanes that intersect, or overlap while crossing in depth, can show in the wrong order; layers\nseparated in depth, and opaque shapes in front of or behind planes, are ordered correctly.\n`opaque` draws a plane that has no transparent pixels with the opaque objects instead.\nA source keeps its detail when it is shown at its own size or larger; shown smaller, it is\nfiltered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample`\naverages it, unless `sampling` is `nearest`.",
+            "description": "Shows a raster, such as text or video, on a flat rectangle facing +Z. With no `material_3d`\nwired into `material` it is unlit and double-sided, so it looks as it does in 2D while it faces\nthe camera. A `material_3d` applies exactly as it is set, so a default one makes the plane lit\nand single-sided; set its `unlit` and `double_sided` to keep the plane as it looks unwired.\nA plane is drawn blended, ordered by its centre among blended objects, so its transparent parts\nshow what is behind it. Planes that intersect, or overlap while crossing in depth, can show in\nthe wrong order; layers separated in depth, and opaque shapes in front of or behind planes, are\nordered correctly. `opaque` draws a plane that has no transparent pixels with the opaque\nobjects instead. A source keeps its detail when it is shown at its own size or larger; shown\nsmaller, it is filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s\n`supersample` averages it, unless `sampling` is `nearest`.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -3338,107 +3338,6 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
-                  "cast_shadows": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": true,
-                    "description": "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,\nsuch as a bulb around a point light, needs this off.",
-                    "title": "Cast Shadows",
-                    "x-lumen-kind": "bool"
-                  },
-                  "color": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/$defs/color"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": [255, 255, 255, 255],
-                    "description": "Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient\nfails `check`.",
-                    "title": "Color",
-                    "x-lumen-constraints": {
-                      "role": "color"
-                    },
-                    "x-lumen-kind": "color"
-                  },
-                  "double_sided": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": true,
-                    "description": "Draws the back of each face too.",
-                    "title": "Double Sided",
-                    "x-lumen-kind": "bool"
-                  },
-                  "emissive": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": 0.0,
-                    "description": "Light the surface gives off on its own, as a multiple of its base colour.",
-                    "title": "Emissive",
-                    "x-lumen-constraints": {
-                      "min": 0.0,
-                      "step": 0.1
-                    },
-                    "x-lumen-kind": "float"
-                  },
-                  "metallic": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": 0.0,
-                    "description": "0 is a dielectric such as plastic, 1 a bare metal.",
-                    "title": "Metallic",
-                    "x-lumen-constraints": {
-                      "max": 1.0,
-                      "min": 0.0,
-                      "step": 0.05
-                    },
-                    "x-lumen-kind": "float"
-                  },
-                  "opacity": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": 1.0,
-                    "description": "Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.",
-                    "title": "Opacity",
-                    "x-lumen-constraints": {
-                      "max": 1.0,
-                      "min": 0.0,
-                      "step": 0.01
-                    },
-                    "x-lumen-kind": "float"
-                  },
                   "opaque": {
                     "anyOf": [
                       {
@@ -3470,20 +3369,6 @@
                     },
                     "x-lumen-kind": "vec3"
                   },
-                  "receive_shadows": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": true,
-                    "description": "Darkens where shadows fall on it. An unlit surface shows none.",
-                    "title": "Receive Shadows",
-                    "x-lumen-kind": "bool"
-                  },
                   "region": {
                     "$ref": "#/$defs/region",
                     "description": "Shows only this part of the source, `[x, y, width, height]` in the source's pixels from its\ntop left, on a plane that covers just that part, so a plane showing a region is where it\nwould be and as big as it would be with the whole source on it: it looks as a plane\nshowing a `crop` of that region does, where `width` is still the width of the whole\nsource, and `position`, `rotation` and `scale` pivot about the whole source's centre.\nCut off at the source's edges as `crop` cuts its region, and a region with no pixel\nleft shows nothing. Each of the four numbers takes an integer or an expression, which is\ntruncated toward zero as `crop`'s are; the whole region cannot be an expression. Unset\nshows the whole source. Planes showing parts of one source share its texture and mip\nlevels and draw together, so a region costs nothing beyond the plane, where a `crop`\ncosts a raster the size of the source and a draw of its own. Sampling is kept inside the\nregion, so what is outside it isn't meant to show. To keep it so under strong minification,\nthe band along each edge of the region that is inside the source, and all of a narrow\nregion, is sampled from a sharper mip level than its footprint, since a texel of a shared\nlevel can hold pixels from both sides of the edge: it can alias or shimmer there where a\n`crop` would be smooth, across the whole of a piece drawn much smaller than its pixels.",
@@ -3506,25 +3391,6 @@
                       "step": 1.0
                     },
                     "x-lumen-kind": "vec3"
-                  },
-                  "roughness": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": 0.5,
-                    "description": "0 is a mirror finish, 1 fully diffuse.",
-                    "title": "Roughness",
-                    "x-lumen-constraints": {
-                      "max": 1.0,
-                      "min": 0.0,
-                      "step": 0.05
-                    },
-                    "x-lumen-kind": "float"
                   },
                   "sampling": {
                     "anyOf": [
@@ -3571,34 +3437,6 @@
                     },
                     "x-lumen-kind": "vec3"
                   },
-                  "shadow_catcher": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": false,
-                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It\nshows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts\nno shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
-                    "title": "Shadow Catcher",
-                    "x-lumen-kind": "bool"
-                  },
-                  "unlit": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": true,
-                    "description": "Shows the base colour as is, ignoring lights.",
-                    "title": "Unlit",
-                    "x-lumen-kind": "bool"
-                  },
                   "width": {
                     "anyOf": [
                       {
@@ -3633,6 +3471,12 @@
                 "kind": "raster",
                 "name": "source",
                 "optional": false,
+                "variadic": false
+              },
+              {
+                "kind": "material",
+                "name": "material",
+                "optional": true,
                 "variadic": false
               }
             ],
@@ -4114,6 +3958,198 @@
             "x-lumen-outputs": [
               {
                 "kind": "scene",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "How a surface responds to light, for the 3D objects it is wired into through their `material`\ninput. One `material_3d` can be wired to any number of objects, which then share its params,\nso changing it changes them all. Each param takes an expression as it does on any node.\nObjects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses\nan unlit, double-sided one.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "cast_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,\nsuch as a bulb around a point light, needs this off.",
+                    "title": "Cast Shadows",
+                    "x-lumen-kind": "bool"
+                  },
+                  "color": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/color"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [255, 255, 255, 255],
+                    "description": "Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient\nfails `check`.",
+                    "title": "Color",
+                    "x-lumen-constraints": {
+                      "role": "color"
+                    },
+                    "x-lumen-kind": "color"
+                  },
+                  "double_sided": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Draws the back of each face too.",
+                    "title": "Double Sided",
+                    "x-lumen-kind": "bool"
+                  },
+                  "emissive": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Light the surface gives off on its own, as a multiple of its base colour.",
+                    "title": "Emissive",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "metallic": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "0 is a dielectric such as plastic, 1 a bare metal.",
+                    "title": "Metallic",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "opacity": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.",
+                    "title": "Opacity",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "receive_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Darkens where shadows fall on it. An unlit surface shows none.",
+                    "title": "Receive Shadows",
+                    "x-lumen-kind": "bool"
+                  },
+                  "roughness": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.5,
+                    "description": "0 is a mirror finish, 1 fully diffuse.",
+                    "title": "Roughness",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "shadow_catcher": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It\nshows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts\nno shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
+                    "title": "Shadow Catcher",
+                    "x-lumen-kind": "bool"
+                  },
+                  "unlit": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Shows the base colour as is, ignoring lights.",
+                    "title": "Unlit",
+                    "x-lumen-kind": "bool"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "material_3d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Material 3D",
+            "type": "object",
+            "x-lumen-category": "scene",
+            "x-lumen-inputs": [],
+            "x-lumen-outputs": [
+              {
+                "kind": "material",
                 "name": "output"
               }
             ]
@@ -7053,7 +7089,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position.",
+            "description": "A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,\nsingle-sided and white unless a `material_3d` is wired into `material`.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -7062,107 +7098,6 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
-                  "cast_shadows": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": true,
-                    "description": "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,\nsuch as a bulb around a point light, needs this off.",
-                    "title": "Cast Shadows",
-                    "x-lumen-kind": "bool"
-                  },
-                  "color": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/$defs/color"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": [255, 255, 255, 255],
-                    "description": "Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient\nfails `check`.",
-                    "title": "Color",
-                    "x-lumen-constraints": {
-                      "role": "color"
-                    },
-                    "x-lumen-kind": "color"
-                  },
-                  "double_sided": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": false,
-                    "description": "Draws the back of each face too.",
-                    "title": "Double Sided",
-                    "x-lumen-kind": "bool"
-                  },
-                  "emissive": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": 0.0,
-                    "description": "Light the surface gives off on its own, as a multiple of its base colour.",
-                    "title": "Emissive",
-                    "x-lumen-constraints": {
-                      "min": 0.0,
-                      "step": 0.1
-                    },
-                    "x-lumen-kind": "float"
-                  },
-                  "metallic": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": 0.0,
-                    "description": "0 is a dielectric such as plastic, 1 a bare metal.",
-                    "title": "Metallic",
-                    "x-lumen-constraints": {
-                      "max": 1.0,
-                      "min": 0.0,
-                      "step": 0.05
-                    },
-                    "x-lumen-kind": "float"
-                  },
-                  "opacity": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": 1.0,
-                    "description": "Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.",
-                    "title": "Opacity",
-                    "x-lumen-constraints": {
-                      "max": 1.0,
-                      "min": 0.0,
-                      "step": 0.01
-                    },
-                    "x-lumen-kind": "float"
-                  },
                   "position": {
                     "anyOf": [
                       {
@@ -7179,20 +7114,6 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "vec3"
-                  },
-                  "receive_shadows": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": true,
-                    "description": "Darkens where shadows fall on it. An unlit surface shows none.",
-                    "title": "Receive Shadows",
-                    "x-lumen-kind": "bool"
                   },
                   "rotation": {
                     "anyOf": [
@@ -7211,25 +7132,6 @@
                     },
                     "x-lumen-kind": "vec3"
                   },
-                  "roughness": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": 0.5,
-                    "description": "0 is a mirror finish, 1 fully diffuse.",
-                    "title": "Roughness",
-                    "x-lumen-constraints": {
-                      "max": 1.0,
-                      "min": 0.0,
-                      "step": 0.05
-                    },
-                    "x-lumen-kind": "float"
-                  },
                   "scale": {
                     "anyOf": [
                       {
@@ -7246,20 +7148,6 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "vec3"
-                  },
-                  "shadow_catcher": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": false,
-                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It\nshows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts\nno shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
-                    "title": "Shadow Catcher",
-                    "x-lumen-kind": "bool"
                   },
                   "shape": {
                     "default": "box",
@@ -7318,20 +7206,6 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "vec3"
-                  },
-                  "unlit": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": false,
-                    "description": "Shows the base colour as is, ignoring lights.",
-                    "title": "Unlit",
-                    "x-lumen-kind": "bool"
                   }
                 },
                 "type": "object"
@@ -7344,7 +7218,14 @@
             "title": "Shape 3D",
             "type": "object",
             "x-lumen-category": "scene",
-            "x-lumen-inputs": [],
+            "x-lumen-inputs": [
+              {
+                "kind": "material",
+                "name": "material",
+                "optional": true,
+                "variadic": false
+              }
+            ],
             "x-lumen-outputs": [
               {
                 "kind": "scene",
@@ -8223,7 +8104,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Text from its font's outlines, extruded into a solid with the material params of a\n`shape_3d`. The text is shaped as a `text` node with the same font, size and layout shapes\nit, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing\n+Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the\npoint of its box at `position`. Its geometry is built again only when the text, font, layout or\nbevel change, or its size or depth do with a bevel, so animating its transform or material\ncosts no more than for a `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the\n`glyph_*` params of a `text` node have no counterpart.",
+            "description": "Text from its font's outlines, extruded into a solid, lit, single-sided and white unless\na `material_3d` is wired into `material`. The text is shaped as a `text` node with the same font, size and layout shapes\nit, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing\n+Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the\npoint of its box at `position`. Its geometry is built again only when the text, font, layout or\nbevel change, or its size or depth do with a bevel, so animating its transform or material\ncosts no more than for a `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the\n`glyph_*` params of a `text` node have no counterpart.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -8327,37 +8208,6 @@
                     },
                     "x-lumen-kind": "float"
                   },
-                  "cast_shadows": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": true,
-                    "description": "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,\nsuch as a bulb around a point light, needs this off.",
-                    "title": "Cast Shadows",
-                    "x-lumen-kind": "bool"
-                  },
-                  "color": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/$defs/color"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": [255, 255, 255, 255],
-                    "description": "Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient\nfails `check`.",
-                    "title": "Color",
-                    "x-lumen-constraints": {
-                      "role": "color"
-                    },
-                    "x-lumen-kind": "color"
-                  },
                   "content": {
                     "anyOf": [
                       {
@@ -8392,38 +8242,6 @@
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 0.05
-                    },
-                    "x-lumen-kind": "float"
-                  },
-                  "double_sided": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": false,
-                    "description": "Draws the back of each face too.",
-                    "title": "Double Sided",
-                    "x-lumen-kind": "bool"
-                  },
-                  "emissive": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": 0.0,
-                    "description": "Light the surface gives off on its own, as a multiple of its base colour.",
-                    "title": "Emissive",
-                    "x-lumen-constraints": {
-                      "min": 0.0,
-                      "step": 0.1
                     },
                     "x-lumen-kind": "float"
                   },
@@ -8576,44 +8394,6 @@
                     },
                     "x-lumen-kind": "float"
                   },
-                  "metallic": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": 0.0,
-                    "description": "0 is a dielectric such as plastic, 1 a bare metal.",
-                    "title": "Metallic",
-                    "x-lumen-constraints": {
-                      "max": 1.0,
-                      "min": 0.0,
-                      "step": 0.05
-                    },
-                    "x-lumen-kind": "float"
-                  },
-                  "opacity": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": 1.0,
-                    "description": "Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.",
-                    "title": "Opacity",
-                    "x-lumen-constraints": {
-                      "max": 1.0,
-                      "min": 0.0,
-                      "step": 0.01
-                    },
-                    "x-lumen-kind": "float"
-                  },
                   "position": {
                     "anyOf": [
                       {
@@ -8630,20 +8410,6 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "vec3"
-                  },
-                  "receive_shadows": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": true,
-                    "description": "Darkens where shadows fall on it. An unlit surface shows none.",
-                    "title": "Receive Shadows",
-                    "x-lumen-kind": "bool"
                   },
                   "rotation": {
                     "anyOf": [
@@ -8662,25 +8428,6 @@
                     },
                     "x-lumen-kind": "vec3"
                   },
-                  "roughness": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": 0.5,
-                    "description": "0 is a mirror finish, 1 fully diffuse.",
-                    "title": "Roughness",
-                    "x-lumen-constraints": {
-                      "max": 1.0,
-                      "min": 0.0,
-                      "step": 0.05
-                    },
-                    "x-lumen-kind": "float"
-                  },
                   "scale": {
                     "anyOf": [
                       {
@@ -8697,20 +8444,6 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "vec3"
-                  },
-                  "shadow_catcher": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": false,
-                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It\nshows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts\nno shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
-                    "title": "Shadow Catcher",
-                    "x-lumen-kind": "bool"
                   },
                   "text_transform": {
                     "anyOf": [
@@ -8749,20 +8482,6 @@
                       }
                     ],
                     "x-lumen-kind": "enum"
-                  },
-                  "unlit": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": false,
-                    "description": "Shows the base colour as is, ignoring lights.",
-                    "title": "Unlit",
-                    "x-lumen-kind": "bool"
                   }
                 },
                 "type": "object"
@@ -8775,7 +8494,14 @@
             "title": "Text 3D",
             "type": "object",
             "x-lumen-category": "scene",
-            "x-lumen-inputs": [],
+            "x-lumen-inputs": [
+              {
+                "kind": "material",
+                "name": "material",
+                "optional": true,
+                "variadic": false
+              }
+            ],
             "x-lumen-outputs": [
               {
                 "kind": "scene",
@@ -10605,6 +10331,6 @@
     ]
   },
   "x-lumen-lumenSchemaVersion": "0.6",
-  "x-lumen-portKinds": ["raster", "scene", "geometry", "drawing"],
+  "x-lumen-portKinds": ["raster", "scene", "geometry", "drawing", "material"],
   "x-lumen-schemaVersion": 1
 }

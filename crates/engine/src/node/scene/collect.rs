@@ -15,7 +15,9 @@ use lumen_3d::{
 };
 use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
-use super::{Light3dKind, Material3d, Model3d, Placement3d, Pose3d, Projection3d, Shape3dKind};
+use super::{
+    Light3dKind, Material3dParams, Model3d, Placement3d, Pose3d, Projection3d, Shape3dKind,
+};
 use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
 use crate::gpu::evictions;
 use crate::gpu::frame_graph::{FrameCx, Raster};
@@ -504,7 +506,7 @@ pub(super) fn solid_linear<N: crate::node::JsonNode>(
 
 fn surface<N: crate::node::JsonNode>(
     node_id: NodeId,
-    material: &Material3d,
+    material: &Material3dParams,
 ) -> crate::Result<Surface<TexRef>> {
     let mut base_color = solid_linear::<N>(node_id, &material.color)?;
     base_color[3] *= material.opacity.clamp(0.0, 1.0) as f32;
@@ -527,6 +529,34 @@ fn surface<N: crate::node::JsonNode>(
         shadow_catcher: material.shadow_catcher,
         ..Surface::default()
     })
+}
+
+/// The surface the `material_3d` wired into `object`'s `material` input gives it, evaluated at
+/// the frame, or `unwired`, `object`'s material when none is. Errors in the params name the
+/// material node.
+fn material_surface<N: crate::node::JsonNode>(
+    cx: &FrameCx<'_>,
+    object: NodeId,
+    material: Option<NodeId>,
+    unwired: Material3dParams,
+) -> crate::Result<Surface<TexRef>> {
+    let Some(material_id) = material else {
+        return surface::<N>(object, &unwired);
+    };
+    let Some(NodeKind::Material3d(material)) = cx.node(material_id) else {
+        return Err(RenderError::evaluating::<N>(
+            object,
+            format!("input `material` must be a material_3d, but node {material_id} is not one"),
+        )
+        .into());
+    };
+    let expr = cx.expr();
+    let ctx = DelegateEvalContext {
+        node_id: material_id,
+        expr: &expr,
+    };
+    let params = material.params.eval(&ctx)?;
+    surface::<super::Material3d>(material_id, &params)
 }
 
 /// The frames, both ends included, around `frame` on which a model plays a clip that spans `span`
@@ -757,7 +787,12 @@ impl Collected {
                 let params = shape.params.eval(&ctx)?;
                 let size = vec3(params.size).max(Vec3::ZERO);
                 let world = parent * placement(&params.placement).matrix() * Mat4::from_scale(size);
-                let surface = surface::<super::Shape3d>(node_id, &params.material)?;
+                let surface = material_surface::<super::Shape3d>(
+                    cx,
+                    node_id,
+                    shape.material,
+                    Material3dParams::default(),
+                )?;
                 let (rec, cache) = cx.scene_cache();
                 let (mesh, index_count) = cache.shape(rec, params.shape);
                 self.push(
@@ -779,7 +814,12 @@ impl Collected {
             NodeKind::Text3d(text) => {
                 let params = text.params.eval(&ctx)?;
                 let world = parent * placement(&params.placement).matrix();
-                let surface = surface::<super::Text3d>(node_id, &params.material)?;
+                let surface = material_surface::<super::Text3d>(
+                    cx,
+                    node_id,
+                    text.material,
+                    Material3dParams::default(),
+                )?;
                 let text = super::text_mesh::text_mesh(cx, node_id, &params).map_err(|error| {
                     error
                         .media_used_as(&[AssetKind::Font], || cx.node_param(node_id, "font_family"))
@@ -822,10 +862,15 @@ impl Collected {
                 );
                 let world =
                     parent * placement(&params.placement).matrix() * Mat4::from_scale(scale);
-                let mut surface = surface::<super::ImagePlane3d>(node_id, &params.material)?;
+                let mut surface = material_surface::<super::ImagePlane3d>(
+                    cx,
+                    node_id,
+                    plane.material,
+                    Material3dParams::flat(),
+                )?;
                 // A raster has transparent texels whatever its opacity, so a plane blends unless
                 // told it has none. A shadow catcher keeps its alpha, which sets its coverage.
-                surface.blending = if params.opaque && !params.material.shadow_catcher {
+                surface.blending = if params.opaque && !surface.shadow_catcher {
                     Blending::Opaque
                 } else {
                     Blending::Blend

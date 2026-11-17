@@ -75,7 +75,7 @@ impl Default for Placement3d {
 
 /// How a surface responds to light.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
-pub struct Material3d {
+pub struct Material3dParams {
     /// Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient
     /// fails `check`.
     #[meta(role = "color", solid)]
@@ -116,7 +116,7 @@ pub struct Material3d {
     pub shadow_catcher: bool,
 }
 
-impl Default for Material3d {
+impl Default for Material3dParams {
     fn default() -> Self {
         Self {
             color: Paint::solid([255, 255, 255, 255]),
@@ -133,8 +133,9 @@ impl Default for Material3d {
     }
 }
 
-impl Material3d {
+impl Material3dParams {
     /// A material that shows its base colour as is, from either side.
+    #[cfg(feature = "3d")]
     fn flat() -> Self {
         Self {
             unlit: true,
@@ -142,6 +143,24 @@ impl Material3d {
             ..Self::default()
         }
     }
+}
+
+/// How a surface responds to light, for the 3D objects it is wired into through their `material`
+/// input. One `material_3d` can be wired to any number of objects, which then share its params,
+/// so changing it changes them all. Each param takes an expression as it does on any node.
+/// Objects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses
+/// an unlit, double-sided one.
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
+#[node(
+    kind = "material_3d",
+    name = "Material 3D",
+    category = "scene",
+    output = "material"
+)]
+pub struct Material3d {
+    pub id: NodeId,
+    #[params]
+    pub params: Material3dParamsDelegate,
 }
 
 #[derive(
@@ -171,8 +190,6 @@ pub struct Shape3dParams {
     pub size: [f64; 3],
     #[meta(flatten)]
     pub placement: Placement3d,
-    #[meta(flatten)]
-    pub material: Material3d,
 }
 
 impl Default for Shape3dParams {
@@ -181,12 +198,12 @@ impl Default for Shape3dParams {
             shape: Shape3dKind::Box,
             size: [1.0; 3],
             placement: Placement3d::default(),
-            material: Material3d::default(),
         }
     }
 }
 
-/// A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position.
+/// A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,
+/// single-sided and white unless a `material_3d` is wired into `material`.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "shape_3d",
@@ -198,6 +215,9 @@ pub struct Shape3d {
     pub id: NodeId,
     #[params]
     pub params: Shape3dParamsDelegate,
+
+    #[input(material, optional)]
+    pub material: Option<NodeId>,
 }
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -241,8 +261,6 @@ pub struct ImagePlane3dParams {
     pub sampling: RasterSampling,
     #[meta(flatten)]
     pub placement: Placement3d,
-    #[meta(flatten)]
-    pub material: Material3d,
 }
 
 impl Default for ImagePlane3dParams {
@@ -253,20 +271,21 @@ impl Default for ImagePlane3dParams {
             opaque: false,
             sampling: RasterSampling::Linear,
             placement: Placement3d::default(),
-            material: Material3d::flat(),
         }
     }
 }
 
-/// Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by
-/// default, so it looks as it does in 2D while it faces the camera. A plane is drawn blended,
-/// ordered by its centre among blended objects, so its transparent parts show what is behind it.
-/// Planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers
-/// separated in depth, and opaque shapes in front of or behind planes, are ordered correctly.
-/// `opaque` draws a plane that has no transparent pixels with the opaque objects instead.
-/// A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
-/// filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample`
-/// averages it, unless `sampling` is `nearest`.
+/// Shows a raster, such as text or video, on a flat rectangle facing +Z. With no `material_3d`
+/// wired into `material` it is unlit and double-sided, so it looks as it does in 2D while it faces
+/// the camera. A `material_3d` applies exactly as it is set, so a default one makes the plane lit
+/// and single-sided; set its `unlit` and `double_sided` to keep the plane as it looks unwired.
+/// A plane is drawn blended, ordered by its centre among blended objects, so its transparent parts
+/// show what is behind it. Planes that intersect, or overlap while crossing in depth, can show in
+/// the wrong order; layers separated in depth, and opaque shapes in front of or behind planes, are
+/// ordered correctly. `opaque` draws a plane that has no transparent pixels with the opaque
+/// objects instead. A source keeps its detail when it is shown at its own size or larger; shown
+/// smaller, it is filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s
+/// `supersample` averages it, unless `sampling` is `nearest`.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "image_plane_3d",
@@ -281,6 +300,8 @@ pub struct ImagePlane3d {
 
     #[input()]
     pub source: Option<NodeId>,
+    #[input(material, optional)]
+    pub material: Option<NodeId>,
 }
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]

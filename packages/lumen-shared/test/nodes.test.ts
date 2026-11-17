@@ -128,7 +128,7 @@ describe("Composition with node values", () => {
       objects: [
         n.camera_3d({ position: [0, 1, 6] }),
         n.light_3d({ light: "directional", intensity: 2 }),
-        n.shape_3d({ shape: "torus", color: "#ee5b24" }),
+        n.shape_3d({ shape: "torus" }),
       ],
     });
     const composition = new Composition().addOutput(

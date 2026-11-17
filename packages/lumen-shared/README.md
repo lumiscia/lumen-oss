@@ -97,7 +97,10 @@ const composition = new Composition({ timeline: { durationSeconds: 3 } }).addOut
   n.render_3d({
     scene: n.merge_3d({
       objects: [
-        n.shape_3d({ color: "#e6b45a", rotation: [20, 35, 0] }),
+        n.shape_3d({
+          rotation: [20, 35, 0],
+          material: n.material_3d({ color: "#e6b45a" }),
+        }),
         n.camera_3d({ position: [0, 1.5, 4], look_at: true }),
       ],
     }),

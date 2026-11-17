@@ -7,7 +7,11 @@ import { FPS, H, SECONDS, W } from "../theme.js";
 /** The glTF fox running over a shadow catcher, with an orbiting camera. */
 export function createAnimatedModel(): Composition {
   // A floor that shows nothing but the shadows on it, so the fox stands on the backdrop.
-  const floor = n.shape_3d({ shape: "plane", size: [30, 1, 30], shadow_catcher: true });
+  const floor = n.shape_3d({
+    shape: "plane",
+    size: [30, 1, 30],
+    material: n.material_3d({ shadow_catcher: true }),
+  });
   const sun = n.light_3d({
     light: "directional",
     intensity: 3,

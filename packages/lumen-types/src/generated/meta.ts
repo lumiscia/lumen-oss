@@ -4,9 +4,9 @@
 import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js";
 
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
-export type NodePortKind = "drawing" | "geometry" | "raster" | "scene";
+export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fill_2d" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fill_2d" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1953,37 +1953,20 @@ export interface HueSaturationNode extends CompositionNodeBase<"hue_saturation">
 }
 
 /**
- * Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by
- * default, so it looks as it does in 2D while it faces the camera. A plane is drawn blended,
- * ordered by its centre among blended objects, so its transparent parts show what is behind it.
- * Planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers
- * separated in depth, and opaque shapes in front of or behind planes, are ordered correctly.
- * `opaque` draws a plane that has no transparent pixels with the opaque objects instead.
- * A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
- * filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample`
- * averages it, unless `sampling` is `nearest`.
+ * Shows a raster, such as text or video, on a flat rectangle facing +Z. With no `material_3d`
+ * wired into `material` it is unlit and double-sided, so it looks as it does in 2D while it faces
+ * the camera. A `material_3d` applies exactly as it is set, so a default one makes the plane lit
+ * and single-sided; set its `unlit` and `double_sided` to keep the plane as it looks unwired.
+ * A plane is drawn blended, ordered by its centre among blended objects, so its transparent parts
+ * show what is behind it. Planes that intersect, or overlap while crossing in depth, can show in
+ * the wrong order; layers separated in depth, and opaque shapes in front of or behind planes, are
+ * ordered correctly. `opaque` draws a plane that has no transparent pixels with the opaque
+ * objects instead. A source keeps its detail when it is shown at its own size or larger; shown
+ * smaller, it is filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s
+ * `supersample` averages it, unless `sampling` is `nearest`.
  */
 export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> {
   readonly params?: {
-    /**
-     * Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is
-     * at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,
-     * such as a bulb around a point light, needs this off.
-     */
-    readonly cast_shadows?: ExpressionValue<boolean>;
-    /**
-     * Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient
-     * fails `check`.
-     */
-    readonly color?: ExpressionValue<Color>;
-    /** Draws the back of each face too. */
-    readonly double_sided?: ExpressionValue<boolean>;
-    /** Light the surface gives off on its own, as a multiple of its base colour. */
-    readonly emissive?: ExpressionValue<number>;
-    /** 0 is a dielectric such as plastic, 1 a bare metal. */
-    readonly metallic?: ExpressionValue<number>;
-    /** Opacity multiplier. Anything below 1 is drawn blended, after opaque objects. */
-    readonly opacity?: ExpressionValue<number>;
     /**
      * Draws the plane with the opaque objects, writing depth, rather than blended. For a source
      * with no transparent pixels, this orders the plane correctly against any geometry it
@@ -1996,8 +1979,6 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
     readonly opaque?: ExpressionValue<boolean>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
-    /** Darkens where shadows fall on it. An unlit surface shows none. */
-    readonly receive_shadows?: ExpressionValue<boolean>;
     /**
      * Shows only this part of the source, `[x, y, width, height]` in the source's pixels from its
      * top left, on a plane that covers just that part, so a plane showing a region is where it
@@ -2022,8 +2003,6 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
      * X, then roll about the turned Z.
      */
     readonly rotation?: ExpressionValue<Vec3>;
-    /** 0 is a mirror finish, 1 fully diffuse. */
-    readonly roughness?: ExpressionValue<number>;
     /**
      * `nearest` gives each pixel the one source texel under it at any size, for pixel art:
      * magnified, texels stay hard-edged squares; shown smaller, a pixel picks one texel instead
@@ -2033,17 +2012,6 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
     readonly sampling?: ExpressionValue<RasterSampling>;
     /** Scale multiplier along X, Y and Z, applied before the rotation. */
     readonly scale?: ExpressionValue<Vec3>;
-    /**
-     * Shows nothing but the shadows falling on it, as transparent black that darkens what the
-     * render is composited over by as much light as the shadows take away, times the colour's
-     * alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It
-     * shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts
-     * no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
-     * footage behind it.
-     */
-    readonly shadow_catcher?: ExpressionValue<boolean>;
-    /** Shows the base colour as is, ignoring lights. */
-    readonly unlit?: ExpressionValue<boolean>;
     /**
      * Width in world units, 1 being as wide as a default `shape_3d` box; the height follows the
      * aspect ratio of the source's full display size.
@@ -2141,6 +2109,52 @@ export interface Light3dNode extends CompositionNodeBase<"light_3d"> {
     readonly spot_angle?: ExpressionValue<number>;
     /** Fraction of a spot light's cone, from its edge, that fades out. */
     readonly spot_softness?: ExpressionValue<number>;
+  };
+}
+
+/**
+ * How a surface responds to light, for the 3D objects it is wired into through their `material`
+ * input. One `material_3d` can be wired to any number of objects, which then share its params,
+ * so changing it changes them all. Each param takes an expression as it does on any node.
+ * Objects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses
+ * an unlit, double-sided one.
+ */
+export interface Material3dNode extends CompositionNodeBase<"material_3d"> {
+  readonly params?: {
+    /**
+     * Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is
+     * at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,
+     * such as a bulb around a point light, needs this off.
+     */
+    readonly cast_shadows?: ExpressionValue<boolean>;
+    /**
+     * Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient
+     * fails `check`.
+     */
+    readonly color?: ExpressionValue<Color>;
+    /** Draws the back of each face too. */
+    readonly double_sided?: ExpressionValue<boolean>;
+    /** Light the surface gives off on its own, as a multiple of its base colour. */
+    readonly emissive?: ExpressionValue<number>;
+    /** 0 is a dielectric such as plastic, 1 a bare metal. */
+    readonly metallic?: ExpressionValue<number>;
+    /** Opacity multiplier. Anything below 1 is drawn blended, after opaque objects. */
+    readonly opacity?: ExpressionValue<number>;
+    /** Darkens where shadows fall on it. An unlit surface shows none. */
+    readonly receive_shadows?: ExpressionValue<boolean>;
+    /** 0 is a mirror finish, 1 fully diffuse. */
+    readonly roughness?: ExpressionValue<number>;
+    /**
+     * Shows nothing but the shadows falling on it, as transparent black that darkens what the
+     * render is composited over by as much light as the shadows take away, times the colour's
+     * alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It
+     * shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts
+     * no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
+     * footage behind it.
+     */
+    readonly shadow_catcher?: ExpressionValue<boolean>;
+    /** Shows the base colour as is, ignoring lights. */
+    readonly unlit?: ExpressionValue<boolean>;
   };
 }
 
@@ -2670,56 +2684,25 @@ export interface Shape2dNode extends CompositionNodeBase<"shape_2d"> {
   };
 }
 
-/** A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. */
+/**
+ * A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,
+ * single-sided and white unless a `material_3d` is wired into `material`.
+ */
 export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
   readonly params?: {
-    /**
-     * Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is
-     * at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,
-     * such as a bulb around a point light, needs this off.
-     */
-    readonly cast_shadows?: ExpressionValue<boolean>;
-    /**
-     * Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient
-     * fails `check`.
-     */
-    readonly color?: ExpressionValue<Color>;
-    /** Draws the back of each face too. */
-    readonly double_sided?: ExpressionValue<boolean>;
-    /** Light the surface gives off on its own, as a multiple of its base colour. */
-    readonly emissive?: ExpressionValue<number>;
-    /** 0 is a dielectric such as plastic, 1 a bare metal. */
-    readonly metallic?: ExpressionValue<number>;
-    /** Opacity multiplier. Anything below 1 is drawn blended, after opaque objects. */
-    readonly opacity?: ExpressionValue<number>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
-    /** Darkens where shadows fall on it. An unlit surface shows none. */
-    readonly receive_shadows?: ExpressionValue<boolean>;
     /**
      * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
      * X, then roll about the turned Z.
      */
     readonly rotation?: ExpressionValue<Vec3>;
-    /** 0 is a mirror finish, 1 fully diffuse. */
-    readonly roughness?: ExpressionValue<number>;
     /** Scale multiplier along X, Y and Z, applied before the rotation. */
     readonly scale?: ExpressionValue<Vec3>;
-    /**
-     * Shows nothing but the shadows falling on it, as transparent black that darkens what the
-     * render is composited over by as much light as the shadows take away, times the colour's
-     * alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It
-     * shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts
-     * no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
-     * footage behind it.
-     */
-    readonly shadow_catcher?: ExpressionValue<boolean>;
     /** Primitive to build. */
     readonly shape?: Shape3dKind;
     /** Width, height and depth in world units, along X, Y and Z before the rotation. */
     readonly size?: ExpressionValue<Vec3>;
-    /** Shows the base colour as is, ignoring lights. */
-    readonly unlit?: ExpressionValue<boolean>;
   };
 }
 
@@ -2893,8 +2876,8 @@ export interface TextNode extends CompositionNodeBase<"text"> {
 }
 
 /**
- * Text from its font's outlines, extruded into a solid with the material params of a
- * `shape_3d`. The text is shaped as a `text` node with the same font, size and layout shapes
+ * Text from its font's outlines, extruded into a solid, lit, single-sided and white unless
+ * a `material_3d` is wired into `material`. The text is shaped as a `text` node with the same font, size and layout shapes
  * it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing
  * +Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the
  * point of its box at `position`. Its geometry is built again only when the text, font, layout or
@@ -2928,17 +2911,6 @@ export interface Text3dNode extends CompositionNodeBase<"text_3d"> {
      */
     readonly bevel_size?: ExpressionValue<number>;
     /**
-     * Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is
-     * at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,
-     * such as a bulb around a point light, needs this off.
-     */
-    readonly cast_shadows?: ExpressionValue<boolean>;
-    /**
-     * Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient
-     * fails `check`.
-     */
-    readonly color?: ExpressionValue<Color>;
-    /**
      * Text to extrude, in one style. Line breaks start new lines. Whitespace is not drawn, and
      * glyphs that their font draws from colour or bitmap tables, such as emoji, have no outline
      * and are left out with a `font.no_outlines` warning. A node extrudes at most as many glyphs
@@ -2955,10 +2927,6 @@ export interface Text3dNode extends CompositionNodeBase<"text_3d"> {
      * it. 0 is flat.
      */
     readonly depth?: ExpressionValue<number>;
-    /** Draws the back of each face too. */
-    readonly double_sided?: ExpressionValue<boolean>;
-    /** Light the surface gives off on its own, as a multiple of its base colour. */
-    readonly emissive?: ExpressionValue<number>;
     /**
      * Font family name, or `asset:<id>` for a font asset of the host's. A family no font answers
      * to falls back as a `text` node's does.
@@ -2988,36 +2956,17 @@ export interface Text3dNode extends CompositionNodeBase<"text_3d"> {
     readonly line_height?: ExpressionValue<number>;
     /** Maximum line width in world units, at which lines wrap. Use 0 for automatic width. */
     readonly max_width?: ExpressionValue<number>;
-    /** 0 is a dielectric such as plastic, 1 a bare metal. */
-    readonly metallic?: ExpressionValue<number>;
-    /** Opacity multiplier. Anything below 1 is drawn blended, after opaque objects. */
-    readonly opacity?: ExpressionValue<number>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
-    /** Darkens where shadows fall on it. An unlit surface shows none. */
-    readonly receive_shadows?: ExpressionValue<boolean>;
     /**
      * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
      * X, then roll about the turned Z.
      */
     readonly rotation?: ExpressionValue<Vec3>;
-    /** 0 is a mirror finish, 1 fully diffuse. */
-    readonly roughness?: ExpressionValue<number>;
     /** Scale multiplier along X, Y and Z, applied before the rotation. */
     readonly scale?: ExpressionValue<Vec3>;
-    /**
-     * Shows nothing but the shadows falling on it, as transparent black that darkens what the
-     * render is composited over by as much light as the shadows take away, times the colour's
-     * alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It
-     * shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts
-     * no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
-     * footage behind it.
-     */
-    readonly shadow_catcher?: ExpressionValue<boolean>;
     /** Case applied to the text. */
     readonly text_transform?: ExpressionValue<TextTransform>;
-    /** Shows the base colour as is, ignoring lights. */
-    readonly unlit?: ExpressionValue<boolean>;
   };
 }
 
@@ -3112,6 +3061,7 @@ export interface CompositionNodeByKind {
   readonly "instance_3d": Instance3dNode;
   readonly "levels": LevelsNode;
   readonly "light_3d": Light3dNode;
+  readonly "material_3d": Material3dNode;
   readonly "media_in": MediaInNode;
   readonly "media_output": MediaOutputNode;
   readonly "merge": MergeNode;
@@ -3196,6 +3146,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "light_3d": Omit<Light3dNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "material_3d": Omit<Material3dNode, "id"> & {
     readonly id?: number;
   };
   readonly "media_in": Omit<MediaInNode, "id"> & {
@@ -3302,10 +3255,11 @@ export interface NodeInputPortNameByKind {
   readonly "fractal_noise": never;
   readonly "glow": "source";
   readonly "hue_saturation": "source";
-  readonly "image_plane_3d": "source";
+  readonly "image_plane_3d": "material" | "source";
   readonly "instance_3d": "scene";
   readonly "levels": "source";
   readonly "light_3d": never;
+  readonly "material_3d": never;
   readonly "media_in": never;
   readonly "media_output": "source";
   readonly "merge": "base" | "mask" | "overlay";
@@ -3326,11 +3280,11 @@ export interface NodeInputPortNameByKind {
   readonly "shadow_2d": "drawing";
   readonly "shape": never;
   readonly "shape_2d": never;
-  readonly "shape_3d": never;
+  readonly "shape_3d": "material";
   readonly "stroke_2d": "geometry";
   readonly "switch": "layers";
   readonly "text": never;
-  readonly "text_3d": never;
+  readonly "text_3d": "material";
   readonly "time_remap": "source";
   readonly "transform": "source";
   readonly "wgsl_shader": "source";
@@ -3356,6 +3310,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "instance_3d": never;
   readonly "levels": never;
   readonly "light_3d": never;
+  readonly "material_3d": never;
   readonly "media_in": never;
   readonly "media_output": never;
   readonly "merge": never;
@@ -3406,6 +3361,7 @@ export interface NodeOutputKindByKind {
   readonly "instance_3d": "scene";
   readonly "levels": "raster";
   readonly "light_3d": "scene";
+  readonly "material_3d": "material";
   readonly "media_in": "raster";
   readonly "media_output": "raster";
   readonly "merge": "raster";
@@ -3452,10 +3408,11 @@ export interface NodeInputPortKindByKind {
   readonly "fractal_noise": {};
   readonly "glow": { readonly "source": "raster" };
   readonly "hue_saturation": { readonly "source": "raster" };
-  readonly "image_plane_3d": { readonly "source": "raster" };
+  readonly "image_plane_3d": { readonly "source": "raster"; readonly "material": "material" };
   readonly "instance_3d": { readonly "scene": "scene" };
   readonly "levels": { readonly "source": "raster" };
   readonly "light_3d": {};
+  readonly "material_3d": {};
   readonly "media_in": {};
   readonly "media_output": { readonly "source": "raster" };
   readonly "merge": { readonly "base": "raster"; readonly "overlay": "raster"; readonly "mask": "raster" };
@@ -3476,11 +3433,11 @@ export interface NodeInputPortKindByKind {
   readonly "shadow_2d": { readonly "drawing": "drawing" };
   readonly "shape": {};
   readonly "shape_2d": {};
-  readonly "shape_3d": {};
+  readonly "shape_3d": { readonly "material": "material" };
   readonly "stroke_2d": { readonly "geometry": "geometry" };
   readonly "switch": { readonly "layers": "raster" };
   readonly "text": {};
-  readonly "text_3d": {};
+  readonly "text_3d": { readonly "material": "material" };
   readonly "time_remap": { readonly "source": "raster" };
   readonly "transform": { readonly "source": "raster" };
   readonly "wgsl_shader": { readonly "source": "raster" };
@@ -3569,17 +3526,19 @@ export const nodeInputPorts = {
   /** Adjusts raster hue, saturation, and lightness of the sRGB-encoded colour. */
   "hue_saturation": { "source": { kind: "raster", variadic: false } },
   /**
-   * Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by
-   * default, so it looks as it does in 2D while it faces the camera. A plane is drawn blended,
-   * ordered by its centre among blended objects, so its transparent parts show what is behind it.
-   * Planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers
-   * separated in depth, and opaque shapes in front of or behind planes, are ordered correctly.
-   * `opaque` draws a plane that has no transparent pixels with the opaque objects instead.
-   * A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
-   * filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample`
-   * averages it, unless `sampling` is `nearest`.
+   * Shows a raster, such as text or video, on a flat rectangle facing +Z. With no `material_3d`
+   * wired into `material` it is unlit and double-sided, so it looks as it does in 2D while it faces
+   * the camera. A `material_3d` applies exactly as it is set, so a default one makes the plane lit
+   * and single-sided; set its `unlit` and `double_sided` to keep the plane as it looks unwired.
+   * A plane is drawn blended, ordered by its centre among blended objects, so its transparent parts
+   * show what is behind it. Planes that intersect, or overlap while crossing in depth, can show in
+   * the wrong order; layers separated in depth, and opaque shapes in front of or behind planes, are
+   * ordered correctly. `opaque` draws a plane that has no transparent pixels with the opaque
+   * objects instead. A source keeps its detail when it is shown at its own size or larger; shown
+   * smaller, it is filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s
+   * `supersample` averages it, unless `sampling` is `nearest`.
    */
-  "image_plane_3d": { "source": { kind: "raster", variadic: false } },
+  "image_plane_3d": { "source": { kind: "raster", variadic: false }, "material": { kind: "material", variadic: false } },
   /**
    * Draws its input scene `count` times, each copy placed by `position`, `rotation` and `scale`
    * evaluated for that copy, where `instance` is the copy's index from 0 and `instance_count` is
@@ -3602,6 +3561,14 @@ export const nodeInputPorts = {
   "levels": { "source": { kind: "raster", variadic: false } },
   /** A light. A scene without any is lit by a default key light and ambient fill. */
   "light_3d": {},
+  /**
+   * How a surface responds to light, for the 3D objects it is wired into through their `material`
+   * input. One `material_3d` can be wired to any number of objects, which then share its params,
+   * so changing it changes them all. Each param takes an expression as it does on any node.
+   * Objects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses
+   * an unlit, double-sided one.
+   */
+  "material_3d": {},
   /** Binds an external image or video frame as a GPU texture. */
   "media_in": {},
   /**
@@ -3693,8 +3660,11 @@ export const nodeInputPorts = {
    * shape is always whole: `stroke_2d`'s trim and dash apply to paths only.
    */
   "shape_2d": {},
-  /** A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. */
-  "shape_3d": {},
+  /**
+   * A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,
+   * single-sided and white unless a `material_3d` is wired into `material`.
+   */
+  "shape_3d": { "material": { kind: "material", variadic: false } },
   /**
    * Strokes its geometry's outline with a paint, as a drawing of one drawable. Caps and joins are
    * round. Trim and dash apply to paths; a shape's stroke is always whole.
@@ -3705,8 +3675,8 @@ export const nodeInputPorts = {
   /** Produces a text source. */
   "text": {},
   /**
-   * Text from its font's outlines, extruded into a solid with the material params of a
-   * `shape_3d`. The text is shaped as a `text` node with the same font, size and layout shapes
+   * Text from its font's outlines, extruded into a solid, lit, single-sided and white unless
+   * a `material_3d` is wired into `material`. The text is shaped as a `text` node with the same font, size and layout shapes
    * it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing
    * +Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the
    * point of its box at `position`. Its geometry is built again only when the text, font, layout or
@@ -3714,7 +3684,7 @@ export const nodeInputPorts = {
    * costs no more than for a `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the
    * `glyph_*` params of a `text` node have no counterpart.
    */
-  "text_3d": {},
+  "text_3d": { "material": { kind: "material", variadic: false } },
   /** Evaluates a raster input at another frame. */
   "time_remap": { "source": { kind: "raster", variadic: false } },
   /** Transforms a raster into the composition canvas bounds. */
@@ -3764,6 +3734,7 @@ export const nodeMediaSources = {
   "instance_3d": {},
   "levels": {},
   "light_3d": {},
+  "material_3d": {},
   "media_in": { "source": { kinds: ["image", "video"], selectedBy: "kind" } },
   "media_output": {},
   "merge": {},

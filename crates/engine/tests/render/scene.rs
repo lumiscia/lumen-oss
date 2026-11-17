@@ -5,11 +5,12 @@ use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
 use crate::support::scene::{
-    CENTER, SIZE, covered, environment_file, flat, fox, fox_media, framed, lit_by, merge, model,
-    plane, plate, quads, render_3d, render_3d_with, sphere, unlit,
+    CENTER, SIZE, covered, environment_file, flat, fox, fox_media, framed, listed, lit_by,
+    material, merge, model, plane, plate, quads, render_3d, render_3d_with, sphere, unlit,
+    with_material,
 };
 use crate::support::{
-    CLEAR, Case, Expect, Frame, GREEN, RED, TestMedia, check, gpu, render, scene,
+    CLEAR, Case, Expect, Frame, GREEN, RED, Scene, TestMedia, check, gpu, render, scene,
 };
 
 /// Asserts that the white box covers `(x, y)` of `frame`, its front lit by the default key light,
@@ -58,28 +59,29 @@ fn a_lit_shape_renders_where_the_camera_puts_it_and_is_transparent_elsewhere() {
 fn nearer_opaque_geometry_hides_farther_geometry_in_either_node_order() {
     let far = flat(
         1,
+        11,
         json!({ "size": [2, 2, 0.2], "position": [0, 0, -1] }),
-        RED,
+        json!({ "color": RED }),
     );
     let near = flat(
         2,
+        12,
         json!({ "size": [0.5, 0.5, 0.2], "position": [0, 0, 1] }),
-        GREEN,
+        json!({ "color": GREEN }),
     );
     let probes = || Expect::Probes(vec![(CENTER, CENTER, GREEN), (CENTER, 18, RED)]);
     check(vec![
         Case::new(
             "far node first",
-            render_3d(vec![
-                far.clone(),
-                near.clone(),
+            render_3d(listed(
+                &[far.clone(), near.clone()],
                 merge(3, &[1, 2], json!({})),
-            ]),
+            )),
             probes(),
         ),
         Case::new(
             "near node first",
-            render_3d(vec![far, near, merge(3, &[2, 1], json!({}))]),
+            render_3d(listed(&[far, near], merge(3, &[2, 1], json!({})))),
             probes(),
         ),
     ]);
@@ -89,19 +91,21 @@ fn nearer_opaque_geometry_hides_farther_geometry_in_either_node_order() {
 fn a_blended_object_shows_what_is_behind_it() {
     let half_green = flat(
         1,
-        json!({ "size": [1, 1, 0.2], "position": [0.5, 0, 1], "opacity": 0.5 }),
-        GREEN,
+        11,
+        json!({ "size": [1, 1, 0.2], "position": [0.5, 0, 1] }),
+        json!({ "color": GREEN, "opacity": 0.5 }),
     );
     let red = flat(
         2,
+        12,
         json!({ "size": [1.5, 1, 0.2], "position": [-0.25, 0, -1] }),
-        RED,
+        json!({ "color": RED }),
     );
     // The two overlap just right of centre. Half of each in linear light is sRGB 188.
     check(vec![
         Case::new(
             "the blended box is listed first and still blends over the opaque one",
-            render_3d(vec![half_green, red, merge(3, &[1, 2], json!({}))]),
+            render_3d(listed(&[half_green, red], merge(3, &[1, 2], json!({})))),
             Expect::Probes(vec![
                 (35, CENTER, [188, 188, 0, 255]),
                 (48, CENTER, [0, 128, 0, 128]),
@@ -116,13 +120,15 @@ fn a_blended_object_shows_what_is_behind_it() {
 fn overlapping_blended_objects_composite_from_back_to_front_in_either_node_order() {
     let near = flat(
         1,
-        json!({ "size": [1, 1, 0.2], "position": [0.4, 0, 1], "opacity": 0.5 }),
-        GREEN,
+        11,
+        json!({ "size": [1, 1, 0.2], "position": [0.4, 0, 1] }),
+        json!({ "color": GREEN, "opacity": 0.5 }),
     );
     let far = flat(
         2,
-        json!({ "size": [1, 1, 0.2], "position": [-0.4, 0, -1], "opacity": 0.5 }),
-        RED,
+        12,
+        json!({ "size": [1, 1, 0.2], "position": [-0.4, 0, -1] }),
+        json!({ "color": RED, "opacity": 0.5 }),
     );
     // Half green over half red, in linear light: green 0.5, red 0.25, alpha 0.75. Red over green
     // would swap the red and green channels.
@@ -130,17 +136,16 @@ fn overlapping_blended_objects_composite_from_back_to_front_in_either_node_order
     check(vec![
         Case::new(
             "near node first",
-            render_3d(vec![
-                near.clone(),
-                far.clone(),
+            render_3d(listed(
+                &[near.clone(), far.clone()],
                 merge(3, &[1, 2], json!({})),
-            ]),
+            )),
             overlap(),
         )
         .tolerance(2),
         Case::new(
             "far node first",
-            render_3d(vec![near, far, merge(3, &[2, 1], json!({}))]),
+            render_3d(listed(&[near, far], merge(3, &[2, 1], json!({})))),
             overlap(),
         )
         .tolerance(2),
@@ -188,9 +193,10 @@ fn a_mirrored_object_shows_and_is_lit_as_its_unmirrored_twin() {
             ),
             like_the_plain_plane(
                 "double-sided",
-                vec![facing_plane(
-                    json!({ "scale": [-1, 1, 1], "double_sided": true }),
-                )],
+                vec![
+                    material(9, json!({ "double_sided": true })),
+                    with_material(facing_plane(json!({ "scale": [-1, 1, 1] })), 9),
+                ],
             ),
             like_the_plain_plane(
                 "mirrored by its merge_3d",
@@ -297,19 +303,21 @@ fn orthographic_keeps_sizes_that_perspective_shrinks_with_distance() {
     let square = |id, position: [f64; 3]| {
         flat(
             id,
+            id + 10,
             json!({ "shape": "plane", "rotation": [90, 0, 0], "position": position }),
-            GREEN,
+            json!({ "color": GREEN }),
         )
     };
     let with_camera = |camera: Value| {
         let mut camera = camera;
         camera["position"] = json!([0, 0, 5]);
-        render_3d(vec![
-            square(1, [-1.0, 0.0, 0.0]),
-            square(2, [1.0, 0.0, -4.0]),
+        let mut nodes = square(1, [-1.0, 0.0, 0.0]).to_vec();
+        nodes.extend(square(2, [1.0, 0.0, -4.0]));
+        nodes.extend([
             json!({ "id": 3, "type": "camera_3d", "params": camera }),
             merge(4, &[1, 2, 3], json!({})),
-        ])
+        ]);
+        render_3d(nodes)
     };
     let widths = |frames: &[Frame]| {
         (
@@ -364,11 +372,15 @@ fn rotation_yaws_then_pitches_then_rolls() {
     // A bar along one axis shows which way the rotation turned it: up the image, across it, or
     // end on towards the camera.
     let bar = |size: [f64; 3], rotation: [f64; 3]| {
-        render_3d(vec![flat(
-            1,
-            json!({ "size": size, "rotation": rotation }),
-            GREEN,
-        )])
+        render_3d(
+            flat(
+                1,
+                11,
+                json!({ "size": size, "rotation": rotation }),
+                json!({ "color": GREEN }),
+            )
+            .to_vec(),
+        )
     };
     let (above, beside) = ((CENTER, CENTER - 12), (CENTER + 12, CENTER));
     let upright = || Expect::Probes(vec![(above.0, above.1, GREEN), (beside.0, beside.1, CLEAR)]);
@@ -426,6 +438,69 @@ fn a_render_3d_is_kept_across_frames_until_its_scene_animates() {
     assert_eq!(skipped, 0, "an animated scene renders every frame");
     for pair in moving.windows(2) {
         assert!(pair[0] != pair[1], "the camera orbits");
+    }
+}
+
+/// Two unlit boxes, a unit either side of the centre, wired to one `material_3d` of `color`.
+fn shared_material(color: Value) -> Scene {
+    let box_at = |id: u32, x: f64| {
+        with_material(
+            json!({ "id": id, "type": "shape_3d", "params": { "position": [x, 0, 0] } }),
+            10,
+        )
+    };
+    render_3d(vec![
+        material(10, json!({ "color": color, "unlit": true })),
+        box_at(1, -1.0),
+        box_at(2, 1.0),
+        merge(3, &[1, 2], json!({})),
+    ])
+}
+
+#[test]
+fn one_material_3d_colours_every_object_it_is_wired_to() {
+    // One unit at the origin is about 17.6 pixels, so the boxes are centred on columns 14 and 49.
+    let both = |color| Expect::Probes(vec![(14, CENTER, color), (49, CENTER, color)]);
+    check(vec![
+        Case::new("red", shared_material(json!(RED)), both(RED)),
+        Case::new(
+            "changed to green",
+            shared_material(json!(GREEN)),
+            both(GREEN),
+        ),
+    ]);
+}
+
+#[test]
+fn a_material_3d_that_reads_the_frame_redraws_the_scene_and_a_static_one_keeps_it() {
+    let gpu = gpu();
+    let media = TestMedia::default();
+    let frames = |color: Value| {
+        let mut composition = shared_material(color).frames(4);
+        composition.0["timeline"]["fps"] = json!(4);
+        let composition = Composition::from(composition);
+        let mut renderer = gpu.renderer();
+        let frames: Vec<Frame> = (0..4)
+            .map(|frame| render(&mut renderer, &composition, f64::from(frame), &media))
+            .collect();
+        (frames, renderer.skipped_pass_count())
+    };
+
+    let (still, skipped) = frames(json!(RED));
+    assert!(still.iter().all(|frame| frame.rgba == still[0].rgba));
+    assert!(
+        skipped >= 3 * 2,
+        "frames after the first read the kept draw and resolve, skipping {skipped} passes"
+    );
+
+    let (moving, skipped) = frames(json!("=rgb(frame * 40, 0, 0)"));
+    assert_eq!(skipped, 0, "a material that animates renders every frame");
+    for pair in moving.windows(2) {
+        assert!(
+            pair[0].pixel(14, CENTER) != pair[1].pixel(14, CENTER)
+                && pair[0].pixel(49, CENTER) != pair[1].pixel(49, CENTER),
+            "both boxes' colour changes"
+        );
     }
 }
 
@@ -597,7 +672,7 @@ fn kept_then_replaced(composition: &Composition, before: &TestMedia, after: &Tes
 fn an_environment_kept_as_a_static_frame_is_drawn_again_when_its_map_changes() {
     let composition: Composition = render_3d_with(
         lit_by("sky.hdr", json!({ "environment_background": true })),
-        vec![sphere(json!({}))],
+        sphere(json!({})),
     )
     .frames(3)
     .into();

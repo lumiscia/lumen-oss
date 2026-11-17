@@ -518,8 +518,9 @@ fn shadowed_ground(model: Value) -> Scene {
     crate::support::scene(
         crate::support::scene::SIZE,
         json!([
-            { "id": 50, "type": "shape_3d", "params": {
-                "shape": "plane", "size": [6, 1, 6], "roughness": 1 } },
+            { "id": 52, "type": "material_3d", "params": { "roughness": 1 } },
+            { "id": 50, "type": "shape_3d", "params": { "shape": "plane", "size": [6, 1, 6] },
+              "in": { "material": 52 } },
             { "id": 51, "type": "camera_3d", "params": {
                 "projection": "orthographic", "ortho_height": 6, "position": [0, 4, 0],
                 "rotation": [-90, 0, 0], "near": 3.95, "far": 10 } },

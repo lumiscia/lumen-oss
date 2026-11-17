@@ -134,14 +134,12 @@ impl Graph {
     }
 }
 
-/// Reports `node` when it is a 3D node, one that outputs or takes a scene, and the engine was
-/// built without 3D.
+/// Reports `node` when it is a 3D node, one that outputs or takes a scene or a material, and the
+/// engine was built without 3D.
 fn check_supported(node: &NodeKind, supports_3d: bool, errors: &mut Vec<LumenError>) {
-    let scene = node.output_kind() == PortKind::Scene
-        || node
-            .input_port_defs()
-            .iter()
-            .any(|input| input.kind == PortKind::Scene);
+    let is_3d = |kind: PortKind| matches!(kind, PortKind::Scene | PortKind::Material);
+    let scene =
+        is_3d(node.output_kind()) || node.input_port_defs().iter().any(|input| is_3d(input.kind));
     if scene && !supports_3d {
         errors.push(
             GraphValidationError::No3dSupport {
@@ -274,7 +272,8 @@ fn cycle_path(unordered: &HashSet<NodeId>, sources: &HashMap<NodeId, Vec<NodeId>
 mod tests {
     use super::*;
 
-    /// A scene node with an optional variadic scene input and an optional raster input.
+    /// A scene node with an optional variadic scene input, an optional raster input and an
+    /// optional material input.
     #[derive(Debug, Default, lumen_macros::Node)]
     #[node(
         kind = "test_scene",
@@ -288,6 +287,8 @@ mod tests {
         children: Vec<NodeId>,
         #[input(optional)]
         texture: Option<NodeId>,
+        #[input(material, optional)]
+        material: Option<NodeId>,
     }
 
     /// A raster node with a required scene input.
@@ -356,6 +357,29 @@ mod tests {
     }
 
     #[test]
+    fn a_raster_or_scene_wired_into_a_material_input_points_at_material_3d() {
+        let hint = "connect a material_3d to the object's `material` input";
+        for source in [RASTER, SCENE] {
+            let object = TestScene {
+                id: NodeId::new(5),
+                material: Some(source),
+                ..TestScene::default()
+            };
+            let actual = if source == RASTER {
+                "a raster"
+            } else {
+                "a scene"
+            };
+            assert_eq!(
+                errors(&object),
+                [format!(
+                    "connection.wrong_kind: node 5: input `material` takes a material, but node {source} outputs {actual}: {hint}"
+                )]
+            );
+        }
+    }
+
+    #[test]
     fn nodes_that_output_or_take_a_scene_need_3d() {
         use crate::node::{
             processing::opacity::Opacity,
@@ -402,6 +426,7 @@ mod tests {
             id: NodeId::new(4),
             children: vec![SCENE, RASTER, MISSING, SCENE],
             texture: Some(RASTER),
+            material: None,
         };
         assert_eq!(
             errors(&scene),

@@ -6,7 +6,8 @@ use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
 use crate::support::scene::{
-    Quad, SIZE, fox, fox_media, light, merge, model, model_glb, ortho, texel_png,
+    Quad, SIZE, fox, fox_media, light, material, merge, model, model_glb, ortho, texel_png,
+    with_material,
 };
 use crate::support::{Frame, Scene, TestMedia, gpu, render, scene};
 
@@ -201,12 +202,17 @@ fn blended_surfaces_write_depth_only_where_their_alpha_reaches_half() {
     let wall = facing(2, [0.0, 0.0, -3.0], [8.0, 8.0], json!({}));
     let range = json!({ "output": "depth", "depth_near": 3, "depth_far": 11 });
     let left = (12, 32);
-    let in_front = |params: Value| {
-        let front = facing(1, [-1.0, 0.0, 1.0], [2.0, 4.0], params);
+    let in_front = |material_params: Value| {
+        let front = with_material(facing(1, [-1.0, 0.0, 1.0], [2.0, 4.0], json!({})), 4);
         frame(
             output(
                 range.clone(),
-                vec![front, wall.clone(), merge(3, &[1, 2], json!({}))],
+                vec![
+                    material(4, material_params),
+                    front,
+                    wall.clone(),
+                    merge(3, &[1, 2], json!({})),
+                ],
             ),
             &TestMedia::default(),
         )
@@ -316,10 +322,13 @@ fn a_spheres_normals_match_its_analytic_normals_in_the_cameras_space() {
 
 #[test]
 fn the_back_of_a_double_sided_surface_has_the_normal_it_is_lit_by() {
-    let normal_of = |params: Value| {
-        let plane = facing(1, [0.0, 0.0, 0.0], [3.0, 3.0], params);
+    let normal_of = |params: Value, material_params: Value| {
+        let plane = with_material(facing(1, [0.0, 0.0, 0.0], [3.0, 3.0], params), 2);
         let frame = frame(
-            output(json!({ "output": "normal" }), vec![plane]),
+            output(
+                json!({ "output": "normal" }),
+                vec![material(2, material_params), plane],
+            ),
             &TestMedia::default(),
         );
         frame.pixel(32, 32)
@@ -329,9 +338,12 @@ fn the_back_of_a_double_sided_surface_has_the_normal_it_is_lit_by() {
     let towards = |pixel: [u8; 4]| {
         pixel[0].abs_diff(half) <= 1 && pixel[1].abs_diff(half) <= 1 && pixel[2..] == [255, 255]
     };
-    let front = normal_of(json!({}));
+    let front = normal_of(json!({}), json!({}));
     assert!(towards(front), "the front faces the camera: {front:?}");
-    let back = normal_of(json!({ "rotation": [-90, 0, 0], "double_sided": true }));
+    let back = normal_of(
+        json!({ "rotation": [-90, 0, 0] }),
+        json!({ "double_sided": true }),
+    );
     assert!(towards(back), "the back, reversed, faces it too: {back:?}");
 }
 

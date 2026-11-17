@@ -16,13 +16,11 @@ const SIZE: (u32, u32) = (64, 64);
 /// A `text_3d` with `params`, unlit green so that it shows its colour wherever it is drawn, under
 /// the default camera.
 fn text_3d(params: Value) -> Composition {
-    let mut params = params;
-    params["color"] = json!(GREEN);
-    params["unlit"] = json!(true);
     scene(
         SIZE,
         json!([
-            { "id": 1, "type": "text_3d", "params": params },
+            { "id": 3, "type": "material_3d", "params": { "color": GREEN, "unlit": true } },
+            { "id": 1, "type": "text_3d", "params": params, "in": { "material": 3 } },
             { "id": 2, "type": "render_3d", "in": { "scene": 1 } },
         ]),
     )
@@ -189,8 +187,7 @@ impl MediaStore for Unreadable {
 
 #[test]
 fn a_font_that_fails_to_load_names_the_font_family_param() {
-    let mut params = json!({ "content": "a", "font_family": "Brand" });
-    params["color"] = json!(GREEN);
+    let params = json!({ "content": "a", "font_family": "Brand" });
     let document = scene(
         SIZE,
         json!([
