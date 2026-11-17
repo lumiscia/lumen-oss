@@ -38,12 +38,17 @@ fn interior(frame: &Frame) -> Vec<(u32, u32)> {
 }
 
 /// A plane tilted away from a camera, showing the `size` square `pixels` far smaller than it is.
-fn tilted_plane(pixels: Vec<u8>, size: u32, supersample: u32) -> (Composition, TestMedia) {
+fn tilted_plane(
+    pixels: Vec<u8>,
+    size: u32,
+    supersample: u32,
+    sampling: &str,
+) -> (Composition, TestMedia) {
     let scene = scene(
         (128, 128),
         json!([
             { "id": 10, "type": "media_in", "params": { "kind": "image", "source": "plate" } },
-            plane(1, 10, json!({ "width": 4, "rotation": [-60, 0, 0] })),
+            plane(1, 10, json!({ "width": 4, "rotation": [-60, 0, 0], "sampling": sampling })),
             { "id": 100, "type": "render_3d", "params": { "supersample": supersample },
               "in": { "scene": 1 } },
         ]),
@@ -58,7 +63,7 @@ fn tilted_plane(pixels: Vec<u8>, size: u32, supersample: u32) -> (Composition, T
 fn a_raster_shown_much_smaller_than_it_is_filtered_instead_of_aliased() {
     let gpu = gpu();
     let render_plane = |pixels: Vec<u8>, supersample: u32| {
-        let (composition, media) = tilted_plane(pixels, 512, supersample);
+        let (composition, media) = tilted_plane(pixels, 512, supersample, "linear");
         render(&mut gpu.renderer(), &composition, 0.0, &media)
     };
     // The average of single-texel squares is the grey of a plane showing nothing finer: what any
@@ -89,6 +94,38 @@ fn a_raster_shown_much_smaller_than_it_is_filtered_instead_of_aliased() {
             "{supersample}x supersampled: {aliasing} levels from the grey on average"
         );
     }
+}
+
+#[test]
+fn a_nearest_plane_shows_only_whole_texels_magnified_or_minified() {
+    let gpu = gpu();
+    // How many pixels inside the plane blend the checker's black and white.
+    let blended = |(composition, media): (Composition, TestMedia)| {
+        let frame = render(&mut gpu.renderer(), &composition, 0.0, &media);
+        let pixels = interior(&frame);
+        assert!(
+            pixels.len() > 1000,
+            "the plane covers {} pixels",
+            pixels.len()
+        );
+        pixels
+            .iter()
+            .filter(|&&(x, y)| (2..254).contains(&frame.pixel(x, y)[0]))
+            .count()
+    };
+    // Eight texels across 64 pixels.
+    let magnified = render_3d_with(
+        json!({ "supersample": 1 }),
+        vec![
+            plate(10),
+            plane(1, 10, json!({ "width": 4, "sampling": "nearest" })),
+            ortho(2, json!({})),
+            merge(3, &[1, 2], json!({})),
+        ],
+    );
+    let media = TestMedia::default().image("plate", 8, 8, checker(8));
+    assert_eq!(blended((magnified.into(), media)), 0);
+    assert_eq!(blended(tilted_plane(checker(512), 512, 1, "nearest")), 0);
 }
 
 /// A `size` square raster on a model's long thin `screen` rectangle, rolled to run corner to

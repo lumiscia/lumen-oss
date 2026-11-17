@@ -157,6 +157,9 @@ pub struct Surface<T> {
     /// A Lumen raster, premultiplied and sRGB-encoded, whose texels colour the surface through
     /// the mesh's texture coordinates.
     pub texture: Option<T>,
+    /// Samples `texture` at the nearest texel of its full size wherever it is shown, instead of
+    /// filtering it.
+    pub nearest: bool,
     pub maps: Maps<T>,
     /// The texture coordinates each map reads: base colour, metallic-roughness, normal, emissive
     /// and occlusion.
@@ -197,6 +200,7 @@ impl<T> Default for Surface<T> {
         Self {
             base_color: [1.0; 4],
             texture: None,
+            nearest: false,
             maps: Maps::default(),
             map_uvs: [MapUv::default(); 5],
             vertex_colors: false,

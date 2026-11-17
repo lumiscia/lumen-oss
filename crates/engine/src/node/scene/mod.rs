@@ -29,6 +29,7 @@ pub use instance::{Instance3d, Instance3dParams, InstanceCount, MAX_INSTANCES};
 pub(crate) use region::REGION;
 pub use region::{Region, RegionDelegate};
 
+use crate::node::processing::RasterSampling;
 use crate::node::vector::paint::Paint;
 use crate::node::{Deferred, NodeId, NodeParams};
 
@@ -232,6 +233,12 @@ pub struct ImagePlane3dParams {
     /// one, so this has no effect on it.
     #[meta()]
     pub opaque: bool,
+    /// `nearest` gives each pixel the one source texel under it at any size, for pixel art:
+    /// magnified, texels stay hard-edged squares; shown smaller, a pixel picks one texel instead
+    /// of averaging the ones it covers, so it aliases and shimmers where `linear` is smooth.
+    /// `render_3d`'s `supersample` still averages its samples within each pixel.
+    #[meta()]
+    pub sampling: RasterSampling,
     #[meta(flatten)]
     pub placement: Placement3d,
     #[meta(flatten)]
@@ -244,6 +251,7 @@ impl Default for ImagePlane3dParams {
             width: 1.0,
             region: Region::default(),
             opaque: false,
+            sampling: RasterSampling::Linear,
             placement: Placement3d::default(),
             material: Material3d::flat(),
         }
@@ -258,7 +266,7 @@ impl Default for ImagePlane3dParams {
 /// `opaque` draws a plane that has no transparent pixels with the opaque objects instead.
 /// A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
 /// filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample`
-/// averages it.
+/// averages it, unless `sampling` is `nearest`.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "image_plane_3d",

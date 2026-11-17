@@ -1478,6 +1478,7 @@ export type GradientStop = {
   readonly offset: number;
 } | readonly [number, Color];
 export type GradientUnits = "object_bounding_box" | "user_space" | "userSpaceOnUse";
+export type ImagePlane3dSampling = RasterSampling;
 export type Light3dKind = "directional" | "point" | "spot" | "ambient";
 export type Light3dLight = Light3dKind;
 export type LoopMode = "clamp" | "repeat" | "ping_pong";
@@ -1919,7 +1920,7 @@ export interface HueSaturationNode extends CompositionNodeBase<"hue_saturation">
  * `opaque` draws a plane that has no transparent pixels with the opaque objects instead.
  * A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
  * filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample`
- * averages it.
+ * averages it, unless `sampling` is `nearest`.
  */
 export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> {
   readonly params?: {
@@ -1982,6 +1983,13 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
     readonly rotation?: ExpressionValue<Vec3>;
     /** 0 is a mirror finish, 1 fully diffuse. */
     readonly roughness?: ExpressionValue<number>;
+    /**
+     * `nearest` gives each pixel the one source texel under it at any size, for pixel art:
+     * magnified, texels stay hard-edged squares; shown smaller, a pixel picks one texel instead
+     * of averaging the ones it covers, so it aliases and shimmers where `linear` is smooth.
+     * `render_3d`'s `supersample` still averages its samples within each pixel.
+     */
+    readonly sampling?: ExpressionValue<RasterSampling>;
     /** Scale multiplier along X, Y and Z, applied before the rotation. */
     readonly scale?: ExpressionValue<Vec3>;
     /**
@@ -3313,7 +3321,7 @@ export const nodeInputPorts = {
    * `opaque` draws a plane that has no transparent pixels with the opaque objects instead.
    * A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
    * filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample`
-   * averages it.
+   * averages it, unless `sampling` is `nearest`.
    */
   "image_plane_3d": { "source": { kind: "raster", variadic: false } },
   /**

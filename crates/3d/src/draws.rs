@@ -21,6 +21,7 @@ pub struct DrawKey<M, T> {
     pub mirrored: bool,
     pub mesh: M,
     pub texture: Option<T>,
+    pub nearest: bool,
     pub maps: Maps<T>,
 }
 
@@ -34,6 +35,7 @@ impl<M: Copy, T: Copy> DrawKey<M, T> {
             mirrored: mirrors(&object.world),
             mesh: object.mesh,
             texture: object.surface.texture,
+            nearest: object.surface.nearest,
             maps: object.surface.maps,
         }
     }
