@@ -36,7 +36,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let input_static = format_ident!("__LUMEN_{}_INPUTS", ident.to_string().to_uppercase());
     let input_defs = inputs.iter().map(|input| {
         let name = &input.name;
-        let kind = port_kind_tokens(input.scene);
+        let kind = port_kind_tokens(input.kind.as_ref());
         let optional = input.optional;
         let variadic = input.variadic;
         quote! {
@@ -115,7 +115,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let node_name = node.name;
     let description = doc_string(&node.docs);
     let category = category_tokens(&node.category);
-    let output = output_kind_tokens(node.output.as_ref());
+    let output = port_kind_tokens(node.output.as_ref());
 
     Ok(quote! {
         #structural_hash
