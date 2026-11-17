@@ -196,6 +196,8 @@ node_kinds! {
     Shape3d(scene::Shape3d),
     ImagePlane3d(scene::ImagePlane3d),
     Text3d(scene::Text3d),
+    Extrude3d(scene::Extrude3d),
+    Lathe3d(scene::Lathe3d),
     Model3d(scene::Model3d),
     Camera3d(scene::Camera3d),
     Light3d(scene::Light3d),

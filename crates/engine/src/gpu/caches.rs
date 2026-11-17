@@ -34,8 +34,8 @@ pub struct CacheBudgets {
     pub models: u64,
     /// 3D environment maps' textures, counted in total, kept as models are. 256 MiB.
     pub environments: u64,
-    /// Extruded `text_3d` meshes' GPU buffers, counted in total, kept as models are. At most 256
-    /// meshes are kept. 64 MiB.
+    /// Extruded `text_3d` meshes' GPU buffers, counted in total with those of `extrude_3d` and
+    /// `lathe_3d` solids, kept as models are. At most 256 meshes of each kind are kept. 64 MiB.
     pub text_meshes: u64,
 }
 

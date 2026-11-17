@@ -79,6 +79,22 @@ impl DrawableTransform {
         }
     }
 
+    /// Where the point `point`, laid out in the same pixels as `position`, lands: scaled and
+    /// turned about the pivot `position + anchor`.
+    #[cfg(feature = "3d")]
+    pub(crate) fn map(&self, point: (f64, f64)) -> (f64, f64) {
+        let pivot = (
+            self.position.0 + self.anchor.0,
+            self.position.1 + self.anchor.1,
+        );
+        let (sin, cos) = self.rotation.to_radians().sin_cos();
+        let (x, y) = (
+            (point.0 - pivot.0) * self.scale.0,
+            (point.1 - pivot.1) * self.scale.1,
+        );
+        (pivot.0 + cos * x - sin * y, pivot.1 + sin * x + cos * y)
+    }
+
     /// `to_gpu` for geometry laid out at `layout_position` rather than at `position`, which
     /// moves it by their difference. The map is always marked linear, since it has an offset.
     pub(crate) fn to_gpu_from(self, layout_position: (f64, f64)) -> GpuDrawableTransform {

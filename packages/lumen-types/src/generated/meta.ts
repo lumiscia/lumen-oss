@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fill_2d" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1858,6 +1858,65 @@ export interface ExposureNode extends CompositionNodeBase<"exposure"> {
   };
 }
 
+/**
+ * A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front
+ * cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
+ * `material_3d` is wired into `material`. The geometry's pixel coordinates, after its own
+ * position, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with
+ * Y flipped, since 2D Y points down and 3D Y up. Pixel (0, 0) is the origin that `placement`
+ * moves and turns the solid about, and nothing re-centres the solid on it: the geometry's
+ * `position` and `anchor` decide where it sits about that origin, so a `shape_2d` at `position`
+ * (0, 0) lies to the right of and below it on screen, and 100 pixels across it is 1 unit wide.
+ * The extrusion is centred on Z = 0. The outline is filled by the nonzero rule, as a `text_3d`
+ * glyph is, so holes of a path stay open whichever way they wind and overlapping subpaths join;
+ * open subpaths are closed by a straight segment. Curves are flattened to within 0.001 world
+ * units, so a larger or smaller `units_per_pixel` keeps them as smooth. An ellipse has as many
+ * sides as that takes, at least 16 and at most 256, and each corner of a rounded rectangle a
+ * quarter of as many for its own radius, at least 4 and at most 64. A path's flattening
+ * coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,
+ * 262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a
+ * render error. An `offset_2d` in the geometry is not supported yet and fails the render. The
+ * mesh is built again only when the outline, `units_per_pixel` or the bevel change, or the
+ * `depth` of a bevelled one, so animating the placement, the material or a plain extrusion's
+ * depth costs no more than for a `shape_3d`.
+ */
+export interface Extrude3dNode extends CompositionNodeBase<"extrude_3d"> {
+  readonly params?: {
+    /**
+     * Steps of the bevel's quarter-round profile, up to 16: 1 is a flat 45° chamfer, and 0 is no
+     * bevel.
+     */
+    readonly bevel_segments?: ExpressionValue<number>;
+    /**
+     * How far the bevel rounds off the outline's edges in world units, in from the outline and in
+     * from the front and back, up to half of `depth`; 0 is none. The outline keeps its size
+     * where the sides meet the bevel. Where the outline is too thin or too tightly curved for
+     * the bevel it gets the widest one that fits.
+     */
+    readonly bevel_size?: ExpressionValue<number>;
+    /**
+     * Thickness along Z in world units, centred on Z = 0 before `placement`, so the front faces
+     * +Z at half of it. 0 is flat.
+     */
+    readonly depth?: ExpressionValue<number>;
+    /** Position in world units along X, Y and Z, in the parent's space. */
+    readonly position?: ExpressionValue<Vec3>;
+    /**
+     * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
+     * X, then roll about the turned Z.
+     */
+    readonly rotation?: ExpressionValue<Vec3>;
+    /** Scale multiplier along X, Y and Z, applied before the rotation. */
+    readonly scale?: ExpressionValue<Vec3>;
+    /**
+     * World units that one pixel of the geometry spans, so that at the default of 0.01 a
+     * 100 pixel outline is 1 unit across. The geometry's own position, scale and rotation apply
+     * before it. 0 draws nothing. At most 1000000.
+     */
+    readonly units_per_pixel?: ExpressionValue<number>;
+  };
+}
+
 /** Fills its geometry's outline with a paint, as a drawing of one drawable. */
 export interface Fill2dNode extends CompositionNodeBase<"fill_2d"> {
   readonly params?: {
@@ -2053,6 +2112,58 @@ export interface Instance3dNode extends CompositionNodeBase<"instance_3d"> {
     readonly rotation?: ExpressionValue<Vec3>;
     /** Scale multiplier along X, Y and Z of each copy, applied before the rotation. Evaluated for every copy, and can read `instance` and `instance_count`. */
     readonly scale?: ExpressionValue<Vec3>;
+  };
+}
+
+/**
+ * A 2D profile, a `path_2d` or `shape_2d` wired into `geometry`, spun around the world Y axis
+ * into a solid of revolution, lit, single-sided and white unless a `material_3d` is wired into
+ * `material`. The geometry's pixel coordinates, after its own position, scale, rotation and
+ * anchor, become world units at `units_per_pixel` each: a point's X is its distance from the axis
+ * and its Y, flipped since 2D Y points down and 3D Y up, its height, so pixel (0, 0) is on the
+ * axis at height 0, which is the origin that `placement` moves and turns the solid about. Points
+ * left of the axis are put on it. Each contour becomes a strip of quads around the axis, shaded
+ * smoothly around it, and along the profile except at corners sharper than 30°, which stay hard.
+ * A closed contour makes a closed ring solid whose faces point out of the area it encloses,
+ * whichever way it winds. An open contour makes a surface whose front faces the right-hand side of
+ * the direction it is drawn in, and which is seen from both sides only if its material is
+ * `double_sided`. A point on the axis is a pole, where the surface closes to a point, such as the
+ * tip of a cone or the top of a dome; the quads there are triangles, so no triangle without
+ * area is left in the mesh, and a closed contour's edge along the axis draws nothing. Contours
+ * are spun separately, so one inside another is a separate solid and not a hole. A solid takes
+ * at most 256 contours, 16384 profile points, 262144 vertices and 786432 indices in all, which
+ * is the profile's vertices times the steps around; more is a render error. The mesh is built
+ * again only when the profile, `units_per_pixel`, `segments` or `sweep` change, so animating the
+ * placement or the material costs no more than for a `shape_3d`.
+ */
+export interface Lathe3dNode extends CompositionNodeBase<"lathe_3d"> {
+  readonly params?: {
+    /** Position in world units along X, Y and Z, in the parent's space. */
+    readonly position?: ExpressionValue<Vec3>;
+    /**
+     * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
+     * X, then roll about the turned Z.
+     */
+    readonly rotation?: ExpressionValue<Vec3>;
+    /** Scale multiplier along X, Y and Z, applied before the rotation. */
+    readonly scale?: ExpressionValue<Vec3>;
+    /**
+     * Steps around the axis for a whole turn, from 3 to 512; a `sweep` of less than 360° has
+     * proportionally fewer. The surface is shaded smoothly around the axis, so a few dozen look
+     * round.
+     */
+    readonly segments?: ExpressionValue<number>;
+    /**
+     * How far around the axis the profile turns, in degrees, from 0 to 360, starting on +X and
+     * turning towards -Z. Under 360 leaves an open wedge with no end caps; 0 draws nothing.
+     */
+    readonly sweep?: ExpressionValue<number>;
+    /**
+     * World units that one pixel of the geometry spans, so that at the default of 0.01 a
+     * 100 pixel profile is 1 unit across. The geometry's own position, scale and rotation apply
+     * before it. 0 draws nothing. At most 1000000.
+     */
+    readonly units_per_pixel?: ExpressionValue<number>;
   };
 }
 
@@ -3056,12 +3167,14 @@ export interface CompositionNodeByKind {
   readonly "directional_blur": DirectionalBlurNode;
   readonly "displacement_map": DisplacementMapNode;
   readonly "exposure": ExposureNode;
+  readonly "extrude_3d": Extrude3dNode;
   readonly "fill_2d": Fill2dNode;
   readonly "fractal_noise": FractalNoiseNode;
   readonly "glow": GlowNode;
   readonly "hue_saturation": HueSaturationNode;
   readonly "image_plane_3d": ImagePlane3dNode;
   readonly "instance_3d": Instance3dNode;
+  readonly "lathe_3d": Lathe3dNode;
   readonly "levels": LevelsNode;
   readonly "light_3d": Light3dNode;
   readonly "material_3d": Material3dNode;
@@ -3127,6 +3240,9 @@ export interface CompositionNodeInputByKind {
   readonly "exposure": Omit<ExposureNode, "id"> & {
     readonly id?: number;
   };
+  readonly "extrude_3d": Omit<Extrude3dNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "fill_2d": Omit<Fill2dNode, "id"> & {
     readonly id?: number;
   };
@@ -3143,6 +3259,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "instance_3d": Omit<Instance3dNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "lathe_3d": Omit<Lathe3dNode, "id"> & {
     readonly id?: number;
   };
   readonly "levels": Omit<LevelsNode, "id"> & {
@@ -3254,12 +3373,14 @@ export interface NodeInputPortNameByKind {
   readonly "directional_blur": "source";
   readonly "displacement_map": "map" | "source";
   readonly "exposure": "source";
+  readonly "extrude_3d": "geometry" | "material";
   readonly "fill_2d": "geometry";
   readonly "fractal_noise": never;
   readonly "glow": "source";
   readonly "hue_saturation": "source";
   readonly "image_plane_3d": "material" | "source";
   readonly "instance_3d": "scene";
+  readonly "lathe_3d": "geometry" | "material";
   readonly "levels": "source";
   readonly "light_3d": never;
   readonly "material_3d": never;
@@ -3305,12 +3426,14 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "directional_blur": never;
   readonly "displacement_map": never;
   readonly "exposure": never;
+  readonly "extrude_3d": never;
   readonly "fill_2d": never;
   readonly "fractal_noise": never;
   readonly "glow": never;
   readonly "hue_saturation": never;
   readonly "image_plane_3d": never;
   readonly "instance_3d": never;
+  readonly "lathe_3d": never;
   readonly "levels": never;
   readonly "light_3d": never;
   readonly "material_3d": never;
@@ -3356,12 +3479,14 @@ export interface NodeOutputKindByKind {
   readonly "directional_blur": "raster";
   readonly "displacement_map": "raster";
   readonly "exposure": "raster";
+  readonly "extrude_3d": "scene";
   readonly "fill_2d": "drawing";
   readonly "fractal_noise": "raster";
   readonly "glow": "raster";
   readonly "hue_saturation": "raster";
   readonly "image_plane_3d": "scene";
   readonly "instance_3d": "scene";
+  readonly "lathe_3d": "scene";
   readonly "levels": "raster";
   readonly "light_3d": "scene";
   readonly "material_3d": "material";
@@ -3407,12 +3532,14 @@ export interface NodeInputPortKindByKind {
   readonly "directional_blur": { readonly "source": "raster" };
   readonly "displacement_map": { readonly "source": "raster"; readonly "map": "raster" };
   readonly "exposure": { readonly "source": "raster" };
+  readonly "extrude_3d": { readonly "geometry": "geometry"; readonly "material": "material" };
   readonly "fill_2d": { readonly "geometry": "geometry" };
   readonly "fractal_noise": {};
   readonly "glow": { readonly "source": "raster" };
   readonly "hue_saturation": { readonly "source": "raster" };
   readonly "image_plane_3d": { readonly "source": "raster"; readonly "material": "material" };
   readonly "instance_3d": { readonly "scene": "scene" };
+  readonly "lathe_3d": { readonly "geometry": "geometry"; readonly "material": "material" };
   readonly "levels": { readonly "source": "raster" };
   readonly "light_3d": {};
   readonly "material_3d": {};
@@ -3517,6 +3644,29 @@ export const nodeInputPorts = {
   "displacement_map": { "source": { kind: "raster", variadic: false }, "map": { kind: "raster", variadic: false } },
   /** Adjusts raster exposure, contrast, and offset. */
   "exposure": { "source": { kind: "raster", variadic: false } },
+  /**
+   * A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front
+   * cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
+   * `material_3d` is wired into `material`. The geometry's pixel coordinates, after its own
+   * position, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with
+   * Y flipped, since 2D Y points down and 3D Y up. Pixel (0, 0) is the origin that `placement`
+   * moves and turns the solid about, and nothing re-centres the solid on it: the geometry's
+   * `position` and `anchor` decide where it sits about that origin, so a `shape_2d` at `position`
+   * (0, 0) lies to the right of and below it on screen, and 100 pixels across it is 1 unit wide.
+   * The extrusion is centred on Z = 0. The outline is filled by the nonzero rule, as a `text_3d`
+   * glyph is, so holes of a path stay open whichever way they wind and overlapping subpaths join;
+   * open subpaths are closed by a straight segment. Curves are flattened to within 0.001 world
+   * units, so a larger or smaller `units_per_pixel` keeps them as smooth. An ellipse has as many
+   * sides as that takes, at least 16 and at most 256, and each corner of a rounded rectangle a
+   * quarter of as many for its own radius, at least 4 and at most 64. A path's flattening
+   * coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,
+   * 262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a
+   * render error. An `offset_2d` in the geometry is not supported yet and fails the render. The
+   * mesh is built again only when the outline, `units_per_pixel` or the bevel change, or the
+   * `depth` of a bevelled one, so animating the placement, the material or a plain extrusion's
+   * depth costs no more than for a `shape_3d`.
+   */
+  "extrude_3d": { "geometry": { kind: "geometry", variadic: false }, "material": { kind: "material", variadic: false } },
   /** Fills its geometry's outline with a paint, as a drawing of one drawable. */
   "fill_2d": { "geometry": { kind: "geometry", variadic: false } },
   /** Generates opaque grey fractal noise, the same for a given seed and evolution. */
@@ -3563,6 +3713,28 @@ export const nodeInputPorts = {
    * and its scene is static.
    */
   "instance_3d": { "scene": { kind: "scene", variadic: false } },
+  /**
+   * A 2D profile, a `path_2d` or `shape_2d` wired into `geometry`, spun around the world Y axis
+   * into a solid of revolution, lit, single-sided and white unless a `material_3d` is wired into
+   * `material`. The geometry's pixel coordinates, after its own position, scale, rotation and
+   * anchor, become world units at `units_per_pixel` each: a point's X is its distance from the axis
+   * and its Y, flipped since 2D Y points down and 3D Y up, its height, so pixel (0, 0) is on the
+   * axis at height 0, which is the origin that `placement` moves and turns the solid about. Points
+   * left of the axis are put on it. Each contour becomes a strip of quads around the axis, shaded
+   * smoothly around it, and along the profile except at corners sharper than 30°, which stay hard.
+   * A closed contour makes a closed ring solid whose faces point out of the area it encloses,
+   * whichever way it winds. An open contour makes a surface whose front faces the right-hand side of
+   * the direction it is drawn in, and which is seen from both sides only if its material is
+   * `double_sided`. A point on the axis is a pole, where the surface closes to a point, such as the
+   * tip of a cone or the top of a dome; the quads there are triangles, so no triangle without
+   * area is left in the mesh, and a closed contour's edge along the axis draws nothing. Contours
+   * are spun separately, so one inside another is a separate solid and not a hole. A solid takes
+   * at most 256 contours, 16384 profile points, 262144 vertices and 786432 indices in all, which
+   * is the profile's vertices times the steps around; more is a render error. The mesh is built
+   * again only when the profile, `units_per_pixel`, `segments` or `sweep` change, so animating the
+   * placement or the material costs no more than for a `shape_3d`.
+   */
+  "lathe_3d": { "geometry": { kind: "geometry", variadic: false }, "material": { kind: "material", variadic: false } },
   /** Remaps raster black, white, gamma, and output range of the sRGB-encoded colour. */
   "levels": { "source": { kind: "raster", variadic: false } },
   /** A light. A scene without any is lit by a default key light and ambient fill. */
@@ -3732,12 +3904,14 @@ export const nodeMediaSources = {
   "directional_blur": {},
   "displacement_map": {},
   "exposure": {},
+  "extrude_3d": {},
   "fill_2d": {},
   "fractal_noise": {},
   "glow": {},
   "hue_saturation": {},
   "image_plane_3d": {},
   "instance_3d": {},
+  "lathe_3d": {},
   "levels": {},
   "light_3d": {},
   "material_3d": {},

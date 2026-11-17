@@ -686,6 +686,27 @@ Params:
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
 - **`target`** ([number, number, number]; default `[0,0,0]`) Point along X, Y and Z the camera aims at while `look_at` is on, in its parent's space.
 
+## `extrude_3d`
+
+A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a `material_3d` is wired into `material`. The geometry's pixel coordinates, after its own position, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with Y flipped, since 2D Y points down and 3D Y up. Pixel (0, 0) is the origin that `placement` moves and turns the solid about, and nothing re-centres the solid on it: the geometry's `position` and `anchor` decide where it sits about that origin, so a `shape_2d` at `position` (0, 0) lies to the right of and below it on screen, and 100 pixels across it is 1 unit wide. The extrusion is centred on Z = 0. The outline is filled by the nonzero rule, as a `text_3d` glyph is, so holes of a path stay open whichever way they wind and overlapping subpaths join; open subpaths are closed by a straight segment. Curves are flattened to within 0.001 world units, so a larger or smaller `units_per_pixel` keeps them as smooth. An ellipse has as many sides as that takes, at least 16 and at most 256, and each corner of a rounded rectangle a quarter of as many for its own radius, at least 4 and at most 64. A path's flattening coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points, 262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a render error. An `offset_2d` in the geometry is not supported yet and fails the render. The mesh is built again only when the outline, `units_per_pixel` or the bevel change, or the `depth` of a bevelled one, so animating the placement, the material or a plain extrusion's depth costs no more than for a `shape_3d`.
+
+Category: scene. Output: scene.
+
+Inputs:
+
+- `geometry`: geometry, required
+- `material`: material, optional
+
+Params:
+
+- **`bevel_segments`** (integer, 0 to 16; default `4`) Steps of the bevel's quarter-round profile, up to 16: 1 is a flat 45° chamfer, and 0 is no bevel.
+- **`bevel_size`** (number, at least 0; default `0`) How far the bevel rounds off the outline's edges in world units, in from the outline and in from the front and back, up to half of `depth`; 0 is none. The outline keeps its size where the sides meet the bevel. Where the outline is too thin or too tightly curved for the bevel it gets the widest one that fits.
+- **`depth`** (number, at least 0; default `0.25`) Thickness along Z in world units, centred on Z = 0 before `placement`, so the front faces +Z at half of it. 0 is flat.
+- **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
+- **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
+- **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z, applied before the rotation.
+- **`units_per_pixel`** (number, at least 0; default `0.01`) World units that one pixel of the geometry spans, so that at the default of 0.01 a 100 pixel outline is 1 unit across. The geometry's own position, scale and rotation apply before it. 0 draws nothing. At most 1000000.
+
 ## `image_plane_3d`
 
 Shows a raster, such as text or video, on a flat rectangle facing +Z. With no `material_3d` wired into `material` it is unlit and double-sided, so it looks as it does in 2D while it faces the camera. A `material_3d` applies exactly as it is set, so a default one makes the plane lit and single-sided; set its `unlit` and `double_sided` to keep the plane as it looks unwired. A plane is drawn blended, ordered by its centre among blended objects, so its transparent parts show what is behind it. Planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers separated in depth, and opaque shapes in front of or behind planes, are ordered correctly. `opaque` draws a plane that has no transparent pixels with the opaque objects instead. A source keeps its detail when it is shown at its own size or larger; shown smaller, it is filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample` averages it, unless `sampling` is `nearest`.
@@ -725,6 +746,26 @@ Params:
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z of each copy, in the scene's own space. Evaluated for every copy, and can read `instance` and `instance_count`.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z of each copy, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z. Evaluated for every copy, and can read `instance` and `instance_count`.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z of each copy, applied before the rotation. Evaluated for every copy, and can read `instance` and `instance_count`.
+
+## `lathe_3d`
+
+A 2D profile, a `path_2d` or `shape_2d` wired into `geometry`, spun around the world Y axis into a solid of revolution, lit, single-sided and white unless a `material_3d` is wired into `material`. The geometry's pixel coordinates, after its own position, scale, rotation and anchor, become world units at `units_per_pixel` each: a point's X is its distance from the axis and its Y, flipped since 2D Y points down and 3D Y up, its height, so pixel (0, 0) is on the axis at height 0, which is the origin that `placement` moves and turns the solid about. Points left of the axis are put on it. Each contour becomes a strip of quads around the axis, shaded smoothly around it, and along the profile except at corners sharper than 30°, which stay hard. A closed contour makes a closed ring solid whose faces point out of the area it encloses, whichever way it winds. An open contour makes a surface whose front faces the right-hand side of the direction it is drawn in, and which is seen from both sides only if its material is `double_sided`. A point on the axis is a pole, where the surface closes to a point, such as the tip of a cone or the top of a dome; the quads there are triangles, so no triangle without area is left in the mesh, and a closed contour's edge along the axis draws nothing. Contours are spun separately, so one inside another is a separate solid and not a hole. A solid takes at most 256 contours, 16384 profile points, 262144 vertices and 786432 indices in all, which is the profile's vertices times the steps around; more is a render error. The mesh is built again only when the profile, `units_per_pixel`, `segments` or `sweep` change, so animating the placement or the material costs no more than for a `shape_3d`.
+
+Category: scene. Output: scene.
+
+Inputs:
+
+- `geometry`: geometry, required
+- `material`: material, optional
+
+Params:
+
+- **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
+- **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
+- **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z, applied before the rotation.
+- **`segments`** (integer, 3 to 512; default `48`) Steps around the axis for a whole turn, from 3 to 512; a `sweep` of less than 360° has proportionally fewer. The surface is shaded smoothly around the axis, so a few dozen look round.
+- **`sweep`** (number, 0 to 360; default `360`) How far around the axis the profile turns, in degrees, from 0 to 360, starting on +X and turning towards -Z. Under 360 leaves an open wedge with no end caps; 0 draws nothing.
+- **`units_per_pixel`** (number, at least 0; default `0.01`) World units that one pixel of the geometry spans, so that at the default of 0.01 a 100 pixel profile is 1 unit across. The geometry's own position, scale and rotation apply before it. 0 draws nothing. At most 1000000.
 
 ## `light_3d`
 

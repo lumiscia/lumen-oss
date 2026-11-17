@@ -187,7 +187,7 @@ the cache's total, protected entries included, so a large entry in use can free 
 | Mip chains of sources shown smaller than their size (also dropped after 600 frames unused) | `mip_chains`       | total; those the latest frame used stay | 256 MiB |
 | 3D models: GPU buffers and textures, plus the CPU bounds kept beside them                  | `models`           | total; drawn or kept-output models stay | 256 MiB |
 | 3D environment maps' textures                                                              | `environments`     | total; as models                        | 256 MiB |
-| Extruded `text_3d` meshes' GPU buffers (at most 256)                                       | `text_meshes`      | total; as models                        | 64 MiB  |
+| Extruded `text_3d`, `extrude_3d` and `lathe_3d` meshes' GPU buffers (at most 256 of each)  | `text_meshes`      | total; as models                        | 64 MiB  |
 
 ```rust
 use lumen_engine::gpu::{CacheBudgets, GpuCompositionRenderer};

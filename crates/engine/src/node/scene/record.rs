@@ -8,7 +8,8 @@ use super::Render3d;
 use super::render::{catcher_programs, light_programs};
 use super::text_3d::{check_length, check_weight};
 use super::{
-    Camera3d, ImagePlane3d, Instance3d, Light3d, Material3d, Merge3d, Model3d, Shape3d, Text3d,
+    Camera3d, Extrude3d, ImagePlane3d, Instance3d, Lathe3d, Light3d, Material3d, Merge3d, Model3d,
+    Shape3d, Text3d,
 };
 use crate::{
     error::{LumenError, RenderError},
@@ -107,6 +108,62 @@ impl RecordNode for Text3d {
             Deferred::Expr(_) => Vec::new(),
         }
     }
+}
+
+impl RecordNode for Extrude3d {
+    fn programs(&self, _: &mut Programs<'_>) -> crate::Result<()> {
+        Ok(())
+    }
+
+    fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
+        Err(not_a_raster::<Extrude3d>(self.id))
+    }
+
+    fn literal_param_errors(&self) -> Vec<(&'static str, String)> {
+        let params = &self.params;
+        length_errors(&[
+            ("units_per_pixel", &params.units_per_pixel),
+            ("depth", &params.depth),
+            ("bevel_size", &params.bevel_size),
+        ])
+    }
+}
+
+impl RecordNode for Lathe3d {
+    fn programs(&self, _: &mut Programs<'_>) -> crate::Result<()> {
+        Ok(())
+    }
+
+    fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
+        Err(not_a_raster::<Lathe3d>(self.id))
+    }
+
+    fn literal_param_errors(&self) -> Vec<(&'static str, String)> {
+        let params = &self.params;
+        let mut errors = length_errors(&[("units_per_pixel", &params.units_per_pixel)]);
+        if let Deferred::Value(sweep) = &params.sweep
+            && !sweep.is_finite()
+        {
+            errors.push((
+                "sweep",
+                format!("`sweep` must be a finite number, got {sweep}"),
+            ));
+        }
+        errors
+    }
+}
+
+/// What is wrong with each of the literal lengths `lengths`, which are not signed.
+fn length_errors(lengths: &[(&'static str, &Deferred<f64>)]) -> Vec<(&'static str, String)> {
+    lengths
+        .iter()
+        .filter_map(|&(param, value)| match value {
+            Deferred::Value(value) => check_length(param, *value, false)
+                .err()
+                .map(|details| (param, details)),
+            Deferred::Expr(_) => None,
+        })
+        .collect()
 }
 
 impl RecordNode for Light3d {

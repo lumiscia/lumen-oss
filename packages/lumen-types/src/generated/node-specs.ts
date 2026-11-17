@@ -198,6 +198,29 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { contrast: 1, exposure: 0, offset: 0 },
   },
   {
+    kind: "extrude_3d",
+    name: "Extrude 3D",
+    description: "A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front\ncap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a\n`material_3d` is wired into `material`. The geometry's pixel coordinates, after its own\nposition, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with\nY flipped, since 2D Y points down and 3D Y up. Pixel (0, 0) is the origin that `placement`\nmoves and turns the solid about, and nothing re-centres the solid on it: the geometry's\n`position` and `anchor` decide where it sits about that origin, so a `shape_2d` at `position`\n(0, 0) lies to the right of and below it on screen, and 100 pixels across it is 1 unit wide.\nThe extrusion is centred on Z = 0. The outline is filled by the nonzero rule, as a `text_3d`\nglyph is, so holes of a path stay open whichever way they wind and overlapping subpaths join;\nopen subpaths are closed by a straight segment. Curves are flattened to within 0.001 world\nunits, so a larger or smaller `units_per_pixel` keeps them as smooth. An ellipse has as many\nsides as that takes, at least 16 and at most 256, and each corner of a rounded rectangle a\nquarter of as many for its own radius, at least 4 and at most 64. A path's flattening\ncoarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,\n262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a\nrender error. An `offset_2d` in the geometry is not supported yet and fails the render. The\nmesh is built again only when the outline, `units_per_pixel` or the bevel change, or the\n`depth` of a bevelled one, so animating the placement, the material or a plain extrusion's\ndepth costs no more than for a `shape_3d`.",
+    category: "scene",
+    inputs: [
+      { name: "geometry", kind: "geometry", optional: false, variadic: false },
+      { name: "material", kind: "material", optional: true, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "scene" },
+    ],
+    params: [
+      { id: "bevel_segments", name: "Bevel Segments", kind: "int", description: "Steps of the bevel's quarter-round profile, up to 16: 1 is a flat 45° chamfer, and 0 is no\nbevel.", defaultValue: 4, constraints: { min: 0, max: 16, step: 1 } },
+      { id: "bevel_size", name: "Bevel Size", kind: "float", description: "How far the bevel rounds off the outline's edges in world units, in from the outline and in\nfrom the front and back, up to half of `depth`; 0 is none. The outline keeps its size\nwhere the sides meet the bevel. Where the outline is too thin or too tightly curved for\nthe bevel it gets the widest one that fits.", defaultValue: 0, constraints: { min: 0, step: 0.005 } },
+      { id: "depth", name: "Depth", kind: "float", description: "Thickness along Z in world units, centred on Z = 0 before `placement`, so the front faces\n+Z at half of it. 0 is flat.", defaultValue: 0.25, constraints: { min: 0, step: 0.05 } },
+      { id: "position", name: "Position", kind: "vec3", description: "Position in world units along X, Y and Z, in the parent's space.", defaultValue: [0, 0, 0], constraints: { step: 0.1 } },
+      { id: "rotation", name: "Rotation", kind: "vec3", description: "Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned\nX, then roll about the turned Z.", defaultValue: [0, 0, 0], constraints: { step: 1 } },
+      { id: "scale", name: "Scale", kind: "vec3", description: "Scale multiplier along X, Y and Z, applied before the rotation.", defaultValue: [1, 1, 1], constraints: { step: 0.1 } },
+      { id: "units_per_pixel", name: "Units Per Pixel", kind: "float", description: "World units that one pixel of the geometry spans, so that at the default of 0.01 a\n100 pixel outline is 1 unit across. The geometry's own position, scale and rotation apply\nbefore it. 0 draws nothing. At most 1000000.", defaultValue: 0.01, constraints: { min: 0, step: 0.001 } },
+    ],
+    defaultParams: { bevel_segments: 4, bevel_size: 0, depth: 0.25, position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], units_per_pixel: 0.01 },
+  },
+  {
     kind: "fill_2d",
     name: "Fill 2D",
     description: "Fills its geometry's outline with a paint, as a drawing of one drawable.",
@@ -321,6 +344,28 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { id: "scale", name: "Scale", kind: "vec3", description: "Scale multiplier along X, Y and Z of each copy, applied before the rotation. Evaluated for every copy, and can read `instance` and `instance_count`.", defaultValue: [1, 1, 1], constraints: { step: 0.1 } },
     ],
     defaultParams: { count: 1, position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+  },
+  {
+    kind: "lathe_3d",
+    name: "Lathe 3D",
+    description: "A 2D profile, a `path_2d` or `shape_2d` wired into `geometry`, spun around the world Y axis\ninto a solid of revolution, lit, single-sided and white unless a `material_3d` is wired into\n`material`. The geometry's pixel coordinates, after its own position, scale, rotation and\nanchor, become world units at `units_per_pixel` each: a point's X is its distance from the axis\nand its Y, flipped since 2D Y points down and 3D Y up, its height, so pixel (0, 0) is on the\naxis at height 0, which is the origin that `placement` moves and turns the solid about. Points\nleft of the axis are put on it. Each contour becomes a strip of quads around the axis, shaded\nsmoothly around it, and along the profile except at corners sharper than 30°, which stay hard.\nA closed contour makes a closed ring solid whose faces point out of the area it encloses,\nwhichever way it winds. An open contour makes a surface whose front faces the right-hand side of\nthe direction it is drawn in, and which is seen from both sides only if its material is\n`double_sided`. A point on the axis is a pole, where the surface closes to a point, such as the\ntip of a cone or the top of a dome; the quads there are triangles, so no triangle without\narea is left in the mesh, and a closed contour's edge along the axis draws nothing. Contours\nare spun separately, so one inside another is a separate solid and not a hole. A solid takes\nat most 256 contours, 16384 profile points, 262144 vertices and 786432 indices in all, which\nis the profile's vertices times the steps around; more is a render error. The mesh is built\nagain only when the profile, `units_per_pixel`, `segments` or `sweep` change, so animating the\nplacement or the material costs no more than for a `shape_3d`.",
+    category: "scene",
+    inputs: [
+      { name: "geometry", kind: "geometry", optional: false, variadic: false },
+      { name: "material", kind: "material", optional: true, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "scene" },
+    ],
+    params: [
+      { id: "position", name: "Position", kind: "vec3", description: "Position in world units along X, Y and Z, in the parent's space.", defaultValue: [0, 0, 0], constraints: { step: 0.1 } },
+      { id: "rotation", name: "Rotation", kind: "vec3", description: "Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned\nX, then roll about the turned Z.", defaultValue: [0, 0, 0], constraints: { step: 1 } },
+      { id: "scale", name: "Scale", kind: "vec3", description: "Scale multiplier along X, Y and Z, applied before the rotation.", defaultValue: [1, 1, 1], constraints: { step: 0.1 } },
+      { id: "segments", name: "Segments", kind: "int", description: "Steps around the axis for a whole turn, from 3 to 512; a `sweep` of less than 360° has\nproportionally fewer. The surface is shaded smoothly around the axis, so a few dozen look\nround.", defaultValue: 48, constraints: { min: 3, max: 512, step: 1 } },
+      { id: "sweep", name: "Sweep", kind: "float", description: "How far around the axis the profile turns, in degrees, from 0 to 360, starting on +X and\nturning towards -Z. Under 360 leaves an open wedge with no end caps; 0 draws nothing.", defaultValue: 360, constraints: { min: 0, max: 360, step: 1 } },
+      { id: "units_per_pixel", name: "Units Per Pixel", kind: "float", description: "World units that one pixel of the geometry spans, so that at the default of 0.01 a\n100 pixel profile is 1 unit across. The geometry's own position, scale and rotation apply\nbefore it. 0 draws nothing. At most 1000000.", defaultValue: 0.01, constraints: { min: 0, step: 0.001 } },
+    ],
+    defaultParams: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], segments: 48, sweep: 360, units_per_pixel: 0.01 },
   },
   {
     kind: "levels",

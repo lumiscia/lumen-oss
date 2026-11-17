@@ -1,5 +1,5 @@
 //! Scene maths and mesh data for Lumen's 3D nodes, with nothing tied to a GPU: primitive meshes,
-//! extruded outlines, glTF models, environment maps, transforms, cameras, lights and their shadow maps, and the order and batches a frame's objects draw in.
+//! extruded outlines, lathed profiles, glTF models, environment maps, transforms, cameras, lights and their shadow maps, and the order and batches a frame's objects draw in.
 //!
 //! World units are metres, Y is up and cameras look down -Z.
 
@@ -9,6 +9,7 @@ mod color;
 mod draws;
 pub mod environment;
 mod extrude;
+mod lathe;
 mod light;
 mod mesh;
 pub mod model;
@@ -24,6 +25,7 @@ pub use color::srgb_to_linear;
 pub use draws::{DrawError, DrawKey, Draws, Row, Run};
 pub use extrude::{ExtrudeLimit, ExtrudeLimits, Extrusion, LimitExceeded, extrude};
 pub use glam;
+pub use lathe::{Lathe, LatheContour, LatheLimits, lathe};
 pub use light::{Light, LightKind, Lighting, Shadow};
 pub use mesh::{Mesh, MorphDelta, Primitive, SkinVertex, Vertex, VertexExtra, plane_scale};
 pub use scene::{
