@@ -136,6 +136,76 @@ fn a_grid_of_instances_draws_as_the_same_cubes_placed_by_hand() {
     ]);
 }
 
+/// Scales of the copies `facing_every_way` places: upright, mirrored, flattened and upright.
+const SCALES: [[i32; 3]; 4] = [[1, 1, 1], [-1, 1, 1], [1, 1, 0], [1, 1, 1]];
+
+/// An opaque box and a blended ball, of which four copies face every way, on the ground with
+/// shadows, drawn as `output`: the copies by an `instance_3d`, or by hand.
+fn facing_every_way(instanced: bool, output: &str) -> crate::support::Scene {
+    let mut nodes = vec![
+        json!({ "id": 3, "type": "material_3d", "params": { "opacity": 0.5, "color": "#3c8aff" } }),
+        shape(
+            1,
+            json!({ "size": [0.4, 0.5, 0.3], "position": [0.1, 0.3, 0], "rotation": [0, 0, 10] }),
+        ),
+        with_material(
+            shape(
+                2,
+                json!({ "shape": "sphere", "size": [0.3, 0.3, 0.3], "position": [0, 0.7, 0.2] }),
+            ),
+            3,
+        ),
+    ];
+    let place = |i: usize| (i as f64 * 0.9 - 1.35, i as f64 * 25.0);
+    let shown = if instanced {
+        nodes.push(merge(4, &[1, 2]));
+        nodes.push(instance(
+            5,
+            4,
+            json!({
+                "count": 4,
+                "position": "=vec3(instance * 0.9 - 1.35, 0, 0)",
+                "rotation": "=vec3(0, instance * 25, 0)",
+                "scale": "=if(instance == 1, vec3(-1, 1, 1), if(instance == 2, vec3(1, 1, 0), vec3(1, 1, 1)))",
+            }),
+        ));
+        vec![5]
+    } else {
+        for (i, scale) in SCALES.iter().enumerate() {
+            let (x, turn) = place(i);
+            nodes.push(
+                json!({ "id": 10 + i, "type": "merge_3d", "in": { "objects": [1, 2] },
+                "params": { "position": [x, 0, 0], "rotation": [0, turn, 0], "scale": scale } }),
+            );
+        }
+        vec![10, 11, 12, 13]
+    };
+    let mut scene = on_ground(nodes, &shown);
+    let nodes = scene.0["nodes"].as_array_mut().expect("nodes");
+    let render = nodes
+        .iter_mut()
+        .find(|node| node["id"] == 100)
+        .expect("render_3d");
+    render["params"]["output"] = json!(output);
+    scene
+}
+
+#[test]
+fn copies_facing_every_way_draw_as_the_same_objects_placed_by_hand() {
+    check(
+        ["color", "normal", "depth"]
+            .into_iter()
+            .map(|output| {
+                Case::new(
+                    format!("mirrored, flattened and blended copies, drawn as {output}"),
+                    facing_every_way(true, output),
+                    Expect::Matches(facing_every_way(false, output).into()),
+                )
+            })
+            .collect(),
+    );
+}
+
 #[test]
 fn instances_of_a_merged_scene_keep_its_lights_once_and_place_its_objects() {
     // The input holds a cube and a sun; each copy of the cube is lit by the one sun.

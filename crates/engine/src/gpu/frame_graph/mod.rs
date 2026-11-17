@@ -976,41 +976,124 @@ impl<'a> FrameCx<'a> {
         (&mut *self.rec, &mut self.st.scene.cache)
     }
 
-    /// The local matrices kept for the copies of `instance_3d` node `node`, if they were placed for
+    /// The placements kept for the copies of `instance_3d` node `node`, if they were placed for
     /// `count` copies.
     #[cfg(feature = "3d")]
     pub(crate) fn kept_placements(
         &mut self,
         node: NodeId,
         count: u32,
-    ) -> Option<Arc<[lumen_3d::glam::Mat4]>> {
+    ) -> Option<Arc<crate::node::scene::collect::Placements>> {
         let key = (self.scope.id, node);
         let kept = self.st.scene.placements.get_mut(&key)?;
         if kept.count != count {
             return None;
         }
         kept.last_used = self.st.tick;
-        Some(kept.locals.clone())
+        Some(kept.placements.clone())
     }
 
-    /// Keeps `locals`, the local matrices of the `count` copies of `instance_3d` node `node`,
-    /// for later frames.
+    /// Keeps `placements`, those of the `count` copies of `instance_3d` node `node`, for later
+    /// frames.
     #[cfg(feature = "3d")]
     pub(crate) fn keep_placements(
         &mut self,
         node: NodeId,
         count: u32,
-        locals: Arc<[lumen_3d::glam::Mat4]>,
+        placements: Arc<crate::node::scene::collect::Placements>,
     ) {
         let key = (self.scope.id, node);
         self.st.scene.placements.insert(
             key,
             state::KeptPlacements {
                 count,
-                locals,
+                placements,
                 last_used: self.st.tick,
             },
         );
+    }
+
+    /// The placements of `outer`'s copies of the copies `inner` places in `range`, its first and
+    /// count, placed by `between` within each outer copy, as `instance_3d` node `node`'s list
+    /// `list`. They are made by `flatten` unless an earlier collection made them from the same
+    /// three, which the second value says.
+    #[cfg(feature = "3d")]
+    pub(crate) fn flattened(
+        &mut self,
+        (node, list): (NodeId, u32),
+        outer: &Arc<crate::node::scene::collect::Placements>,
+        (between, inner, range): (
+            lumen_3d::glam::Mat4,
+            &Arc<crate::node::scene::collect::Placements>,
+            (u32, u32),
+        ),
+        flatten: impl FnOnce() -> crate::node::scene::collect::Placements,
+    ) -> (Arc<crate::node::scene::collect::Placements>, bool) {
+        let key = ((self.scope.id, node), list);
+        let tick = self.st.tick;
+        if let Some(kept) = self.st.scene.flattened.get_mut(&key)
+            && Arc::ptr_eq(&kept.outer, outer)
+            && Arc::ptr_eq(&kept.inner, inner)
+            && kept.between == between
+            && kept.range == range
+        {
+            kept.last_used = tick;
+            return (kept.placements.clone(), true);
+        }
+        let placements = Arc::new(flatten());
+        self.st.scene.flattened.insert(
+            key,
+            state::KeptFlattened {
+                outer: outer.clone(),
+                between,
+                inner: inner.clone(),
+                range,
+                placements: placements.clone(),
+                last_used: tick,
+            },
+        );
+        (placements, false)
+    }
+
+    /// The instance buffer kept for `instance_3d` node `node`'s list `list`, holding `placements`:
+    /// the one an earlier frame uploaded for them, or a new one holding `records`, which replaces
+    /// it. `None` when the buffer this frame already drew holds other placements.
+    #[cfg(feature = "3d")]
+    pub(crate) fn copy_buffer<R: bytemuck::Pod>(
+        &mut self,
+        (node, list): (NodeId, u32),
+        placements: &Arc<crate::node::scene::collect::Placements>,
+        records: impl FnOnce() -> Vec<R>,
+    ) -> Option<lumen_gpu::BufRef> {
+        let key = ((self.scope.id, node), list);
+        let tick = self.st.tick;
+        let buffers = &mut self.st.scene.buffers;
+        if let Some(kept) = buffers.get_mut(&key) {
+            if Arc::ptr_eq(&kept.placements, placements) {
+                kept.last_used = tick;
+                return Some(kept.buffer);
+            }
+            if kept.last_used == tick {
+                return None;
+            }
+        }
+        let buffer = crate::node::scene::collect::storage_buffer(
+            self.rec,
+            "lumen 3d instance buffer",
+            bytemuck::cast_slice(&records()),
+        );
+        let replaced = buffers.insert(
+            key,
+            state::KeptBuffer {
+                placements: placements.clone(),
+                buffer,
+                last_used: tick,
+            },
+        );
+        if let Some(replaced) = replaced {
+            self.rec.forget_buffer(replaced.buffer);
+        }
+        Some(buffer)
     }
 
     pub(crate) fn canvas_size(&self) -> Size {

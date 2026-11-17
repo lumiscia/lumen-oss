@@ -2,6 +2,9 @@
 
 mod instance;
 
+pub(super) use instance::CopyList;
+pub(crate) use instance::Placements;
+
 use std::sync::Arc;
 
 use foldhash::HashMap;
@@ -46,7 +49,7 @@ pub(crate) struct GpuMesh {
     pub(crate) morphs: u32,
 }
 
-pub(super) fn storage_buffer(rec: &mut Recorder, label: &str, contents: &[u8]) -> BufRef {
+pub(crate) fn storage_buffer(rec: &mut Recorder, label: &str, contents: &[u8]) -> BufRef {
     let buffer = wgpu::util::DeviceExt::create_buffer_init(
         rec.device(),
         &wgpu::util::BufferInitDescriptor {
@@ -632,7 +635,9 @@ fn model_error(node_id: NodeId, source: &str, details: impl std::fmt::Display) -
     RenderError::evaluating::<Model3d>(node_id, format!("model `{source}`: {details}")).into()
 }
 
-/// What an object covers before it is placed in the world.
+/// What an object covers before it is placed in the world, or for an instanced object, before its
+/// copies' placements and their parent place it.
+#[derive(Clone, Copy)]
 enum Extent {
     /// Bounds its world matrix places.
     Local(Bounds),
@@ -656,6 +661,10 @@ pub(super) struct Collected {
     pub(super) scene: Scene<GpuMesh, TexRef>,
     /// The node of each of the scene's lights.
     pub(super) light_nodes: Vec<NodeId>,
+    /// The lists of placements instanced objects draw their copies from.
+    pub(super) lists: Vec<CopyList>,
+    /// Objects the scene draws, counting each copy.
+    drawn: usize,
     /// One per object, from which [`Self::place_bounds`] works out its bounds.
     extents: Vec<Extent>,
     skins: Vec<PosedSkin>,
@@ -680,6 +689,8 @@ impl Collected {
         Self {
             scene: Scene::default(),
             light_nodes: Vec::new(),
+            lists: Vec::new(),
+            drawn: 0,
             extents: Vec::new(),
             skins: Vec::new(),
             render_id,
@@ -694,12 +705,14 @@ impl Collected {
 
     fn push(&mut self, object: Object<GpuMesh, TexRef>, extent: Extent) {
         self.indices += u64::from(object.index_count);
+        self.drawn += 1;
         self.scene.objects.push(object);
         self.extents.push(extent);
     }
 
     /// Sets every object's bounds in the world, which only shadows need: each skin's from the
-    /// joints that move its vertices, once for every object it moves.
+    /// joints that move its vertices, once for every object it moves, and an instanced object's
+    /// around all its copies.
     pub(super) fn place_bounds(&mut self) {
         let joints = &self.scene.joints;
         let skins: Vec<Bounds> = self
@@ -724,9 +737,16 @@ impl Collected {
             })
             .collect();
         for (object, extent) in self.scene.objects.iter_mut().zip(&self.extents) {
-            object.bounds = match *extent {
+            let bounds = match *extent {
                 Extent::Local(bounds) => bounds.transformed(&object.world),
                 Extent::Skin(skin) => skins[skin],
+            };
+            object.bounds = match object.instanced {
+                None => bounds,
+                Some(copies) => self.lists[copies.list as usize]
+                    .placements
+                    .bounds(bounds, (copies.first, copies.count))
+                    .transformed(&copies.parent),
             };
         }
     }
@@ -807,6 +827,7 @@ impl Collected {
                         morph: None,
                         bounds: Bounds::EMPTY,
                         part: None,
+                        instanced: None,
                     },
                     Extent::Local(UNIT_BOUNDS),
                 );
@@ -838,6 +859,7 @@ impl Collected {
                             morph: None,
                             bounds: Bounds::EMPTY,
                             part: None,
+                            instanced: None,
                         },
                         Extent::Local(local),
                     );
@@ -897,6 +919,7 @@ impl Collected {
                         morph: None,
                         bounds: Bounds::EMPTY,
                         part,
+                        instanced: None,
                     },
                     Extent::Local(local),
                 );
@@ -1032,7 +1055,7 @@ impl Collected {
                 }
             }
         };
-        if self.scene.objects.len() + scene.draw_count() > MAX_SCENE_NODES {
+        if self.drawn + scene.draw_count() > MAX_SCENE_NODES {
             return Err(super::render::render_error(
                 self.render_id,
                 format!("the scene draws more than {MAX_SCENE_NODES} objects"),
@@ -1171,6 +1194,7 @@ impl Collected {
                         .map(|(morph, weight)| (morph, weight + first_weight as u32)),
                     bounds: Bounds::EMPTY,
                     part: None,
+                    instanced: None,
                 },
                 extent,
             );

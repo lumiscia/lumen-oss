@@ -2,7 +2,8 @@
 // objects from the object table, and each vertex of the draw belongs to the object whose range of
 // the run's vertices it falls in. Vertices are pulled from storage: `indices` holds a mesh's
 // vertex indices, from each object's first, one per vertex the object draws. A vertex is morphed
-// by its morph targets, then skinned.
+// by its morph targets, then skinned. A run of an instanced object draws its one object once for
+// each of its copies, each placed by its row of `instances`.
 
 const PI: f32 = 3.14159265;
 
@@ -34,6 +35,8 @@ const FLAG_MAP_UVS: u32 = 32768u;
 const FLAG_PART: u32 = 65536u;
 // No vertex extras, in `Object::extras`.
 const NO_EXTRAS: u32 = 0xffffffffu;
+// A run of objects drawn once, in `Run::first_instance`.
+const NO_INSTANCES: u32 = 0xffffffffu;
 // Words of one morph target displacement: a position's, then a normal's.
 const MORPH_DELTA_WORDS: u32 = 6u;
 // The map slots, in the order of an object's rows of `map_uvs`.
@@ -145,12 +148,23 @@ struct MapUv {
     second: vec4<f32>,
 }
 
-// The rows of the object table a draw covers, and where their vertices start.
+// The rows of the object table a draw covers, and where their vertices start. A run of copies
+// places copy `i` by `parent`, then `instances[first_instance + i]`, then its object's `model`.
 struct Run {
     first: u32,
     count: u32,
     base: u32,
-    _pad: u32,
+    first_instance: u32,
+    parent: mat4x4<f32>,
+    // Shadow views each object or copy is drawn into, one draw instance each.
+    views: u32,
+}
+
+// One copy of an instanced object: the rows of its affine placement, then a colour reserved for
+// the copy, white.
+struct Instance {
+    rows: array<vec4<f32>, 3>,
+    tint: vec4<f32>,
 }
 
 struct Light {
@@ -228,6 +242,7 @@ struct ShadowView {
 // Morphed objects' morph target weights.
 @group(0) @binding(28) var<storage, read> weights: array<f32>;
 @group(0) @binding(29) var<storage, read> map_uvs: array<MapUv>;
+@group(0) @binding(30) var<storage, read> instances: array<Instance>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -306,7 +321,8 @@ fn data_vec3(at: u32) -> vec3<f32> {
     return vec3<f32>(bitcast<f32>(vertex_data[at]), bitcast<f32>(vertex_data[at + 1u]), bitcast<f32>(vertex_data[at + 2u]));
 }
 
-fn posed(index: u32) -> Posed {
+// Vertex `index` of the run, of its copy `copy` if it draws copies.
+fn posed(index: u32, copy: u32) -> Posed {
     let slot = index + run.base;
     let oi = object_of(slot);
     let o = objects[oi];
@@ -340,11 +356,19 @@ fn posed(index: u32) -> Posed {
         position = skin * position;
         normal = normal_turn(skin) * normal;
     }
+    var model = o.model;
+    var turn = o.normal;
+    if (run.first_instance != NO_INSTANCES) {
+        let rows = instances[run.first_instance + copy].rows;
+        let placement = transpose(mat4x4<f32>(rows[0], rows[1], rows[2], vec4<f32>(0.0, 0.0, 0.0, 1.0)));
+        model = run.parent * placement * o.model;
+        turn = normal_turn(model);
+    }
     var out: Posed;
     out.object = oi;
-    out.world = o.model * position;
+    out.world = model * position;
     // Unit length at each vertex, so that its length doesn't weigh how it is interpolated.
-    out.normal = unit(o.normal * normal);
+    out.normal = unit(turn * normal);
     out.uv = uv;
     out.uv1 = out.uv;
     out.color = vec4<f32>(1.0);
@@ -395,8 +419,8 @@ fn map_coords(o: Object, slot: u32, uvs: Uvs) -> MapCoords {
 }
 
 @vertex
-fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
-    let vertex = posed(index);
+fn vs_main(@builtin(vertex_index) index: u32, @builtin(instance_index) copy: u32) -> VsOut {
+    let vertex = posed(index, copy);
     var out: VsOut;
     out.clip = globals.view_proj * vertex.world;
     out.world = vertex.world.xyz;
@@ -419,11 +443,12 @@ struct ShadowOut {
     @location(5) alpha: f32,
 }
 
-// The vertex seen from the shadow view of the instance being drawn, squeezed into its tile.
+// The vertex seen from one shadow view, squeezed into its tile. Draw instances go through the views
+// for each copy in turn.
 @vertex
-fn vs_shadow(@builtin(vertex_index) index: u32, @builtin(instance_index) view_index: u32) -> ShadowOut {
-    let vertex = posed(index);
-    let view = shadow_views[view_index];
+fn vs_shadow(@builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> ShadowOut {
+    let vertex = posed(index, instance / run.views);
+    let view = shadow_views[instance % run.views];
     let clip = view.view_proj * vertex.world;
     let scale = view.tile.zw - view.tile.xy;
     let offset = vec2<f32>(view.tile.x + view.tile.z - 1.0, 1.0 - view.tile.y - view.tile.w);
