@@ -30,6 +30,7 @@ impl Expression {
         ctx: &ExpressionContext<'_>,
     ) -> crate::Result<ExpressionValue> {
         let _evaluation = EvaluationGuard::enter(self.depth)?;
+        self.plan.load();
         let mut scratch = Scratch::new(&self.plan);
         usable(
             self.plan
@@ -511,6 +512,23 @@ impl EvalPlan {
             kept_slots,
             shared_slots,
         }
+    }
+
+    /// Reads every cache line of the plan once. A plan is usually out of cache when an evaluation
+    /// of it starts, as most are evaluated once a frame, and an evaluation reads its steps one
+    /// after another, each waiting for the last to load. These reads don't wait for each other.
+    pub(super) fn load(&self) {
+        let mut read = 0_usize;
+        for step in &self.steps {
+            read = read.wrapping_add(usize::from(step.repeatable));
+            if let Op::Builtin(_, args) = &step.op {
+                read = read.wrapping_add(args.first().copied().unwrap_or(0));
+            }
+        }
+        for constant in &self.constants {
+            read = read.wrapping_add(usize::from(constant.as_f64().is_some()));
+        }
+        std::hint::black_box(read);
     }
 
     pub(super) fn evaluate_step(
