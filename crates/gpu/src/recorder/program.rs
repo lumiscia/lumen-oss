@@ -16,6 +16,8 @@ pub enum LayoutKind {
     /// Bound with a dynamic offset into the uniform bump buffer.
     Uniform,
     Storage,
+    /// A storage buffer the shader may write, for compute passes.
+    StorageReadWrite,
     Sampler,
     /// A sampler that compares depth, made with a `compare` function.
     ComparisonSampler,
@@ -364,6 +366,11 @@ impl Recorder {
                     },
                     LayoutKind::Storage => wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    LayoutKind::StorageReadWrite => wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },

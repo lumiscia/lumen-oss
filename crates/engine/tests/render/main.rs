@@ -28,6 +28,8 @@ mod motion;
 mod noise;
 mod operators;
 mod paint;
+#[cfg(feature = "3d")]
+mod particles;
 mod repeat;
 #[cfg(feature = "3d")]
 mod scene;

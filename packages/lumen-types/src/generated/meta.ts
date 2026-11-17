@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -2485,6 +2485,104 @@ export interface OpacityNode extends CompositionNodeBase<"opacity"> {
   };
 }
 
+/**
+ * Draws `count` copies of its `object` scene as particles, scattered over its `surface` scene:
+ * each is emitted from a point picked at random over the surface's triangles, as likely
+ * anywhere as anywhere else of the same area, then moves along a direction near the
+ * triangle's normal with `speed` and falls with `gravity`. Without a surface, particles are
+ * emitted from the node's origin along +Y. The surface isn't drawn; wire it into a `merge_3d` as
+ * well to show it. The defaults scatter all the particles at once and keep them still, which
+ * suits grass on a hill or rocks on a floor; a `rate`, `lifetime` and `speed` make it an emitter,
+ * such as sparks or snow.
+ * 
+ * A frame's particles depend only on the seed, the params, the surface and the time, which is
+ * the frame over the composition's frame rate, so any frame renders alone and the same, and a
+ * `motion_blur` blurs particles by their motion. Particles are placed on the GPU: a frame's CPU
+ * work doesn't grow with `count`, and each `particles_3d` counts once towards a scene's 100000
+ * objects, however many particles it draws.
+ * 
+ * The surface is taken at rest: a skinned or morphed model emits from its vertices as they are
+ * stored, unposed, and an `instance_3d` in it emits from all its copies. Each object of the
+ * surface emits in proportion to its area in the world, which is exact under a uniform scale and
+ * otherwise scales its area as the uniform scale of the same volume would. Emit points follow the
+ * surface where it is at the frame. A surface with no area emits nothing.
+ * 
+ * Particles are drawn as `instance_3d` copies are, sharing the object's meshes and materials,
+ * with its lights and camera left out. They are drawn at once, with no order among them, so the
+ * object must be opaque or masked: a blended surface, or one showing a raster such as an image
+ * plane, fails the render. Fade particles with `scale_over_life` rather than opacity. A
+ * `particles_3d` may sit under an `instance_3d` of `count` 1, which places it as a group would,
+ * but more copies of particles, particles of particles, and particles emitted from particles
+ * fail the render.
+ */
+export interface Particles3dNode extends CompositionNodeBase<"particles_3d"> {
+  readonly params?: {
+    /**
+     * Turns each particle so that its +Y follows the normal of the surface where it was emitted.
+     * Off, particles keep the node's axes.
+     */
+    readonly align_to_normal?: ExpressionValue<boolean>;
+    /**
+     * Particles, from 0 to 100000. Each is one copy of `object`. With `rate` above 0, they are
+     * slots that are born one after another and born again once all have been.
+     */
+    readonly count?: ExpressionValue<number>;
+    /**
+     * Acceleration in world units per second squared along X, Y and Z, in the node's own space:
+     * `[0, -9.8, 0]` makes particles fall. A particle is at `emit + velocity * age + gravity *
+     * age² / 2`.
+     */
+    readonly gravity?: ExpressionValue<Vec3>;
+    /**
+     * Seconds a particle lives once born, after which it draws nothing until it is born again.
+     * 0 lives until it is born again, or forever when `rate` is 0. With `rate` above 0, a
+     * particle is born again every `count / rate` seconds, which cuts a longer lifetime short.
+     */
+    readonly lifetime?: ExpressionValue<number>;
+    /** Position in world units along X, Y and Z of the whole system in the parent's space: the surface, the particles and, without a surface, the point they are emitted from move with it. */
+    readonly position?: ExpressionValue<Vec3>;
+    /**
+     * Particles born per second: particle `k` is born `k / rate` seconds into the composition,
+     * and born again, somewhere new, every `count / rate` seconds after. 0 gives birth to all of
+     * them at once, at 0 seconds, and never again.
+     */
+    readonly rate?: ExpressionValue<number>;
+    /** Rotation in degrees about X, Y and Z of the whole system, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z. It turns `gravity`, and the direction particles are emitted along without a surface, with the rest. */
+    readonly rotation?: ExpressionValue<Vec3>;
+    /**
+     * Most degrees a particle turns about an axis picked at random, by an angle picked at random
+     * up to this. 180 turns particles every way.
+     */
+    readonly rotation_jitter?: ExpressionValue<number>;
+    /**
+     * The smallest and largest uniform scale of a particle, each picked at random between them.
+     * Negative scales are taken as 0.
+     */
+    readonly scale?: ExpressionValue<Vec2>;
+    /**
+     * The scale multiplier at a particle's birth and at the end of its `lifetime`, between which
+     * it moves in a straight line with its age. Fade particles out with an end of 0. With a
+     * `lifetime` of 0 the start applies throughout.
+     */
+    readonly scale_over_life?: ExpressionValue<Vec2>;
+    /**
+     * Picks an unrelated scatter: where each particle is emitted, and its direction, size and
+     * turn. The same seed gives the same particles at the same time.
+     */
+    readonly seed?: ExpressionValue<number>;
+    /**
+     * World units per second a particle moves at, along its emit direction, from where it is
+     * emitted.
+     */
+    readonly speed?: ExpressionValue<number>;
+    /**
+     * Degrees the emit direction may lean from the surface normal, or from +Y without a surface,
+     * at random within a cone: 0 emits along the normal and 180 every way.
+     */
+    readonly spread?: ExpressionValue<number>;
+  };
+}
+
 /** Produces a rasterized vector path source. */
 export interface PathNode extends CompositionNodeBase<"path"> {
   readonly params?: {
@@ -3200,6 +3298,7 @@ export interface CompositionNodeByKind {
   readonly "motion_blur": MotionBlurNode;
   readonly "offset_2d": Offset2dNode;
   readonly "opacity": OpacityNode;
+  readonly "particles_3d": Particles3dNode;
   readonly "path": PathNode;
   readonly "path_2d": Path2dNode;
   readonly "radial_blur": RadialBlurNode;
@@ -3313,6 +3412,9 @@ export interface CompositionNodeInputByKind {
   readonly "opacity": Omit<OpacityNode, "id"> & {
     readonly id?: number;
   };
+  readonly "particles_3d": Omit<Particles3dNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "path": Omit<PathNode, "id"> & {
     readonly id?: number;
   };
@@ -3406,6 +3508,7 @@ export interface NodeInputPortNameByKind {
   readonly "motion_blur": "source";
   readonly "offset_2d": "geometry";
   readonly "opacity": "source";
+  readonly "particles_3d": "object" | "surface";
   readonly "path": never;
   readonly "path_2d": never;
   readonly "radial_blur": "source";
@@ -3459,6 +3562,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "motion_blur": never;
   readonly "offset_2d": never;
   readonly "opacity": never;
+  readonly "particles_3d": never;
   readonly "path": never;
   readonly "path_2d": never;
   readonly "radial_blur": never;
@@ -3512,6 +3616,7 @@ export interface NodeOutputKindByKind {
   readonly "motion_blur": "raster";
   readonly "offset_2d": "geometry";
   readonly "opacity": "raster";
+  readonly "particles_3d": "scene";
   readonly "path": "raster";
   readonly "path_2d": "geometry";
   readonly "radial_blur": "raster";
@@ -3565,6 +3670,7 @@ export interface NodeInputPortKindByKind {
   readonly "motion_blur": { readonly "source": "raster" };
   readonly "offset_2d": { readonly "geometry": "geometry" };
   readonly "opacity": { readonly "source": "raster" };
+  readonly "particles_3d": { readonly "surface": "scene"; readonly "object": "scene" };
   readonly "path": {};
   readonly "path_2d": {};
   readonly "radial_blur": { readonly "source": "raster" };
@@ -3810,6 +3916,37 @@ export const nodeInputPorts = {
   "offset_2d": { "geometry": { kind: "geometry", variadic: false } },
   /** Uniformly adjusts raster opacity. */
   "opacity": { "source": { kind: "raster", variadic: false } },
+  /**
+   * Draws `count` copies of its `object` scene as particles, scattered over its `surface` scene:
+   * each is emitted from a point picked at random over the surface's triangles, as likely
+   * anywhere as anywhere else of the same area, then moves along a direction near the
+   * triangle's normal with `speed` and falls with `gravity`. Without a surface, particles are
+   * emitted from the node's origin along +Y. The surface isn't drawn; wire it into a `merge_3d` as
+   * well to show it. The defaults scatter all the particles at once and keep them still, which
+   * suits grass on a hill or rocks on a floor; a `rate`, `lifetime` and `speed` make it an emitter,
+   * such as sparks or snow.
+   * 
+   * A frame's particles depend only on the seed, the params, the surface and the time, which is
+   * the frame over the composition's frame rate, so any frame renders alone and the same, and a
+   * `motion_blur` blurs particles by their motion. Particles are placed on the GPU: a frame's CPU
+   * work doesn't grow with `count`, and each `particles_3d` counts once towards a scene's 100000
+   * objects, however many particles it draws.
+   * 
+   * The surface is taken at rest: a skinned or morphed model emits from its vertices as they are
+   * stored, unposed, and an `instance_3d` in it emits from all its copies. Each object of the
+   * surface emits in proportion to its area in the world, which is exact under a uniform scale and
+   * otherwise scales its area as the uniform scale of the same volume would. Emit points follow the
+   * surface where it is at the frame. A surface with no area emits nothing.
+   * 
+   * Particles are drawn as `instance_3d` copies are, sharing the object's meshes and materials,
+   * with its lights and camera left out. They are drawn at once, with no order among them, so the
+   * object must be opaque or masked: a blended surface, or one showing a raster such as an image
+   * plane, fails the render. Fade particles with `scale_over_life` rather than opacity. A
+   * `particles_3d` may sit under an `instance_3d` of `count` 1, which places it as a group would,
+   * but more copies of particles, particles of particles, and particles emitted from particles
+   * fail the render.
+   */
+  "particles_3d": { "surface": { kind: "scene", variadic: false }, "object": { kind: "scene", variadic: false } },
   /** Produces a rasterized vector path source. */
   "path": {},
   /**
@@ -3941,6 +4078,7 @@ export const nodeMediaSources = {
   "motion_blur": {},
   "offset_2d": {},
   "opacity": {},
+  "particles_3d": {},
   "path": {},
   "path_2d": {},
   "radial_blur": {},

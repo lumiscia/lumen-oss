@@ -1,9 +1,12 @@
 //! Evaluates a scene's nodes at a frame into what `render_3d` draws.
 
 mod instance;
+mod particles;
 
-pub(super) use instance::CopyList;
 pub(crate) use instance::Placements;
+pub(super) use instance::{CopyList, CopySource};
+pub(super) use particles::instance_buffer as particle_buffer;
+pub(crate) use particles::{ParticleCache, particles_programs};
 
 use std::sync::Arc;
 
@@ -98,6 +101,8 @@ struct LoadedModel {
 
 struct CachedModel {
     model: LoadedModel,
+    /// The source the model was first loaded from, to read it from again.
+    source: String,
     bytes: u64,
     last_used: u64,
 }
@@ -219,6 +224,7 @@ impl SceneCache {
             identity.as_str().to_string(),
             CachedModel {
                 model: loaded.clone(),
+                source: source.to_string(),
                 bytes: size,
                 last_used: tick,
             },
@@ -256,16 +262,21 @@ impl SceneCache {
 
     fn shape(&mut self, rec: &mut Recorder, kind: Shape3dKind) -> (GpuMesh, u32) {
         *self.shapes.entry(kind).or_insert_with(|| {
-            let mesh = Mesh::primitive(match kind {
-                Shape3dKind::Box => Primitive::Box,
-                Shape3dKind::Sphere => Primitive::Sphere,
-                Shape3dKind::Plane => Primitive::Plane,
-                Shape3dKind::Cylinder => Primitive::Cylinder,
-                Shape3dKind::Torus => Primitive::Torus,
-                Shape3dKind::Cone => Primitive::Cone,
-            });
+            let mesh = Mesh::primitive(primitive(kind));
             (GpuMesh::upload(rec, &mesh), mesh.indices.len() as u32)
         })
+    }
+}
+
+/// The primitive a `shape_3d` of `kind` draws.
+fn primitive(kind: Shape3dKind) -> Primitive {
+    match kind {
+        Shape3dKind::Box => Primitive::Box,
+        Shape3dKind::Sphere => Primitive::Sphere,
+        Shape3dKind::Plane => Primitive::Plane,
+        Shape3dKind::Cylinder => Primitive::Cylinder,
+        Shape3dKind::Torus => Primitive::Torus,
+        Shape3dKind::Cone => Primitive::Cone,
     }
 }
 
@@ -779,7 +790,7 @@ impl Collected {
             object.bounds = match object.instanced {
                 None => bounds,
                 Some(copies) => self.lists[copies.list as usize]
-                    .placements
+                    .source
                     .bounds(bounds, (copies.first, copies.count))
                     .transformed(&copies.parent),
             };
@@ -838,6 +849,7 @@ impl Collected {
                 ));
             }
             NodeKind::Instance3d(instance) => self.add_instances(cx, instance, parent)?,
+            NodeKind::Particles3d(particles) => self.add_particles(cx, particles, parent)?,
             NodeKind::Shape3d(shape) => {
                 let params = shape.params.eval(&ctx)?;
                 let size = vec3(params.size).max(Vec3::ZERO);

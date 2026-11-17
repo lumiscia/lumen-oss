@@ -5,10 +5,13 @@
 #[cfg(not(feature = "3d"))]
 use super::Render3d;
 #[cfg(feature = "3d")]
+use super::collect::particles_programs;
+#[cfg(feature = "3d")]
 use super::render::{catcher_programs, light_programs};
 use super::text_3d::{check_length, check_weight};
 use super::{
     Camera3d, Extrude3d, ImagePlane3d, Instance3d, Lathe3d, Light3d, Material3d, Merge3d, Model3d,
+    Particles3d,
     Shape3d, Text3d,
 };
 use crate::{
@@ -234,6 +237,32 @@ impl RecordNode for Instance3d {
             Staticness::Never
         } else {
             held(reads_frame)
+        }
+    }
+}
+
+/// Without the `3d` feature nothing draws a scene, so particles build no programs.
+#[cfg(not(feature = "3d"))]
+fn particles_programs(_: &mut Programs<'_>) -> crate::Result<()> {
+    Ok(())
+}
+
+impl RecordNode for Particles3d {
+    fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
+        particles_programs(programs)
+    }
+
+    fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
+        Err(not_a_raster::<Particles3d>(self.id))
+    }
+
+    // Particles move with the time unless they are all born at once, live forever and stay
+    // still.
+    fn staticness(&self, reads_frame: bool) -> Staticness {
+        if !reads_frame && self.is_still() {
+            Staticness::Always
+        } else {
+            Staticness::Never
         }
     }
 }

@@ -184,11 +184,42 @@ impl Placements {
 #[derive(Clone)]
 pub(crate) struct CopyList {
     /// The `instance_3d` the list is of, and which of its lists: 0 for the copies it places, and
-    /// later ones for its copies of the copies that `instance_3d` nodes in its scene place.
+    /// later ones for its copies of the copies that `instance_3d` nodes in its scene place. A
+    /// `particles_3d`'s list is its 0.
     pub(crate) key: (NodeId, u32),
-    pub(crate) placements: Arc<Placements>,
+    pub(crate) source: CopySource,
     /// Whether frames draw the same placements again, so their buffer stays on the GPU.
     pub(crate) kept: bool,
+}
+
+/// What places a list's copies.
+#[derive(Clone)]
+pub(crate) enum CopySource {
+    /// Placements known on the CPU, uploaded as they are.
+    Placements(Arc<Placements>),
+    /// Particles that a compute pass places on the GPU, all upright, with bounds worked out
+    /// without their placements.
+    Particles(Arc<super::particles::ParticleSystem>),
+}
+
+impl CopySource {
+    /// The copies facing each way that some do: where they start, how many there are, and the
+    /// way they face.
+    fn runs(&self) -> impl Iterator<Item = (u32, u32, Orientation)> + use<> {
+        let (placed, particles) = match self {
+            Self::Placements(placements) => (Some(placements.runs()), None),
+            Self::Particles(system) => (None, Some((0, system.count(), Orientation::Upright))),
+        };
+        placed.into_iter().flatten().chain(particles)
+    }
+
+    /// What `count` copies from `first` on of something covering `one` cover together.
+    pub(super) fn bounds(&self, one: Bounds, copies: (u32, u32)) -> Bounds {
+        match self {
+            Self::Placements(placements) => placements.bounds(one, copies),
+            Self::Particles(system) => system.bounds(one),
+        }
+    }
 }
 
 /// Whether the copies of `object` can draw at once: blended surfaces sort among themselves, and a
@@ -512,9 +543,18 @@ impl Collected {
                     continue;
                 }
                 Some(copies) => {
+                    let CopySource::Placements(copied) = &inner.lists[copies.list as usize].source
+                    else {
+                        return Err(instance_error(
+                            node.id,
+                            "a particles_3d can't be copied more than once; raise its count \
+                             instead"
+                                .to_string(),
+                        ));
+                    };
                     let source = (copies.list, copies.first, copies.count, copies.parent);
                     let list = self.made_list(&mut made, source, |earlier| {
-                        flattened(cx, (node.id, earlier + 1), &placements, inner, copies)
+                        flattened(cx, (node.id, earlier + 1), &placements, copied, copies)
                     });
                     (list, parent)
                 }
@@ -522,7 +562,7 @@ impl Collected {
                     let list = *own.get_or_insert_with(|| {
                         self.lists.push(CopyList {
                             key: (node.id, 0),
-                            placements: placements.clone(),
+                            source: CopySource::Placements(placements.clone()),
                             kept,
                         });
                         self.lists.len() as u32 - 1
@@ -530,7 +570,7 @@ impl Collected {
                     (list, parent)
                 }
             };
-            for (first, count, orientation) in self.lists[list as usize].placements.runs() {
+            for (first, count, orientation) in self.lists[list as usize].source.runs() {
                 object.instanced = Some(Instanced {
                     list,
                     first,
@@ -627,7 +667,7 @@ impl Collected {
 }
 
 /// `skin` placed by `world`, its joints starting at `joint_base` in the scene's.
-fn rebased(skin: &PosedSkin, world: Mat4, joint_base: usize) -> PosedSkin {
+pub(super) fn rebased(skin: &PosedSkin, world: Mat4, joint_base: usize) -> PosedSkin {
     PosedSkin {
         first_joint: joint_base + skin.first_joint,
         root: world * skin.root,
@@ -666,16 +706,15 @@ fn placements(
     Ok((placements, keep))
 }
 
-/// The list `key` of `outer`'s copies of the copies `copies` of an instanced object of `inner`
-/// draws, placed by its parent within each outer copy.
+/// The list `key` of `outer`'s copies of the copies `copies` of an instanced object draws from
+/// `list`, placed by its parent within each outer copy.
 fn flattened(
     cx: &mut FrameCx<'_>,
     key: (NodeId, u32),
     outer: &Arc<Placements>,
-    inner: &Collected,
+    list: &Arc<Placements>,
     copies: Instanced,
 ) -> CopyList {
-    let list = &inner.lists[copies.list as usize].placements;
     let range = (copies.first, copies.count);
     let (placements, kept) = cx.flattened(key, outer, (copies.parent, list, range), || {
         let copied = copies.first as usize..(copies.first + copies.count) as usize;
@@ -703,7 +742,7 @@ fn flattened(
     });
     CopyList {
         key,
-        placements,
+        source: CopySource::Placements(placements),
         kept,
     }
 }

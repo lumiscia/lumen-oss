@@ -1096,6 +1096,28 @@ impl<'a> FrameCx<'a> {
         Some(buffer)
     }
 
+    /// The graph being recorded, the frame count `tick` gives, and the caches `particles_3d`
+    /// nodes read: the scene cache, for the meshes their surfaces draw, and their own.
+    #[cfg(feature = "3d")]
+    pub(crate) fn particle_cache(
+        &mut self,
+    ) -> (
+        crate::composition::SceneId,
+        u64,
+        &mut Recorder,
+        &mut crate::node::scene::collect::SceneCache,
+        &mut crate::node::scene::collect::ParticleCache,
+    ) {
+        let scene = &mut self.st.scene;
+        (
+            self.scope.id,
+            self.st.tick,
+            &mut *self.rec,
+            &mut scene.cache,
+            &mut scene.particles,
+        )
+    }
+
     pub(crate) fn canvas_size(&self) -> Size {
         let settings = &self.scope.scene.render_settings;
         Size::new(settings.width.max(1), settings.height.max(1))
