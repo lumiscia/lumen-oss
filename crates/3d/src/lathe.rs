@@ -18,7 +18,8 @@ const FULL_TURN: f32 = TAU - 1e-4;
 /// distance `x` and height `y`, starting on +X and turning towards -Z.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Lathe {
-    /// Steps around the axis for the whole sweep, at least 3.
+    /// Steps around the axis for a whole turn, at least 3. A shorter sweep takes its share of
+    /// them, at least one.
     pub segments: u32,
     /// How far around the axis the profile turns, in radians. Sweeps of a full turn or more
     /// close the solid; shorter ones leave an open wedge with no end caps.
@@ -122,10 +123,12 @@ impl Cleaned {
     }
 }
 
+/// Measured from the first point, so a small contour far from the origin keeps its area.
 fn signed_area(points: &[Vec2]) -> f32 {
     let n = points.len();
+    let origin = points[0];
     (0..n)
-        .map(|i| points[i].perp_dot(points[(i + 1) % n]))
+        .map(|i| (points[i] - origin).perp_dot(points[(i + 1) % n] - origin))
         .sum::<f32>()
         * 0.5
 }
@@ -215,8 +218,13 @@ pub fn lathe(
         return Ok(Mesh::default());
     }
 
-    let segments = lathe.segments.max(3) as usize;
     let closed = sweep >= FULL_TURN;
+    let per_turn = lathe.segments.max(3) as usize;
+    let segments = if closed {
+        per_turn
+    } else {
+        ((per_turn as f32 * sweep / TAU).ceil() as usize).clamp(1, per_turn)
+    };
     let columns = if closed { segments } else { segments + 1 };
     ExtrudeLimits::check(
         limits.max_vertices,
@@ -288,6 +296,31 @@ mod tests {
             points: points.iter().map(|&(x, y)| Vec2::new(x, y)).collect(),
             closed: true,
         }
+    }
+
+    #[test]
+    fn a_small_profile_far_from_the_origin_keeps_its_area() {
+        let square = |at: f32| {
+            closed(&[
+                (at, at),
+                (at + 1.0, at),
+                (at + 1.0, at + 1.0),
+                (at, at + 1.0),
+            ])
+        };
+        let near = spin(&[square(1.0)], 16, TAU);
+        let far = spin(&[square(10001.0)], 16, TAU);
+        assert!(!near.indices.is_empty());
+        assert_eq!(far.indices.len(), near.indices.len());
+    }
+
+    #[test]
+    fn a_partial_sweep_takes_its_share_of_the_turns_segments() {
+        let ring = [closed(&[(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0)])];
+        let quads = |mesh: &Mesh| mesh.indices.len() / 6;
+        let whole = quads(&spin(&ring, 48, TAU));
+        assert_eq!(quads(&spin(&ring, 48, TAU / 4.0)), whole / 4);
+        assert_eq!(quads(&spin(&ring, 48, 0.01)), whole / 48);
     }
 
     fn position(mesh: &Mesh, index: u32) -> Vec3 {
@@ -377,10 +410,11 @@ mod tests {
             points: vec![Vec2::new(1.0, 0.0), Vec2::new(1.0, 2.0)],
             closed: false,
         };
+        // Half a turn takes half of the turn's 8 steps.
         let half = spin(std::slice::from_ref(&line), 8, TAU / 2.0);
-        assert_eq!(half.vertices.len(), 2 * 9);
-        assert_eq!(half.indices.len(), 8 * 6);
-        let end = position(&half, 16);
+        assert_eq!(half.vertices.len(), 2 * 5);
+        assert_eq!(half.indices.len(), 4 * 6);
+        let end = position(&half, 8);
         assert!((end - Vec3::new(-1.0, 0.0, 0.0)).length() < 1e-5, "{end}");
         let full = spin(&[line], 8, TAU);
         assert_eq!(full.vertices.len(), 2 * 8);

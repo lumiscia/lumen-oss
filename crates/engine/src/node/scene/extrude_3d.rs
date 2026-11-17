@@ -79,8 +79,9 @@ impl Default for Extrude3dParams {
 /// coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,
 /// 262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a
 /// render error. An `offset_2d` in the geometry is not supported yet and fails the render. The
-/// mesh is built again only when the outline, `units_per_pixel`, `depth` or the bevel change, so
-/// animating the placement or the material costs no more than for a `shape_3d`.
+/// mesh is built again only when the outline, `units_per_pixel` or the bevel change, or the
+/// `depth` of a bevelled one, so animating the placement, the material or a plain extrusion's
+/// depth costs no more than for a `shape_3d`.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "extrude_3d",

@@ -170,7 +170,10 @@ impl SceneCache {
         budgets: &crate::gpu::CacheBudgets,
     ) {
         let kept: std::collections::HashSet<&String> = kept.into_iter().collect();
-        self.texts.trim(rec, tick, &kept, budgets.text_meshes);
+        // Each trims against what the other leaves of their shared budget, so meshes either
+        // still draws don't keep the other's unused ones past it.
+        let text_budget = budgets.text_meshes.saturating_sub(self.solids.bytes());
+        self.texts.trim(rec, tick, &kept, text_budget);
         let solid_budget = budgets.text_meshes.saturating_sub(self.texts.bytes());
         self.solids.trim(rec, tick, &kept, solid_budget);
         if self.model_bytes <= budgets.models {
@@ -906,9 +909,10 @@ impl Collected {
                     extrude.material,
                     Material3dParams::default(),
                 )?;
-                if let Some(solid) =
+                if let Some((solid, depth)) =
                     super::solid_mesh::extrude_mesh(cx, node_id, geometry, &params)?
                 {
+                    let world = world * Mat4::from_scale(Vec3::new(1.0, 1.0, depth));
                     self.push_solid(world, surface, solid);
                 }
             }

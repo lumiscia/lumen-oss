@@ -280,23 +280,35 @@ fn contours(outline: &Outline, units_per_pixel: f64) -> Result<Vec<Contour>, Str
     })
 }
 
-/// The mesh of `node_id`'s outline, the geometry node `geometry`, with `params` at this frame.
+/// The mesh of `node_id`'s outline, the geometry node `geometry`, with `params` at this frame,
+/// and the scale along Z it is placed with. A plain extrusion is built a unit deep and scaled to
+/// its depth, so animating the depth builds nothing again; a bevel ties the mesh to its depth.
 pub(super) fn extrude_mesh(
     cx: &mut FrameCx<'_>,
     node_id: NodeId,
     geometry: NodeId,
     params: &Extrude3dParams,
-) -> crate::Result<Option<SolidMesh>> {
+) -> crate::Result<Option<(SolidMesh, f32)>> {
     params
         .check()
         .map_err(|details| error::<Extrude3d>(node_id, details))?;
     let outline = outline_of::<Extrude3d>(cx, node_id, geometry, "extrude")?;
     let units = params.units_per_pixel;
-    let extrusion = Extrusion {
+    let mut extrusion = Extrusion {
         depth: params.depth as f32,
         bevel: params.bevel_size as f32,
         bevel_segments: params.bevel_segments.min(MAX_BEVEL_SEGMENTS),
     };
+    let bevelled = extrusion.bevel > 0.0 && extrusion.bevel_segments > 0;
+    let mut depth_scale = 1.0;
+    if !bevelled && extrusion.depth > 0.0 {
+        depth_scale = extrusion.depth;
+        extrusion = Extrusion {
+            depth: 1.0,
+            bevel: 0.0,
+            bevel_segments: 0,
+        };
+    }
     let shape = Shape::Extrude {
         depth: extrusion.depth.to_bits(),
         bevel: extrusion.bevel.to_bits(),
@@ -311,6 +323,7 @@ pub(super) fn extrude_mesh(
         extrude(&outlines, &extrusion, &EXTRUDE_LIMITS)
             .map_err(|limit| format!("the extruded outline has {limit}"))
     })
+    .map(|solid| solid.map(|solid| (solid, depth_scale)))
 }
 
 /// The mesh of `node_id`'s profile, the geometry node `geometry`, with `params` at this frame.

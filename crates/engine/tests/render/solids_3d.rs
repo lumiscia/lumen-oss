@@ -286,7 +286,10 @@ fn a_static_outline_is_built_once_and_a_changing_one_is_built_again() {
     let turning = held(json!({ "rotation": "=vec3(0, frame * 10, 0)" }));
     assert!(turning[0] > 0, "the mesh is kept: {turning:?}");
     assert_eq!(turning[0], turning[2], "built once: {turning:?}");
-    // Changing the depth builds a mesh each frame, of which the cache still holds the old ones.
+    // A plain extrusion is scaled to its depth, so changing it builds nothing again.
     let deepening = held(json!({ "depth": "=0.25 + frame * 0.1" }));
-    assert!(deepening[2] > deepening[0], "built again: {deepening:?}");
+    assert_eq!(deepening[0], deepening[2], "built once: {deepening:?}");
+    // A bevel is sized against the depth, so each depth builds a mesh, which the cache keeps.
+    let bevelled = held(json!({ "depth": "=0.25 + frame * 0.1", "bevel_size": 0.05 }));
+    assert!(bevelled[2] > bevelled[0], "built again: {bevelled:?}");
 }
