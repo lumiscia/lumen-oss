@@ -31,7 +31,7 @@ use crate::gpu::frame_graph::{FrameCx, Raster};
 use crate::media::{AssetKind, MediaIdentity, ModelResolver, resolve_as};
 use crate::node::processing::RasterSampling;
 use crate::node::vector::paint::Paint;
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, required_input};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, Node, NodeId, NodeKind, required_input};
 
 /// The most joint matrices one frame's scene may hold.
 const MAX_SCENE_JOINTS: usize = 1 << 16;
@@ -563,13 +563,14 @@ fn wired_material<'a, N: crate::node::JsonNode>(
     object: NodeId,
     material_id: NodeId,
 ) -> crate::Result<(&'a super::Material3d, Material3dParams)> {
-    let Some(NodeKind::Material3d(material)) = cx.node(material_id) else {
+    let Some(node @ NodeKind::Material3d(material)) = cx.node(material_id) else {
         return Err(RenderError::evaluating::<N>(
             object,
             format!("input `material` must be a material_3d, but node {material_id} is not one"),
         )
         .into());
     };
+    let _timed = cx.node_times().time(node);
     let expr = cx.expr();
     let ctx = DelegateEvalContext {
         node_id: material_id,
@@ -942,7 +943,11 @@ impl Collected {
                     ),
                 ));
             }
-            if let Some(children) = self.add_node(cx, node_id, parent)? {
+            let node = cx.node(node_id).ok_or(RenderError::MissingNode {
+                at: crate::error::At::node(node_id),
+            })?;
+            let children = cx.time_node(node, |cx| self.add_node(cx, node, parent));
+            if let Some(children) = children? {
                 pending.extend(children.into_iter().rev());
             }
         }
@@ -954,12 +959,10 @@ impl Collected {
     fn add_node(
         &mut self,
         cx: &mut FrameCx<'_>,
-        node_id: NodeId,
+        node: &NodeKind,
         parent: Mat4,
     ) -> crate::Result<Option<Vec<(NodeId, Mat4)>>> {
-        let node = cx.node(node_id).ok_or(RenderError::MissingNode {
-            at: crate::error::At::node(node_id),
-        })?;
+        let node_id = node.id();
         let expr = cx.expr();
         let ctx = DelegateEvalContext {
             node_id,

@@ -15,6 +15,7 @@ export const flags = {
     "media-root",
     "output",
     "preset",
+    "profile-nodes",
     "qp",
     "quality",
     "quality-config",

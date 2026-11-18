@@ -239,6 +239,13 @@ impl FrameCx<'_> {
         let node = self.scope.node(node_id).ok_or(RenderError::MissingNode {
             at: crate::error::At::node(node_id),
         })?;
+        self.time_node(node, |cx| cx.input_node(node_id, node))
+    }
+
+    /// Records `node`, the node `node_id`, looking for what is kept of it first. Everything the
+    /// node costs on the way, from checking the frame values it reads to keeping its output, is
+    /// its own time.
+    fn input_node(&mut self, node_id: NodeId, node: &NodeKind) -> crate::Result<Raster> {
         let graph = self.scope.id;
         let staticness = if self.settings.retain_static {
             self.staticness(node)

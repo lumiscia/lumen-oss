@@ -59,17 +59,18 @@ pub(crate) struct Outline {
 }
 
 /// The outline the geometry node `node_id` outputs, following `offset_2d` nodes to their source.
-/// `node_of` finds each node the walk reaches; a node of another kind fails as `N`.
-pub(crate) fn resolve_outline<'e, N: JsonNode>(
+/// `node_of` finds each node the walk reaches, along with a value that lives while it is
+/// evaluated; a node of another kind fails as `N`.
+pub(crate) fn resolve_outline<'e, N: JsonNode, G>(
     expr: &ExpressionContext<'_>,
     node_id: NodeId,
-    mut node_of: impl FnMut(NodeId) -> crate::Result<&'e NodeKind>,
+    mut node_of: impl FnMut(NodeId) -> crate::Result<(&'e NodeKind, G)>,
 ) -> crate::Result<Outline> {
     let mut offset = 0.0_f64;
     let mut offsets = false;
     let mut at = node_id;
     loop {
-        let node = node_of(at)?;
+        let (node, _evaluating) = node_of(at)?;
         let ctx = DelegateEvalContext { node_id: at, expr };
         let (source, transform) = match node {
             NodeKind::Offset2d(node) => {
@@ -293,6 +294,7 @@ impl<'e> Collector<'_, 'e> {
         pending: &mut Vec<Step>,
     ) -> crate::Result<()> {
         let node = self.reach(node_id)?;
+        let _timed = self.cx.node_times().time(node);
         match node {
             NodeKind::Merge2d(merge) => {
                 let params = merge.params.eval(&DelegateEvalContext {
@@ -401,8 +403,9 @@ impl<'e> Collector<'_, 'e> {
             return Ok(index);
         }
         let (cx, reached, render_id) = (self.cx, &mut self.reached, self.render_id);
-        let outline = resolve_outline::<Render2d>(&self.expr, node_id, |at| {
-            reach_node(cx, reached, render_id, at)
+        let outline = resolve_outline::<Render2d, _>(&self.expr, node_id, |at| {
+            let node = reach_node(cx, reached, render_id, at)?;
+            Ok((node, cx.node_times().time(node)))
         })?;
         let (x, y) = outline.transform.position;
         let index = self.record.geometries.len();
@@ -423,9 +426,10 @@ impl<'e> Collector<'_, 'e> {
         parent: GpuDrawableTransform,
         start: usize,
     ) -> crate::Result<()> {
-        let Some(NodeKind::Shadow2d(node)) = self.cx.node(node_id) else {
+        let Some(shadow @ NodeKind::Shadow2d(node)) = self.cx.node(node_id) else {
             unreachable!("only shadow nodes cast shadows")
         };
+        let _timed = self.cx.node_times().time(shadow);
         let params = node.params.eval(&DelegateEvalContext {
             node_id,
             expr: &self.expr,

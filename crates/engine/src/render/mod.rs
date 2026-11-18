@@ -24,6 +24,7 @@ use lumen_ffmpeg::{
     AudioEncoderConfig, QualityConfig, QualityRequest, VideoEncoderChoice, check_audio_encoder,
 };
 
+pub use crate::gpu::NodeTiming;
 pub use error::{Error, ErrorCode};
 pub use fonts::{FONT_DIR_ENV, FontCatalog, ResolvedFont, existing_font_dir};
 pub use gpu::{

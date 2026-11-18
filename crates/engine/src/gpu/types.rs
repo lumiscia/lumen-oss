@@ -19,6 +19,20 @@ pub enum RenderTarget {
     External(lumen_gpu::ExternalTexture),
 }
 
+/// The time a node spent binding, summed over a render.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeTiming {
+    pub node: crate::node::NodeId,
+    /// The template the node is in, or `None` at the root. Node ids are only unique within one.
+    pub template: Option<String>,
+    /// The node's `type` in JSON.
+    pub kind: &'static str,
+    /// The node's own time: what it took, less what the nodes it evaluated inside it took.
+    pub bind: std::time::Duration,
+    /// How many frames evaluated the node. A frame the node is kept from, or rebinds, counts once.
+    pub frames: u32,
+}
+
 /// A frame submitted to the GPU.
 #[derive(Debug, Clone)]
 pub struct RenderedFrame {
