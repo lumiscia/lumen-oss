@@ -1,8 +1,8 @@
 //! `instance_3d`: many placed copies of one scene.
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
-use super::Placement3d;
+use super::{InstanceCopies, Placement3d};
 use crate::error::LumenError;
 use crate::expr::ExpressionValue;
 use crate::node::vector::paint::Paint;
@@ -72,7 +72,7 @@ impl NodeParamType for InstanceCount {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Instance3dParams {
     /// Copies to place, from 0 to 100000. 0 leaves the node's scene out entirely, lights and
-    /// cameras too.
+    /// cameras too. Not set together with `copies`.
     #[meta(min = 0, enforced_min, max = 100000, step = 1)]
     pub count: InstanceCount,
     #[meta(
@@ -92,6 +92,13 @@ pub struct Instance3dParams {
     /// gradient fails `check`.
     #[meta(role = "color", solid)]
     pub tint: Paint,
+    /// Copies to place, each given literally as `{ position, rotation, scale, tint }` with any
+    /// field left out taking the default of the param of that name: position and rotation 0,
+    /// scale 1 and a white tint. The list can't hold expressions and holds at most 100000
+    /// copies. An empty list places none of its own. When it has copies, `count`, `position`,
+    /// `rotation`, `scale` and `tint` must not be set, and `check` fails if they are.
+    #[meta()]
+    pub copies: InstanceCopies,
 }
 
 impl Default for Instance3dParams {
@@ -100,6 +107,7 @@ impl Default for Instance3dParams {
             count: InstanceCount(1),
             placement: Placement3d::default(),
             tint: Paint::solid([255, 255, 255, 255]),
+            copies: InstanceCopies::default(),
         }
     }
 }
@@ -114,6 +122,12 @@ impl Default for Instance3dParams {
 /// `tint` colours each copy: `tint = rgb(255 * instance / instance_count, 128, 255)` shifts the
 /// colour along the copies, and it multiplies the objects' base colours and emissive light, so
 /// copies of a white or textured object take the tint's colour. Its alpha is ignored.
+///
+/// Copies placed by hand are listed in `copies` instead, as literals: `copies = [{ "position":
+/// [0, 0, 0], "scale": [1, 2, 1], "tint": "#ff8040" }, { "position": [2, 0, 1], "rotation":
+/// [0, 45, 0] }]` places two. `count`, `position`, `rotation`, `scale` and `tint` must not be set
+/// beside a `copies` list that has copies, or `check` fails. A list is placed once, so a frame
+/// after the first does no work per copy.
 ///
 /// Copies share the input's meshes, textures, materials and joint matrices on the GPU, so every
 /// copy of a skinned model plays the same animation at the same time. Opaque surfaces draw all
@@ -140,4 +154,29 @@ pub struct Instance3d {
 
     #[input(scene)]
     pub scene: Option<NodeId>,
+}
+
+impl Instance3d {
+    /// What is wrong with a node whose JSON `params` set `copies` beside params that it replaces,
+    /// if anything is.
+    pub(crate) fn copies_conflict(params: &Map<String, Value>) -> Option<String> {
+        let has_copies = params
+            .get("copies")
+            .and_then(Value::as_array)
+            .is_some_and(|copies| !copies.is_empty());
+        if !has_copies {
+            return None;
+        }
+        let set: Vec<String> = ["count", "position", "rotation", "scale", "tint"]
+            .into_iter()
+            .filter(|name| params.contains_key(*name))
+            .map(|name| format!("`{name}`"))
+            .collect();
+        (!set.is_empty()).then(|| {
+            format!(
+                "`copies` places the copies itself, so it can't be set together with {}",
+                set.join(", ")
+            )
+        })
+    }
 }

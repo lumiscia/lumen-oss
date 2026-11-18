@@ -19,7 +19,7 @@ use super::{
 use crate::error::{ExpressionError, LumenError, RenderError};
 use crate::expr::{ExpressionContext, InstanceEvaluator, InstanceScope};
 use crate::gpu::frame_graph::FrameCx;
-use crate::node::scene::{Instance3d, MAX_INSTANCES, Placement3d, Pose3d};
+use crate::node::scene::{Instance3d, InstanceCopies, MAX_INSTANCES, Placement3d, Pose3d};
 use crate::node::vector::paint::{Paint, PaintDelegate};
 use crate::node::{Deferred, DelegateEvalContext, Node, NodeId, ParamValue, required_input};
 
@@ -384,7 +384,10 @@ impl Collected {
             node_id: node.id,
             expr: &expr,
         };
-        let count = ctx.eval_field("count", &node.params.count)?.0;
+        let count = match literal_copies(node) {
+            Some(copies) => copies.0.len() as u32,
+            None => ctx.eval_field("count", &node.params.count)?.0,
+        };
         if count == 0 {
             return Ok(());
         }
@@ -677,6 +680,14 @@ pub(super) fn rebased(skin: &PosedSkin, world: Mat4, joint_base: usize) -> Posed
     }
 }
 
+/// The list `node` places its copies from, if it has any copies in it.
+fn literal_copies(node: &Instance3d) -> Option<&InstanceCopies> {
+    match &node.params.copies {
+        Deferred::Value(copies) if !copies.0.is_empty() => Some(copies),
+        _ => None,
+    }
+}
+
 /// The placements and tints of `node`'s `count` copies: those kept from an earlier frame when its
 /// params don't read the frame, or evaluated, and whether frames draw them again.
 fn placements(
@@ -684,19 +695,37 @@ fn placements(
     node: &Instance3d,
     count: u32,
 ) -> crate::Result<(Arc<Placements>, bool)> {
-    let keep = !node.is_frame_dependent();
+    let copies = literal_copies(node);
+    let keep = copies.is_some() || !node.is_frame_dependent();
     if keep && let Some(kept) = cx.kept_placements(node.id, count) {
         return Ok((kept, true));
     }
-    let mut placer = Placer::new(node)?;
-    let mut scoped = cx.expr();
     let mut locals = Vec::with_capacity(count as usize);
     let mut tints = Vec::with_capacity(count as usize);
-    for index in 0..count {
-        scoped.instance = Some(InstanceScope { index, count });
-        let (matrix, tint) = placer.copy(&scoped, index)?;
-        locals.push(matrix);
-        tints.push(tint);
+    if let Some(copies) = copies {
+        for copy in &copies.0 {
+            let [r, g, b] = copy.tint;
+            locals.push(
+                placement(&Placement3d {
+                    pose: Pose3d {
+                        position: copy.position,
+                        rotation: copy.rotation,
+                    },
+                    scale: copy.scale,
+                })
+                .matrix(),
+            );
+            tints.push(linear_tint(node.id, &Paint::SolidColor(r, g, b, 255))?);
+        }
+    } else {
+        let mut placer = Placer::new(node)?;
+        let mut scoped = cx.expr();
+        for index in 0..count {
+            scoped.instance = Some(InstanceScope { index, count });
+            let (matrix, tint) = placer.copy(&scoped, index)?;
+            locals.push(matrix);
+            tints.push(tint);
+        }
     }
     let tinted = tints.iter().any(|&tint| tint != WHITE);
     let placements = Arc::new(Placements::new(locals, tinted.then_some(tints)));

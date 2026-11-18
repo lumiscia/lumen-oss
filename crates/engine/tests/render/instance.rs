@@ -802,3 +802,97 @@ fn placements_kept_across_frames_draw_as_placements_evaluated_every_frame() {
         .collect();
     assert!(frames[0] != frames[1], "the parent moves the copies");
 }
+
+/// Three unlit boxes of `opacity`, placed and tinted per copy by `if` chains of the copy's index,
+/// or listed in a `copies` list.
+fn listed_row(listed: bool, opacity: f64) -> crate::support::Scene {
+    let positions = [[-0.5, 0.0, 0.0], [0.0, 0.1, 0.0], [0.5, 0.0, 0.2]];
+    let rotations = [[0.0, 0.0, 0.0], [0.0, 30.0, 0.0], [0.0, 60.0, 15.0]];
+    let tints = ["#ff8040", "#40ff80", "#ffffff"];
+    let by_index = |value: &dyn Fn(usize) -> String| {
+        format!(
+            "=if(instance == 0, {}, if(instance == 1, {}, {}))",
+            value(0),
+            value(1),
+            value(2)
+        )
+    };
+    let vec3 = |[x, y, z]: [f64; 3]| format!("vec3({x}, {y}, {z})");
+    let params = if listed {
+        let copies: Vec<Value> = (0..3)
+            .map(
+                |i| json!({ "position": positions[i], "rotation": rotations[i], "tint": tints[i] }),
+            )
+            .collect();
+        json!({ "copies": copies })
+    } else {
+        json!({
+            "count": 3,
+            "position": by_index(&|i| vec3(positions[i])),
+            "rotation": by_index(&|i| vec3(rotations[i])),
+            "tint": by_index(&|i| tints[i].to_string()),
+        })
+    };
+    render_3d(vec![
+        json!({ "id": 9, "type": "material_3d", "params": { "unlit": true, "opacity": opacity } }),
+        with_material(shape(1, json!({ "size": [0.3, 0.3, 0.3] })), 9),
+        instance(2, 1, params),
+    ])
+}
+
+#[test]
+fn a_copies_list_draws_as_the_same_copies_placed_by_expressions() {
+    check(vec![
+        Case::new(
+            "opaque copies, drawn from the instance buffer",
+            listed_row(true, 1.0),
+            Expect::Matches(listed_row(false, 1.0).into()),
+        ),
+        Case::new(
+            "blended copies, drawn one by one",
+            listed_row(true, 0.5),
+            Expect::Matches(listed_row(false, 0.5).into()),
+        ),
+    ]);
+}
+
+#[test]
+fn copies_beside_the_params_they_replace_fail_check_naming_them() {
+    let error = parse_error(vec![
+        shape(1, json!({})),
+        instance(
+            2,
+            1,
+            json!({ "copies": [{}], "count": 1, "position": [1, 0, 0] }),
+        ),
+    ]);
+    assert!(
+        error.contains("can't be set together with `count`, `position`"),
+        "{error}"
+    );
+    // An empty list leaves the per-copy params in use.
+    assert!(
+        lumen_engine::json::parse_value(
+            &render_3d(vec![
+                shape(1, json!({})),
+                instance(2, 1, json!({ "copies": [], "count": 2 })),
+            ])
+            .0
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn an_expression_in_a_copy_fails_check_naming_its_place() {
+    let error = parse_error(vec![
+        shape(1, json!({})),
+        instance(
+            2,
+            1,
+            json!({ "copies": [{}, { "position": [0, "=instance", 0] }] }),
+        ),
+    ]);
+    assert!(error.contains("copies[1].position[1]"), "{error}");
+    assert!(error.contains("expression can't go here"), "{error}");
+}

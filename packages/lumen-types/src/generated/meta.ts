@@ -5,7 +5,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
-export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
+export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
 export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
@@ -1497,6 +1497,15 @@ export type GradientStop = {
 } | readonly [number, Color];
 export type GradientUnits = "object_bounding_box" | "user_space" | "userSpaceOnUse";
 export type ImagePlane3dSampling = RasterSampling;
+/** Copies an `instance_3d` places, each given literally. The list can't be an expression. */
+export type InstanceCopies = readonly InstanceCopy[];
+/** One copy of an `instance_3d`: where it sits, how it is scaled and turned, and its tint. Fields left out take the defaults of the `instance_3d` params of the same names. Every value is a literal. */
+export type InstanceCopy = {
+  readonly position?: Vec3;
+  readonly rotation?: Vec3;
+  readonly scale?: Vec3;
+  readonly tint?: Color;
+};
 export type Light3dKind = "directional" | "point" | "spot" | "ambient";
 export type Light3dLight = Light3dKind;
 export type LoopMode = "clamp" | "repeat" | "ping_pong";
@@ -2091,6 +2100,12 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
  * colour along the copies, and it multiplies the objects' base colours and emissive light, so
  * copies of a white or textured object take the tint's colour. Its alpha is ignored.
  * 
+ * Copies placed by hand are listed in `copies` instead, as literals: `copies = [{ "position":
+ * [0, 0, 0], "scale": [1, 2, 1], "tint": "#ff8040" }, { "position": [2, 0, 1], "rotation":
+ * [0, 45, 0] }]` places two. `count`, `position`, `rotation`, `scale` and `tint` must not be set
+ * beside a `copies` list that has copies, or `check` fails. A list is placed once, so a frame
+ * after the first does no work per copy.
+ * 
  * Copies share the input's meshes, textures, materials and joint matrices on the GPU, so every
  * copy of a skinned model plays the same animation at the same time. Opaque surfaces draw all
  * their copies at once from placements and tints kept on the GPU, so a moving camera or parent
@@ -2106,8 +2121,16 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
 export interface Instance3dNode extends CompositionNodeBase<"instance_3d"> {
   readonly params?: {
     /**
+     * Copies to place, each given literally as `{ position, rotation, scale, tint }` with any
+     * field left out taking the default of the param of that name: position and rotation 0,
+     * scale 1 and a white tint. The list can't hold expressions and holds at most 100000
+     * copies. An empty list places none of its own. When it has copies, `count`, `position`,
+     * `rotation`, `scale` and `tint` must not be set, and `check` fails if they are.
+     */
+    readonly copies?: InstanceCopies;
+    /**
      * Copies to place, from 0 to 100000. 0 leaves the node's scene out entirely, lights and
-     * cameras too.
+     * cameras too. Not set together with `copies`.
      */
     readonly count?: ExpressionValue<number>;
     /** Position in world units along X, Y and Z of each copy, in the scene's own space. Evaluated for every copy, and can read `instance` and `instance_count`. */
@@ -3822,6 +3845,12 @@ export const nodeInputPorts = {
    * `tint` colours each copy: `tint = rgb(255 * instance / instance_count, 128, 255)` shifts the
    * colour along the copies, and it multiplies the objects' base colours and emissive light, so
    * copies of a white or textured object take the tint's colour. Its alpha is ignored.
+   * 
+   * Copies placed by hand are listed in `copies` instead, as literals: `copies = [{ "position":
+   * [0, 0, 0], "scale": [1, 2, 1], "tint": "#ff8040" }, { "position": [2, 0, 1], "rotation":
+   * [0, 45, 0] }]` places two. `count`, `position`, `rotation`, `scale` and `tint` must not be set
+   * beside a `copies` list that has copies, or `check` fails. A list is placed once, so a frame
+   * after the first does no work per copy.
    * 
    * Copies share the input's meshes, textures, materials and joint matrices on the GPU, so every
    * copy of a skinned model plays the same animation at the same time. Opaque surfaces draw all

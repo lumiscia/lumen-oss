@@ -122,6 +122,7 @@ fn value_defs_json() -> Map<String, Value> {
 /// type name `x-lumen-type`.
 fn kind_defs_json() -> Result<Map<String, Value>> {
     use lumen_engine::node::{
+        scene::MAX_INSTANCES,
         source::text_content::{
             TextHighlightDelegate, TextLineDelegate, TextSpanDelegate, TextStrokeDelegate,
         },
@@ -262,6 +263,31 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
                     { "$ref": "#/$defs/expression" }
                 ]
             }
+        }),
+    );
+    insert_def(
+        &mut defs,
+        "InstanceCopy",
+        json!({
+            "description": "One copy of an `instance_3d`: where it sits, how it is scaled and turned, and its tint. Fields left out take the defaults of the `instance_3d` params of the same names. Every value is a literal.",
+            "type": "object",
+            "properties": {
+                "position": { "$ref": "#/$defs/vec3", "default": [0, 0, 0] },
+                "rotation": { "$ref": "#/$defs/vec3", "default": [0, 0, 0] },
+                "scale": { "$ref": "#/$defs/vec3", "default": [1, 1, 1] },
+                "tint": { "$ref": "#/$defs/color", "default": [255, 255, 255] }
+            },
+            "additionalProperties": false
+        }),
+    );
+    insert_def(
+        &mut defs,
+        "InstanceCopies",
+        json!({
+            "description": "Copies an `instance_3d` places, each given literally. The list can't be an expression.",
+            "type": "array",
+            "maxItems": MAX_INSTANCES,
+            "items": { "$ref": "#/$defs/instanceCopy" }
         }),
     );
     insert_def(

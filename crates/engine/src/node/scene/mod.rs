@@ -10,6 +10,7 @@ pub(crate) mod collect;
 mod environment;
 mod extrude_3d;
 mod instance;
+mod instance_copies;
 mod lathe_3d;
 #[cfg(feature = "3d")]
 pub(crate) mod mips;
@@ -33,6 +34,7 @@ pub use lathe_3d::{Lathe3d, Lathe3dParams, Lathe3dParamsDelegate};
 pub use text_3d::{Text3d, Text3dParams, Text3dParamsDelegate};
 
 pub use instance::{Instance3d, Instance3dParams, InstanceCount, MAX_INSTANCES};
+pub use instance_copies::{InstanceCopies, InstanceCopy};
 pub use particles::{MAX_PARTICLES, ParticleCount, Particles3d, Particles3dParams};
 pub(crate) use region::REGION;
 pub use region::{Region, RegionDelegate};

@@ -734,6 +734,8 @@ Draws its input scene `count` times, each copy placed by `position`, `rotation` 
 
 `tint` colours each copy: `tint = rgb(255 * instance / instance_count, 128, 255)` shifts the colour along the copies, and it multiplies the objects' base colours and emissive light, so copies of a white or textured object take the tint's colour. Its alpha is ignored.
 
+Copies placed by hand are listed in `copies` instead, as literals: `copies = [{ "position": [0, 0, 0], "scale": [1, 2, 1], "tint": "#ff8040" }, { "position": [2, 0, 1], "rotation": [0, 45, 0] }]` places two. `count`, `position`, `rotation`, `scale` and `tint` must not be set beside a `copies` list that has copies, or `check` fails. A list is placed once, so a frame after the first does no work per copy.
+
 Copies share the input's meshes, textures, materials and joint matrices on the GPU, so every copy of a skinned model plays the same animation at the same time. Opaque surfaces draw all their copies at once from placements and tints kept on the GPU, so a moving camera or parent costs nothing per copy, and neither does a frame when the params don't read the frame. Blended surfaces, and those showing a raster, are copied one by one, which costs more. Only the objects are copied: the input's lights and camera appear once, placed as they would be without the node, so copies don't multiply a scene's lighting. Shadows, fog and the environment treat a copy as any other object. An `instance_3d` may hold another, which multiplies their counts, up to 8 deep. A scene draws at most 100000 objects in all, counting each copy's objects, and a count that would exceed this fails the render. The node is static when its params don't read the frame and its scene is static.
 
 Category: scene. Output: scene.
@@ -744,7 +746,8 @@ Inputs:
 
 Params:
 
-- **`count`** (integer, 0 to 100000; default `1`) Copies to place, from 0 to 100000. 0 leaves the node's scene out entirely, lights and cameras too.
+- **`copies`** ([instanceCopies](#type-instancecopies); default `[]`; literal as a whole) Copies to place, each given literally as `{ position, rotation, scale, tint }` with any field left out taking the default of the param of that name: position and rotation 0, scale 1 and a white tint. The list can't hold expressions and holds at most 100000 copies. An empty list places none of its own. When it has copies, `count`, `position`, `rotation`, `scale` and `tint` must not be set, and `check` fails if they are.
+- **`count`** (integer, 0 to 100000; default `1`) Copies to place, from 0 to 100000. 0 leaves the node's scene out entirely, lights and cameras too. Not set together with `copies`.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z of each copy, in the scene's own space. Evaluated for every copy, and can read `instance` and `instance_count`.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z of each copy, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z. Evaluated for every copy, and can read `instance` and `instance_count`.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z of each copy, applied before the rotation. Evaluated for every copy, and can read `instance` and `instance_count`.
@@ -1036,6 +1039,25 @@ No other fields.
 A color at a point along a gradient: `{ offset, color }` or `[offset, color]`.
 
 Value: { color: [color](#type-color); offset: number } | [number, [color](#type-color)].
+
+### Type `instanceCopies`
+
+Copies an `instance_3d` places, each given literally. The list can't be an expression.
+
+Value: array of [instanceCopy](#type-instancecopy), at most 100000 items.
+
+### Type `instanceCopy`
+
+One copy of an `instance_3d`: where it sits, how it is scaled and turned, and its tint. Fields left out take the defaults of the `instance_3d` params of the same names. Every value is a literal.
+
+Fields:
+
+- **`position`** ([number, number, number]; default `[0,0,0]`; literal as a whole)
+- **`rotation`** ([number, number, number]; default `[0,0,0]`; literal as a whole)
+- **`scale`** ([number, number, number]; default `[1,1,1]`; literal as a whole)
+- **`tint`** ([color](#type-color); default `[255,255,255]`; literal as a whole)
+
+No other fields.
 
 ### Type `paint`
 

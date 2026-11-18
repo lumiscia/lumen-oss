@@ -32,7 +32,7 @@ use crate::{
     gpu::frame_graph::RecordNode,
     graph::{Connection, Graph},
     media::{AssetKind, AssetResolver, Found, MediaLocation, asset_id, resolve_asset_of},
-    node::{NodeId, NodeKind},
+    node::{NodeId, NodeKind, scene::Instance3d},
 };
 
 pub(crate) use property::{
@@ -931,6 +931,18 @@ fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Grap
                 continue;
             }
         };
+        if let (NodeKind::Instance3d(_), Some(params)) = (&node_kind, params)
+            && let Some(details) = Instance3d::copies_conflict(params)
+        {
+            errors.push(
+                DocumentError::InvalidParam {
+                    at: At::param(id, "copies"),
+                    details,
+                }
+                .into(),
+            );
+            continue;
+        }
         let invalid = node_kind.literal_param_errors();
         if !invalid.is_empty() {
             errors.extend(invalid.into_iter().map(|(param, details)| {
