@@ -7,9 +7,14 @@
 //! | 0       | `input0`        | `texture_2d<f32>`                          |
 //! | 1       | (user uniform)  | the shader's own `var<uniform>` struct     |
 //! | 2       | `output`        | `texture_storage_2d<rgba16float, write>`   |
-//! | 3       | `lumen`         | `LumenGlobals { resolution, time, frame }` |
+//! | 3       | `lumen`         | `LumenGlobals`                             |
 //! | 4       | `input_sampler` | linear, clamp-to-edge `sampler`            |
 //! | 4 + i   | `input{i}`      | `texture_2d<f32>`, for `i` in `1..N`       |
+//!
+//! `LumenGlobals` holds `resolution` (`vec2<f32>`, the output's size in pixels), `time` (seconds),
+//! `frame`, and the `camera` input's camera: `view` (world to view), `projection` (view to clip,
+//! for the output's aspect ratio) and `camera_position`. Without a `camera` the matrices are the
+//! identity and the position is zero.
 //!
 //! A shader may declare bindings 0 and 2 itself under its own names, and the prelude then leaves
 //! them out; bindings 3 and up belong to the prelude. The entry point is `cs_main` with
@@ -50,10 +55,16 @@ pub const PRELUDE: &str = concat!(
 ",
     include_str!("../../gpu/shaders/color.wgsl"),
     "struct LumenGlobals {
-    // Output size in pixels.
-    resolution: vec2<f32>,
+    // World to view. The identity without a `camera` input.
+    view: mat4x4<f32>,
+    // View to clip, for the output's aspect ratio. The identity without a `camera` input.
+    projection: mat4x4<f32>,
+    // World-space position of the camera. Zero without a `camera` input.
+    camera_position: vec3<f32>,
     // Seconds since the start of the composition: frame / fps.
     time: f32,
+    // Output size in pixels.
+    resolution: vec2<f32>,
     // Composition frame index, rounded down at fractional frame times.
     frame: u32,
 }
@@ -100,7 +111,9 @@ const DEFAULT_SHADER: &str = concat!(
 /// Runs a custom WGSL compute shader over one or more rasters.
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
 pub struct WgslShaderParams {
-    /// WGSL compute shader; the prelude provides inputs, `input_sampler`, `output` and `lumen`.
+    /// WGSL compute shader; the prelude provides inputs, `input_sampler`, `output` and `lumen`,
+    /// which holds `resolution`, `time`, `frame`, and from the `camera` input `view`, `projection`
+    /// and `camera_position`.
     #[meta(
         name = "Shader source",
         format = "wgsl",
@@ -123,15 +136,31 @@ pub struct WgslShader {
     /// Bound as `input0..inputN` in connection order.
     #[input(name = "source", variadic)]
     pub sources: Vec<NodeId>,
+    /// A scene whose camera the shader reads as `lumen.view`, `lumen.projection` and
+    /// `lumen.camera_position`, chosen as `render_3d` would choose it. Without one they are the
+    /// identity and zero.
+    #[input(scene, optional)]
+    pub camera: Option<NodeId>,
 }
+
+const IDENTITY: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, lumen_macros::ShaderLayout)]
 #[shader_layout(wgsl = "LumenGlobals", source = PRELUDE)]
 struct LumenGlobals {
-    resolution: [f32; 2],
+    view: [[f32; 4]; 4],
+    projection: [[f32; 4]; 4],
+    camera_position: [f32; 3],
     time: f32,
+    resolution: [f32; 2],
     frame: u32,
+    _padding: u32,
 }
 
 /// `input0` sits at binding 0; later inputs follow the prelude's sampler.
@@ -698,6 +727,44 @@ impl WgslShader {
         }
         Ok(())
     }
+
+    /// The camera of the `camera` scene as the prelude holds it, for an output `size`.
+    #[cfg_attr(not(feature = "3d"), allow(unused_variables))]
+    fn camera_globals(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+        size: lumen_gpu::Size,
+    ) -> crate::Result<CameraGlobals> {
+        #[cfg(feature = "3d")]
+        if let Some(scene) = self.camera {
+            let camera = crate::node::scene::collect::find_camera::<Self>(cx, self.id, scene)?
+                .unwrap_or_default();
+            let aspect = size.width as f32 / size.height as f32;
+            return Ok(CameraGlobals {
+                view: camera.view().to_cols_array_2d(),
+                projection: camera.projection_matrix(aspect).to_cols_array_2d(),
+                position: camera.position().into(),
+            });
+        }
+        Ok(CameraGlobals::default())
+    }
+}
+
+/// What the prelude holds of a camera.
+struct CameraGlobals {
+    view: [[f32; 4]; 4],
+    projection: [[f32; 4]; 4],
+    position: [f32; 3],
+}
+
+impl Default for CameraGlobals {
+    fn default() -> Self {
+        Self {
+            view: IDENTITY,
+            projection: IDENTITY,
+            position: [0.0; 3],
+        }
+    }
 }
 
 impl crate::gpu::frame_graph::RecordNode for WgslShader {
@@ -761,6 +828,7 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
             .downcast_ref::<ShaderInterface>()
             .expect("shader interface");
         let size = first.domain.storage_size;
+        let camera = self.camera_globals(cx, size)?;
         let (uniforms, globals) = {
             let expr = cx.expr();
             (
@@ -768,9 +836,13 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
                     .uniform_bytes(self.id, &params.uniforms, &expr)?
                     .to_vec(),
                 LumenGlobals {
-                    resolution: [size.width as f32, size.height as f32],
+                    view: camera.view,
+                    projection: camera.projection,
+                    camera_position: camera.position,
                     time: expr.time_seconds() as f32,
+                    resolution: [size.width as f32, size.height as f32],
                     frame: expr.frame as u32,
+                    _padding: 0,
                 },
             )
         };
