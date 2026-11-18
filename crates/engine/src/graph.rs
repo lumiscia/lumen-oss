@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     error::{At, GraphValidationError, LumenError},
-    node::{Node, NodeId, NodeKind, PortKind},
+    node::{InputPortDef, Node, NodeId, NodeKind, PortKind},
 };
 
 /// An edge as authors write it. `connect` stores it in the target node's input field.
@@ -134,12 +134,35 @@ impl Graph {
     }
 }
 
-/// Reports `node` when it is a 3D node, one that outputs or takes a scene or a material, and the
-/// engine was built without 3D.
+/// Each input `node` declares, with the sources wired into it: one for a single input if
+/// connected, any number for a variadic one.
+fn wired_inputs(node: &dyn Node) -> Vec<(&'static InputPortDef, Vec<NodeId>)> {
+    let defs = node.input_port_defs();
+    let inputs = node.input_ports();
+    // A node has at most one variadic input, which holds the entries the single inputs don't.
+    let variadic_len = inputs.len() - defs.iter().filter(|input| !input.variadic).count();
+    let mut wired = inputs.into_iter();
+    defs.iter()
+        .map(|input| {
+            let sources = if input.variadic {
+                wired.by_ref().take(variadic_len).flatten().collect()
+            } else {
+                wired.next().flatten().into_iter().collect()
+            };
+            (input, sources)
+        })
+        .collect()
+}
+
+/// Reports `node` when it is a 3D node, one that outputs a scene or a material or takes one
+/// through a required or wired input, and the engine was built without 3D. An optional scene or
+/// material input left unconnected doesn't make a node 3D.
 fn check_supported(node: &NodeKind, supports_3d: bool, errors: &mut Vec<LumenError>) {
     let is_3d = |kind: PortKind| matches!(kind, PortKind::Scene | PortKind::Material);
-    let scene =
-        is_3d(node.output_kind()) || node.input_port_defs().iter().any(|input| is_3d(input.kind));
+    let scene = is_3d(node.output_kind())
+        || wired_inputs(node)
+            .iter()
+            .any(|(input, sources)| is_3d(input.kind) && (!input.optional || !sources.is_empty()));
     if scene && !supports_3d {
         errors.push(
             GraphValidationError::No3dSupport {
@@ -159,17 +182,7 @@ fn check_inputs(
     output_kind: impl Fn(NodeId) -> Option<PortKind>,
     errors: &mut Vec<LumenError>,
 ) {
-    let defs = node.input_port_defs();
-    let inputs = node.input_ports();
-    // A node has at most one variadic input, which holds the entries the single inputs don't.
-    let variadic_len = inputs.len() - defs.iter().filter(|input| !input.variadic).count();
-    let mut wired = inputs.into_iter();
-    for input in defs {
-        let sources: Vec<NodeId> = if input.variadic {
-            wired.by_ref().take(variadic_len).flatten().collect()
-        } else {
-            wired.next().flatten().into_iter().collect()
-        };
+    for (input, sources) in wired_inputs(node) {
         if sources.is_empty() && !input.optional {
             errors.push(
                 GraphValidationError::MissingRequiredInput {
@@ -377,6 +390,27 @@ mod tests {
                 )]
             );
         }
+    }
+
+    #[cfg(not(feature = "3d"))]
+    #[test]
+    fn a_wgsl_shader_needs_3d_only_with_a_camera_wired() {
+        use crate::node::processing::wgsl_shader::WgslShader;
+
+        let shader = |camera| {
+            let node = NodeKind::WgslShader(WgslShader {
+                camera,
+                ..WgslShader::default()
+            });
+            let mut errors = Vec::new();
+            check_supported(&node, false, &mut errors);
+            errors
+                .iter()
+                .map(|error| error.code().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shader(None), Vec::<String>::new());
+        assert_eq!(shader(Some(NodeId::new(2))), ["node.unsupported"]);
     }
 
     #[test]
