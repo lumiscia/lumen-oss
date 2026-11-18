@@ -9,9 +9,10 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::{
-    expr::Expression,
+    error::LumenError,
+    expr::{Expression, ExpressionContext, ExpressionValue},
     json::{StringParam, classify_string},
-    node::ParamTypeDef,
+    node::{NodeId, ParamTypeDef},
 };
 
 #[derive(Debug, Clone, Default, lumen_macros::StructuralHash)]
@@ -58,18 +59,65 @@ impl ClipProps {
         Value::Object(
             self.0
                 .iter()
-                .map(|(name, value)| {
-                    let value = match value {
-                        ClipPropValue::Literal(Value::String(text)) if text.starts_with('=') => {
-                            Value::from(format!("={text}"))
-                        }
-                        ClipPropValue::Literal(value) => value.clone(),
-                        ClipPropValue::Expr(expr) => Value::from(format!("={}", expr.source)),
-                    };
-                    (name.clone(), value)
-                })
+                .map(|(name, value)| (name.clone(), value.to_json_value()))
                 .collect(),
         )
+    }
+}
+
+impl ClipPropValue {
+    fn to_json_value(&self) -> Value {
+        match self {
+            Self::Literal(Value::String(text)) if text.starts_with('=') => {
+                Value::from(format!("={text}"))
+            }
+            Self::Literal(value) => value.clone(),
+            Self::Expr(expr) => Value::from(format!("={}", expr.source)),
+        }
+    }
+}
+
+impl ClipProps {
+    /// The JSON of these props with each expression replaced by its value at `ctx`: a string, a
+    /// number, an array of numbers or a `[r, g, b, a]` colour. A failure is located at
+    /// `field.name` of node `node_id`, as rendering locates it.
+    pub(crate) fn evaluate_json(
+        &self,
+        node_id: NodeId,
+        field: &str,
+        ctx: &ExpressionContext<'_>,
+    ) -> crate::Result<Value> {
+        self.0
+            .iter()
+            .map(|(name, value)| {
+                let ClipPropValue::Expr(expr) = value else {
+                    return Ok((name.clone(), value.to_json_value()));
+                };
+                let path = format!("{field}.{name}");
+                let value = expr
+                    .evaluate(ctx)
+                    .map_err(|error| error.located(node_id, &path))?;
+                let json = match value {
+                    ExpressionValue::Number(number) => Value::from(number),
+                    ExpressionValue::String(text) => Value::from(&*text),
+                    ExpressionValue::Vec2((x, y)) => Value::from(vec![x, y]),
+                    ExpressionValue::Vec3(vector) => Value::from(vector.to_vec()),
+                    ExpressionValue::Color(rgba) => Value::from(
+                        rgba.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
+                            .to_vec(),
+                    ),
+                    other => {
+                        return Err(LumenError::evaluate(format!(
+                            "a prop can't be a {}",
+                            other.type_name()
+                        ))
+                        .located(node_id, &path));
+                    }
+                };
+                Ok((name.clone(), json))
+            })
+            .collect::<crate::Result<_>>()
+            .map(Value::Object)
     }
 }
 

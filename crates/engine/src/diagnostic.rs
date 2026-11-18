@@ -368,7 +368,22 @@ pub const CODE_DOCS: &[CodeDoc] = &[
     CodeDoc {
         code: "render.missing_node",
         found_by: FoundBy::Render,
-        meaning: "A node read while rendering doesn't exist.",
+        meaning: "A node read while rendering, or one whose param is evaluated by itself, doesn't exist.",
+    },
+    CodeDoc {
+        code: "render.template_node",
+        found_by: FoundBy::Render,
+        meaning: "A node of a template was asked for by itself, such as to evaluate one of its params. Only nodes of the root can be.",
+    },
+    CodeDoc {
+        code: "render.node_not_evaluated",
+        found_by: FoundBy::Render,
+        meaning: "A node's param was asked for at a frame at which no clip or switch leading to the node shows it.",
+    },
+    CodeDoc {
+        code: "render.ambiguous_node_frame",
+        found_by: FoundBy::Render,
+        meaning: "A node's param was asked for at a frame at which the node is evaluated at several frames of its own, through clips with different timing, a time remap or a motion blur.",
     },
     CodeDoc {
         code: "render.invalid_output_type",
@@ -623,6 +638,9 @@ fn locate(error: &LumenError, document: &Value) -> (String, Option<NodeId>) {
         LumenError::Render(error) => match error {
             RenderError::NodeEvaluation { at: place, .. }
             | RenderError::MissingNode { at: place }
+            | RenderError::TemplateNode { at: place }
+            | RenderError::NodeNotEvaluated { at: place, .. }
+            | RenderError::AmbiguousNodeFrame { at: place, .. }
             | RenderError::InvalidNodeOutputType { at: place, .. }
             | RenderError::TooDeeplyNested { at: place, .. } => at(place, ""),
             RenderError::FrameOutOfRange { .. }

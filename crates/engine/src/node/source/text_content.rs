@@ -445,6 +445,22 @@ impl DelegateEvaluable for TextContentDelegate {
         }
     }
 
+    /// The spans with their styles evaluated too, which `eval` leaves alone.
+    fn evaluate_json(
+        &self,
+        field: &str,
+        ctx: &DelegateEvalContext<'_>,
+    ) -> Option<crate::Result<Value>> {
+        let Self::Spans(spans) = self else {
+            return None;
+        };
+        Some(ctx.eval_field(field, spans).map(|spans: Vec<TextSpan>| {
+            Delegated::into_delegate(spans)
+                .to_json_value()
+                .unwrap_or(Value::Null)
+        }))
+    }
+
     fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
         match self {
             Self::Text(text) => text.for_each_expression(f),

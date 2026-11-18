@@ -45,6 +45,32 @@ pub fn media_dependencies(
         .ok_or_else(|| js_sys::Error::new("the composition's media could not be returned").into())
 }
 
+/// One param of a root node, evaluated as a render would at a frame, without rendering. The
+/// composition is JSON text or an object, and `request` is `{ node, param, frame, instance? }`, as
+/// text or an object. The result is the value in the JSON that sets the param. Throws, with
+/// `diagnostics`, on a composition the engine rejects, on a node or param it doesn't have, and on an
+/// expression that fails, which includes one that needs media. Text measures in the bundled font.
+#[wasm_bindgen::prelude::wasm_bindgen(js_name = "evaluate")]
+pub fn evaluate(
+    composition: wasm_bindgen::JsValue,
+    request: wasm_bindgen::JsValue,
+) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {
+    let composition = utils::json_text(&composition)
+        .ok_or_else(|| js_sys::Error::new("the composition must be JSON text or an object"))?;
+    let request = utils::json_text(&request)
+        .ok_or_else(|| js_sys::Error::new("the evaluate request must be an object"))?;
+    let request: lumen_engine::json::EvaluateRequest =
+        serde_json::from_str(&request).map_err(|error| {
+            js_sys::Error::new(&format!("the evaluate request is invalid: {error}"))
+        })?;
+    let value = lumen_engine::json::evaluate_param(&composition, &request)
+        .map_err(|diagnostics| utils::js_diagnostics_error(&diagnostics))?;
+    serde_json::to_string(&value)
+        .ok()
+        .and_then(|json| js_sys::JSON::parse(&json).ok())
+        .ok_or_else(|| js_sys::Error::new("the param's value could not be returned").into())
+}
+
 /// The animation clips and materials of a binary glTF (`.glb`), which a `model_3d` selects with
 /// `animation` and `texture_material`: `{ animations: [{ index, name?, duration }], materials:
 /// [{ index, name?, hasBaseColorTexture }] }`, with `duration` in seconds. Throws as a render

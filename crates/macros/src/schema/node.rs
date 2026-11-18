@@ -61,6 +61,17 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             }
         }
     });
+    let metas_property_evaluations = metas.iter().map(|(field, _)| {
+        quote! {
+            if let Some(value) = ::lumen_engine::node::NodeParams::evaluate_property(
+                &self.#field,
+                id,
+                &::lumen_engine::node::DelegateEvalContext { node_id: self.id, expr: ctx },
+            ) {
+                return Some(value);
+            }
+        }
+    });
     let json_metas_sets = metas.iter().map(|(field, _)| {
         quote! {
             match ::lumen_engine::node::NodeParams::from_json(id, params) {
@@ -226,6 +237,15 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                 id: &str,
             ) -> ::core::option::Option<::lumen_engine::node::PropertyRead<'_>> {
                 #(#metas_property_matches)*
+                None
+            }
+
+            fn evaluate_property(
+                &self,
+                id: &str,
+                ctx: &::lumen_engine::expr::ExpressionContext<'_>,
+            ) -> ::core::option::Option<::core::result::Result<::serde_json::Value, ::lumen_engine::error::LumenError>> {
+                #(#metas_property_evaluations)*
                 None
             }
         }

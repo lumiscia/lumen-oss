@@ -40,15 +40,14 @@ impl<'a> ErrorFields<'a> {
     }
 
     /// Carries the code of the first error, which is the first thing wrong with the composition.
-    fn of_parse_error(error: &'a ParseError) -> Self {
+    fn of_diagnostics(diagnostics: &'a [Diagnostic]) -> Self {
         Self {
-            code: error
-                .diagnostics()
+            code: diagnostics
                 .iter()
                 .find(|diagnostic| diagnostic.severity == Severity::Error)
                 .map(|diagnostic| diagnostic.code),
             media: None,
-            diagnostics: error.diagnostics(),
+            diagnostics,
             frame_not_loaded: false,
         }
     }
@@ -61,7 +60,28 @@ pub fn js_error(error: &LumenError) -> JsValue {
 
 /// The JS `Error` for a composition that doesn't parse, carrying its diagnostics.
 pub fn js_parse_error(error: &ParseError) -> JsValue {
-    error_with_fields(&error.to_string(), &ErrorFields::of_parse_error(error))
+    error_with_fields(
+        &error.to_string(),
+        &ErrorFields::of_diagnostics(error.diagnostics()),
+    )
+}
+
+/// The JS `Error` for a request the engine answers with diagnostics, carrying them.
+pub fn js_diagnostics_error(diagnostics: &[Diagnostic]) -> JsValue {
+    let message = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    error_with_fields(&message, &ErrorFields::of_diagnostics(diagnostics))
+}
+
+/// `value` as JSON text: itself when it is a string, otherwise what `JSON.stringify` makes of it,
+/// which uses a `toJSON` method when it has one.
+pub fn json_text(value: &JsValue) -> Option<String> {
+    value
+        .as_string()
+        .or_else(|| js_sys::JSON::stringify(value).ok()?.as_string())
 }
 
 fn error_with_fields(message: &str, fields: &ErrorFields) -> JsValue {

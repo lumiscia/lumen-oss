@@ -105,6 +105,16 @@ macro_rules! node_kinds {
                     $(Self::$variant(node) => node.get_property(id),)+
                 }
             }
+
+            fn evaluate_property(
+                &self,
+                id: &str,
+                ctx: &crate::expr::ExpressionContext<'_>,
+            ) -> Option<crate::Result<serde_json::Value>> {
+                match self {
+                    $(Self::$variant(node) => node.evaluate_property(id, ctx),)+
+                }
+            }
         }
 
         impl RecordNode for NodeKind {

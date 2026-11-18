@@ -7,6 +7,7 @@ use lumen_engine::{
     audio::AudioPlan,
     diagnostic::{self, Diagnostic, Severity},
     error::MediaFailure,
+    json::EvaluateRequest,
     media::{FrameRequirements, MediaInventory},
 };
 use schemars::generate::SchemaSettings;
@@ -26,6 +27,7 @@ fn render_schema() -> Result<Value> {
         .into_generator();
     generator.subschema_for::<Diagnostic>();
     generator.subschema_for::<MediaInventory>();
+    generator.subschema_for::<EvaluateRequest>();
     generator.subschema_for::<MediaFailure>();
     generator.subschema_for::<ModelInfo>();
     generator.subschema_for::<AudioPlan>();

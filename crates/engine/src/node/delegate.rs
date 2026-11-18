@@ -46,6 +46,17 @@ pub trait DelegateEvaluable: Clone {
 
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated>;
 
+    /// This value as the JSON that sets it, with the expressions it holds evaluated, for a value
+    /// whose `eval` leaves them for rendering to evaluate. `None` for every other value, whose
+    /// `eval` has evaluated them. A failure is located at `field` and the key of the expression.
+    fn evaluate_json(
+        &self,
+        _field: &str,
+        _ctx: &DelegateEvalContext<'_>,
+    ) -> Option<crate::Result<Value>> {
+        None
+    }
+
     /// Calls `f` with every expression in this value, however deeply it is held.
     fn for_each_expression(&self, f: &mut dyn FnMut(&Expression));
 
@@ -82,6 +93,13 @@ pub trait NodeParams: DelegateEvaluable + Default {
     /// documents.
     fn json_properties(&self) -> Vec<(&'static str, Value)>;
     fn get_property(&self, id: &str) -> Option<PropertyRead<'_>>;
+    /// The param `id` as it evaluates at `ctx`, in the JSON that sets it, or `None` when there is
+    /// no such param. A param with no value evaluates to `null`.
+    fn evaluate_property(
+        &self,
+        id: &str,
+        ctx: &DelegateEvalContext<'_>,
+    ) -> Option<crate::Result<Value>>;
     /// Calls `f` with every param declared with `#[media(...)]`, groups included.
     fn for_each_media_source<'a>(&'a self, f: &mut dyn FnMut(MediaSource<'a>));
     /// The id of each param, in declaration order.

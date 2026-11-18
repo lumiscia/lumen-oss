@@ -11,6 +11,7 @@ use std::fmt;
     PartialOrd,
     Ord,
     serde::Serialize,
+    serde::Deserialize,
     lumen_macros::StructuralHash,
 )]
 #[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]

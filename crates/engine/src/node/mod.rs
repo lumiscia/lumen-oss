@@ -84,4 +84,11 @@ pub trait Node: Send + Sync {
 
 pub trait PropertyEval {
     fn get_property(&self, id: &str) -> Option<PropertyRead<'_>>;
+    /// The param `id` as it evaluates at `ctx`, in the JSON that sets it, or `None` when the node
+    /// has no such param. A param with no value evaluates to `null`.
+    fn evaluate_property(
+        &self,
+        id: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> Option<crate::Result<serde_json::Value>>;
 }

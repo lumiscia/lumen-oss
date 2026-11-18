@@ -92,6 +92,14 @@ for (const { source, kinds, uses } of mediaDependencies(json).media) {
 }
 ```
 
+`evaluate` gives the value of one param of a root node at a frame, as a render would evaluate it and without rendering, so an easing curve, a timing or a `table()` lookup can be read without reading pixels. It takes the composition as JSON text or an object and a request `{ node, param, frame, instance? }`, and returns the value in the JSON that sets the param. A flattened param such as `position` is addressed by its own name, and `instance` picks the copy of an `instance_3d` whose `position`, `rotation` and `scale` are evaluated. It throws, with `diagnostics`, on a composition the engine rejects, a node or param that doesn't exist, a node inside a template, and an expression that fails, which includes one that needs media. Text is measured in the bundled font. The request is typed as `EvaluateRequest` in `@lumiscia/lumen-types`:
+
+```ts
+const { evaluate } = await loadLumenBindings();
+const position = evaluate(composition, { node: 12, param: "position", frame: 90 });
+// [1.5, 0, -3]
+```
+
 `modelInfo` lists the animation clips, materials and cameras of a binary glTF (`.glb`), which a `model_3d` selects with `animation`, `texture_material` and `camera`. It reads the file as a render would and throws on one it can't read. An unnamed clip, material or camera has no `name`; a clip or camera is then selected by its `index`, as text:
 
 ```ts
