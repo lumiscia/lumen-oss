@@ -86,8 +86,8 @@ impl Default for Placement3d {
 /// How a surface responds to light.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Material3dParams {
-    /// Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient
-    /// fails `check`.
+    /// Base colour, which multiplies the `texture` on a shape and the raster on an image plane.
+    /// Must be a solid color; a gradient fails `check`.
     #[meta(role = "color", solid)]
     pub color: Paint,
     /// 0 is a dielectric such as plastic, 1 a bare metal.
@@ -129,6 +129,10 @@ pub struct Material3dParams {
     /// footage behind it.
     #[meta()]
     pub shadow_catcher: bool,
+    /// How a shape reads its `texture`, as `sampling` on `image_plane_3d`: `nearest` gives each
+    /// pixel the one texel under it at any size, for pixel art.
+    #[meta()]
+    pub sampling: RasterSampling,
 }
 
 impl Default for Material3dParams {
@@ -145,6 +149,7 @@ impl Default for Material3dParams {
             receive_shadows: true,
             unlit_shadows: 0.0,
             shadow_catcher: false,
+            sampling: RasterSampling::Linear,
         }
     }
 }
@@ -165,7 +170,11 @@ impl Material3dParams {
 /// input. One `material_3d` can be wired to any number of objects, which then share its params,
 /// so changing it changes them all. Each param takes an expression as it does on any node.
 /// Objects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses
-/// an unlit, double-sided one.
+/// an unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by
+/// `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest
+/// of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.
+/// Its alpha counts where the material blends, through `opacity` or the colour's alpha. Wired
+/// into any other object, a material with a texture fails the render.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "material_3d",
@@ -177,6 +186,9 @@ pub struct Material3d {
     pub id: NodeId,
     #[params]
     pub params: Material3dParamsDelegate,
+
+    #[input(raster, optional)]
+    pub texture: Option<NodeId>,
 }
 
 #[derive(
@@ -219,15 +231,24 @@ impl Default for Shape3dParams {
 }
 
 /// A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,
-/// single-sided and white unless a `material_3d` is wired into `material`.
+/// single-sided and white unless a `material_3d` is wired into `material`. Its material's
+/// `texture` shows upright seen from outside: whole on each face of a box, the top and bottom
+/// faces upright to a camera on +Z tilted to look at them, and whole on a plane seen from above,
+/// its top edge towards -Z. A sphere, cylinder, cone or torus wraps it around Y, its left edge at
+/// -Z and running towards -X, so a camera on +Z sees its middle. A sphere maps it
+/// equirectangularly from the top pole to the bottom one, and a cylinder's or cone's side from
+/// top to bottom, with the circle inscribed in the texture on each cap, upright as on a box. A
+/// torus wraps the texture's height around its tube, from the inner equator over the top, so its
+/// middle row runs around the outer equator.
 ///
 /// A box takes a material for each face from `top_material`, `bottom_material`, `left_material`,
 /// `right_material`, `front_material` and `back_material`, which are its +Y, -Y, -X, +X, +Z and
 /// -Z faces in its own axes before `rotation`; the front faces a camera looking down -Z. A face
-/// with none wired uses `material`. A face material wired into any other shape fails the render
-/// naming the input. The faces draw as one object each, merged where neighbours share a material,
-/// from the same mesh, so a box with face materials costs a draw for each run of faces, and
-/// under `instance_3d` each draws all its copies.
+/// with none wired uses `material`, and each face shows its own material's texture. A face
+/// material wired into any other shape fails the render naming the input. The faces draw as one
+/// object each, merged where neighbours share a material, from the same mesh, so a box with face
+/// materials costs a draw for each run of faces, and under `instance_3d` each draws all its
+/// copies.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "shape_3d",

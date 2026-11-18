@@ -13,8 +13,8 @@ const ANISOTROPY: u16 = 16;
 
 /// A raster shown with no more texels than this per pixel keeps its detail unfiltered.
 const MINIFIED_ABOVE: f32 = 1.01;
-/// A model's raster with no side longer than this has no chain, since what it loses to aliasing
-/// is too little to see.
+/// A model's or shape's raster with no side longer than this has no chain, since what it loses to
+/// aliasing is too little to see.
 const MODEL_RASTER_MIN_SIDE: u32 = 64;
 
 /// The sampler `render_3d` reads a raster with when it has a mip chain.
@@ -41,7 +41,7 @@ pub(super) fn levels_for(size: Size, texels_per_pixel: f32) -> u32 {
     needed.clamp(1, full_levels(size))
 }
 
-/// Whether a raster of `size` that a model shows on a surface of unknown shape has a chain.
+/// Whether a raster of `size` that a model or shape shows on a surface of unknown form has a chain.
 pub(super) fn model_raster_is_mipped(size: Size) -> bool {
     size.width.max(size.height) > MODEL_RASTER_MIN_SIDE
 }

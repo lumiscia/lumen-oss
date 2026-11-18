@@ -796,20 +796,25 @@ Params:
 
 ## `material_3d`
 
-How a surface responds to light, for the 3D objects it is wired into through their `material` input. One `material_3d` can be wired to any number of objects, which then share its params, so changing it changes them all. Each param takes an expression as it does on any node. Objects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses an unlit, double-sided one.
+How a surface responds to light, for the 3D objects it is wired into through their `material` input. One `material_3d` can be wired to any number of objects, which then share its params, so changing it changes them all. Each param takes an expression as it does on any node. Objects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses an unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`. Its alpha counts where the material blends, through `opacity` or the colour's alpha. Wired into any other object, a material with a texture fails the render.
 
 Category: scene. Output: material.
+
+Inputs:
+
+- `texture`: raster, optional
 
 Params:
 
 - **`cast_shadows`** (boolean; default `true`) Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light, such as a bulb around a point light, needs this off.
-- **`color`** ([color](#type-color); default `[255,255,255,255]`) Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient fails `check`.
+- **`color`** ([color](#type-color); default `[255,255,255,255]`) Base colour, which multiplies the `texture` on a shape and the raster on an image plane. Must be a solid color; a gradient fails `check`.
 - **`double_sided`** (boolean; default `false`) Draws the back of each face too.
 - **`emissive`** (number, at least 0; default `0`) Light the surface gives off on its own, as a multiple of its base colour.
 - **`metallic`** (number, 0 to 1; default `0`) 0 is a dielectric such as plastic, 1 a bare metal.
 - **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.
 - **`receive_shadows`** (boolean; default `true`) Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says.
 - **`roughness`** (number, 0 to 1; default `0.5`) 0 is a mirror finish, 1 fully diffuse.
+- **`sampling`** (`"nearest"` | `"linear"`; default `"linear"`) How a shape reads its `texture`, as `sampling` on `image_plane_3d`: `nearest` gives each pixel the one texel under it at any size, for pixel art.
 - **`shadow_catcher`** (boolean; default `false`) Shows nothing but the shadows falling on it, as transparent black that darkens what the render is composited over by as much light as the shadows take away, times the colour's alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D footage behind it.
 - **`unlit`** (boolean; default `false`) Shows the base colour as is, ignoring lights.
 - **`unlit_shadows`** (number, 0 to 1; default `0`) How much an unlit surface darkens where shadows fall on it, from 0, which shows none, to 1, where a fully shadowed point is black. Lit surfaces ignore it, as do surfaces that don't receive shadows.
@@ -919,9 +924,9 @@ Params:
 
 ## `shape_3d`
 
-A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit, single-sided and white unless a `material_3d` is wired into `material`.
+A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit, single-sided and white unless a `material_3d` is wired into `material`. Its material's `texture` shows upright seen from outside: whole on each face of a box, the top and bottom faces upright to a camera on +Z tilted to look at them, and whole on a plane seen from above, its top edge towards -Z. A sphere, cylinder, cone or torus wraps it around Y, its left edge at -Z and running towards -X, so a camera on +Z sees its middle. A sphere maps it equirectangularly from the top pole to the bottom one, and a cylinder's or cone's side from top to bottom, with the circle inscribed in the texture on each cap, upright as on a box. A torus wraps the texture's height around its tube, from the inner equator over the top, so its middle row runs around the outer equator.
 
-A box takes a material for each face from `top_material`, `bottom_material`, `left_material`, `right_material`, `front_material` and `back_material`, which are its +Y, -Y, -X, +X, +Z and -Z faces in its own axes before `rotation`; the front faces a camera looking down -Z. A face with none wired uses `material`. A face material wired into any other shape fails the render naming the input. The faces draw as one object each, merged where neighbours share a material, from the same mesh, so a box with face materials costs a draw for each run of faces, and under `instance_3d` each draws all its copies.
+A box takes a material for each face from `top_material`, `bottom_material`, `left_material`, `right_material`, `front_material` and `back_material`, which are its +Y, -Y, -X, +X, +Z and -Z faces in its own axes before `rotation`; the front faces a camera looking down -Z. A face with none wired uses `material`, and each face shows its own material's texture. A face material wired into any other shape fails the render naming the input. The faces draw as one object each, merged where neighbours share a material, from the same mesh, so a box with face materials costs a draw for each run of faces, and under `instance_3d` each draws all its copies.
 
 Category: scene. Output: scene.
 

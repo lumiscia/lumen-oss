@@ -417,26 +417,29 @@ export const nodeSpecs: readonly NodeSpec[] = [
   {
     kind: "material_3d",
     name: "Material 3D",
-    description: "How a surface responds to light, for the 3D objects it is wired into through their `material`\ninput. One `material_3d` can be wired to any number of objects, which then share its params,\nso changing it changes them all. Each param takes an expression as it does on any node.\nObjects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses\nan unlit, double-sided one.",
+    description: "How a surface responds to light, for the 3D objects it is wired into through their `material`\ninput. One `material_3d` can be wired to any number of objects, which then share its params,\nso changing it changes them all. Each param takes an expression as it does on any node.\nObjects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses\nan unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by\n`color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest\nof the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.\nIts alpha counts where the material blends, through `opacity` or the colour's alpha. Wired\ninto any other object, a material with a texture fails the render.",
     category: "scene",
-    inputs: [],
+    inputs: [
+      { name: "texture", kind: "raster", optional: true, variadic: false },
+    ],
     outputs: [
       { name: "output", kind: "material" },
     ],
     params: [
       { id: "cast_shadows", name: "Cast Shadows", kind: "bool", description: "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,\nsuch as a bulb around a point light, needs this off.", defaultValue: true },
-      { id: "color", name: "Color", kind: "color", description: "Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient\nfails `check`.", defaultValue: [255, 255, 255, 255], constraints: { role: "color" } },
+      { id: "color", name: "Color", kind: "color", description: "Base colour, which multiplies the `texture` on a shape and the raster on an image plane.\nMust be a solid color; a gradient fails `check`.", defaultValue: [255, 255, 255, 255], constraints: { role: "color" } },
       { id: "double_sided", name: "Double Sided", kind: "bool", description: "Draws the back of each face too.", defaultValue: false },
       { id: "emissive", name: "Emissive", kind: "float", description: "Light the surface gives off on its own, as a multiple of its base colour.", defaultValue: 0, constraints: { min: 0, step: 0.1 } },
       { id: "metallic", name: "Metallic", kind: "float", description: "0 is a dielectric such as plastic, 1 a bare metal.", defaultValue: 0, constraints: { min: 0, max: 1, step: 0.05 } },
       { id: "opacity", name: "Opacity", kind: "float", description: "Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.", defaultValue: 1, constraints: { min: 0, max: 1, step: 0.01 } },
       { id: "receive_shadows", name: "Receive Shadows", kind: "bool", description: "Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says.", defaultValue: true },
       { id: "roughness", name: "Roughness", kind: "float", description: "0 is a mirror finish, 1 fully diffuse.", defaultValue: 0.5, constraints: { min: 0, max: 1, step: 0.05 } },
+      { id: "sampling", name: "Sampling", kind: "enum", description: "How a shape reads its `texture`, as `sampling` on `image_plane_3d`: `nearest` gives each\npixel the one texel under it at any size, for pixel art.", defaultValue: "linear", enumOptions: [{ name: "nearest", label: "Nearest", value: 0 }, { name: "linear", label: "Linear", value: 1 }] },
       { id: "shadow_catcher", name: "Shadow Catcher", kind: "bool", description: "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It\nshows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts\nno shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.", defaultValue: false },
       { id: "unlit", name: "Unlit", kind: "bool", description: "Shows the base colour as is, ignoring lights.", defaultValue: false },
       { id: "unlit_shadows", name: "Unlit Shadows", kind: "float", description: "How much an unlit surface darkens where shadows fall on it, from 0, which shows none, to\n1, where a fully shadowed point is black. Lit surfaces ignore it, as do surfaces that\ndon't receive shadows.", defaultValue: 0, constraints: { min: 0, max: 1, step: 0.05 } },
     ],
-    defaultParams: { cast_shadows: true, color: [255, 255, 255, 255], double_sided: false, emissive: 0, metallic: 0, opacity: 1, receive_shadows: true, roughness: 0.5, shadow_catcher: false, unlit: false, unlit_shadows: 0 },
+    defaultParams: { cast_shadows: true, color: [255, 255, 255, 255], double_sided: false, emissive: 0, metallic: 0, opacity: 1, receive_shadows: true, roughness: 0.5, sampling: "linear", shadow_catcher: false, unlit: false, unlit_shadows: 0 },
   },
   {
     kind: "media_in",
@@ -878,7 +881,7 @@ export const nodeSpecs: readonly NodeSpec[] = [
   {
     kind: "shape_3d",
     name: "Shape 3D",
-    description: "A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,\nsingle-sided and white unless a `material_3d` is wired into `material`.\n\nA box takes a material for each face from `top_material`, `bottom_material`, `left_material`,\n`right_material`, `front_material` and `back_material`, which are its +Y, -Y, -X, +X, +Z and\n-Z faces in its own axes before `rotation`; the front faces a camera looking down -Z. A face\nwith none wired uses `material`. A face material wired into any other shape fails the render\nnaming the input. The faces draw as one object each, merged where neighbours share a material,\nfrom the same mesh, so a box with face materials costs a draw for each run of faces, and\nunder `instance_3d` each draws all its copies.",
+    description: "A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,\nsingle-sided and white unless a `material_3d` is wired into `material`. Its material's\n`texture` shows upright seen from outside: whole on each face of a box, the top and bottom\nfaces upright to a camera on +Z tilted to look at them, and whole on a plane seen from above,\nits top edge towards -Z. A sphere, cylinder, cone or torus wraps it around Y, its left edge at\n-Z and running towards -X, so a camera on +Z sees its middle. A sphere maps it\nequirectangularly from the top pole to the bottom one, and a cylinder's or cone's side from\ntop to bottom, with the circle inscribed in the texture on each cap, upright as on a box. A\ntorus wraps the texture's height around its tube, from the inner equator over the top, so its\nmiddle row runs around the outer equator.\n\nA box takes a material for each face from `top_material`, `bottom_material`, `left_material`,\n`right_material`, `front_material` and `back_material`, which are its +Y, -Y, -X, +X, +Z and\n-Z faces in its own axes before `rotation`; the front faces a camera looking down -Z. A face\nwith none wired uses `material`, and each face shows its own material's texture. A face\nmaterial wired into any other shape fails the render naming the input. The faces draw as one\nobject each, merged where neighbours share a material, from the same mesh, so a box with face\nmaterials costs a draw for each run of faces, and under `instance_3d` each draws all its\ncopies.",
     category: "scene",
     inputs: [
       { name: "material", kind: "material", optional: true, variadic: false },

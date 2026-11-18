@@ -4348,7 +4348,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "How a surface responds to light, for the 3D objects it is wired into through their `material`\ninput. One `material_3d` can be wired to any number of objects, which then share its params,\nso changing it changes them all. Each param takes an expression as it does on any node.\nObjects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses\nan unlit, double-sided one.",
+            "description": "How a surface responds to light, for the 3D objects it is wired into through their `material`\ninput. One `material_3d` can be wired to any number of objects, which then share its params,\nso changing it changes them all. Each param takes an expression as it does on any node.\nObjects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses\nan unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by\n`color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest\nof the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.\nIts alpha counts where the material blends, through `opacity` or the colour's alpha. Wired\ninto any other object, a material with a texture fails the render.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -4381,7 +4381,7 @@
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient\nfails `check`.",
+                    "description": "Base colour, which multiplies the `texture` on a shape and the raster on an image plane.\nMust be a solid color; a gradient fails `check`.",
                     "title": "Color",
                     "x-lumen-constraints": {
                       "role": "color"
@@ -4491,6 +4491,34 @@
                     },
                     "x-lumen-kind": "float"
                   },
+                  "sampling": {
+                    "anyOf": [
+                      {
+                        "enum": ["nearest", "linear"],
+                        "type": "string",
+                        "x-lumen-type": "RasterSampling"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "linear",
+                    "description": "How a shape reads its `texture`, as `sampling` on `image_plane_3d`: `nearest` gives each\npixel the one texel under it at any size, for pixel art.",
+                    "title": "Sampling",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Nearest",
+                        "name": "nearest",
+                        "value": 0
+                      },
+                      {
+                        "label": "Linear",
+                        "name": "linear",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
                   "shadow_catcher": {
                     "anyOf": [
                       {
@@ -4549,7 +4577,14 @@
             "title": "Material 3D",
             "type": "object",
             "x-lumen-category": "scene",
-            "x-lumen-inputs": [],
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "texture",
+                "optional": true,
+                "variadic": false
+              }
+            ],
             "x-lumen-outputs": [
               {
                 "kind": "material",
@@ -7763,7 +7798,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,\nsingle-sided and white unless a `material_3d` is wired into `material`.\n\nA box takes a material for each face from `top_material`, `bottom_material`, `left_material`,\n`right_material`, `front_material` and `back_material`, which are its +Y, -Y, -X, +X, +Z and\n-Z faces in its own axes before `rotation`; the front faces a camera looking down -Z. A face\nwith none wired uses `material`. A face material wired into any other shape fails the render\nnaming the input. The faces draw as one object each, merged where neighbours share a material,\nfrom the same mesh, so a box with face materials costs a draw for each run of faces, and\nunder `instance_3d` each draws all its copies.",
+            "description": "A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,\nsingle-sided and white unless a `material_3d` is wired into `material`. Its material's\n`texture` shows upright seen from outside: whole on each face of a box, the top and bottom\nfaces upright to a camera on +Z tilted to look at them, and whole on a plane seen from above,\nits top edge towards -Z. A sphere, cylinder, cone or torus wraps it around Y, its left edge at\n-Z and running towards -X, so a camera on +Z sees its middle. A sphere maps it\nequirectangularly from the top pole to the bottom one, and a cylinder's or cone's side from\ntop to bottom, with the circle inscribed in the texture on each cap, upright as on a box. A\ntorus wraps the texture's height around its tube, from the inner equator over the top, so its\nmiddle row runs around the outer equator.\n\nA box takes a material for each face from `top_material`, `bottom_material`, `left_material`,\n`right_material`, `front_material` and `back_material`, which are its +Y, -Y, -X, +X, +Z and\n-Z faces in its own axes before `rotation`; the front faces a camera looking down -Z. A face\nwith none wired uses `material`, and each face shows its own material's texture. A face\nmaterial wired into any other shape fails the render naming the input. The faces draw as one\nobject each, merged where neighbours share a material, from the same mesh, so a box with face\nmaterials costs a draw for each run of faces, and under `instance_3d` each draws all its\ncopies.",
             "properties": {
               "id": {
                 "minimum": 0,

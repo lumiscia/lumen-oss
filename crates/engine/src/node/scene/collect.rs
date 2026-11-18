@@ -556,18 +556,13 @@ fn surface<N: crate::node::JsonNode>(
     })
 }
 
-/// The surface the `material_3d` wired into `object`'s `material` input gives it, evaluated at
-/// the frame, or `unwired`, `object`'s material when none is. Errors in the params name the
-/// material node.
-fn material_surface<N: crate::node::JsonNode>(
-    cx: &FrameCx<'_>,
+/// The `material_3d` wired into `object`'s `material` input as `material_id`, with its params
+/// evaluated at the frame.
+fn wired_material<'a, N: crate::node::JsonNode>(
+    cx: &FrameCx<'a>,
     object: NodeId,
-    material: Option<NodeId>,
-    unwired: Material3dParams,
-) -> crate::Result<Surface<TexRef>> {
-    let Some(material_id) = material else {
-        return surface::<N>(object, &unwired);
-    };
+    material_id: NodeId,
+) -> crate::Result<(&'a super::Material3d, Material3dParams)> {
     let Some(NodeKind::Material3d(material)) = cx.node(material_id) else {
         return Err(RenderError::evaluating::<N>(
             object,
@@ -580,7 +575,33 @@ fn material_surface<N: crate::node::JsonNode>(
         node_id: material_id,
         expr: &expr,
     };
-    let params = material.params.eval(&ctx)?;
+    Ok((material, material.params.eval(&ctx)?))
+}
+
+/// The surface the `material_3d` wired into `object`'s `material` input gives it, evaluated at
+/// the frame, or `unwired`, `object`'s material when none is. Errors in the params name the
+/// material node. Only a `shape_3d` shows a material's texture, so one with a texture fails.
+fn material_surface<N: crate::node::JsonNode>(
+    cx: &FrameCx<'_>,
+    object: NodeId,
+    material: Option<NodeId>,
+    unwired: Material3dParams,
+) -> crate::Result<Surface<TexRef>> {
+    let Some(material_id) = material else {
+        return surface::<N>(object, &unwired);
+    };
+    let (material, params) = wired_material::<N>(cx, object, material_id)?;
+    if material.texture.is_some() {
+        return Err(RenderError::evaluating::<N>(
+            object,
+            format!(
+                "{} can't show the `texture` of material_3d node {material_id}; only a shape_3d \
+                 shows one",
+                N::KIND
+            ),
+        )
+        .into());
+    }
     surface::<super::Material3d>(material_id, &params)
 }
 
@@ -976,12 +997,7 @@ impl Collected {
                 }
                 let surface = match faces {
                     Some(_) => Surface::default(),
-                    None => material_surface::<Shape3d>(
-                        cx,
-                        node_id,
-                        shape.material,
-                        Material3dParams::default(),
-                    )?,
+                    None => self.shape_surface(cx, node_id, shape.material)?,
                 };
                 let (rec, cache) = cx.scene_cache();
                 let (mesh, index_count) = cache.shape(rec, params.shape);
@@ -1000,13 +1016,20 @@ impl Collected {
                 };
                 match faces {
                     None => self.push(object, Extent::Local(UNIT_BOUNDS)),
-                    Some(faces) => self.push_runs::<Shape3d>(
-                        cx,
-                        node_id,
-                        object,
-                        Extent::Local(UNIT_BOUNDS),
-                        runs(faces),
-                    )?,
+                    Some(faces) => {
+                        for (indices, material) in runs(faces) {
+                            let surface = self.shape_surface(cx, node_id, material)?;
+                            self.push(
+                                Object {
+                                    first_index: indices.start,
+                                    index_count: indices.len() as u32,
+                                    surface,
+                                    ..object.clone()
+                                },
+                                Extent::Local(UNIT_BOUNDS),
+                            );
+                        }
+                    }
                 }
             }
             NodeKind::Text3d(text) => {
@@ -1235,6 +1258,27 @@ impl Collected {
             }
         }
         Ok(None)
+    }
+
+    /// The surface of the `shape_3d` `node_id`, which shows its material's texture.
+    fn shape_surface(
+        &mut self,
+        cx: &mut FrameCx<'_>,
+        node_id: NodeId,
+        material: Option<NodeId>,
+    ) -> crate::Result<Surface<TexRef>> {
+        let Some(material_id) = material else {
+            return surface::<super::Shape3d>(node_id, &Material3dParams::default());
+        };
+        let (material, params) = wired_material::<super::Shape3d>(cx, node_id, material_id)?;
+        let mut surface = surface::<super::Material3d>(material_id, &params)?;
+        if let Some(texture) = material.texture {
+            let raster = cx.input_native(texture)?;
+            self.rasters.push((texture, raster));
+            surface.texture = Some(raster.tex);
+            surface.nearest = params.sampling == RasterSampling::Nearest;
+        }
+        Ok(surface)
     }
 
     /// Adds the primitives of `node`'s model, posed `seconds` into the composition's clip.

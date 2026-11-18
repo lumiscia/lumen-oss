@@ -1549,8 +1549,9 @@ fn mip_rasters(
             continue;
         };
         let size = raster.domain.storage_size;
-        // A model's surface can stretch a raster across any shape, so a texel's footprint isn't
-        // known from the object's bounds: its raster gets all its levels wherever it is in view.
+        // A shape's or model's surface can stretch a raster across any form, so a texel's
+        // footprint isn't known from the object's bounds: its raster gets all its levels wherever
+        // it is in view.
         let shown = if Some(object.mesh) == collected.quad {
             mips::plane_texels_per_pixel(&object.world, &view_proj, size, target)
         } else {

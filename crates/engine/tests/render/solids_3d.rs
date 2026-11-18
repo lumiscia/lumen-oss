@@ -238,6 +238,29 @@ fn an_offset_2d_in_the_geometry_names_the_solid() {
 }
 
 #[test]
+fn a_textured_material_on_a_solid_fails_naming_the_solid() {
+    for kind in ["extrude_3d", "lathe_3d"] {
+        let mut scene = solid_scene(
+            kind,
+            shape_2d(json!({ "width": 100, "height": 100 })),
+            json!({}),
+            ortho(4, json!({})),
+        );
+        let nodes = scene.0["nodes"].as_array_mut().expect("nodes");
+        nodes.push(json!({ "id": 6, "type": "shape", "params": {} }));
+        let connections = scene.0["connections"].as_array_mut().expect("connections");
+        connections.push(json!({ "from_node": 6, "to_node": 3, "to_port": "texture" }));
+        let error = failure(scene);
+        assert!(
+            error.contains(&format!(
+                "{kind} can't show the `texture` of material_3d node 3; only a shape_3d shows one"
+            )) && error.contains("node 2"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn a_solid_past_its_limits_fails_naming_the_node() {
     // 512 steps around a profile of 600 corners holds more than 262144 vertices.
     let data: String = (0..600)

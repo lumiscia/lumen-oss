@@ -10,8 +10,7 @@ pub struct Vertex {
     pub position: [f32; 3],
     /// Unit length.
     pub normal: [f32; 3],
-    /// Texture coordinates, with V running down like a raster's rows. Zero on the primitives,
-    /// which are drawn untextured.
+    /// Texture coordinates, with V running down like a raster's rows.
     pub uv: [f32; 2],
 }
 
@@ -126,6 +125,8 @@ impl Mesh {
 
     /// `primitive` one unit across in X and Z, centred on the origin. Round primitives stand along
     /// Y, a unit tall but for the flat plane and the torus, whose tube is a quarter unit thick.
+    /// Their texture coordinates are laid out as the engine's `shape_3d` documents: round ones run
+    /// U around Y from -Z, towards -X.
     pub fn primitive(primitive: Primitive) -> Self {
         let mut mesh = Self::default();
         match primitive {
@@ -141,28 +142,31 @@ impl Mesh {
                 for (normal, right, up) in faces {
                     let base = mesh.vertices.len() as u32;
                     for (x, y) in [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)] {
-                        mesh.vertex(normal * 0.5 + right * x + up * y, normal);
+                        let uv = [x + 0.5, 0.5 - y];
+                        mesh.vertex_uv(normal * 0.5 + right * x + up * y, normal, uv);
                     }
                     mesh.quad(base, base + 1, base + 2, base + 3);
                 }
             }
             Primitive::Plane => {
                 for (x, z) in [(-0.5, 0.5), (0.5, 0.5), (0.5, -0.5), (-0.5, -0.5)] {
-                    mesh.vertex(Vec3::new(x, 0.0, z), Vec3::Y);
+                    mesh.vertex_uv(Vec3::new(x, 0.0, z), Vec3::Y, [x + 0.5, z + 0.5]);
                 }
                 mesh.quad(0, 1, 2, 3);
             }
             Primitive::Sphere => {
                 for ring in 0..=RINGS {
-                    let polar = ring as f32 / RINGS as f32 * PI;
+                    let v = ring as f32 / RINGS as f32;
+                    let polar = v * PI;
                     for segment in 0..=SEGMENTS {
-                        let azimuth = segment as f32 / SEGMENTS as f32 * TAU;
+                        let u = segment as f32 / SEGMENTS as f32;
+                        let azimuth = u * TAU;
                         let normal = Vec3::new(
-                            -polar.sin() * azimuth.cos(),
+                            -polar.sin() * azimuth.sin(),
                             polar.cos(),
-                            polar.sin() * azimuth.sin(),
+                            -polar.sin() * azimuth.cos(),
                         );
-                        mesh.vertex(normal * 0.5, normal);
+                        mesh.vertex_uv(normal * 0.5, normal, [u, v]);
                     }
                 }
                 mesh.grid(RINGS, SEGMENTS);
@@ -174,12 +178,18 @@ impl Mesh {
                     0.5
                 };
                 let slope = 0.5 - top;
+                // From -Z, towards -X.
+                let around = |segment: u32| {
+                    let (sin, cos) = (segment as f32 / SEGMENTS as f32 * TAU).sin_cos();
+                    (-sin, -cos)
+                };
                 for (y, radius) in [(0.5, top), (-0.5, 0.5)] {
                     for segment in 0..=SEGMENTS {
-                        let (sin, cos) = (segment as f32 / SEGMENTS as f32 * TAU).sin_cos();
-                        mesh.vertex(
-                            Vec3::new(sin * radius, y, cos * radius),
-                            Vec3::new(sin, slope, cos).normalize(),
+                        let (x, z) = around(segment);
+                        mesh.vertex_uv(
+                            Vec3::new(x * radius, y, z * radius),
+                            Vec3::new(x, slope, z).normalize(),
+                            [segment as f32 / SEGMENTS as f32, 0.5 - y],
                         );
                     }
                 }
@@ -189,11 +199,14 @@ impl Mesh {
                         continue;
                     }
                     let normal = Vec3::new(0.0, y * 2.0, 0.0);
+                    // Seen from outside, top edge towards -Z on the top cap and +Z on the bottom.
+                    let cap_uv = |x: f32, z: f32| [x + 0.5, 0.5 + z * normal.y];
                     let center = mesh.vertices.len() as u32;
-                    mesh.vertex(Vec3::new(0.0, y, 0.0), normal);
+                    mesh.vertex_uv(Vec3::new(0.0, y, 0.0), normal, cap_uv(0.0, 0.0));
                     for segment in 0..=SEGMENTS {
-                        let (sin, cos) = (segment as f32 / SEGMENTS as f32 * TAU).sin_cos();
-                        mesh.vertex(Vec3::new(sin * radius, y, cos * radius), normal);
+                        let (x, z) = around(segment);
+                        let (x, z) = (x * radius, z * radius);
+                        mesh.vertex_uv(Vec3::new(x, y, z), normal, cap_uv(x, z));
                     }
                     for segment in 0..SEGMENTS {
                         let (a, b) = (center + 1 + segment, center + 2 + segment);
@@ -208,23 +221,22 @@ impl Mesh {
             Primitive::Torus => {
                 let (major, minor) = (0.375, 0.125);
                 for ring in 0..=RINGS {
-                    // The tube angle runs down the outer equator first, so the grid winds outward.
-                    let (tube_sin, tube_cos) = (-(ring as f32) / RINGS as f32 * TAU).sin_cos();
+                    let v = ring as f32 / RINGS as f32;
+                    // The tube angle runs from the inner equator up over the top, then down the
+                    // outer equator, so the grid winds outward.
+                    let (tube_sin, tube_cos) = (PI - v * TAU).sin_cos();
                     for segment in 0..=SEGMENTS {
-                        let (sin, cos) = (segment as f32 / SEGMENTS as f32 * TAU).sin_cos();
-                        let normal = Vec3::new(cos * tube_cos, tube_sin, -sin * tube_cos);
-                        let center = Vec3::new(cos * major, 0.0, -sin * major);
-                        mesh.vertex(center + normal * minor, normal);
+                        let u = segment as f32 / SEGMENTS as f32;
+                        let (sin, cos) = (u * TAU).sin_cos();
+                        let normal = Vec3::new(-sin * tube_cos, tube_sin, -cos * tube_cos);
+                        let center = Vec3::new(-sin * major, 0.0, -cos * major);
+                        mesh.vertex_uv(center + normal * minor, normal, [u, v]);
                     }
                 }
                 mesh.grid(RINGS, SEGMENTS);
             }
         }
         mesh
-    }
-
-    fn vertex(&mut self, position: Vec3, normal: Vec3) {
-        self.vertex_uv(position, normal, [0.0; 2]);
     }
 
     fn vertex_uv(&mut self, position: Vec3, normal: Vec3, uv: [f32; 2]) {
@@ -314,6 +326,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn no_primitive_shows_its_texture_mirrored_from_outside() {
+        for primitive in ALL {
+            let mesh = Mesh::primitive(primitive);
+            for triangle in mesh.indices.chunks(3) {
+                let [a, b, c] = [0, 1, 2].map(|i| mesh.vertices[triangle[i] as usize]);
+                let [pa, pb, pc] = [a, b, c].map(|v| Vec3::from(v.position));
+                if (pb - pa).cross(pc - pa).length_squared() < 1e-12 {
+                    continue;
+                }
+                // Counter-clockwise from outside, so clockwise in texture space, where V runs down.
+                let [ua, ub, uc] = [a, b, c].map(|v| glam::Vec2::from(v.uv));
+                assert!(
+                    (ub - ua).perp_dot(uc - ua) < 0.0,
+                    "{primitive:?} triangle {triangle:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_sphere_wraps_its_texture_from_minus_z_and_pole_to_pole() {
+        let mesh = Mesh::primitive(Primitive::Sphere);
+        let at = |u: f32, v: f32| {
+            let vertex = mesh
+                .vertices
+                .iter()
+                .find(|vertex| vertex.uv == [u, v])
+                .expect("a vertex");
+            Vec3::from(vertex.position) * 2.0
+        };
+        let near = |a: Vec3, b: Vec3| (a - b).length() < 1e-5;
+        assert!(near(at(0.0, 0.5), Vec3::NEG_Z), "the seam is at -Z");
+        assert!(near(at(1.0, 0.5), Vec3::NEG_Z), "the seam is at -Z");
+        assert!(near(at(0.25, 0.5), Vec3::NEG_X), "then -X");
+        assert!(near(at(0.5, 0.5), Vec3::Z), "the middle faces +Z");
+        assert!(near(at(0.75, 0.0), Vec3::Y), "the top row is the top pole");
+        assert!(
+            near(at(0.75, 1.0), Vec3::NEG_Y),
+            "the bottom row the bottom pole"
+        );
     }
 
     #[test]
