@@ -82,6 +82,13 @@ pub trait NodeParams: DelegateEvaluable + Default {
     /// documents.
     fn json_properties(&self) -> Vec<(&'static str, Value)>;
     fn get_property(&self, id: &str) -> Option<PropertyRead<'_>>;
+    /// The param `id` as it evaluates at `ctx`, in the JSON that sets it, or `None` when there is
+    /// no such param. A param with no value evaluates to `null`.
+    fn evaluate_property(
+        &self,
+        id: &str,
+        ctx: &DelegateEvalContext<'_>,
+    ) -> Option<crate::Result<Value>>;
     /// Calls `f` with every param declared with `#[media(...)]`, groups included.
     fn for_each_media_source<'a>(&'a self, f: &mut dyn FnMut(MediaSource<'a>));
     /// The id of each param, in declaration order.

@@ -6,8 +6,10 @@
 //!
 //! # Modules
 //!
+//! - `evaluate` — one param of a node, evaluated at a frame
 //! - `property` — the JSON forms params share: a leading `=`, whole numbers and colors
 
+mod evaluate;
 mod property;
 
 use std::{collections::BTreeMap, fmt, marker::PhantomData, ops::Deref};
@@ -35,6 +37,7 @@ use crate::{
     node::{NodeId, NodeKind, scene::Instance3d},
 };
 
+pub use evaluate::{EvaluateRequest, evaluate_param};
 pub(crate) use property::{
     StringParam, classify_string, expression_unsupported, integer_mismatch, integral_i64,
     reject_expression,

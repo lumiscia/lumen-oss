@@ -6,6 +6,7 @@ import { LumenPreviewController, loadLumenBindings } from "@lumiscia/lumen-bindi
 const {
   LumenPreviewController: Controller,
   check,
+  evaluate,
   mediaDependencies,
   modelInfo,
 } = await loadLumenBindings();
@@ -47,6 +48,26 @@ assert.equal(check("{").at(0)?.code, "document.syntax");
 assert.throws(
   () => controller.loadComposition("{"),
   (error) => error instanceof Error && error.diagnostics[0]?.code === "document.syntax",
+);
+
+const timed = {
+  timeline: { fps: 30, duration_frames: 90 },
+  render_settings: { width: 8, height: 4 },
+  nodes: [
+    { id: 1, type: "background", params: { width: 8, height: 4 } },
+    { id: 2, type: "opacity", params: { opacity: "=frame / 60" } },
+    { id: 3, type: "media_output" },
+  ],
+  connections: [
+    { from_node: 1, from_port: "output", to_node: 2, to_port: "source" },
+    { from_node: 2, from_port: "output", to_node: 3, to_port: "source" },
+  ],
+};
+assert.equal(evaluate(timed, { node: 2, param: "opacity", frame: 30 }), 0.5);
+assert.equal(evaluate(JSON.stringify(timed), { node: 2, param: "opacity", frame: 15 }), 0.25);
+assert.throws(
+  () => evaluate(timed, { node: 2, param: "blur", frame: 0 }),
+  (error) => error instanceof Error && error.diagnostics[0]?.code === "node.unknown_param",
 );
 
 const inventory = mediaDependencies(

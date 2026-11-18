@@ -158,6 +158,31 @@ pub(crate) fn expand_struct_delegate(
             let name = &meta.property.id;
             quote!(#name => ::lumen_engine::node::DelegateEvaluable::read(&self.#ident))
         });
+    let evaluate_matches = metas
+        .iter()
+        .filter(|meta| !meta.property.flatten)
+        .map(|meta| {
+            let ident = &meta.ident;
+            let ty = &meta.ty;
+            let name = &meta.property.id;
+            quote! {
+                #name => ::core::option::Option::Some(
+                    ctx.eval_field(#name, &self.#ident).map(|evaluated: #ty| {
+                        ::lumen_engine::node::DelegateEvaluable::to_json_value(
+                            &::lumen_engine::node::Delegated::into_delegate(evaluated),
+                        )
+                        .unwrap_or(::serde_json::Value::Null)
+                    })
+                )
+            }
+        });
+    let group_property_evaluations = metas
+        .iter()
+        .filter(|meta| meta.property.flatten)
+        .map(|meta| {
+            let ident = &meta.ident;
+            quote!(.or_else(|| ::lumen_engine::node::NodeParams::evaluate_property(&self.#ident, id, ctx)))
+        });
     let group_property_reads = metas
         .iter()
         .filter(|meta| meta.property.flatten)
@@ -287,6 +312,17 @@ pub(crate) fn expand_struct_delegate(
                 match id {
                     #(#property_matches,)*
                     _ => None #(#group_property_reads)*,
+                }
+            }
+
+            fn evaluate_property(
+                &self,
+                id: &str,
+                ctx: &::lumen_engine::node::DelegateEvalContext<'_>,
+            ) -> ::core::option::Option<::core::result::Result<::serde_json::Value, ::lumen_engine::error::LumenError>> {
+                match id {
+                    #(#evaluate_matches,)*
+                    _ => None #(#group_property_evaluations)*,
                 }
             }
 

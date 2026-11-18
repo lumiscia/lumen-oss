@@ -1,4 +1,10 @@
-import type { Diagnostic, ModelInfo, MediaInventory } from "@lumiscia/lumen-types";
+import type {
+  CompositionSource,
+  Diagnostic,
+  EvaluateRequest,
+  ModelInfo,
+  MediaInventory,
+} from "@lumiscia/lumen-types";
 
 import { LumenMediaBridge, toUint8Array } from "./media/index.js";
 import type {
@@ -34,6 +40,13 @@ export interface LumenPreviewBindings {
    * provides.
    */
   check(compositionJson: string, fonts?: string[] | null): Diagnostic[];
+  /**
+   * One param of a root node as a render would evaluate it at a frame, in the JSON that sets the
+   * param, without rendering. A copy of an `instance_3d` is chosen with `instance`. Throws, with
+   * `diagnostics`, on a composition the engine rejects, on a node or param it doesn't have, and on
+   * an expression that fails, which includes one that needs media.
+   */
+  evaluate(composition: string | CompositionSource, request: EvaluateRequest): unknown;
   /**
    * What a composition needs before it renders: the media its nodes and audio clips name, with
    * the kinds each reads and where it is used, and the font families its text uses. Throws, with

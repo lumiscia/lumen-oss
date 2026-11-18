@@ -460,7 +460,13 @@
         {
           "code": "render.missing_node",
           "foundBy": "render",
-          "meaning": "A node read while rendering doesn't exist.",
+          "meaning": "A node read while rendering, or one whose param is evaluated by itself, doesn't exist.",
+          "severity": "error"
+        },
+        {
+          "code": "render.template_node",
+          "foundBy": "render",
+          "meaning": "A node of a template was asked for by itself, such as to evaluate one of its params. Only nodes of the root can be.",
           "severity": "error"
         },
         {
@@ -519,6 +525,35 @@
         }
       },
       "required": ["node", "param", "kinds"],
+      "type": "object"
+    },
+    "EvaluateRequest": {
+      "additionalProperties": false,
+      "description": "Which param of which node to evaluate, and when.",
+      "properties": {
+        "frame": {
+          "description": "The composition frame, which may be fractional.",
+          "format": "double",
+          "type": "number"
+        },
+        "instance": {
+          "description": "The copy an `instance_3d`'s `position`, `rotation` and `scale` are evaluated for, which\nthey read as `instance`. Other nodes and params ignore it.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "node": {
+          "description": "A node of the root composition.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "param": {
+          "description": "The param's name in the node's `params`. A group of params the node flattens, such as\n`position`, is addressed by the names it flattens to.",
+          "type": "string"
+        }
+      },
+      "required": ["node", "param", "frame"],
       "type": "object"
     },
     "FontDependency": {
