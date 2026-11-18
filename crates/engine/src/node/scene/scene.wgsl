@@ -130,6 +130,8 @@ struct Object {
     first_weight: u32,
     // Where its maps' five rows start in `map_uvs`.
     first_map_uv: u32,
+    // How much an unlit surface darkens where it is shadowed, from 0 to 1.
+    unlit_shadows: f32,
     // With `FLAG_PART`, the part of the textured quad drawn: its left, top, right and bottom
     // edges in its texture coordinates.
     part: vec4<f32>,
@@ -856,6 +858,61 @@ fn shadow_visibility(light: Light, world: vec3<f32>, face: vec3<f32>, pixel: vec
     return mix(1.0, lit / f32(SHADOW_TAPS), fade);
 }
 
+struct Incoming {
+    // The direction to the light.
+    direction: vec3<f32>,
+    // The light's radiance at the point, after falloff.
+    radiance: vec3<f32>,
+}
+
+fn light_incoming(light: Light, world: vec3<f32>) -> Incoming {
+    var l: vec3<f32>;
+    var radiance = light.radiance;
+    if (light.kind == LIGHT_DIRECTIONAL) {
+        l = -light.direction;
+    } else {
+        let to_light = light.position - world;
+        let distance = length(to_light);
+        l = to_light / max(distance, 1e-5);
+        var falloff = 1.0 / max(distance * distance, 1e-4);
+        if (light.range > 0.0) {
+            let ratio = distance / light.range;
+            let window = clamp(1.0 - ratio * ratio * ratio * ratio, 0.0, 1.0);
+            falloff *= window * window;
+        }
+        radiance *= falloff;
+        if (light.kind == LIGHT_SPOT) {
+            radiance *= smoothstep(light.cos_outer, light.cos_inner, dot(-l, light.direction));
+        }
+    }
+    return Incoming(l, radiance);
+}
+
+// The face's own normal on the side `n` is lit from, which shadows are tested off.
+fn lit_face(n: vec3<f32>, world_dx: vec3<f32>, world_dy: vec3<f32>) -> vec3<f32> {
+    let face = unit(cross(world_dx, world_dy));
+    return select(n, select(face, -face, dot(face, n) < 0.0), any(face != vec3<f32>(0.0)));
+}
+
+// The light the lights send to `world`, facing `n`, as luminance times cosine: x without shadows
+// and y with them.
+fn shadow_light(world: vec3<f32>, n: vec3<f32>, face: vec3<f32>, pixel: vec2<f32>) -> vec2<f32> {
+    var unshadowed = 0.0;
+    var shadowed = 0.0;
+    for (var i = 0u; i < globals.light_count; i += 1u) {
+        let light = lights[i];
+        let incoming = light_incoming(light, world);
+        let n_dot_l = dot(n, incoming.direction);
+        if (n_dot_l <= 0.0) {
+            continue;
+        }
+        let strength = luminance(incoming.radiance) * n_dot_l;
+        unshadowed += strength;
+        shadowed += strength * shadow_visibility(light, world, face, pixel);
+    }
+    return vec2<f32>(unshadowed, shadowed);
+}
+
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     // Derivatives need uniform control flow, so they come before anything branches.
@@ -899,14 +956,28 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     if (has(o.flags, FLAG_UNLIT) && !catcher) {
         // A raster shown unlit keeps its colours as in 2D, whatever the exposure and tone mapping.
         let shown = base.rgb + emissive;
-        return vec4<f32>(fogged(select(display(shown), shown, raster), in.world) * base.a, base.a);
+        var color = select(display(shown), shown, raster);
+        if (o.unlit_shadows > 0.0 && has(o.flags, FLAG_RECEIVE_SHADOWS)) {
+            let v = view_direction(in.world);
+            let n = shading_normal(o, in.normal, v, front, uvs, world_dx, world_dy);
+            let face = lit_face(n, world_dx, world_dy);
+            let light = shadow_light(in.world, n, face, in.clip.xy);
+            let taken = select(0.0, 1.0 - light.y / light.x, light.x > 0.0);
+            color *= 1.0 - o.unlit_shadows * taken;
+        }
+        return vec4<f32>(fogged(color, in.world) * base.a, base.a);
     }
 
     let v = view_direction(in.world);
     let n = shading_normal(o, in.normal, v, front, uvs, world_dx, world_dy);
-    // The face's own normal on the side `n` is lit from, which shadows are tested off.
-    var face = unit(cross(world_dx, world_dy));
-    face = select(n, select(face, -face, dot(face, n) < 0.0), any(face != vec3<f32>(0.0)));
+    let face = lit_face(n, world_dx, world_dy);
+    if (catcher) {
+        // Light from all around, as irradiance like the lights'.
+        let around = luminance(diffuse_environment(n)) * PI;
+        let light = shadow_light(in.world, n, face, in.clip.xy);
+        let shadow = select(0.0, 1.0 - (around + light.y) / (around + light.x), light.x > 0.0);
+        return vec4<f32>(0.0, 0.0, 0.0, clamp(shadow * coverage * fog_transmittance(in.world), 0.0, 1.0));
+    }
     let receives = has(o.flags, FLAG_RECEIVE_SHADOWS);
     let n_dot_v = max(dot(n, v), 1e-4);
     var metallic = o.metallic;
@@ -931,30 +1002,11 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     let f0 = mix(vec3<f32>(0.04), base.rgb, metallic);
 
     var color = vec3<f32>(0.0);
-    // Light reaching the surface with and without shadows, for a shadow catcher.
-    var unshadowed = 0.0;
-    var shadowed = 0.0;
     for (var i = 0u; i < globals.light_count; i += 1u) {
         let light = lights[i];
-        var l: vec3<f32>;
-        var radiance = light.radiance;
-        if (light.kind == LIGHT_DIRECTIONAL) {
-            l = -light.direction;
-        } else {
-            let to_light = light.position - in.world;
-            let distance = length(to_light);
-            l = to_light / max(distance, 1e-5);
-            var falloff = 1.0 / max(distance * distance, 1e-4);
-            if (light.range > 0.0) {
-                let ratio = distance / light.range;
-                let window = clamp(1.0 - ratio * ratio * ratio * ratio, 0.0, 1.0);
-                falloff *= window * window;
-            }
-            radiance *= falloff;
-            if (light.kind == LIGHT_SPOT) {
-                radiance *= smoothstep(light.cos_outer, light.cos_inner, dot(-l, light.direction));
-            }
-        }
+        let incoming = light_incoming(light, in.world);
+        let l = incoming.direction;
+        var radiance = incoming.radiance;
         let n_dot_l = dot(n, l);
         if (n_dot_l <= 0.0) {
             continue;
@@ -963,9 +1015,6 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
         if (receives) {
             visibility = shadow_visibility(light, in.world, face, in.clip.xy);
         }
-        let strength = luminance(radiance) * n_dot_l;
-        unshadowed += strength;
-        shadowed += strength * visibility;
         radiance *= visibility;
         let h = normalize(l + v);
         let n_dot_h = max(dot(n, h), 0.0);
@@ -976,12 +1025,6 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
         color += (diffuse + specular) * radiance * n_dot_l;
     }
 
-    if (catcher) {
-        // Light from all around, as irradiance like the lights'.
-        let around = luminance(diffuse_environment(n)) * PI;
-        let shadow = select(0.0, 1.0 - (around + shadowed) / (around + unshadowed), unshadowed > 0.0);
-        return vec4<f32>(0.0, 0.0, 0.0, clamp(shadow * coverage * fog_transmittance(in.world), 0.0, 1.0));
-    }
     let reflected = reflect(-v, n);
     let blurred = normalize(mix(reflected, n, alpha * alpha));
     if (environment.map != 0u) {

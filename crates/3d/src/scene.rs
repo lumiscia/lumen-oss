@@ -186,8 +186,10 @@ pub struct Surface<T> {
     /// Blocks light from shadow-casting lights: where its alpha reaches its mask's cutoff, or half
     /// for a blended surface.
     pub cast_shadows: bool,
-    /// Darkens where shadows fall on it. An unlit surface shows none.
+    /// Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says.
     pub receive_shadows: bool,
+    /// How much an unlit surface darkens where shadows fall on it, from 0 to 1.
+    pub unlit_shadows: f32,
     /// Shows nothing but the shadows falling on it, as black whose alpha is the fraction of light
     /// they take away, times the base colour's alpha. It hides what is behind it, casts no shadows
     /// and is drawn before other objects.
@@ -215,6 +217,7 @@ impl<T> Default for Surface<T> {
             flat_normals: false,
             cast_shadows: true,
             receive_shadows: true,
+            unlit_shadows: 0.0,
             shadow_catcher: false,
         }
     }

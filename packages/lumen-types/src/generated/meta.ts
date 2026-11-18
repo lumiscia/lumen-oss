@@ -2291,7 +2291,7 @@ export interface Material3dNode extends CompositionNodeBase<"material_3d"> {
     readonly metallic?: ExpressionValue<number>;
     /** Opacity multiplier. Anything below 1 is drawn blended, after opaque objects. */
     readonly opacity?: ExpressionValue<number>;
-    /** Darkens where shadows fall on it. An unlit surface shows none. */
+    /** Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says. */
     readonly receive_shadows?: ExpressionValue<boolean>;
     /** 0 is a mirror finish, 1 fully diffuse. */
     readonly roughness?: ExpressionValue<number>;
@@ -2306,6 +2306,12 @@ export interface Material3dNode extends CompositionNodeBase<"material_3d"> {
     readonly shadow_catcher?: ExpressionValue<boolean>;
     /** Shows the base colour as is, ignoring lights. */
     readonly unlit?: ExpressionValue<boolean>;
+    /**
+     * How much an unlit surface darkens where shadows fall on it, from 0, which shows none, to
+     * 1, where a fully shadowed point is black. Lit surfaces ignore it, as do surfaces that
+     * don't receive shadows.
+     */
+    readonly unlit_shadows?: ExpressionValue<number>;
   };
 }
 

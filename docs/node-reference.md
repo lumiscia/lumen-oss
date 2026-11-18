@@ -808,10 +808,11 @@ Params:
 - **`emissive`** (number, at least 0; default `0`) Light the surface gives off on its own, as a multiple of its base colour.
 - **`metallic`** (number, 0 to 1; default `0`) 0 is a dielectric such as plastic, 1 a bare metal.
 - **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.
-- **`receive_shadows`** (boolean; default `true`) Darkens where shadows fall on it. An unlit surface shows none.
+- **`receive_shadows`** (boolean; default `true`) Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says.
 - **`roughness`** (number, 0 to 1; default `0.5`) 0 is a mirror finish, 1 fully diffuse.
 - **`shadow_catcher`** (boolean; default `false`) Shows nothing but the shadows falling on it, as transparent black that darkens what the render is composited over by as much light as the shadows take away, times the colour's alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D footage behind it.
 - **`unlit`** (boolean; default `false`) Shows the base colour as is, ignoring lights.
+- **`unlit_shadows`** (number, 0 to 1; default `0`) How much an unlit surface darkens where shadows fall on it, from 0, which shows none, to 1, where a fully shadowed point is black. Lit surfaces ignore it, as do surfaces that don't receive shadows.
 
 ## `merge_3d`
 
