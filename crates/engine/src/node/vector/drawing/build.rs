@@ -23,6 +23,7 @@ use super::Path2d;
 use super::collect::{Geometry, Record, Source, Style, Use};
 use crate::composition::SceneId;
 use crate::error::RenderError;
+use crate::gpu::frame_graph::Timed;
 use crate::node::NodeId;
 
 pub(super) const DRAWING_SHADER: &str = concat!(
@@ -664,10 +665,12 @@ impl Drawing {
 }
 
 /// Builds the buffers for `record`, drawn on a canvas of `canvas` pixels. Paths from nodes
-/// `keeps` says don't read the frame are kept for later frames.
-pub(super) fn build(
+/// `keeps` says don't read the frame are kept for later frames. `timed` starts timing a path
+/// node, which its paths are built under.
+pub(super) fn build<'t>(
     record: &Record,
     keeps: &dyn Fn(NodeId) -> bool,
+    timed: &dyn Fn(NodeId) -> Timed<'t>,
     canvas: [f32; 2],
     keeping: &mut Keeping<'_>,
 ) -> crate::Result<Drawing> {
@@ -704,6 +707,7 @@ pub(super) fn build(
         let Source::Path { node, data } = &geometry.source else {
             unreachable!("only paths are instanced")
         };
+        let _timed = timed(*node);
         let ordinal = ordinals.entry(*node).or_default();
         let slot = (keeping.scene, keeping.render, *node, *ordinal);
         *ordinal += 1;

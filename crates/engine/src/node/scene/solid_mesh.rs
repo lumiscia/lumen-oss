@@ -254,9 +254,11 @@ fn outline_of<N: JsonNode>(
     verb: &str,
 ) -> crate::Result<Outline> {
     let expr = cx.expr();
-    let outline = resolve_outline::<N>(&expr, geometry, |at| {
-        cx.node(at)
-            .ok_or_else(|| RenderError::MissingNode { at: At::node(at) }.into())
+    let outline = resolve_outline::<N, _>(&expr, geometry, |at| {
+        let node = cx
+            .node(at)
+            .ok_or_else(|| RenderError::MissingNode { at: At::node(at) })?;
+        Ok((node, cx.node_times().time(node)))
     })?;
     if outline.offsets {
         return Err(error::<N>(

@@ -3,7 +3,7 @@
 //! recording one fails.
 
 use bytemuck::{Pod, Zeroable};
-use foldhash::HashSet;
+use foldhash::HashMap;
 
 use super::build::{DRAWING_SHADER, Keeping, build};
 use super::collect::{Source, collect};
@@ -91,21 +91,23 @@ impl RecordNode for Render2d {
         let record = collect(cx, self.id, root)?;
         let canvas = cx.canvas_size();
         let canvas = [canvas.width as f32, canvas.height as f32];
-        let kept: HashSet<_> = record
+        let paths: HashMap<_, _> = record
             .geometries
             .iter()
             .filter_map(|geometry| match geometry.source {
-                Source::Path { node, .. } => cx
-                    .node(node)
-                    .is_some_and(|path| !path.is_frame_dependent())
-                    .then_some(node),
+                Source::Path { node, .. } => Some((node, cx.node(node)?)),
                 Source::Shape { .. } => None,
             })
             .collect();
-        let (scene, tick, cache) = cx.drawing_cache();
+        let (scene, tick, cache, times) = cx.drawing_cache();
         let drawing = build(
             &record,
-            &|node| kept.contains(&node),
+            &|node| {
+                paths
+                    .get(&node)
+                    .is_some_and(|path| !path.is_frame_dependent())
+            },
+            &|node| times.time(paths[&node]),
             canvas,
             &mut Keeping {
                 cache,

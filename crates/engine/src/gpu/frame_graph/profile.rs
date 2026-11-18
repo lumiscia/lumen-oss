@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 use foldhash::HashMap;
@@ -19,13 +20,12 @@ struct Entry {
     template: Option<String>,
     bind: Duration,
     frames: u32,
-    /// The last [`NodeProfile::frame`] that counted in `frames`.
+    /// The last [`State::frame`] that counted in `frames`.
     last_frame: u32,
 }
 
-/// Each node's own bind time, taken when [`super::RecordSettings::profile_nodes`] is set.
 #[derive(Default)]
-pub(super) struct NodeProfile {
+struct State {
     entries: HashMap<(SceneId, NodeId), Entry>,
     /// Time the nodes running now have spent in nodes inside them, innermost last.
     inner: Vec<Duration>,
@@ -33,26 +33,35 @@ pub(super) struct NodeProfile {
     frame: u32,
 }
 
+/// Each node's own bind time, taken when [`super::RecordSettings::profile_nodes`] is set. Timers
+/// start and finish through a shared reference, and no borrow of the state outlasts a call.
+#[derive(Default)]
+pub(super) struct NodeProfile {
+    state: RefCell<State>,
+}
+
 impl NodeProfile {
     pub(super) fn begin_frame(&mut self) {
-        self.frame += 1;
+        self.state.get_mut().frame += 1;
     }
 
-    pub(super) fn start(&mut self, scene: SceneId) -> NodeTimer {
-        self.inner.push(Duration::ZERO);
+    pub(super) fn start(&self, scene: SceneId) -> NodeTimer {
+        self.state.borrow_mut().inner.push(Duration::ZERO);
         NodeTimer {
             scene,
             started: Instant::now(),
         }
     }
 
-    pub(super) fn finish(&mut self, timer: NodeTimer, node: &NodeKind, composition: &Composition) {
+    pub(super) fn finish(&self, timer: NodeTimer, node: &NodeKind, composition: &Composition) {
         let total = timer.started.elapsed();
-        let inner = self.inner.pop().unwrap_or_default();
-        if let Some(outer) = self.inner.last_mut() {
+        let mut state = self.state.borrow_mut();
+        let state = &mut *state;
+        let inner = state.inner.pop().unwrap_or_default();
+        if let Some(outer) = state.inner.last_mut() {
             *outer += total;
         }
-        let entry = self
+        let entry = state
             .entries
             .entry((timer.scene, node.id()))
             .or_insert_with(|| Entry {
@@ -63,8 +72,8 @@ impl NodeProfile {
                 last_frame: 0,
             });
         entry.bind += total.saturating_sub(inner);
-        if entry.last_frame != self.frame {
-            entry.last_frame = self.frame;
+        if entry.last_frame != state.frame {
+            entry.last_frame = state.frame;
             entry.frames += 1;
         }
     }
@@ -72,6 +81,8 @@ impl NodeProfile {
     /// What the nodes took since the last call, slowest first.
     pub(super) fn take(&mut self) -> Vec<NodeTiming> {
         let mut timings: Vec<_> = self
+            .state
+            .get_mut()
             .entries
             .drain()
             .map(|((_, node), entry)| NodeTiming {
@@ -89,5 +100,55 @@ impl NodeProfile {
                 .then_with(|| a.node.cmp(&b.node))
         });
         timings
+    }
+}
+
+/// Starts timers for the nodes of one scene, from code that holds the frame context by shared
+/// reference. Times nothing when node profiling is off.
+#[derive(Clone, Copy)]
+pub(crate) struct NodeTimes<'a> {
+    on: Option<(&'a NodeProfile, SceneId, &'a Composition)>,
+}
+
+impl<'a> NodeTimes<'a> {
+    pub(super) fn new(
+        profiling: bool,
+        profile: &'a NodeProfile,
+        scene: SceneId,
+        composition: &'a Composition,
+    ) -> Self {
+        Self {
+            on: profiling.then_some((profile, scene, composition)),
+        }
+    }
+
+    /// Times `node` until the result is dropped, less the nodes timed inside it.
+    pub(crate) fn time(self, node: &'a NodeKind) -> Timed<'a> {
+        Timed(self.on.map(|(profile, scene, composition)| Running {
+            profile,
+            timer: profile.start(scene),
+            node,
+            composition,
+        }))
+    }
+}
+
+struct Running<'a> {
+    profile: &'a NodeProfile,
+    timer: NodeTimer,
+    node: &'a NodeKind,
+    composition: &'a Composition,
+}
+
+/// A node being timed.
+pub(crate) struct Timed<'a>(Option<Running<'a>>);
+
+impl Drop for Timed<'_> {
+    fn drop(&mut self) {
+        if let Some(running) = self.0.take() {
+            running
+                .profile
+                .finish(running.timer, running.node, running.composition);
+        }
     }
 }

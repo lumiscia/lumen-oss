@@ -45,6 +45,7 @@ mod ingest;
 #[cfg(test)]
 pub(crate) use ingest::YUV_TO_RGBA_SHADER;
 mod profile;
+pub(crate) use profile::{NodeTimes, Timed};
 mod retention;
 mod state;
 mod targets;
@@ -872,6 +873,17 @@ impl<'a> FrameCx<'a> {
         result
     }
 
+    /// Starts timers for nodes of the scene being recorded, for code that can't run them through
+    /// [`Self::time_node`].
+    pub(crate) fn node_times(&self) -> NodeTimes<'_> {
+        NodeTimes::new(
+            self.settings.profile_nodes,
+            &self.st.profile,
+            self.scope.id,
+            self.composition,
+        )
+    }
+
     pub(crate) fn expr(&self) -> ExpressionContext<'_> {
         self.expr_at(self.frame)
     }
@@ -963,15 +975,23 @@ impl<'a> FrameCx<'a> {
         self.scope.node(id)
     }
 
-    /// The scene being recorded, the frame count `tick` gives, and the paths `render_2d` keeps.
+    /// The scene being recorded, the frame count `tick` gives, the paths `render_2d` keeps, and
+    /// timers for its nodes.
     pub(crate) fn drawing_cache(
         &mut self,
     ) -> (
         crate::composition::SceneId,
         u64,
         &mut crate::node::vector::drawing::DrawingCache,
+        NodeTimes<'_>,
     ) {
-        (self.scope.id, self.st.tick, &mut self.st.drawings)
+        let times = NodeTimes::new(
+            self.settings.profile_nodes,
+            &self.st.profile,
+            self.scope.id,
+            self.composition,
+        );
+        (self.scope.id, self.st.tick, &mut self.st.drawings, times)
     }
 
     /// Counts frames recorded, for caches that keep what recent frames used.
@@ -1360,8 +1380,8 @@ pub(crate) fn ensure_texture_fits(
 /// `node` is in.
 fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
     let outer = cx.rec.replace_largest_acquired_texture(Size::new(0, 0));
-    let raster = cx
-        .time_node(node, |cx| node.record(cx))
+    let raster = node
+        .record(cx)
         .map_err(|error| locate_media_failure(node, &cx.scope, error));
     let largest = cx.rec.replace_largest_acquired_texture(outer);
     let raster = raster.and_then(|raster| {
