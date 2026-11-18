@@ -46,6 +46,17 @@ pub trait DelegateEvaluable: Clone {
 
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated>;
 
+    /// This value as the JSON that sets it, with the expressions it holds evaluated, for a value
+    /// whose `eval` leaves them for rendering to evaluate. `None` for every other value, whose
+    /// `eval` has evaluated them. A failure is located at `field` and the key of the expression.
+    fn evaluate_json(
+        &self,
+        _field: &str,
+        _ctx: &DelegateEvalContext<'_>,
+    ) -> Option<crate::Result<Value>> {
+        None
+    }
+
     /// Calls `f` with every expression in this value, however deeply it is held.
     fn for_each_expression(&self, f: &mut dyn FnMut(&Expression));
 

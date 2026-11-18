@@ -929,6 +929,20 @@ pub enum RenderError {
     #[code("render.template_node")]
     #[error("{at} is in a template, and only nodes of the root can be evaluated by themselves")]
     TemplateNode { at: At },
+    /// A node's param was asked for at a composition frame the node isn't evaluated at, because a
+    /// clip or switch that leads to it isn't showing it then.
+    #[code("render.node_not_evaluated")]
+    #[error(
+        "{at} is not evaluated at frame {frame}: no clip or switch leading to it shows it then"
+    )]
+    NodeNotEvaluated { at: At, frame: f64 },
+    /// A node's param was asked for at a composition frame at which it is evaluated at several
+    /// frames of its own.
+    #[code("render.ambiguous_node_frame")]
+    #[error(
+        "{at} is evaluated at frame {frame} of the composition at several frames of its own: {local}"
+    )]
+    AmbiguousNodeFrame { at: At, frame: f64, local: String },
     #[code("render.invalid_output_type")]
     #[error("output of {at} has invalid type: expected {expected}, got {actual}")]
     InvalidNodeOutputType {
@@ -984,6 +998,8 @@ impl RenderError {
             Self::NodeEvaluation { at, .. }
             | Self::MissingNode { at }
             | Self::TemplateNode { at }
+            | Self::NodeNotEvaluated { at, .. }
+            | Self::AmbiguousNodeFrame { at, .. }
             | Self::InvalidNodeOutputType { at, .. }
             | Self::TooDeeplyNested { at, .. } => Some(at),
             Self::FrameOutOfRange { .. }

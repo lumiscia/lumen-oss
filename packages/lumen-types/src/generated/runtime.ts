@@ -97,6 +97,10 @@ export type DiagnosticCode =
   | "render.missing_node"
   /** A node of a template was asked for by itself, such as to evaluate one of its params. Only nodes of the root can be. */
   | "render.template_node"
+  /** A node's param was asked for at a frame at which no clip or switch leading to the node shows it. */
+  | "render.node_not_evaluated"
+  /** A node's param was asked for at a frame at which the node is evaluated at several frames of its own, through clips with different timing, a time remap or a motion blur. */
+  | "render.ambiguous_node_frame"
   /** A node's output had the wrong type for its reader. */
   | "render.invalid_output_type"
   /** The GPU failed: the device, its queue or a driver. Nothing the composition says causes it, so trying again may succeed. */
@@ -158,6 +162,8 @@ export const diagnosticCodes = [
   { code: "render.node_evaluation", severity: "error", foundBy: "render", meaning: "A node failed to render, such as text with too many glyphs or a `wgsl_shader` that doesn't compile." },
   { code: "render.missing_node", severity: "error", foundBy: "render", meaning: "A node read while rendering, or one whose param is evaluated by itself, doesn't exist." },
   { code: "render.template_node", severity: "error", foundBy: "render", meaning: "A node of a template was asked for by itself, such as to evaluate one of its params. Only nodes of the root can be." },
+  { code: "render.node_not_evaluated", severity: "error", foundBy: "render", meaning: "A node's param was asked for at a frame at which no clip or switch leading to the node shows it." },
+  { code: "render.ambiguous_node_frame", severity: "error", foundBy: "render", meaning: "A node's param was asked for at a frame at which the node is evaluated at several frames of its own, through clips with different timing, a time remap or a motion blur." },
   { code: "render.invalid_output_type", severity: "error", foundBy: "render", meaning: "A node's output had the wrong type for its reader." },
   { code: "render.gpu", severity: "error", foundBy: "render", meaning: "The GPU failed: the device, its queue or a driver. Nothing the composition says causes it, so trying again may succeed." },
   { code: "render.limit", severity: "error", foundBy: "render", meaning: "The composition needs more than the device or engine allows, such as a frame whose data is too large for the device's buffers or a video frame larger than its texture limit." },
@@ -261,7 +267,10 @@ export interface DynamicMediaUse {
 
 /** Which param of which node to evaluate, and when. */
 export interface EvaluateRequest {
-  /** The composition frame, which may be fractional. */
+  /**
+   * The composition frame, which may be fractional. A node inside a `clip`, or behind a
+   * `time_remap`, is evaluated at the frame of its own time that this frame maps to.
+   */
   readonly frame: number;
   /**
    * The copy an `instance_3d`'s `position`, `rotation` and `scale` are evaluated for, which

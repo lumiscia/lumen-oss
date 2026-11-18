@@ -167,12 +167,15 @@ pub(crate) fn expand_struct_delegate(
             let name = &meta.property.id;
             quote! {
                 #name => ::core::option::Option::Some(
-                    ctx.eval_field(#name, &self.#ident).map(|evaluated: #ty| {
-                        ::lumen_engine::node::DelegateEvaluable::to_json_value(
-                            &::lumen_engine::node::Delegated::into_delegate(evaluated),
-                        )
-                        .unwrap_or(::serde_json::Value::Null)
-                    })
+                    ::lumen_engine::node::DelegateEvaluable::evaluate_json(&self.#ident, #name, ctx)
+                        .unwrap_or_else(|| {
+                            ctx.eval_field(#name, &self.#ident).map(|evaluated: #ty| {
+                                ::lumen_engine::node::DelegateEvaluable::to_json_value(
+                                    &::lumen_engine::node::Delegated::into_delegate(evaluated),
+                                )
+                                .unwrap_or(::serde_json::Value::Null)
+                            })
+                        })
                 )
             }
         });

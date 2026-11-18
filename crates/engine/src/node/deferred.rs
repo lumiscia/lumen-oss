@@ -64,6 +64,17 @@ pub trait ParamValue: Clone {
     /// Calls `f` with each expression this literal holds of its own.
     fn for_each_expression(&self, _f: &mut dyn FnMut(&Expression)) {}
 
+    /// This literal as JSON with the expressions it holds evaluated at `ctx`, or `None` when
+    /// rendering evaluates them. A failure is located at `field` of node `node_id`.
+    fn evaluate_json(
+        &self,
+        _node_id: NodeId,
+        _field: &str,
+        _ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> Option<crate::Result<Value>> {
+        None
+    }
+
     /// Parses a literal, already told apart from an `=expression`. Errors name `path`.
     fn from_json_value(value: &Value, path: &str) -> Result<Self, String>;
 
@@ -88,6 +99,17 @@ where
 
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
         Deferred::eval(self, ctx.node_id, "", ctx.expr)
+    }
+
+    fn evaluate_json(
+        &self,
+        field: &str,
+        ctx: &DelegateEvalContext<'_>,
+    ) -> Option<crate::Result<Value>> {
+        match self {
+            Self::Value(value) => value.evaluate_json(ctx.node_id, field, ctx.expr),
+            Self::Expr(_) => None,
+        }
     }
 
     fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
@@ -444,6 +466,15 @@ impl ParamValue for ShaderUniforms {
         }
     }
 
+    fn evaluate_json(
+        &self,
+        node_id: NodeId,
+        field: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> Option<crate::Result<Value>> {
+        Some(ShaderUniforms::evaluate_json(self, node_id, field, ctx))
+    }
+
     fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
         ShaderUniforms::from_json_value(value, path)
     }
@@ -472,6 +503,15 @@ impl ParamValue for ClipProps {
                 f(expr);
             }
         }
+    }
+
+    fn evaluate_json(
+        &self,
+        node_id: NodeId,
+        field: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> Option<crate::Result<Value>> {
+        Some(ClipProps::evaluate_json(self, node_id, field, ctx))
     }
 
     fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {

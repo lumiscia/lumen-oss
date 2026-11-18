@@ -470,6 +470,18 @@
           "severity": "error"
         },
         {
+          "code": "render.node_not_evaluated",
+          "foundBy": "render",
+          "meaning": "A node's param was asked for at a frame at which no clip or switch leading to the node shows it.",
+          "severity": "error"
+        },
+        {
+          "code": "render.ambiguous_node_frame",
+          "foundBy": "render",
+          "meaning": "A node's param was asked for at a frame at which the node is evaluated at several frames of its own, through clips with different timing, a time remap or a motion blur.",
+          "severity": "error"
+        },
+        {
           "code": "render.invalid_output_type",
           "foundBy": "render",
           "meaning": "A node's output had the wrong type for its reader.",
@@ -532,7 +544,7 @@
       "description": "Which param of which node to evaluate, and when.",
       "properties": {
         "frame": {
-          "description": "The composition frame, which may be fractional.",
+          "description": "The composition frame, which may be fractional. A node inside a `clip`, or behind a\n`time_remap`, is evaluated at the frame of its own time that this frame maps to.",
           "format": "double",
           "type": "number"
         },

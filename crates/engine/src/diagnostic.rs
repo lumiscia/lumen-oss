@@ -376,6 +376,16 @@ pub const CODE_DOCS: &[CodeDoc] = &[
         meaning: "A node of a template was asked for by itself, such as to evaluate one of its params. Only nodes of the root can be.",
     },
     CodeDoc {
+        code: "render.node_not_evaluated",
+        found_by: FoundBy::Render,
+        meaning: "A node's param was asked for at a frame at which no clip or switch leading to the node shows it.",
+    },
+    CodeDoc {
+        code: "render.ambiguous_node_frame",
+        found_by: FoundBy::Render,
+        meaning: "A node's param was asked for at a frame at which the node is evaluated at several frames of its own, through clips with different timing, a time remap or a motion blur.",
+    },
+    CodeDoc {
         code: "render.invalid_output_type",
         found_by: FoundBy::Render,
         meaning: "A node's output had the wrong type for its reader.",
@@ -629,6 +639,8 @@ fn locate(error: &LumenError, document: &Value) -> (String, Option<NodeId>) {
             RenderError::NodeEvaluation { at: place, .. }
             | RenderError::MissingNode { at: place }
             | RenderError::TemplateNode { at: place }
+            | RenderError::NodeNotEvaluated { at: place, .. }
+            | RenderError::AmbiguousNodeFrame { at: place, .. }
             | RenderError::InvalidNodeOutputType { at: place, .. }
             | RenderError::TooDeeplyNested { at: place, .. } => at(place, ""),
             RenderError::FrameOutOfRange { .. }

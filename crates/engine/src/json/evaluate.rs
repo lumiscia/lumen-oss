@@ -1,15 +1,18 @@
 //! Evaluating one param of a node at a frame, without rendering.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{ParseError, load, read_json};
 use crate::{
-    composition::Composition,
+    composition::{Composition, SceneId},
     diagnostic::Diagnostic,
     error::{At, DocumentError, RenderError},
-    expr::{ExpressionContext, InstanceScope},
-    node::{NodeId, NodeKind, PropertyEval},
+    expr::InstanceScope,
+    node::{Node, NodeId, NodeKind, PropertyEval},
+    scope::{FrameTime, MAX_GRAPH_DEPTH, Routed, Scope, route},
 };
 
 /// Which param of which node to evaluate, and when.
@@ -22,7 +25,8 @@ pub struct EvaluateRequest {
     /// The param's name in the node's `params`. A group of params the node flattens, such as
     /// `position`, is addressed by the names it flattens to.
     pub param: String,
-    /// The composition frame, which may be fractional.
+    /// The composition frame, which may be fractional. A node inside a `clip`, or behind a
+    /// `time_remap`, is evaluated at the frame of its own time that this frame maps to.
     pub frame: f64,
     /// The copy an `instance_3d`'s `position`, `rotation` and `scale` are evaluated for, which
     /// they read as `instance`. Other nodes and params ignore it.
@@ -61,14 +65,9 @@ fn evaluate(composition: &Composition, request: &EvaluateRequest) -> crate::Resu
         }
         .into());
     };
-    let mut ctx = ExpressionContext {
-        frame: request.frame,
-        fps: composition.timeline().fps,
-        width: composition.render_settings().width,
-        height: composition.render_settings().height,
-        graph: Some(graph),
-        ..ExpressionContext::default()
-    };
+    let scope = Scope::root(composition);
+    let frame = local_frame(&scope, request)?;
+    let mut ctx = scope.expr_context(frame, None);
     // `count` is the one param of an `instance_3d` that isn't evaluated for a copy.
     if let (NodeKind::Instance3d(instances), Some(index)) = (node, request.instance)
         && request.param != "count"
@@ -86,6 +85,107 @@ fn evaluate(composition: &Composition, request: &EvaluateRequest) -> crate::Resu
             }
             .into())
         })
+}
+
+/// The frame of its own time that `request.node` is evaluated at when the composition is at
+/// `request.frame`: the requested frame carried through the clips and time remaps between the
+/// output and the node, as rendering does. A node the output doesn't read keeps the requested
+/// frame.
+fn local_frame(scope: &Scope<'_>, request: &EvaluateRequest) -> crate::Result<FrameTime> {
+    let mut walk = Walk {
+        target: request.node,
+        frames: Vec::new(),
+        seen: HashSet::new(),
+    };
+    walk.visit(scope, scope.output, request.frame.into(), false, 0)?;
+    let at = At::node(request.node);
+    match walk.frames.as_slice() {
+        [frame] => Ok(*frame),
+        [] if reads(scope, scope.output, request.node, &mut HashSet::new()) => {
+            Err(RenderError::NodeNotEvaluated {
+                at,
+                frame: request.frame,
+            }
+            .into())
+        }
+        [] => Ok(request.frame.into()),
+        frames => Err(RenderError::AmbiguousNodeFrame {
+            at,
+            frame: request.frame,
+            local: frames
+                .iter()
+                .map(|frame| frame.value().to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        }
+        .into()),
+    }
+}
+
+/// The walk of the graph from the output that finds the frames a node is evaluated at.
+struct Walk {
+    target: NodeId,
+    /// Each distinct frame the target was reached at.
+    frames: Vec<FrameTime>,
+    seen: HashSet<(NodeId, u64, bool)>,
+}
+
+impl Walk {
+    /// Visits `node_id` of the root at `frame`, then the inputs `route` reads from it. Templates
+    /// hold no node of the root, so they aren't entered.
+    fn visit(
+        &mut self,
+        scope: &Scope<'_>,
+        node_id: NodeId,
+        frame: FrameTime,
+        sampling: bool,
+        depth: u32,
+    ) -> crate::Result<()> {
+        if !self
+            .seen
+            .insert((node_id, frame.value().to_bits(), sampling))
+        {
+            return Ok(());
+        }
+        if node_id == self.target {
+            if !self.frames.iter().any(|seen| seen.value() == frame.value()) {
+                self.frames.push(frame);
+            }
+            return Ok(());
+        }
+        if depth == MAX_GRAPH_DEPTH {
+            return Err(scope.too_deep(node_id));
+        }
+        let Some(node) = scope.node(node_id) else {
+            return Ok(());
+        };
+        for Routed {
+            node: input,
+            frame,
+            scope,
+            instance,
+        } in route(scope, node, frame, None, sampling)?
+        {
+            if scope.id == SceneId::Root {
+                let sampling =
+                    sampling || (instance.is_some() && matches!(node, NodeKind::MotionBlur(_)));
+                self.visit(&scope, input, frame, sampling, depth + 1)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether `target` is `node_id` or among its inputs, however deep.
+fn reads(scope: &Scope<'_>, node_id: NodeId, target: NodeId, seen: &mut HashSet<NodeId>) -> bool {
+    node_id == target
+        || seen.insert(node_id)
+            && scope.node(node_id).is_some_and(|node| {
+                node.input_ports()
+                    .into_iter()
+                    .flatten()
+                    .any(|input| reads(scope, input, target, seen))
+            })
 }
 
 #[cfg(test)]
@@ -215,6 +315,137 @@ mod tests {
         let diagnostics = evaluate_param(&json, &request(7, "width", 0.0)).unwrap_err();
         assert_eq!(diagnostics[0].code, "render.template_node");
         assert_eq!(diagnostics[0].path, "/compositions/card/nodes/0");
+    }
+
+    fn clip_chain(starts: &[i64]) -> String {
+        let mut nodes = vec![
+            json!({ "id": 1, "type": "background" }),
+            json!({ "id": 2, "type": "opacity", "params": { "opacity": "=frame / 100" } }),
+        ];
+        let mut connections = vec![connect(1, 2, "source")];
+        let mut clips = Vec::new();
+        for (index, start) in starts.iter().enumerate() {
+            let id = 3 + index as u64;
+            nodes.push(json!({ "id": id, "type": "clip", "params": { "start": start } }));
+            connections.push(connect(2, id, "source"));
+            clips.push(id);
+        }
+        let output = 3 + starts.len() as u64;
+        match clips.as_slice() {
+            [only] => connections.push(connect(*only, output, "source")),
+            [first, second] => {
+                nodes.push(json!({ "id": output, "type": "merge" }));
+                connections.push(connect(*first, output, "base"));
+                connections.push(connect(*second, output, "overlay"));
+                nodes.push(json!({ "id": output + 1, "type": "media_output" }));
+                connections.push(connect(output, output + 1, "source"));
+                return composition(json!(nodes), json!(connections));
+            }
+            _ => unreachable!(),
+        }
+        nodes.push(json!({ "id": output, "type": "media_output" }));
+        composition(json!(nodes), json!(connections))
+    }
+
+    #[test]
+    fn a_node_upstream_of_a_clip_is_evaluated_at_its_local_frame() {
+        let json = clip_chain(&[30]);
+        let at = |frame| evaluate_param(&json, &request(2, "opacity", frame));
+        assert_eq!(at(60.0).unwrap().as_f64(), Some(0.3));
+        assert_eq!(at(40.5).unwrap().as_f64(), Some(0.105));
+        let diagnostics = at(10.0).unwrap_err();
+        assert_eq!(diagnostics[0].code, "render.node_not_evaluated");
+        assert_eq!(diagnostics[0].path, "/nodes/1");
+    }
+
+    #[test]
+    fn a_node_reached_at_several_local_frames_is_ambiguous() {
+        let json = clip_chain(&[30, 40]);
+        let at = |frame| evaluate_param(&json, &request(2, "opacity", frame));
+        assert_eq!(at(45.0).unwrap_err()[0].code, "render.ambiguous_node_frame");
+        // The first clip hasn't started, so only the second reaches the node.
+        assert_eq!(at(35.0).unwrap().as_f64(), Some(0.05));
+    }
+
+    #[test]
+    fn expressions_nested_in_wgsl_shader_uniforms_are_evaluated() {
+        let shader =
+            "struct P { amount: f32, center: vec2<f32> } @group(0) @binding(1) var<uniform> p: P;";
+        let json = |uniforms| {
+            composition(
+                json!([
+                    { "id": 1, "type": "background" },
+                    { "id": 2, "type": "wgsl_shader", "params": { "shader": shader, "uniforms": uniforms } },
+                    { "id": 3, "type": "media_output" },
+                ]),
+                json!([connect(1, 2, "source"), connect(2, 3, "source")]),
+            )
+        };
+        let evaluated = evaluate_param(
+            &json(json!({ "amount": "=frame / 100", "center": [1, "=frame"] })),
+            &request(2, "uniforms", 60.0),
+        )
+        .unwrap();
+        assert_eq!(evaluated, json!({ "amount": 0.6, "center": [1.0, 60.0] }));
+        let diagnostics = evaluate_param(
+            &json(json!({ "amount": "=frame / 100", "center": "='abc'" })),
+            &request(2, "uniforms", 60.0),
+        )
+        .unwrap_err();
+        assert_eq!(diagnostics[0].path, "/nodes/1/params/uniforms/center");
+    }
+
+    #[test]
+    fn expressions_nested_in_clip_props_are_evaluated() {
+        let json = |props| {
+            json!({
+                "timeline": { "fps": 30, "duration_frames": 90 },
+                "render_settings": { "width": 64, "height": 32 },
+                "nodes": [
+                    { "id": 1, "type": "clip", "params": { "composition": "card", "props": props } },
+                    { "id": 2, "type": "media_output" },
+                ],
+                "connections": [connect(1, 2, "source")],
+                "compositions": { "card": {
+                    "props": { "index": { "type": "number" } },
+                    "nodes": [{ "id": 7, "type": "background" }, { "id": 8, "type": "media_output" }],
+                    "connections": [connect(7, 8, "source")],
+                } },
+            })
+            .to_string()
+        };
+        let evaluated = evaluate_param(
+            &json(json!({ "index": "=frame / 10" })),
+            &request(1, "props", 30.0),
+        );
+        assert_eq!(evaluated.unwrap(), json!({ "index": 3.0 }));
+        let diagnostics = evaluate_param(
+            &json(json!({ "index": "=frame > 1" })),
+            &request(1, "props", 30.0),
+        )
+        .unwrap_err();
+        assert!(
+            diagnostics[0].path.ends_with("/props/index"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn text_spans_are_evaluated_with_their_styles() {
+        let json = composition(
+            json!([
+                { "id": 1, "type": "text", "params": { "content": [
+                    { "text": "a", "font_size": "=frame", "color": "=rgb(255, 0, 0)" },
+                    { "text": "b", "underline": { "thickness": "=frame / 5" } },
+                ] } },
+                { "id": 2, "type": "media_output" },
+            ]),
+            json!([connect(1, 2, "source")]),
+        );
+        let content = evaluate_param(&json, &request(1, "content", 10.0)).unwrap();
+        assert_eq!(content[0]["font_size"], json!(10.0));
+        assert_eq!(content[0]["color"], json!([255, 0, 0, 255]));
+        assert_eq!(content[1]["underline"]["thickness"], json!(2.0));
     }
 
     #[test]

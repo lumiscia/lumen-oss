@@ -9,11 +9,12 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::{
-    expr::{Expression, parse_hex_color},
+    error::LumenError,
+    expr::{Expression, ExpressionContext, ExpressionValue, parse_hex_color},
     json::{StringParam, classify_string},
 };
 
-use super::{Deferred, ParamTypeDef};
+use super::{Deferred, NodeId, ParamTypeDef};
 
 #[derive(Debug, Clone, Default, lumen_macros::StructuralHash)]
 pub struct ShaderUniforms(pub BTreeMap<String, ShaderUniformValue>);
@@ -61,6 +62,61 @@ impl ShaderUniforms {
                 .map(|(name, value)| (name.clone(), value.to_json_value()))
                 .collect(),
         )
+    }
+
+    /// The JSON of these uniforms with each expression replaced by its value at `ctx`: a number,
+    /// an array of numbers or a `#rrggbb(aa)` colour. A failure is located at `field.name` of node
+    /// `node_id`, as rendering locates it.
+    pub(crate) fn evaluate_json(
+        &self,
+        node_id: NodeId,
+        field: &str,
+        ctx: &ExpressionContext<'_>,
+    ) -> crate::Result<Value> {
+        self.0
+            .iter()
+            .map(|(name, value)| {
+                let path = format!("{field}.{name}");
+                let evaluated = match value {
+                    ShaderUniformValue::Expr(expr) => {
+                        let value = expr
+                            .evaluate(ctx)
+                            .map_err(|error| error.located(node_id, &path))?;
+                        match value {
+                            ExpressionValue::Number(number) => Value::from(number),
+                            ExpressionValue::Vec2((x, y)) => Value::from(vec![x, y]),
+                            ExpressionValue::Vec3(vector) => Value::from(vector.to_vec()),
+                            ExpressionValue::Color(rgba) => {
+                                let [r, g, b, a] = rgba
+                                    .map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8);
+                                ShaderUniformValue::Color {
+                                    rgb: [r, g, b],
+                                    alpha: (a != u8::MAX).then_some(a),
+                                }
+                                .to_json_value()
+                            }
+                            other => {
+                                return Err(LumenError::evaluate(format!(
+                                    "expression returned a {}, expected a number",
+                                    other.type_name()
+                                ))
+                                .located(node_id, &path));
+                            }
+                        }
+                    }
+                    ShaderUniformValue::Vector(components) => components
+                        .iter()
+                        .map(|component| component.eval(node_id, &path, ctx))
+                        .collect::<crate::Result<Vec<f64>>>()?
+                        .into(),
+                    ShaderUniformValue::Number(_) | ShaderUniformValue::Color { .. } => {
+                        value.to_json_value()
+                    }
+                };
+                Ok((name.clone(), evaluated))
+            })
+            .collect::<crate::Result<_>>()
+            .map(Value::Object)
     }
 }
 
