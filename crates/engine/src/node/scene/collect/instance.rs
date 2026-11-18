@@ -26,7 +26,7 @@ use crate::node::{Deferred, DelegateEvalContext, Node, NodeId, ParamValue, requi
 const _: () = assert!(MAX_INSTANCES as usize <= MAX_SCENE_NODES);
 
 /// How many `instance_3d` nodes may hold one another, which bounds the recursion collecting them.
-const MAX_NESTING: u32 = 8;
+pub(super) const MAX_NESTING: u32 = 8;
 
 fn instance_error(node_id: NodeId, details: String) -> LumenError {
     RenderError::evaluating::<Instance3d>(node_id, details).into()

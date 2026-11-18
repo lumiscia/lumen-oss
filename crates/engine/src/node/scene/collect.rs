@@ -1,8 +1,10 @@
 //! Evaluates a scene's nodes at a frame into what `render_3d` draws.
 
+mod camera;
 mod instance;
 mod particles;
 
+pub(crate) use camera::find_camera;
 pub(crate) use instance::Placements;
 pub(super) use instance::{CopyList, CopySource};
 pub(super) use particles::instance_buffer as particle_buffer;
@@ -17,14 +19,12 @@ use lumen_3d::model::{
     Material, Model, ModelError, ModelScene, Playback, Reach, SkinBounds, Texture,
 };
 use lumen_3d::{
-    Blending, Bounds, BoxFace, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive,
-    Projection, Scene, Shadow, Surface, Transform,
+    Blending, Bounds, BoxFace, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive, Scene,
+    Shadow, Surface, Transform,
 };
 use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
-use super::{
-    Light3dKind, Material3dParams, Model3d, Placement3d, Pose3d, Projection3d, Shape3d, Shape3dKind,
-};
+use super::{Light3dKind, Material3dParams, Model3d, Placement3d, Pose3d, Shape3d, Shape3dKind};
 use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
 use crate::gpu::evictions;
 use crate::gpu::frame_graph::{FrameCx, Raster};
@@ -773,6 +773,52 @@ fn solid_object(
     (object, Extent::Local(local))
 }
 
+/// The model `source` names, loaded once and counted as drawn this frame, as the node `node_id`
+/// reads it.
+fn open_model(cx: &mut FrameCx<'_>, node_id: NodeId, source: &str) -> crate::Result<LoadedModel> {
+    let at = cx.node_param(node_id, "source");
+    let in_node = |error: MediaError| {
+        LumenError::from(error).media_used_as(&[AssetKind::Model], || at.clone())
+    };
+    let media = cx.media().ok_or_else(|| {
+        in_node(MediaError::source_not_found(
+            source,
+            "this render has no media store",
+        ))
+    })?;
+    let (identity, resolver) = resolve_as::<dyn ModelResolver>(media, source).map_err(in_node)?;
+    let tick = cx.tick();
+    let (rec, cache) = cx.scene_cache();
+    let model = cache
+        .model(rec, tick, source, (&identity, &*resolver))
+        .map_err(in_node)?;
+    cx.drew_model(identity.as_str());
+    cx.read_source(AssetKind::Model, source, Some(&identity));
+    Ok(model)
+}
+
+/// The composition time in seconds that a model's clip plays from.
+fn model_seconds(expr: &crate::expr::ExpressionContext<'_>) -> f64 {
+    if expr.fps > 0.0 {
+        expr.frame / f64::from(expr.fps)
+    } else {
+        0.0
+    }
+}
+
+/// `clip` of a model played as `params` say, `seconds` into the composition.
+fn model_playback(
+    clip: Option<usize>,
+    params: &super::Model3dParams,
+    seconds: f64,
+) -> Option<Playback> {
+    clip.map(|clip| Playback {
+        clip,
+        seconds: (seconds * params.animation_speed + params.animation_offset) as f32,
+        looped: params.animation_loop,
+    })
+}
+
 /// What an object covers before it is placed in the world, or for an instanced object, before its
 /// copies' placements and their parent place it.
 #[derive(Clone, Copy)]
@@ -1196,34 +1242,13 @@ impl Collected {
             }
             NodeKind::Model3d(model) => {
                 let params = model.params.eval(&ctx)?;
-                let seconds = if expr.fps > 0.0 {
-                    expr.frame / f64::from(expr.fps)
-                } else {
-                    0.0
-                };
-                self.add_model(cx, model, params, seconds, parent)?;
+                self.add_model(cx, model, params, model_seconds(&expr), parent)?;
             }
             NodeKind::Camera3d(camera) => {
                 let params = camera.params.eval(&ctx)?;
-                let local = if params.look_at {
-                    lumen_3d::look_at(vec3(params.pose.position), vec3(params.target))
-                } else {
-                    pose(&params.pose).matrix()
-                };
-                let near = (params.near as f32).max(1e-4);
-                self.scene.camera.get_or_insert(Camera {
-                    world: parent * local,
-                    projection: match params.projection {
-                        Projection3d::Perspective => Projection::Perspective {
-                            fov_y: (params.fov.clamp(1.0, 179.0) as f32).to_radians(),
-                        },
-                        Projection3d::Orthographic => Projection::Orthographic {
-                            height: (params.ortho_height as f32).max(1e-4),
-                        },
-                    },
-                    near,
-                    far: (params.far as f32).max(near + 1e-3),
-                });
+                self.scene
+                    .camera
+                    .get_or_insert_with(|| camera::camera_3d(&params, parent));
             }
             NodeKind::Light3d(light) => {
                 let params = light.params.eval(&ctx)?;
@@ -1295,25 +1320,7 @@ impl Collected {
     ) -> crate::Result<()> {
         let source = params.source.as_str();
         let error = |details: String| model_error(node.id, source, details);
-        let at = cx.node_param(node.id, "source");
-        let in_node = |error: MediaError| {
-            LumenError::from(error).media_used_as(&[AssetKind::Model], || at.clone())
-        };
-        let media = cx.media().ok_or_else(|| {
-            in_node(MediaError::source_not_found(
-                source,
-                "this render has no media store",
-            ))
-        })?;
-        let (identity, resolver) =
-            resolve_as::<dyn ModelResolver>(media, source).map_err(in_node)?;
-        let tick = cx.tick();
-        let (rec, cache) = cx.scene_cache();
-        let model = cache
-            .model(rec, tick, source, (&identity, &*resolver))
-            .map_err(in_node)?;
-        cx.drew_model(identity.as_str());
-        cx.read_source(AssetKind::Model, source, Some(&identity));
+        let model = open_model(cx, node.id, source)?;
         let scene = &model.scene;
         if scene.skipped_primitives() > 0 {
             cx.warn(
@@ -1353,11 +1360,7 @@ impl Collected {
             ));
         }
 
-        let playback = clip.map(|clip| Playback {
-            clip,
-            seconds: (seconds * params.animation_speed + params.animation_offset) as f32,
-            looped: params.animation_loop,
-        });
+        let playback = model_playback(clip, &params, seconds);
         if let Some(clip) = clip
             && node.animates()
         {
@@ -1398,20 +1401,9 @@ impl Collected {
                 .extend(std::iter::repeat_n(node.id, pose.lights.len()));
         }
         if let Some(camera) = camera
-            && let Some(&(_, world)) = pose.cameras.iter().find(|(index, _)| *index == camera)
-            && let Some(model_camera) = scene.cameras().get(camera)
+            && let Some(camera) = camera::model_camera(scene, &pose, camera, root)
         {
-            // A camera keeps its node's place and turn, but not its scale.
-            let (_, rotation, translation) = (root * world).to_scale_rotation_translation();
-            let world = Mat4::from_rotation_translation(rotation, translation);
-            if world.is_finite() {
-                self.scene.camera.get_or_insert(Camera {
-                    world,
-                    projection: model_camera.projection,
-                    near: model_camera.near,
-                    far: model_camera.far,
-                });
-            }
+            self.scene.camera.get_or_insert(camera);
         }
         // Each skin's joint matrices start, in the pose, at the first joint of the primitives it
         // moves, and later skins' start later.

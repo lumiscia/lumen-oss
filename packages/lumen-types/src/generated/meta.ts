@@ -3299,7 +3299,11 @@ export interface TransformNode extends CompositionNodeBase<"transform"> {
 /** Runs a custom WGSL compute shader over one or more rasters. */
 export interface WgslShaderNode extends CompositionNodeBase<"wgsl_shader"> {
   readonly params?: {
-    /** WGSL compute shader; the prelude provides inputs, `input_sampler`, `output` and `lumen`. */
+    /**
+     * WGSL compute shader; the prelude provides inputs, `input_sampler`, `output` and `lumen`,
+     * which holds `resolution`, `time`, `frame`, and from the `camera` input `view`, `projection`
+     * and `camera_position`.
+     */
     readonly shader?: ExpressionValue<string>;
     /** Uniform struct field values by name; unset fields are zero. */
     readonly uniforms?: ShaderUniforms;
@@ -3585,7 +3589,7 @@ export interface NodeInputPortNameByKind {
   readonly "text_3d": "material" | "side_material";
   readonly "time_remap": "source";
   readonly "transform": "source";
-  readonly "wgsl_shader": "source";
+  readonly "wgsl_shader": "camera" | "source";
   readonly "zoom_blur": "source";
 }
 
@@ -3747,7 +3751,7 @@ export interface NodeInputPortKindByKind {
   readonly "text_3d": { readonly "material": "material"; readonly "side_material": "material" };
   readonly "time_remap": { readonly "source": "raster" };
   readonly "transform": { readonly "source": "raster" };
-  readonly "wgsl_shader": { readonly "source": "raster" };
+  readonly "wgsl_shader": { readonly "source": "raster"; readonly "camera": "scene" };
   readonly "zoom_blur": { readonly "source": "raster" };
 }
 
@@ -4109,7 +4113,7 @@ export const nodeInputPorts = {
   /** Transforms a raster into the composition canvas bounds. */
   "transform": { "source": { kind: "raster", variadic: false } },
   /** Runs a custom WGSL compute shader over one or more rasters. */
-  "wgsl_shader": { "source": { kind: "raster", variadic: true } },
+  "wgsl_shader": { "source": { kind: "raster", variadic: true }, "camera": { kind: "scene", variadic: false } },
   /** Blurs a raster along rays from a centre, as a zoom. */
   "zoom_blur": { "source": { kind: "raster", variadic: false } },
 } as const satisfies [NodeParamPortNameClash] extends [never]

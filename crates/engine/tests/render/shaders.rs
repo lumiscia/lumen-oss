@@ -43,6 +43,23 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 ";
 
+/// Green where the camera matrices are the identity and the position is zero, red elsewhere.
+const NO_CAMERA_SHADER: &str = "
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let identity = mat4x4<f32>(
+        vec4<f32>(1.0, 0.0, 0.0, 0.0), vec4<f32>(0.0, 1.0, 0.0, 0.0),
+        vec4<f32>(0.0, 0.0, 1.0, 0.0), vec4<f32>(0.0, 0.0, 0.0, 1.0),
+    );
+    let still = all(lumen.view[0] == identity[0]) && all(lumen.view[1] == identity[1])
+        && all(lumen.view[2] == identity[2]) && all(lumen.view[3] == identity[3])
+        && all(lumen.projection[0] == identity[0]) && all(lumen.projection[1] == identity[1])
+        && all(lumen.projection[2] == identity[2]) && all(lumen.projection[3] == identity[3])
+        && all(lumen.camera_position == vec3<f32>(0.0));
+    textureStore(output, vec2<i32>(id.xy), select(vec4<f32>(1.0, 0.0, 0.0, 1.0), vec4<f32>(0.0, 1.0, 0.0, 1.0), still));
+}
+";
+
 const VEC3_SHADER: &str = "
 struct Params {
     amount: f32,
@@ -152,6 +169,11 @@ fn shader_abi() {
                 &[BLACK],
             ),
             Expect::Uniform([srgb8(0.5), 0, 0, 255]),
+        ),
+        Case::new(
+            "without a camera the matrices are the identity and the position zero",
+            shader_scene(NO_CAMERA_SHADER, json!({}), &[BLACK]),
+            Expect::Uniform([0, 255, 0, 255]),
         ),
         Case::new(
             "uniforms from composition JSON",
@@ -339,4 +361,66 @@ fn shader_output_is_kept_in_the_working_space() {
     })
     .into();
     check(cases);
+}
+
+/// White at the pixel the world origin projects to through the camera, black elsewhere.
+#[cfg(feature = "3d")]
+const ORIGIN_SHADER: &str = "
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let clip = lumen.projection * lumen.view * vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    let ndc = clip.xy / clip.w;
+    let pixel = vec2<i32>(floor(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * lumen.resolution));
+    let hit = all(vec2<i32>(id.xy) == pixel);
+    textureStore(output, vec2<i32>(id.xy), select(vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(1.0), hit));
+}
+";
+
+#[cfg(feature = "3d")]
+#[test]
+fn a_shader_projects_through_the_camera_of_its_scene() {
+    // A 9 × 5 canvas has a single centre pixel, (4, 2).
+    let projected = |scene_nodes: Value| {
+        let mut nodes = vec![json!({
+            "id": 1, "type": "background",
+            "params": { "paint": [0, 0, 0, 255], "width": 9, "height": 5 }
+        })];
+        nodes.extend(scene_nodes.as_array().cloned().unwrap());
+        nodes.push(json!({
+            "id": 10, "type": "wgsl_shader", "in": { "source": [1], "camera": 2 },
+            "params": { "shader": ORIGIN_SHADER }
+        }));
+        scene((9, 5), json!(nodes))
+    };
+    let at = |x: u32| Expect::Probes(vec![(x, 2, [255; 4]), (4 + 3 - x, 2, [0, 0, 0, 255])]);
+    check(vec![
+        Case::new(
+            "the origin is at the centre of a camera looking at it down -Z",
+            projected(json!([
+                { "id": 2, "type": "camera_3d", "params": { "position": [0, 0, 5] } }
+            ])),
+            at(4),
+        ),
+        Case::new(
+            "a camera moved along +X sees it to the left",
+            projected(json!([
+                { "id": 2, "type": "camera_3d", "params": { "position": [1, 0, 5] } }
+            ])),
+            at(3),
+        ),
+        Case::new(
+            "the first camera of a scene wins, placed by the merge above it",
+            projected(json!([
+                { "id": 3, "type": "camera_3d", "params": { "position": [1, 0, 5] } },
+                { "id": 4, "type": "camera_3d", "params": { "position": [-1, 0, 5] } },
+                { "id": 2, "type": "merge_3d", "in": { "objects": [3, 4] }, "params": {} },
+            ])),
+            at(3),
+        ),
+        Case::new(
+            "a scene without a camera is viewed as render_3d views it",
+            projected(json!([{ "id": 2, "type": "merge_3d", "params": {} }])),
+            at(4),
+        ),
+    ]);
 }
