@@ -184,9 +184,15 @@ pub(super) struct VideoArgs {
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Image options")]
 pub(super) struct ImageArgs {
-    /// Frame to render as one image [default: 0]
-    #[arg(long, value_name = "N", conflicts_with = "frames")]
-    pub(super) frame: Option<u32>,
+    /// Frame to render as one image, or a comma-separated list of frames for a %d sequence
+    /// [default: 0]
+    #[arg(
+        long,
+        value_name = "N[,N...]",
+        value_delimiter = ',',
+        conflicts_with = "frames"
+    )]
+    pub(super) frame: Option<Vec<u32>>,
 
     /// JPEG quality from 1 to 100 [default: 90]
     #[arg(
