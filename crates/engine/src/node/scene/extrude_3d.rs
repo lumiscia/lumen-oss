@@ -64,7 +64,8 @@ impl Default for Extrude3dParams {
 
 /// A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front
 /// cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
-/// `material_3d` is wired into `material`. The geometry's pixel coordinates, after its own
+/// `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
+/// side walls and the bevel instead, leaving the caps to `material`. The geometry's pixel coordinates, after its own
 /// position, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with
 /// Y flipped, since 2D Y points down and 3D Y up. Pixel (0, 0) is the origin that `placement`
 /// moves and turns the solid about, and nothing re-centres the solid on it: the geometry's
@@ -98,4 +99,6 @@ pub struct Extrude3d {
     pub geometry: Option<NodeId>,
     #[input(material, optional)]
     pub material: Option<NodeId>,
+    #[input(material, optional)]
+    pub side_material: Option<NodeId>,
 }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use foldhash::HashMap;
 use lumen_3d::glam::{Vec2, Vec3};
 use lumen_3d::model::{MAX_INDICES, MAX_VERTICES};
-use lumen_3d::{Bounds, ExtrudeLimit, ExtrudeLimits, Extrusion, LimitExceeded, Mesh};
+use lumen_3d::{Bounds, ExtrudeLimit, ExtrudeLimits, Extruded, Extrusion, LimitExceeded, Mesh};
 use lumen_gpu::Recorder;
 use lumen_text::{GlyphKey, GlyphOutline, OutlineCommand, TextLayoutRequest};
 use lyon_path::iterator::PathIterator;
@@ -52,11 +52,14 @@ const GLYPH_LIMITS: ExtrudeLimits = ExtrudeLimits {
     max_indices: 786_432,
 };
 
-/// A text's mesh on the GPU, with its index count and what it covers before it is placed.
+/// A text's mesh on the GPU, with its index count and what it covers before it is placed. Its
+/// indices draw the glyphs' side walls, then their caps.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TextMesh {
     pub(super) mesh: GpuMesh,
     pub(super) index_count: u32,
+    /// Where the caps' indices start.
+    pub(super) caps_start: u32,
     pub(super) bounds: Bounds,
 }
 
@@ -152,7 +155,7 @@ type GlyphBuild = [u32; 3];
 
 struct CachedGlyph {
     /// `None` for a glyph with no outline.
-    mesh: Option<Arc<Mesh>>,
+    mesh: Option<Arc<Extruded>>,
     /// What building it took of [`MAX_GLYPH_WORK`].
     work: u64,
     bytes: u64,
@@ -183,7 +186,7 @@ impl GlyphMeshes {
     }
 
     /// The mesh of `glyph` and the work it took to build, if it is kept, which counts as using it.
-    fn get(&mut self, glyph: &(GlyphKey, GlyphBuild)) -> Option<(Option<Arc<Mesh>>, u64)> {
+    fn get(&mut self, glyph: &(GlyphKey, GlyphBuild)) -> Option<(Option<Arc<Extruded>>, u64)> {
         self.clock += 1;
         let cached = self.meshes.get_mut(glyph)?;
         cached.last_used = self.clock;
@@ -197,14 +200,14 @@ impl GlyphMeshes {
             cached
                 .mesh
                 .as_ref()
-                .is_some_and(|mesh| !mesh.indices.is_empty()),
+                .is_some_and(|glyph| !glyph.mesh.indices.is_empty()),
         )
     }
 
     /// Keeps `mesh` unless it is larger than the budget, freeing the least recently used meshes
     /// while more than the budget is kept.
-    fn insert(&mut self, glyph: (GlyphKey, GlyphBuild), mesh: Option<Arc<Mesh>>, work: u64) {
-        let bytes = mesh.as_ref().map_or(0, |mesh| glyph_bytes(mesh));
+    fn insert(&mut self, glyph: (GlyphKey, GlyphBuild), mesh: Option<Arc<Extruded>>, work: u64) {
+        let bytes = mesh.as_ref().map_or(0, |glyph| glyph_bytes(&glyph.mesh));
         if bytes > GLYPH_BUDGET_BYTES {
             return;
         }
@@ -333,6 +336,7 @@ impl TextMeshes {
         let mesh = mesh.map(|mesh| TextMesh {
             mesh: GpuMesh::upload(rec, &mesh),
             index_count: mesh.indices.len() as u32,
+            caps_start: built.caps_start,
             bounds: Bounds::of(
                 mesh.vertices
                     .iter()
@@ -443,6 +447,8 @@ pub(super) fn text_mesh(
 
 struct Built {
     mesh: Option<Mesh>,
+    /// The index of the mesh where the glyphs' caps start.
+    caps_start: u32,
     skipped: usize,
 }
 
@@ -567,9 +573,9 @@ fn build(
             }
         };
         match mesh {
-            Some(mesh) if !mesh.indices.is_empty() => {
-                vertex_count += mesh.vertices.len();
-                index_count += mesh.indices.len();
+            Some(mesh) if !mesh.mesh.indices.is_empty() => {
+                vertex_count += mesh.mesh.vertices.len();
+                index_count += mesh.mesh.indices.len();
                 if vertex_count > MAX_VERTICES || index_count > MAX_INDICES {
                     return Err(BuildError::Rejected(node_limit_message()));
                 }
@@ -589,11 +595,12 @@ fn build(
         indices: Vec::with_capacity(index_count),
     };
     let scale = Vec3::new(em, em, z_scale);
-    for (offset, part) in parts {
-        let base = mesh.vertices.len() as u32;
-        for vertex in &part.vertices {
+    let mut bases = Vec::with_capacity(parts.len());
+    for (offset, part) in &parts {
+        bases.push(mesh.vertices.len() as u32);
+        for vertex in &part.mesh.vertices {
             let mut vertex = *vertex;
-            vertex.position = (Vec3::from(vertex.position) * scale + offset).into();
+            vertex.position = (Vec3::from(vertex.position) * scale + *offset).into();
             if !(vertex.position.iter().all(|c| c.is_finite())) {
                 return Err(BuildError::Rejected(
                     "the extruded text has a vertex that is not finite; check the node's sizes, \
@@ -603,11 +610,23 @@ fn build(
             }
             mesh.vertices.push(vertex);
         }
-        mesh.indices
-            .extend(part.indices.iter().map(|index| base + index));
+    }
+    // Every glyph's walls, then every glyph's caps.
+    let mut caps_start = 0;
+    for caps in [false, true] {
+        for ((_, part), base) in parts.iter().zip(&bases) {
+            let (walls, front_and_back) = part.mesh.indices.split_at(part.caps_start as usize);
+            let indices = if caps { front_and_back } else { walls };
+            mesh.indices
+                .extend(indices.iter().map(|index| base + index));
+        }
+        if !caps {
+            caps_start = mesh.indices.len() as u32;
+        }
     }
     Ok(Built {
         mesh: Some(mesh),
+        caps_start,
         skipped,
     })
 }
@@ -684,7 +703,7 @@ fn glyph_mesh(
     extrusion: &Extrusion,
     limits: &ExtrudeLimits,
     work_left: u64,
-) -> Result<(Option<Arc<Mesh>>, u64), GlyphFailure> {
+) -> Result<(Option<Arc<Extruded>>, u64), GlyphFailure> {
     let outline = text_system(media)
         .map_err(GlyphFailure::Lumen)?
         .glyph_outline(glyph);
@@ -702,10 +721,10 @@ fn glyph_mesh(
     if work > work_left {
         return Err(GlyphFailure::TooMuchWork);
     }
-    let mut mesh = lumen_3d::extrude(&contours, extrusion, limits).map_err(GlyphFailure::Limit)?;
-    mesh.vertices.shrink_to_fit();
-    mesh.indices.shrink_to_fit();
-    Ok((Some(Arc::new(mesh)), work))
+    let mut glyph = lumen_3d::extrude(&contours, extrusion, limits).map_err(GlyphFailure::Limit)?;
+    glyph.mesh.vertices.shrink_to_fit();
+    glyph.mesh.indices.shrink_to_fit();
+    Ok((Some(Arc::new(glyph)), work))
 }
 
 /// The closed polygons of an outline in pixels, flattened to within `tolerance` pixels and
@@ -812,7 +831,9 @@ mod tests {
     }
 
     fn extrude(contours: &[Vec<Vec2>], extrusion: &Extrusion) -> Mesh {
-        lumen_3d::extrude(contours, extrusion, &ExtrudeLimits::NONE).unwrap()
+        lumen_3d::extrude(contours, extrusion, &ExtrudeLimits::NONE)
+            .unwrap()
+            .mesh
     }
 
     fn position(mesh: &Mesh, index: u32) -> Vec3 {
@@ -1022,15 +1043,18 @@ mod tests {
         }
     }
 
-    fn mesh_of(vertices: usize) -> Option<Arc<Mesh>> {
+    fn mesh_of(vertices: usize) -> Option<Arc<Extruded>> {
         let vertex = lumen_3d::Vertex {
             position: [0.0; 3],
             normal: [0.0, 0.0, 1.0],
             uv: [0.0; 2],
         };
-        Some(Arc::new(Mesh {
-            vertices: vec![vertex; vertices],
-            indices: vec![0; 3],
+        Some(Arc::new(Extruded {
+            mesh: Mesh {
+                vertices: vec![vertex; vertices],
+                indices: vec![0; 3],
+            },
+            caps_start: 0,
         }))
     }
 
@@ -1166,7 +1190,7 @@ mod tests {
         let mut glyphs = GlyphMeshes::default();
         built(text("@"), &mut glyphs, 100).unwrap();
         for glyph in glyphs.meshes.values() {
-            let mesh = glyph.mesh.as_ref().unwrap();
+            let mesh = &glyph.mesh.as_ref().unwrap().mesh;
             assert_eq!(mesh.vertices.capacity(), mesh.vertices.len());
             assert_eq!(mesh.indices.capacity(), mesh.indices.len());
         }

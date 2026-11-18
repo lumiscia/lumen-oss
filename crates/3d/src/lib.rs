@@ -23,11 +23,13 @@ pub use bounds::Bounds;
 pub use camera::{Camera, Projection};
 pub use color::srgb_to_linear;
 pub use draws::{DrawError, DrawKey, Draws, Row, Run};
-pub use extrude::{ExtrudeLimit, ExtrudeLimits, Extrusion, LimitExceeded, extrude};
+pub use extrude::{ExtrudeLimit, ExtrudeLimits, Extruded, Extrusion, LimitExceeded, extrude};
 pub use glam;
 pub use lathe::{Lathe, LatheContour, LatheLimits, lathe};
 pub use light::{Light, LightKind, Lighting, Shadow};
-pub use mesh::{Mesh, MorphDelta, Primitive, SkinVertex, Vertex, VertexExtra, plane_scale};
+pub use mesh::{
+    BoxFace, Mesh, MorphDelta, Primitive, SkinVertex, Vertex, VertexExtra, plane_scale,
+};
 pub use scene::{
     Blending, Filter, Instanced, MAX_SCENE_NODES, Map, MapUv, Maps, Morph, Object, Orientation,
     Sampler, Scene, Surface, Wrap,

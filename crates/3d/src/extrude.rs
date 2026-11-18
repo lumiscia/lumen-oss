@@ -117,6 +117,15 @@ const BEVEL_HALVINGS: u32 = 6;
 /// clear of slivers.
 const BEVEL_CLEARANCE: f32 = 1.25;
 
+/// An extruded solid's mesh, whose indices draw the side walls first and then the caps.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Extruded {
+    pub mesh: Mesh,
+    /// The index of `mesh.indices` where the front cap, then the back cap, start; the walls,
+    /// including the bevel, come before it.
+    pub caps_start: u32,
+}
+
 /// The outline's closed `contours` extruded into a solid: a front cap facing +Z, a back cap
 /// facing -Z and side walls facing out around the area the contours fill by the nonzero rule, so
 /// the holes of a glyph such as "o" stay open whichever way its contours wind, and contours that
@@ -130,7 +139,7 @@ pub fn extrude(
     contours: &[Vec<Vec2>],
     extrusion: &Extrusion,
     limits: &ExtrudeLimits,
-) -> Result<Mesh, LimitExceeded> {
+) -> Result<Extruded, LimitExceeded> {
     ExtrudeLimits::check(limits.max_contours, contours.len(), ExtrudeLimit::Contours)?;
     let points = |contours: &[Vec<Vec2>]| contours.iter().map(Vec::len).sum::<usize>();
     ExtrudeLimits::check(limits.max_points, points(contours), ExtrudeLimit::Points)?;
@@ -141,7 +150,7 @@ pub fn extrude(
         .collect();
     let mut mesh = Mesh::default();
     if contours.is_empty() {
-        return Ok(mesh);
+        return Ok(Extruded::default());
     }
     ExtrudeLimits::check(limits.max_contours, contours.len(), ExtrudeLimit::Contours)?;
     ExtrudeLimits::check(limits.max_points, points(&contours), ExtrudeLimit::Points)?;
@@ -178,8 +187,9 @@ pub fn extrude(
         }
         caps.push(rings.last().cloned().unwrap_or_default());
     }
+    let caps_start = mesh.indices.len() as u32;
     fill_caps(&mut mesh, &caps, half, limits)?;
-    Ok(mesh)
+    Ok(Extruded { mesh, caps_start })
 }
 
 /// `contour` without points that aren't finite or that repeat the one before, or `None` when
@@ -774,7 +784,9 @@ mod tests {
     use super::*;
 
     fn extrude(contours: &[Vec<Vec2>], extrusion: &Extrusion) -> Mesh {
-        super::extrude(contours, extrusion, &ExtrudeLimits::NONE).unwrap()
+        super::extrude(contours, extrusion, &ExtrudeLimits::NONE)
+            .unwrap()
+            .mesh
     }
 
     fn rectangle(min: Vec2, max: Vec2) -> Vec<Vec2> {
@@ -1079,7 +1091,7 @@ mod tests {
             ..limits()
         };
         assert_eq!(
-            super::extrude(&outline, &bevelled(8), &exact).unwrap(),
+            super::extrude(&outline, &bevelled(8), &exact).unwrap().mesh,
             mesh
         );
     }

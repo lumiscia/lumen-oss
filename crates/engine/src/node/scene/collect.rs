@@ -8,6 +8,7 @@ pub(super) use instance::{CopyList, CopySource};
 pub(super) use particles::instance_buffer as particle_buffer;
 pub(crate) use particles::{ParticleCache, particles_programs};
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use foldhash::HashMap;
@@ -16,13 +17,13 @@ use lumen_3d::model::{
     Material, Model, ModelError, ModelScene, Playback, Reach, SkinBounds, Texture,
 };
 use lumen_3d::{
-    Blending, Bounds, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive,
+    Blending, Bounds, BoxFace, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive,
     Projection, Scene, Shadow, Surface, Transform,
 };
 use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
 use super::{
-    Light3dKind, Material3dParams, Model3d, Placement3d, Pose3d, Projection3d, Shape3dKind,
+    Light3dKind, Material3dParams, Model3d, Placement3d, Pose3d, Projection3d, Shape3d, Shape3dKind,
 };
 use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
 use crate::gpu::evictions;
@@ -582,6 +583,76 @@ fn material_surface<N: crate::node::JsonNode>(
     surface::<super::Material3d>(material_id, &params)
 }
 
+/// Part of an object's indices, and the node of the `material_3d` that shades it, or `None` for
+/// the object's default material.
+type Face = (Range<u32>, Option<NodeId>);
+
+/// The runs of `faces`, in order, with neighbours that take the same material joined and faces
+/// without indices left out.
+fn runs(faces: impl IntoIterator<Item = Face>) -> Vec<Face> {
+    let mut runs: Vec<Face> = Vec::new();
+    for (indices, material) in faces {
+        if indices.is_empty() {
+            continue;
+        }
+        match runs.last_mut() {
+            Some((run, last)) if *last == material => run.end = indices.end,
+            _ => runs.push((indices, material)),
+        }
+    }
+    runs
+}
+
+/// The faces of a box, in the order its indices draw them, with the material each takes: its own
+/// input, or `material`. `None` when no face has an input of its own.
+fn box_faces(shape: &Shape3d) -> Option<Vec<Face>> {
+    let own = |face| match face {
+        BoxFace::Top => shape.top_material,
+        BoxFace::Bottom => shape.bottom_material,
+        BoxFace::Left => shape.left_material,
+        BoxFace::Right => shape.right_material,
+        BoxFace::Front => shape.front_material,
+        BoxFace::Back => shape.back_material,
+    };
+    BoxFace::ALL
+        .iter()
+        .any(|&face| own(face).is_some())
+        .then(|| {
+            BoxFace::ALL
+                .iter()
+                .map(|&face| (face.indices(), own(face).or(shape.material)))
+                .collect()
+        })
+}
+
+/// The runs of a solid whose indices draw its side walls up to `caps_start` and its caps after,
+/// as shaded by `side_material`, or `material` where it has none, and `material`.
+fn side_runs(
+    material: Option<NodeId>,
+    side_material: Option<NodeId>,
+    caps_start: u32,
+    index_count: u32,
+) -> Vec<Face> {
+    runs([
+        (0..caps_start, side_material.or(material)),
+        (caps_start..index_count, material),
+    ])
+}
+
+/// The first of a shape's face inputs that is wired, by name.
+fn wired_face_input(shape: &Shape3d) -> Option<&'static str> {
+    [
+        ("top_material", shape.top_material),
+        ("bottom_material", shape.bottom_material),
+        ("left_material", shape.left_material),
+        ("right_material", shape.right_material),
+        ("front_material", shape.front_material),
+        ("back_material", shape.back_material),
+    ]
+    .into_iter()
+    .find_map(|(name, material)| material.map(|_| name))
+}
+
 /// The frames, both ends included, around `frame` on which a model plays a clip that spans `span`
 /// seconds as `params` say, at `fps`, and shows the same pose. A looping clip never does, and a
 /// clip without a span, or a composition without a frame rate, always does.
@@ -653,6 +724,29 @@ fn model_surface(
 
 fn model_error(node_id: NodeId, source: &str, details: impl std::fmt::Display) -> LumenError {
     RenderError::evaluating::<Model3d>(node_id, format!("model `{source}`: {details}")).into()
+}
+
+/// The object that draws all of `solid`, placed by `world`, and what it covers.
+fn solid_object(
+    world: Mat4,
+    surface: Surface<TexRef>,
+    solid: super::solid_mesh::SolidMesh,
+) -> (Object<GpuMesh, TexRef>, Extent) {
+    let local = solid.bounds;
+    let object = Object {
+        world,
+        mesh: solid.mesh,
+        first_index: 0,
+        index_count: solid.index_count,
+        surface,
+        center: world.transform_point3((local.min + local.max) * 0.5),
+        first_joint: None,
+        morph: None,
+        bounds: Bounds::EMPTY,
+        part: None,
+        instanced: None,
+    };
+    (object, Extent::Local(local))
 }
 
 /// What an object covers before it is placed in the world, or for an instanced object, before its
@@ -737,23 +831,34 @@ impl Collected {
         surface: Surface<TexRef>,
         solid: super::solid_mesh::SolidMesh,
     ) {
-        let local = solid.bounds;
-        self.push(
-            Object {
-                world,
-                mesh: solid.mesh,
-                first_index: 0,
-                index_count: solid.index_count,
-                surface,
-                center: world.transform_point3((local.min + local.max) * 0.5),
-                first_joint: None,
-                morph: None,
-                bounds: Bounds::EMPTY,
-                part: None,
-                instanced: None,
-            },
-            Extent::Local(local),
-        );
+        let (object, extent) = solid_object(world, surface, solid);
+        self.push(object, extent);
+    }
+
+    /// Adds `object` once for each of `runs`, drawing the indices the run covers with the run's
+    /// material, or the node's default one where it has none.
+    fn push_runs<N: crate::node::JsonNode>(
+        &mut self,
+        cx: &FrameCx<'_>,
+        node_id: NodeId,
+        object: Object<GpuMesh, TexRef>,
+        extent: Extent,
+        runs: Vec<Face>,
+    ) -> crate::Result<()> {
+        for (indices, material) in runs {
+            let surface =
+                material_surface::<N>(cx, node_id, material, Material3dParams::default())?;
+            self.push(
+                Object {
+                    first_index: indices.start,
+                    index_count: indices.len() as u32,
+                    surface,
+                    ..object.clone()
+                },
+                extent,
+            );
+        }
+        Ok(())
     }
 
     /// Sets every object's bounds in the world, which only shadows need: each skin's from the
@@ -854,79 +959,137 @@ impl Collected {
                 let params = shape.params.eval(&ctx)?;
                 let size = vec3(params.size).max(Vec3::ZERO);
                 let world = parent * placement(&params.placement).matrix() * Mat4::from_scale(size);
-                let surface = material_surface::<super::Shape3d>(
-                    cx,
-                    node_id,
-                    shape.material,
-                    Material3dParams::default(),
-                )?;
+                let faces = box_faces(shape);
+                if params.shape != Shape3dKind::Box
+                    && let Some(input) = wired_face_input(shape)
+                {
+                    return Err(RenderError::evaluating::<Shape3d>(
+                        node_id,
+                        format!(
+                            "input `{input}` is for a box, but `shape` is {:?}",
+                            params.shape
+                        ),
+                    )
+                    .into());
+                }
+                let surface = match faces {
+                    Some(_) => Surface::default(),
+                    None => material_surface::<Shape3d>(
+                        cx,
+                        node_id,
+                        shape.material,
+                        Material3dParams::default(),
+                    )?,
+                };
                 let (rec, cache) = cx.scene_cache();
                 let (mesh, index_count) = cache.shape(rec, params.shape);
-                self.push(
-                    Object {
+                let object = Object {
+                    world,
+                    mesh,
+                    first_index: 0,
+                    index_count,
+                    surface,
+                    center: world.transform_point3(Vec3::ZERO),
+                    first_joint: None,
+                    morph: None,
+                    bounds: Bounds::EMPTY,
+                    part: None,
+                    instanced: None,
+                };
+                match faces {
+                    None => self.push(object, Extent::Local(UNIT_BOUNDS)),
+                    Some(faces) => self.push_runs::<Shape3d>(
+                        cx,
+                        node_id,
+                        object,
+                        Extent::Local(UNIT_BOUNDS),
+                        runs(faces),
+                    )?,
+                }
+            }
+            NodeKind::Text3d(text) => {
+                let params = text.params.eval(&ctx)?;
+                let world = parent * placement(&params.placement).matrix();
+                let surface = match text.side_material {
+                    Some(_) => Surface::default(),
+                    None => material_surface::<super::Text3d>(
+                        cx,
+                        node_id,
+                        text.material,
+                        Material3dParams::default(),
+                    )?,
+                };
+                let mesh = super::text_mesh::text_mesh(cx, node_id, &params).map_err(|error| {
+                    error
+                        .media_used_as(&[AssetKind::Font], || cx.node_param(node_id, "font_family"))
+                })?;
+                if let Some(mesh) = mesh {
+                    let local = mesh.bounds;
+                    let object = Object {
                         world,
-                        mesh,
+                        mesh: mesh.mesh,
                         first_index: 0,
-                        index_count,
+                        index_count: mesh.index_count,
                         surface,
-                        center: world.transform_point3(Vec3::ZERO),
+                        center: world.transform_point3((local.min + local.max) * 0.5),
                         first_joint: None,
                         morph: None,
                         bounds: Bounds::EMPTY,
                         part: None,
                         instanced: None,
-                    },
-                    Extent::Local(UNIT_BOUNDS),
-                );
-            }
-            NodeKind::Text3d(text) => {
-                let params = text.params.eval(&ctx)?;
-                let world = parent * placement(&params.placement).matrix();
-                let surface = material_surface::<super::Text3d>(
-                    cx,
-                    node_id,
-                    text.material,
-                    Material3dParams::default(),
-                )?;
-                let text = super::text_mesh::text_mesh(cx, node_id, &params).map_err(|error| {
-                    error
-                        .media_used_as(&[AssetKind::Font], || cx.node_param(node_id, "font_family"))
-                })?;
-                if let Some(text) = text {
-                    let local = text.bounds;
-                    self.push(
-                        Object {
-                            world,
-                            mesh: text.mesh,
-                            first_index: 0,
-                            index_count: text.index_count,
-                            surface,
-                            center: world.transform_point3((local.min + local.max) * 0.5),
-                            first_joint: None,
-                            morph: None,
-                            bounds: Bounds::EMPTY,
-                            part: None,
-                            instanced: None,
-                        },
-                        Extent::Local(local),
-                    );
+                    };
+                    match text.side_material {
+                        None => self.push(object, Extent::Local(local)),
+                        Some(_) => self.push_runs::<super::Text3d>(
+                            cx,
+                            node_id,
+                            object,
+                            Extent::Local(local),
+                            side_runs(
+                                text.material,
+                                text.side_material,
+                                mesh.caps_start,
+                                mesh.index_count,
+                            ),
+                        )?,
+                    }
                 }
             }
             NodeKind::Extrude3d(extrude) => {
                 let params = extrude.params.eval(&ctx)?;
                 let geometry = required_input(node_id, "geometry", extrude.geometry)?;
                 let world = parent * placement(&params.placement).matrix();
-                let surface = material_surface::<super::Extrude3d>(
-                    cx,
-                    node_id,
-                    extrude.material,
-                    Material3dParams::default(),
-                )?;
+                let surface = match extrude.side_material {
+                    Some(_) => Surface::default(),
+                    None => material_surface::<super::Extrude3d>(
+                        cx,
+                        node_id,
+                        extrude.material,
+                        Material3dParams::default(),
+                    )?,
+                };
                 if let Some((solid, depth)) =
                     super::solid_mesh::extrude_mesh(cx, node_id, geometry, &params)?
                 {
                     let world = world * Mat4::from_scale(Vec3::new(1.0, 1.0, depth));
-                    self.push_solid(world, surface, solid);
+                    match extrude.side_material {
+                        None => self.push_solid(world, surface, solid),
+                        Some(_) => {
+                            let (object, extent) = solid_object(world, surface, solid);
+                            self.push_runs::<super::Extrude3d>(
+                                cx,
+                                node_id,
+                                object,
+                                extent,
+                                side_runs(
+                                    extrude.material,
+                                    extrude.side_material,
+                                    solid.caps_start,
+                                    solid.index_count,
+                                ),
+                            )?;
+                        }
+                    }
                 }
             }
             NodeKind::Lathe3d(lathe) => {

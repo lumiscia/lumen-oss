@@ -1870,7 +1870,8 @@ export interface ExposureNode extends CompositionNodeBase<"exposure"> {
 /**
  * A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front
  * cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
- * `material_3d` is wired into `material`. The geometry's pixel coordinates, after its own
+ * `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
+ * side walls and the bevel instead, leaving the caps to `material`. The geometry's pixel coordinates, after its own
  * position, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with
  * Y flipped, since 2D Y points down and 3D Y up. Pixel (0, 0) is the origin that `placement`
  * moves and turns the solid about, and nothing re-centres the solid on it: the geometry's
@@ -2935,6 +2936,14 @@ export interface Shape2dNode extends CompositionNodeBase<"shape_2d"> {
 /**
  * A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,
  * single-sided and white unless a `material_3d` is wired into `material`.
+ * 
+ * A box takes a material for each face from `top_material`, `bottom_material`, `left_material`,
+ * `right_material`, `front_material` and `back_material`, which are its +Y, -Y, -X, +X, +Z and
+ * -Z faces in its own axes before `rotation`; the front faces a camera looking down -Z. A face
+ * with none wired uses `material`. A face material wired into any other shape fails the render
+ * naming the input. The faces draw as one object each, merged where neighbours share a material,
+ * from the same mesh, so a box with face materials costs a draw for each run of faces, and
+ * under `instance_3d` each draws all its copies.
  */
 export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
   readonly params?: {
@@ -3125,8 +3134,9 @@ export interface TextNode extends CompositionNodeBase<"text"> {
 
 /**
  * Text from its font's outlines, extruded into a solid, lit, single-sided and white unless
- * a `material_3d` is wired into `material`. The text is shaped as a `text` node with the same font, size and layout shapes
- * it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing
+ * a `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
+ * side walls and the bevel instead, leaving the front and back faces to `material`. The text is
+ * shaped as a `text` node with the same font, size and layout shapes it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing
  * +Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the
  * point of its box at `position`. Its geometry is built again only when the text, font, layout or
  * bevel change, or its size or depth do with a bevel, so animating its transform or material
@@ -3511,7 +3521,7 @@ export interface NodeInputPortNameByKind {
   readonly "directional_blur": "source";
   readonly "displacement_map": "map" | "source";
   readonly "exposure": "source";
-  readonly "extrude_3d": "geometry" | "material";
+  readonly "extrude_3d": "geometry" | "material" | "side_material";
   readonly "fill_2d": "geometry";
   readonly "fractal_noise": never;
   readonly "glow": "source";
@@ -3543,11 +3553,11 @@ export interface NodeInputPortNameByKind {
   readonly "shadow_2d": "drawing";
   readonly "shape": never;
   readonly "shape_2d": never;
-  readonly "shape_3d": "material";
+  readonly "shape_3d": "back_material" | "bottom_material" | "front_material" | "left_material" | "material" | "right_material" | "top_material";
   readonly "stroke_2d": "geometry";
   readonly "switch": "layers";
   readonly "text": never;
-  readonly "text_3d": "material";
+  readonly "text_3d": "material" | "side_material";
   readonly "time_remap": "source";
   readonly "transform": "source";
   readonly "wgsl_shader": "source";
@@ -3673,7 +3683,7 @@ export interface NodeInputPortKindByKind {
   readonly "directional_blur": { readonly "source": "raster" };
   readonly "displacement_map": { readonly "source": "raster"; readonly "map": "raster" };
   readonly "exposure": { readonly "source": "raster" };
-  readonly "extrude_3d": { readonly "geometry": "geometry"; readonly "material": "material" };
+  readonly "extrude_3d": { readonly "geometry": "geometry"; readonly "material": "material"; readonly "side_material": "material" };
   readonly "fill_2d": { readonly "geometry": "geometry" };
   readonly "fractal_noise": {};
   readonly "glow": { readonly "source": "raster" };
@@ -3705,11 +3715,11 @@ export interface NodeInputPortKindByKind {
   readonly "shadow_2d": { readonly "drawing": "drawing" };
   readonly "shape": {};
   readonly "shape_2d": {};
-  readonly "shape_3d": { readonly "material": "material" };
+  readonly "shape_3d": { readonly "material": "material"; readonly "top_material": "material"; readonly "bottom_material": "material"; readonly "left_material": "material"; readonly "right_material": "material"; readonly "front_material": "material"; readonly "back_material": "material" };
   readonly "stroke_2d": { readonly "geometry": "geometry" };
   readonly "switch": { readonly "layers": "raster" };
   readonly "text": {};
-  readonly "text_3d": { readonly "material": "material" };
+  readonly "text_3d": { readonly "material": "material"; readonly "side_material": "material" };
   readonly "time_remap": { readonly "source": "raster" };
   readonly "transform": { readonly "source": "raster" };
   readonly "wgsl_shader": { readonly "source": "raster" };
@@ -3789,7 +3799,8 @@ export const nodeInputPorts = {
   /**
    * A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front
    * cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
-   * `material_3d` is wired into `material`. The geometry's pixel coordinates, after its own
+   * `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
+   * side walls and the bevel instead, leaving the caps to `material`. The geometry's pixel coordinates, after its own
    * position, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with
    * Y flipped, since 2D Y points down and 3D Y up. Pixel (0, 0) is the origin that `placement`
    * moves and turns the solid about, and nothing re-centres the solid on it: the geometry's
@@ -3808,7 +3819,7 @@ export const nodeInputPorts = {
    * `depth` of a bevelled one, so animating the placement, the material or a plain extrusion's
    * depth costs no more than for a `shape_3d`.
    */
-  "extrude_3d": { "geometry": { kind: "geometry", variadic: false }, "material": { kind: "material", variadic: false } },
+  "extrude_3d": { "geometry": { kind: "geometry", variadic: false }, "material": { kind: "material", variadic: false }, "side_material": { kind: "material", variadic: false } },
   /** Fills its geometry's outline with a paint, as a drawing of one drawable. */
   "fill_2d": { "geometry": { kind: "geometry", variadic: false } },
   /** Generates opaque grey fractal noise, the same for a given seed and evolution. */
@@ -4024,8 +4035,16 @@ export const nodeInputPorts = {
   /**
    * A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. Lit,
    * single-sided and white unless a `material_3d` is wired into `material`.
+   * 
+   * A box takes a material for each face from `top_material`, `bottom_material`, `left_material`,
+   * `right_material`, `front_material` and `back_material`, which are its +Y, -Y, -X, +X, +Z and
+   * -Z faces in its own axes before `rotation`; the front faces a camera looking down -Z. A face
+   * with none wired uses `material`. A face material wired into any other shape fails the render
+   * naming the input. The faces draw as one object each, merged where neighbours share a material,
+   * from the same mesh, so a box with face materials costs a draw for each run of faces, and
+   * under `instance_3d` each draws all its copies.
    */
-  "shape_3d": { "material": { kind: "material", variadic: false } },
+  "shape_3d": { "material": { kind: "material", variadic: false }, "top_material": { kind: "material", variadic: false }, "bottom_material": { kind: "material", variadic: false }, "left_material": { kind: "material", variadic: false }, "right_material": { kind: "material", variadic: false }, "front_material": { kind: "material", variadic: false }, "back_material": { kind: "material", variadic: false } },
   /**
    * Strokes its geometry's outline with a paint, as a drawing of one drawable. Caps and joins are
    * round. Trim and dash apply to paths; a shape's stroke is always whole.
@@ -4037,15 +4056,16 @@ export const nodeInputPorts = {
   "text": {},
   /**
    * Text from its font's outlines, extruded into a solid, lit, single-sided and white unless
-   * a `material_3d` is wired into `material`. The text is shaped as a `text` node with the same font, size and layout shapes
-   * it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing
+   * a `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
+   * side walls and the bevel instead, leaving the front and back faces to `material`. The text is
+   * shaped as a `text` node with the same font, size and layout shapes it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing
    * +Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the
    * point of its box at `position`. Its geometry is built again only when the text, font, layout or
    * bevel change, or its size or depth do with a bevel, so animating its transform or material
    * costs no more than for a `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the
    * `glyph_*` params of a `text` node have no counterpart.
    */
-  "text_3d": { "material": { kind: "material", variadic: false } },
+  "text_3d": { "material": { kind: "material", variadic: false }, "side_material": { kind: "material", variadic: false } },
   /** Evaluates a raster input at another frame. */
   "time_remap": { "source": { kind: "raster", variadic: false } },
   /** Transforms a raster into the composition canvas bounds. */
