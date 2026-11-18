@@ -1,5 +1,43 @@
 # @lumiscia/lumen-cli
 
+## 0.6.0-beta.5
+
+### Patch Changes
+
+- 7b4ea54: `lumen render --frame` takes a comma-separated list of frames for an output with `%d`, and writes one still per frame from a single load of the composition, fonts and media. Frames render in the order given, each file is named by its own frame number padded as the largest frame is, and a frame listed twice fails. A single value, and an output without `%d`, behave as before.
+
+  ```sh
+  lumen render film.json -o shots/frame-%d.png --frame 0,120,348,610
+  ```
+
+- 590016f: `lumen render --profile-nodes` prints which nodes take the bind (CPU) time. After the summary line it lists the ten slowest nodes by their own time per frame, averaged over the frames rendered, then what all nodes took against the frame's `bind_ms`, so the time outside nodes is visible. A node's own time leaves out the nodes it takes as input, and a node inside a template names the template. Nothing is timed without the flag. It works for videos, images and sequences. In the engine, `Mp4Render` and `ImageRender` take `set_profile_nodes(true)` and report `RenderReport::node_timing`.
+
+  ```sh
+  lumen render film.json -o out.mp4 --profile-nodes
+  ```
+
+  ```text
+  bind by node (ms per frame, top 10)
+    12  instance_3d  3.81
+     7  text         1.20
+     3  path_2d      0.44
+    all nodes 5.45 of bind_ms 6.10
+  ```
+
+- Updated dependencies [06e8c8d]
+- Updated dependencies [84d1aa7]
+- Updated dependencies [0ffadaf]
+- Updated dependencies [cab42d2]
+- Updated dependencies [af40822]
+- Updated dependencies [ceaba3c]
+- Updated dependencies [9cb96fe]
+- Updated dependencies [fe9ddf6]
+- Updated dependencies [ef0a093]
+- Updated dependencies [f962b09]
+- Updated dependencies [4be16fa]
+- Updated dependencies [e1d88ad]
+  - @lumiscia/lumen-types@0.6.0-beta.5
+
 ## 0.6.0-beta.4
 
 ### Patch Changes

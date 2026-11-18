@@ -1,5 +1,286 @@
 # @lumiscia/lumen-bindings
 
+## 0.6.0-beta.5
+
+### Patch Changes
+
+- 06e8c8d: Add `evaluate` to the bindings, which gives the value of one param of a root node at a frame without rendering. It evaluates the param as a render does, at the frame of its own time that the composition frame maps to through any `clip` or `time_remap` before it, and with the expressions nested in `uniforms`, a `clip`'s `props` and text spans evaluated too, so an easing curve, a timing or a `table()` lookup can be checked without reading pixels, and it runs wherever `check` does: no GPU and no media. It returns the value as the JSON that sets the param, and a flattened param such as `position` is addressed by its own name. For an `instance_3d`, `instance` picks the copy whose `position`, `rotation` or `scale` is evaluated.
+
+  It throws, with `diagnostics`, on a composition `check` reports errors for, a node or param that doesn't exist, a node inside a template (`render.template_node`, which is new), a node no clip or switch shows at that frame (`render.node_not_evaluated`), a node evaluated at several frames of its own through different clips (`render.ambiguous_node_frame`) and an expression that fails, such as one that needs media. `EvaluateRequest` is exported from `@lumiscia/lumen-types`.
+
+  ```ts
+  const { evaluate } = await loadLumenBindings();
+
+  evaluate(composition, { node: 12, param: "position", frame: 90 });
+  // [1.5, 0, -3]
+
+  evaluate(composition, { node: 4, param: "position", frame: 0, instance: 3 });
+  ```
+
+- 7b4ea54: `lumen render --frame` takes a comma-separated list of frames for an output with `%d`, and writes one still per frame from a single load of the composition, fonts and media. Frames render in the order given, each file is named by its own frame number padded as the largest frame is, and a frame listed twice fails. A single value, and an output without `%d`, behave as before.
+
+  ```sh
+  lumen render film.json -o shots/frame-%d.png --frame 0,120,348,610
+  ```
+
+- 84d1aa7: New 2D vector nodes draw any number of paths and shapes in one GPU pass. They use two new port kinds: `geometry`, an outline, and `drawing`, styled outlines.
+
+  - `path_2d` and `shape_2d` make geometry, and `offset_2d` grows or shrinks it.
+  - `fill_2d` and `stroke_2d` turn geometry into a drawing.
+  - `shadow_2d` puts soft shadows under a whole drawing, and `merge_2d` stacks drawings and places them.
+  - `render_2d` turns a drawing into a raster.
+
+  The `path`, `shape` and `raster_multimerge` nodes are unchanged.
+
+  A stroked, filled path with a shadow:
+
+  ```json
+  {
+    "nodes": [
+      { "id": 1, "type": "path_2d", "params": { "data": "M 0 0 L 120 20 L 40 100 Z" } },
+      { "id": 2, "type": "fill_2d", "params": { "paint": [255, 120, 0, 255] } },
+      { "id": 3, "type": "stroke_2d", "params": { "paint": [0, 0, 0, 255], "width": 4 } },
+      { "id": 4, "type": "merge_2d", "params": { "position": [200, 120] } },
+      {
+        "id": 5,
+        "type": "shadow_2d",
+        "params": { "shadows": [{ "offset": [6, 10], "radius": 12, "opacity": 0.4 }] }
+      },
+      { "id": 6, "type": "render_2d" }
+    ],
+    "connections": [
+      { "from_node": 1, "to_node": 2, "to_port": "geometry" },
+      { "from_node": 1, "to_node": 3, "to_port": "geometry" },
+      { "from_node": 2, "to_node": 4, "to_port": "drawings" },
+      { "from_node": 3, "to_node": 4, "to_port": "drawings" },
+      { "from_node": 4, "to_node": 5, "to_port": "drawing" },
+      { "from_node": 5, "to_node": 6, "to_port": "drawing" }
+    ]
+  }
+  ```
+
+- 0ffadaf: Add `extrude_3d` and `lathe_3d`, which turn a 2D `geometry` outline, a `path_2d` or `shape_2d`, into a solid. `extrude_3d` gives the outline `depth` along Z, with an optional bevel as on `text_3d`; `lathe_3d` spins it around the world Y axis in `segments` steps over a `sweep` of up to 360 degrees. Both take a `material_3d` through `material` and the `position`, `rotation` and `scale` of a `shape_3d`.
+
+  The geometry's pixel coordinates, after its own transform, become world units at `units_per_pixel` each (0.01 by default), with Y flipped, so pixel (0, 0) is the origin the node places the solid about. A `lathe_3d` profile's X is its distance from the axis and its Y its height. A closed contour makes a ring solid and an open one a surface; a point on the axis is a pole with no degenerate triangles. An `offset_2d` in the geometry is not supported yet and fails the render, naming the node. Meshes are built once and kept while their outline and params stay the same, and share the `text_meshes` cache budget.
+
+  ```json
+  {
+    "nodes": [
+      {
+        "id": 0,
+        "type": "path_2d",
+        "params": {
+          "data": "M 50 0 L 61 35 L 98 35 L 68 57 L 79 91 L 50 70 L 21 91 L 32 57 L 2 35 L 39 35 Z",
+          "position": [-50, -45]
+        }
+      },
+      {
+        "id": 1,
+        "type": "material_3d",
+        "params": { "color": [232, 176, 96, 255], "metallic": 0.8 }
+      },
+      {
+        "id": 2,
+        "type": "extrude_3d",
+        "params": { "units_per_pixel": 0.02, "depth": 0.2, "bevel_size": 0.03 }
+      },
+      {
+        "id": 3,
+        "type": "path_2d",
+        "params": {
+          "data": "M 0 0 L 60 0 C 105 -40 105 -100 55 -150 L 45 -195 L 38 -195 L 46 -150 C 90 -100 90 -45 50 -10 L 0 -10 Z"
+        }
+      },
+      { "id": 4, "type": "lathe_3d", "params": { "segments": 64, "position": [2, 0, 0] } }
+    ],
+    "connections": [
+      { "from_node": 0, "to_node": 2, "to_port": "geometry" },
+      { "from_node": 1, "to_node": 2, "to_port": "material" },
+      { "from_node": 3, "to_node": 4, "to_port": "geometry" }
+    ]
+  }
+  ```
+
+- cab42d2: `image_plane_3d` takes `sampling`, `"linear"` by default as before, or `"nearest"` to show pixel art in a 3D scene unfiltered. A nearest plane gives each pixel the one texel under it: magnified, texels stay hard-edged squares, and shown smaller, a pixel picks a texel instead of averaging the ones it covers, so it aliases where `linear` is smooth. A raster shown only by nearest planes gets no mip chain.
+
+  ```json
+  {
+    "id": 4,
+    "type": "image_plane_3d",
+    "params": { "width": 4, "sampling": "nearest" },
+    "in": { "source": 3 }
+  }
+  ```
+
+- 0085980: `instance_3d` draws the copies of opaque surfaces at once from an instance buffer on the GPU, instead of one object per copy. 100,000 boxes under a moving camera took 24.5 ms a frame to prepare and now take 0.6 ms, and the whole frame went from 37 ms to 14 ms. Copies that move each frame only have their placements written: a ripple over the same boxes went from 72 to 50 ms. Pixels are unchanged. Blended surfaces, and those showing a raster, are still copied one by one so that they sort and mip as before.
+- af40822: Add a `copies` param to `instance_3d`: a literal list of `{ position, rotation, scale, tint }` objects that places hand-set copies without an expression per param per copy. A field left out takes the default of the param of that name. The list and its numbers can't be expressions and it holds at most 100000 copies. It is used in place of `count`, `position`, `rotation`, `scale` and `tint`, and `check` fails, naming the node and the params, if any of them is set beside a list that has copies. The list is placed once and kept on the GPU like static expression placements, so a moving camera or parent costs nothing per copy, and `lumen-types` gains `InstanceCopies` and `InstanceCopy`.
+
+  ```json
+  {
+    "id": 4,
+    "type": "instance_3d",
+    "in": { "scene": 3 },
+    "params": {
+      "copies": [
+        { "position": [0, 0, 0], "scale": [1, 2, 1], "tint": "#ff8040" },
+        { "position": [2, 0, 1], "rotation": [0, 45, 0] }
+      ]
+    }
+  }
+  ```
+
+- ceaba3c: Add a `tint` param to `instance_3d`: a solid colour that multiplies the base colour of every object in a copy, texture or base colour map included, and the light the object gives off. It is white by default, and like `position`, `rotation` and `scale` it can be an expression evaluated for each copy, reading `instance` and `instance_count`. The tint's alpha is ignored, so a copy stays opaque or blended as its material makes it, and the tints of nested `instance_3d` nodes multiply. A still field with a literal or static tint keeps its tints on the GPU like its placements, and a tint that reads the frame is evaluated every frame.
+
+  ```json
+  {
+    "nodes": [
+      { "id": 1, "type": "shape_3d", "params": { "size": [0.6, 0.6, 0.6] } },
+      {
+        "id": 2,
+        "type": "instance_3d",
+        "params": {
+          "count": 10,
+          "position": "=vec3(instance * 1.2 - 5.4, 0, 0)",
+          "tint": "=rgb(instance / instance_count * 255, 140, 255 - instance / instance_count * 255)"
+        }
+      }
+    ],
+    "connections": [{ "from_node": 1, "to_node": 2, "to_port": "scene" }]
+  }
+  ```
+
+- 9cb96fe: Move the material params off `shape_3d`, `text_3d` and `image_plane_3d` onto a new `material_3d` node, which an object takes through a `material` input. `color`, `metallic`, `roughness`, `emissive`, `opacity`, `unlit`, `double_sided`, `cast_shadows`, `receive_shadows` and `shadow_catcher` are now params of `material_3d`, and those nodes no longer accept them. One `material_3d` can be wired into any number of objects, which then share its params, and every param still takes an expression. This breaks compositions that set those params on an object.
+
+  An object with no `material_3d` wired in renders as before: `shape_3d` and `text_3d` are lit, single-sided and white, and `image_plane_3d` is unlit and double-sided. A wired `material_3d` applies exactly as it is set, so a default `material_3d` makes an `image_plane_3d` lit and single-sided; set `unlit` and `double_sided` to keep it as it was. `model_3d` keeps the materials of its glTF file.
+
+  Before:
+
+  ```json
+  {
+    "nodes": [
+      {
+        "id": 1,
+        "type": "shape_3d",
+        "params": { "color": "#e6b45a", "metallic": 1, "roughness": 0.2 }
+      },
+      {
+        "id": 2,
+        "type": "shape_3d",
+        "params": { "color": "#e6b45a", "metallic": 1, "roughness": 0.2, "position": [2, 0, 0] }
+      }
+    ]
+  }
+  ```
+
+  After:
+
+  ```json
+  {
+    "nodes": [
+      {
+        "id": 0,
+        "type": "material_3d",
+        "params": { "color": "#e6b45a", "metallic": 1, "roughness": 0.2 }
+      },
+      { "id": 1, "type": "shape_3d" },
+      { "id": 2, "type": "shape_3d", "params": { "position": [2, 0, 0] } }
+    ],
+    "connections": [
+      { "from_node": 0, "to_node": 1, "to_port": "material" },
+      { "from_node": 0, "to_node": 2, "to_port": "material" }
+    ]
+  }
+  ```
+
+  The TypeScript SDK takes the material as a nested node: `n.shape_3d({ material: n.material_3d({ color: "#e6b45a" }) })`.
+
+- fe9ddf6: Add a `texture` input to `material_3d`, so a `shape_3d` can show a raster with real depth, fog and shadows, such as a pixel-art planet. The texture multiplies `color` and is lit like the rest of the surface. `sampling` reads it as `image_plane_3d` reads its source: `linear` by default, or `nearest` for pixel art. Primitives now have texture coordinates. A sphere is wrapped equirectangularly from −Z, so a camera on +Z sees the texture's middle. A box shows the whole texture on each face, and a plane shows it seen from above. A cylinder, cone or torus is wrapped around Y. The `shape_3d` docs give the exact layout. A textured material wired into `text_3d`, `extrude_3d`, `lathe_3d` or `image_plane_3d` fails the render, naming the node.
+
+  ```json
+  {
+    "nodes": [
+      { "id": 0, "type": "media_in", "params": { "kind": "image", "source": "planet.png" } },
+      { "id": 1, "type": "material_3d", "params": { "sampling": "nearest" } },
+      { "id": 2, "type": "shape_3d", "params": { "shape": "sphere", "size": [2, 2, 2] } },
+      { "id": 3, "type": "render_3d" }
+    ],
+    "connections": [
+      { "from_node": 0, "to_node": 1, "to_port": "texture" },
+      { "from_node": 1, "to_node": 2, "to_port": "material" },
+      { "from_node": 2, "to_node": 3, "to_port": "scene" }
+    ]
+  }
+  ```
+
+- ef0a093: Add a `particles_3d` node that draws up to 100,000 copies of its `object` scene as particles placed on the GPU. With the defaults it scatters them once over its `surface` scene, as likely anywhere as anywhere else of the same area, which suits grass or rocks; a `rate`, `lifetime`, `speed`, `spread` and `gravity` make it an emitter. Particles are stateless, so any frame renders alone and the same, and a frame's CPU work doesn't grow with `count`.
+
+  ```json
+  {
+    "nodes": [
+      { "id": 1, "type": "shape_3d", "params": { "shape": "plane", "size": [10, 1, 10] } },
+      { "id": 2, "type": "shape_3d", "params": { "shape": "cylinder", "size": [0.03, 0.4, 0.03] } },
+      {
+        "id": 3,
+        "type": "particles_3d",
+        "params": { "count": 20000, "seed": 7, "align_to_normal": true, "scale": [0.6, 1.4] }
+      }
+    ],
+    "connections": [
+      { "from_node": 1, "to_node": 3, "to_port": "surface" },
+      { "from_node": 2, "to_node": 3, "to_port": "object" }
+    ]
+  }
+  ```
+
+- f962b09: A `shape_3d` box takes a material for each face, through `top_material`, `bottom_material`, `left_material`, `right_material`, `front_material` and `back_material`, and `text_3d` and `extrude_3d` take a `side_material` for their walls and bevel, leaving the caps to `material`. A face or side with no material wired uses `material`. They draw from the one mesh as an object for each run of faces sharing a material, so a voxel-style scene needs a shape per voxel instead of one per face, and under `instance_3d` every run is drawn from the same instance buffer. Face materials on a shape other than a box fail the render, naming the node and the input.
+
+  ```ts
+  n.shape_3d({
+    material: n.material_3d({ color: "#8a5a35" }),
+    top_material: n.material_3d({ color: "#5fa04e" }),
+  });
+  ```
+
+- 590016f: `lumen render --profile-nodes` prints which nodes take the bind (CPU) time. After the summary line it lists the ten slowest nodes by their own time per frame, averaged over the frames rendered, then what all nodes took against the frame's `bind_ms`, so the time outside nodes is visible. A node's own time leaves out the nodes it takes as input, and a node inside a template names the template. Nothing is timed without the flag. It works for videos, images and sequences. In the engine, `Mp4Render` and `ImageRender` take `set_profile_nodes(true)` and report `RenderReport::node_timing`.
+
+  ```sh
+  lumen render film.json -o out.mp4 --profile-nodes
+  ```
+
+  ```text
+  bind by node (ms per frame, top 10)
+    12  instance_3d  3.81
+     7  text         1.20
+     3  path_2d      0.44
+    all nodes 5.45 of bind_ms 6.10
+  ```
+
+- 4be16fa: `wgsl_shader` takes an optional `camera` scene input, so a shader can line up with a 3D scene without rebuilding the camera from uniforms. The shader reads the scene's camera, chosen as `render_3d` chooses it, as `lumen.view` (world to view), `lumen.projection` (view to clip, for the shader's output aspect ratio) and `lumen.camera_position` (world space). A scene without a camera gives `render_3d`'s default camera, and a shader without a `camera` input sees the matrices as the identity and the position as zero, so existing shaders keep working. Scene inputs need the `3d` feature.
+
+  ```json
+  [
+    { "id": 5, "type": "camera_3d", "params": { "position": [0, 2, 8], "look_at": true } },
+    {
+      "id": 6,
+      "type": "wgsl_shader",
+      "params": { "shader": "…uses lumen.projection * lumen.view…" },
+      "in": { "source": [4], "camera": 5 }
+    }
+  ]
+  ```
+
+- e1d88ad: Add `unlit_shadows` to `material_3d`, so an unlit surface can darken where shadows fall on it. An unlit surface shows its base colour as is, multiplied by `1 - unlit_shadows × shadow`, where `shadow` is the fraction of the lights' light that shadows take away at that point, as a `shadow_catcher` measures it. It is 0 by default, which changes nothing, and at 1 a fully shadowed point is black. It reads the shadow maps lit surfaces already use, applies to the shadows of lights with `cast_shadows` on, and does nothing on lit surfaces or with `receive_shadows` off.
+
+  ```json
+  {
+    "id": 1,
+    "type": "material_3d",
+    "params": { "color": "#e0c080", "unlit": true, "unlit_shadows": 0.45 }
+  }
+  ```
+
+- @lumiscia/lumen-preview@0.6.0-beta.5
+
 ## 0.6.0-beta.4
 
 ### Patch Changes

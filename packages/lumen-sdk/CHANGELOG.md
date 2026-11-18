@@ -1,5 +1,24 @@
 # @lumiscia/lumen-sdk
 
+## 0.6.0-beta.5
+
+### Patch Changes
+
+- Updated dependencies [06e8c8d]
+- Updated dependencies [84d1aa7]
+- Updated dependencies [0ffadaf]
+- Updated dependencies [cab42d2]
+- Updated dependencies [af40822]
+- Updated dependencies [ceaba3c]
+- Updated dependencies [9cb96fe]
+- Updated dependencies [fe9ddf6]
+- Updated dependencies [ef0a093]
+- Updated dependencies [f962b09]
+- Updated dependencies [4be16fa]
+- Updated dependencies [e1d88ad]
+  - @lumiscia/lumen-types@0.6.0-beta.5
+  - @lumiscia/lumen-shared@0.6.0-beta.5
+
 ## 0.6.0-beta.4
 
 ### Patch Changes
