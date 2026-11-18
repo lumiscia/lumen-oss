@@ -796,8 +796,8 @@ pub(super) fn global_value(
             .map(f64::from)
             .ok_or_else(|| {
                 LumenError::evaluate(format!(
-                    "`{}` is only available in an instance_3d's position, rotation and scale \
-                     params",
+                    "`{}` is only available in an instance_3d's position, rotation, scale \
+                     and tint params",
                     global.name()
                 ))
             })

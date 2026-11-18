@@ -1233,11 +1233,11 @@ export const expressionGlobals = [
     "name": "span_count"
   },
   {
-    "doc": "Index of the copy being placed, from 0. Only in an `instance_3d`'s `position`, `rotation` and `scale` params.",
+    "doc": "Index of the copy being placed, from 0. Only in an `instance_3d`'s `position`, `rotation`, `scale` and `tint` params.",
     "name": "instance"
   },
   {
-    "doc": "Number of copies. Only in an `instance_3d`'s `position`, `rotation` and `scale` params.",
+    "doc": "Number of copies. Only in an `instance_3d`'s `position`, `rotation`, `scale` and `tint` params.",
     "name": "instance_count"
   }
 ] as const;
@@ -2087,13 +2087,17 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
  * `instance / instance_count`. A copy is placed in the input scene's own space, so it turns and
  * scales about the origin of the scene's own coordinates.
  * 
+ * `tint` colours each copy: `tint = rgb(255 * instance / instance_count, 128, 255)` shifts the
+ * colour along the copies, and it multiplies the objects' base colours and emissive light, so
+ * copies of a white or textured object take the tint's colour. Its alpha is ignored.
+ * 
  * Copies share the input's meshes, textures, materials and joint matrices on the GPU, so every
  * copy of a skinned model plays the same animation at the same time. Opaque surfaces draw all
- * their copies at once from placements kept on the GPU, so a moving camera or parent costs nothing
- * per copy, and neither does a frame when the params don't read the frame. Blended surfaces, and
- * those showing a raster, are copied one by one, which costs more. Only the objects are copied:
- * the input's lights and camera appear once, placed as they would be without the node, so
- * copies don't multiply a scene's lighting. Shadows, fog and the environment treat a copy as any
+ * their copies at once from placements and tints kept on the GPU, so a moving camera or parent
+ * costs nothing per copy, and neither does a frame when the params don't read the frame. Blended
+ * surfaces, and those showing a raster, are copied one by one, which costs more. Only the objects
+ * are copied: the input's lights and camera appear once, placed as they would be without the node,
+ * so copies don't multiply a scene's lighting. Shadows, fog and the environment treat a copy as any
  * other object. An `instance_3d` may hold another, which multiplies their counts, up to 8 deep.
  * A scene draws at most 100000 objects in all, counting each copy's objects, and a count that
  * would exceed this fails the render. The node is static when its params don't read the frame
@@ -2112,6 +2116,15 @@ export interface Instance3dNode extends CompositionNodeBase<"instance_3d"> {
     readonly rotation?: ExpressionValue<Vec3>;
     /** Scale multiplier along X, Y and Z of each copy, applied before the rotation. Evaluated for every copy, and can read `instance` and `instance_count`. */
     readonly scale?: ExpressionValue<Vec3>;
+    /**
+     * Colour that multiplies the base colour of every object in each copy, texture and base
+     * colour map included, and the light they give off, so a glowing copy glows in its tint.
+     * White leaves a copy as it is. Evaluated for every copy, and can read `instance` and
+     * `instance_count`. Its alpha is ignored: a copy is opaque or blended exactly as its
+     * material makes it. Tints of nested `instance_3d` nodes multiply. Must be a solid color; a
+     * gradient fails `check`.
+     */
+    readonly tint?: ExpressionValue<Color>;
   };
 }
 
@@ -3700,13 +3713,17 @@ export const nodeInputPorts = {
    * `instance / instance_count`. A copy is placed in the input scene's own space, so it turns and
    * scales about the origin of the scene's own coordinates.
    * 
+   * `tint` colours each copy: `tint = rgb(255 * instance / instance_count, 128, 255)` shifts the
+   * colour along the copies, and it multiplies the objects' base colours and emissive light, so
+   * copies of a white or textured object take the tint's colour. Its alpha is ignored.
+   * 
    * Copies share the input's meshes, textures, materials and joint matrices on the GPU, so every
    * copy of a skinned model plays the same animation at the same time. Opaque surfaces draw all
-   * their copies at once from placements kept on the GPU, so a moving camera or parent costs nothing
-   * per copy, and neither does a frame when the params don't read the frame. Blended surfaces, and
-   * those showing a raster, are copied one by one, which costs more. Only the objects are copied:
-   * the input's lights and camera appear once, placed as they would be without the node, so
-   * copies don't multiply a scene's lighting. Shadows, fog and the environment treat a copy as any
+   * their copies at once from placements and tints kept on the GPU, so a moving camera or parent
+   * costs nothing per copy, and neither does a frame when the params don't read the frame. Blended
+   * surfaces, and those showing a raster, are copied one by one, which costs more. Only the objects
+   * are copied: the input's lights and camera appear once, placed as they would be without the node,
+   * so copies don't multiply a scene's lighting. Shadows, fog and the environment treat a copy as any
    * other object. An `instance_3d` may hold another, which multiplies their counts, up to 8 deep.
    * A scene draws at most 100000 objects in all, counting each copy's objects, and a count that
    * would exceed this fails the render. The node is static when its params don't read the frame

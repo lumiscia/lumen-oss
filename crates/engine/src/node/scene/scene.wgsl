@@ -160,8 +160,8 @@ struct Run {
     views: u32,
 }
 
-// One copy of an instanced object: the rows of its affine placement, then a colour reserved for
-// the copy, white.
+// One copy of an instanced object: the rows of its affine placement, then the linear colour that
+// multiplies its base colour and emissive light. Its alpha is not read.
 struct Instance {
     rows: array<vec4<f32>, 3>,
     tint: vec4<f32>,
@@ -253,6 +253,8 @@ struct VsOut {
     @location(4) uv1: vec2<f32>,
     // Linear, with straight alpha.
     @location(5) color: vec4<f32>,
+    // Multiplies the base colour and emissive light.
+    @location(6) @interpolate(flat) tint: vec3<f32>,
 }
 
 // The row of the object table that draws vertex `slot` of the whole table.
@@ -315,6 +317,7 @@ struct Posed {
     uv: vec2<f32>,
     uv1: vec2<f32>,
     color: vec4<f32>,
+    tint: vec3<f32>,
 }
 
 fn data_vec3(at: u32) -> vec3<f32> {
@@ -358,13 +361,17 @@ fn posed(index: u32, copy: u32) -> Posed {
     }
     var model = o.model;
     var turn = o.normal;
+    var tint = vec3<f32>(1.0);
     if (run.first_instance != NO_INSTANCES) {
-        let rows = instances[run.first_instance + copy].rows;
+        let instance = instances[run.first_instance + copy];
+        let rows = instance.rows;
         let placement = transpose(mat4x4<f32>(rows[0], rows[1], rows[2], vec4<f32>(0.0, 0.0, 0.0, 1.0)));
         model = run.parent * placement * o.model;
         turn = normal_turn(model);
+        tint = instance.tint.rgb;
     }
     var out: Posed;
+    out.tint = tint;
     out.object = oi;
     out.world = model * position;
     // Unit length at each vertex, so that its length doesn't weigh how it is interpolated.
@@ -429,6 +436,7 @@ fn vs_main(@builtin(vertex_index) index: u32, @builtin(instance_index) copy: u32
     out.uv = vertex.uv;
     out.uv1 = vertex.uv1;
     out.color = vertex.color;
+    out.tint = vertex.tint;
     return out;
 }
 
@@ -863,7 +871,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
         let at = in_part(o, pixel_centre_uv(in.clip.xy, in.uv, uv_dx, uv_dy), uv_dx, uv_dy);
         texel = raster_texel(at.uv, at.dx, at.dy);
     }
-    var emissive = o.emissive * texel.rgb;
+    var emissive = o.emissive * texel.rgb * in.tint;
     if (has(o.flags, FLAG_EMISSIVE_MAP)) {
         let at = map_coords(o, SLOT_EMISSIVE, uvs);
         emissive *= textureSampleGrad(emissive_map, emissive_sampler, at.uv, at.dx, at.dy).rgb;
@@ -872,7 +880,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
         let at = map_coords(o, SLOT_BASE_COLOR, uvs);
         texel *= textureSampleGrad(base_color_map, base_color_sampler, at.uv, at.dx, at.dy);
     }
-    var base = o.base_color * texel * in.color;
+    var base = o.base_color * texel * in.color * vec4<f32>(in.tint, 1.0);
     // A shadow catcher shows none of its colour, and catches shadows as much as its alpha covers
     // it, with its raster's and maps', which hide nothing where they are 0.
     let catcher = has(o.flags, FLAG_SHADOW_CATCHER);
