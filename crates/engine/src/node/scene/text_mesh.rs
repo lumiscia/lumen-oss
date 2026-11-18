@@ -294,6 +294,38 @@ impl TextMeshes {
         }
     }
 
+    /// The id of the kept text whose mesh is `mesh`.
+    pub(super) fn id_of(&self, mesh: &GpuMesh) -> Option<&str> {
+        self.texts
+            .iter()
+            .find(|text| text.mesh.is_some_and(|kept| kept.mesh == *mesh))
+            .map(|text| text.id.as_str())
+    }
+
+    /// The mesh of the text kept as `id`, built again on the CPU from glyphs kept or built anew,
+    /// or `None` when no text is kept as `id`.
+    pub(super) fn rebuild(
+        &mut self,
+        media: Option<&dyn MediaStore>,
+        id: &str,
+        max_glyphs: usize,
+    ) -> Option<crate::Result<Mesh>> {
+        let key = self.texts.iter().find(|text| text.id == id)?.key.clone();
+        let limits = BuildLimits {
+            max_glyphs,
+            glyph: GLYPH_LIMITS,
+            max_work: MAX_GLYPH_WORK,
+        };
+        Some(
+            build(media, &key, &mut self.glyphs, &limits)
+                .map(|built| built.mesh.unwrap_or_default())
+                .map_err(|failure| match failure {
+                    BuildError::Lumen(error) => error,
+                    BuildError::Rejected(details) => RenderError::Internal { details }.into(),
+                }),
+        )
+    }
+
     /// Adds the text `built` from `key`, drawn in frame `tick`, and returns where it is.
     fn insert(&mut self, rec: &mut Recorder, key: TextKey, built: Built, tick: u64) -> usize {
         let mesh = built.mesh.filter(|mesh| !mesh.indices.is_empty());

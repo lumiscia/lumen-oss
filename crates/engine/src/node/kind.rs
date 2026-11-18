@@ -203,5 +203,6 @@ node_kinds! {
     Light3d(scene::Light3d),
     Merge3d(scene::Merge3d),
     Instance3d(scene::Instance3d),
+    Particles3d(scene::Particles3d),
     Render3d(scene::Render3d),
 }

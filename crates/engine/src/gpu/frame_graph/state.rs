@@ -419,6 +419,8 @@ pub(super) struct SceneState {
     pub(super) flattened: HashMap<CopyListKey, KeptFlattened>,
     /// The instance buffers of lists later frames draw again, by the node and list.
     pub(super) buffers: HashMap<CopyListKey, KeptBuffer>,
+    /// What `particles_3d` nodes sample their surfaces from and place their particles into.
+    pub(super) particles: crate::node::scene::collect::ParticleCache,
 }
 
 /// An `instance_3d` in a graph, and which of the lists of copies it draws from.
@@ -475,6 +477,7 @@ impl SceneState {
             }
             used
         });
+        self.particles.trim(recorder, tick);
     }
 
     fn reset(&mut self, recorder: &mut Recorder) {
@@ -483,5 +486,6 @@ impl SceneState {
         for (_, kept) in self.buffers.drain() {
             recorder.forget_buffer(kept.buffer);
         }
+        self.particles.release(recorder);
     }
 }

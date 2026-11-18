@@ -5573,6 +5573,277 @@
           },
           {
             "additionalProperties": false,
+            "description": "Draws `count` copies of its `object` scene as particles, scattered over its `surface` scene:\neach is emitted from a point picked at random over the surface's triangles, as likely\nanywhere as anywhere else of the same area, then moves along a direction near the\ntriangle's normal with `speed` and falls with `gravity`. Without a surface, particles are\nemitted from the node's origin along +Y. The surface isn't drawn; wire it into a `merge_3d` as\nwell to show it. The defaults scatter all the particles at once and keep them still, which\nsuits grass on a hill or rocks on a floor; a `rate`, `lifetime` and `speed` make it an emitter,\nsuch as sparks or snow.\n\nA frame's particles depend only on the seed, the params, the surface and the time, which is\nthe frame over the composition's frame rate, so any frame renders alone and the same, and a\n`motion_blur` blurs particles by their motion. Particles are placed on the GPU: a frame's CPU\nwork doesn't grow with `count`, and each `particles_3d` counts once towards a scene's 100000\nobjects, however many particles it draws.\n\nThe surface is taken at rest: a skinned or morphed model emits from its vertices as they are\nstored, unposed, and an `instance_3d` in it emits from all its copies. Each object of the\nsurface emits in proportion to its area in the world, so a flat plane or a flattened box still\nemits, and an `image_plane_3d` with a `region` emits from the part it shows. Emit points\nfollow the surface where it is at the frame. A surface with no area emits nothing.\n\nParticles are drawn as `instance_3d` copies are, sharing the object's meshes and materials,\nwith its lights and camera left out. They are drawn at once, with no order among them, so the\nobject must be opaque or masked: a blended surface, or one showing a raster such as an image\nplane, fails the render. Fade particles with `scale_over_life` rather than opacity. A\n`particles_3d` may sit under an `instance_3d` of `count` 1, which places it as a group would,\nbut more copies of particles, particles of particles, and particles emitted from particles\nfail the render.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "align_to_normal": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Turns each particle so that its +Y follows the normal of the surface where it was emitted.\nOff, particles keep the node's axes.",
+                    "title": "Align To Normal",
+                    "x-lumen-kind": "bool"
+                  },
+                  "count": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1000,
+                    "description": "Particles, from 0 to 100000. Each is one copy of `object`. With `rate` above 0, they are\nslots that are born one after another and born again once all have been.",
+                    "title": "Count",
+                    "x-lumen-constraints": {
+                      "max": 100000.0,
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "gravity": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0, 0.0],
+                    "description": "Acceleration in world units per second squared along X, Y and Z, in the node's own space:\n`[0, -9.8, 0]` makes particles fall. A particle is at `emit + velocity * age + gravity *\nage² / 2`.",
+                    "title": "Gravity",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "lifetime": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Seconds a particle lives once born, after which it draws nothing until it is born again.\n0 lives until it is born again, or forever when `rate` is 0. With `rate` above 0, a\nparticle is born again every `count / rate` seconds, which cuts a longer lifetime short.",
+                    "title": "Lifetime",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "position": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0, 0.0],
+                    "description": "Position in world units along X, Y and Z of the whole system in the parent's space: the surface, the particles and, without a surface, the point they are emitted from move with it.",
+                    "title": "Position",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "rate": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Particles born per second: particle `k` is born `k / rate` seconds into the composition,\nand born again, somewhere new, every `count / rate` seconds after. 0 gives birth to all of\nthem at once, at 0 seconds, and never again.",
+                    "title": "Rate",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "rotation": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0, 0.0],
+                    "description": "Rotation in degrees about X, Y and Z of the whole system, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z. It turns `gravity`, and the direction particles are emitted along without a surface, with the rest.",
+                    "title": "Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "rotation_jitter": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Most degrees a particle turns about an axis picked at random, by an angle picked at random\nup to this. 180 turns particles every way.",
+                    "title": "Rotation Jitter",
+                    "x-lumen-constraints": {
+                      "max": 180.0,
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0],
+                    "description": "The smallest and largest uniform scale of a particle, each picked at random between them.\nNegative scales are taken as 0.",
+                    "title": "Scale",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "vec2"
+                  },
+                  "scale_over_life": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0],
+                    "description": "The scale multiplier at a particle's birth and at the end of its `lifetime`, between which\nit moves in a straight line with its age. Fade particles out with an end of 0. With a\n`lifetime` of 0 the start applies throughout.",
+                    "title": "Scale Over Life",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "vec2"
+                  },
+                  "seed": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0,
+                    "description": "Picks an unrelated scatter: where each particle is emitted, and its direction, size and\nturn. The same seed gives the same particles at the same time.",
+                    "title": "Seed",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "speed": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "World units per second a particle moves at, along its emit direction, from where it is\nemitted.",
+                    "title": "Speed",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "spread": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Degrees the emit direction may lean from the surface normal, or from +Y without a surface,\nat random within a cone: 0 emits along the normal and 180 every way.",
+                    "title": "Spread",
+                    "x-lumen-constraints": {
+                      "max": 180.0,
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "particles_3d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Particles 3D",
+            "type": "object",
+            "x-lumen-category": "scene",
+            "x-lumen-inputs": [
+              {
+                "kind": "scene",
+                "name": "surface",
+                "optional": true,
+                "variadic": false
+              },
+              {
+                "kind": "scene",
+                "name": "object",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "scene",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Produces a rasterized vector path source.",
             "properties": {
               "id": {

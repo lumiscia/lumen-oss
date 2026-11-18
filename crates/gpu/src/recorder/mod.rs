@@ -93,7 +93,7 @@ pub struct ProgramRef(u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SamplerRef(u32);
 
-/// A long-lived buffer adopted from outside, bound whole as read-only storage.
+/// A long-lived buffer adopted from outside, bound whole as storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BufRef(u32);
 

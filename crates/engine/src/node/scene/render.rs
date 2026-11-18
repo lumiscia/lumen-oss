@@ -13,7 +13,7 @@ use lumen_gpu::{
     TexRef, TextureDomain, wgpu,
 };
 
-use super::collect::{Collected, GpuMesh, solid_linear};
+use super::collect::{Collected, CopySource, GpuMesh, solid_linear};
 use super::{Light3d, Render3d, Render3dOutput, Render3dOutputDelegate};
 use crate::error::{LumenError, RenderError};
 use crate::gpu::frame_graph::{
@@ -734,7 +734,7 @@ impl Render3d {
         let globals = cx.rec.uniform(&globals(
             &camera, aspect, 0, &no_lights, params, [0.0; 4], 1,
         ));
-        let tables = Tables::new(cx, collected, &draws, 1);
+        let tables = Tables::new(cx, collected, &draws, 1)?;
         let target = cx.rec.acquire(
             size,
             COLOR_FORMAT,
@@ -976,7 +976,7 @@ impl RecordNode for Render3d {
         ));
         let lights = cx.rec.storage_parts(&[bytemuck::cast_slice(&lights)]);
         let views = atlas.as_ref().map_or(1, |atlas| atlas.views.len() as u32);
-        let tables = Tables::new(cx, &collected, &draws, views);
+        let tables = Tables::new(cx, &collected, &draws, views)?;
 
         let color = cx.rec.acquire(
             target_size,
@@ -1359,7 +1359,7 @@ impl Tables {
         collected: &Collected,
         draws: &Draws<GpuMesh, TexRef>,
         views: u32,
-    ) -> Self {
+    ) -> crate::Result<Self> {
         let scene = &collected.scene;
         let mut map_uvs = Vec::new();
         let objects: Vec<GpuObject> = draws
@@ -1396,9 +1396,14 @@ impl Tables {
                 let instances = match copies {
                     // Runs drawn once read no copy, and bind the object table in place of one.
                     None => objects,
-                    Some(copies) => *lists[copies.list as usize].get_or_insert_with(|| {
-                        instance_buffer(cx, &collected.lists[copies.list as usize])
-                    }),
+                    Some(copies) => match lists[copies.list as usize] {
+                        Some(instances) => instances,
+                        None => {
+                            let instances =
+                                instance_buffer(cx, &collected.lists[copies.list as usize])?;
+                            *lists[copies.list as usize].insert(instances)
+                        }
+                    },
                 };
                 let uniform = cx.rec.uniform(&GpuRun {
                     first: run.first,
@@ -1411,31 +1416,33 @@ impl Tables {
                     views,
                     _pad: [0; 3],
                 });
-                (uniform, instances)
+                Ok((uniform, instances))
             })
-            .collect();
-        Self {
+            .collect::<crate::Result<_>>()?;
+        Ok(Self {
             objects,
             map_uvs,
             weights,
             joints,
             runs,
-        }
+        })
     }
 }
 
 /// The instance buffer of `list`: kept on the GPU while frames draw the same placements, else
 /// uploaded for this frame.
-fn instance_buffer(cx: &mut FrameCx<'_>, list: &super::collect::CopyList) -> Res {
+fn instance_buffer(cx: &mut FrameCx<'_>, list: &super::collect::CopyList) -> crate::Result<Res> {
+    let placements = match &list.source {
+        CopySource::Placements(placements) => placements,
+        CopySource::Particles(system) => return super::collect::particle_buffer(cx, system),
+    };
     if list.kept
-        && let Some(buffer) = cx.copy_buffer(list.key, &list.placements, || {
-            gpu_instances(&list.placements)
-        })
+        && let Some(buffer) = cx.copy_buffer(list.key, placements, || gpu_instances(placements))
     {
-        return Res::Buffer(buffer);
+        return Ok(Res::Buffer(buffer));
     }
-    let records = gpu_instances(&list.placements);
-    cx.rec.storage_parts(&[bytemuck::cast_slice(&records)])
+    let records = gpu_instances(placements);
+    Ok(cx.rec.storage_parts(&[bytemuck::cast_slice(&records)]))
 }
 
 /// The sampler a run reads its raster with outside the colour pass: `clamp`, or the nearest
