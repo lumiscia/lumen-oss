@@ -63,6 +63,7 @@ impl crate::gpu::frame_graph::RecordNode for Blur {
             tex,
             domain,
             bounds: None,
+            reduced: None,
         })
     }
 

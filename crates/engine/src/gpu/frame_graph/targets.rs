@@ -78,6 +78,7 @@ impl FrameCx<'_> {
             tex,
             domain: TextureDomain::full_frame(size),
             bounds: None,
+            reduced: None,
         };
         self.st.full_frames.insert(key, full);
         full
@@ -234,6 +235,7 @@ impl FrameCx<'_> {
             tex,
             domain: TextureDomain::bounded(display, lumen_gpu::RectI::new(0, 0, 0, 0)),
             bounds: None,
+            reduced: None,
         }
     }
 

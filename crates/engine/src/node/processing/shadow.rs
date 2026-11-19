@@ -163,6 +163,7 @@ impl crate::gpu::frame_graph::RecordNode for Shadow {
             tex,
             domain,
             bounds: None,
+            reduced: None,
         })
     }
 

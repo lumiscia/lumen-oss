@@ -254,10 +254,10 @@ impl GpuCompositionRenderer {
         self.graph.take_node_timing()
     }
 
-    /// Sets the longest side an image is decoded at where its uses let it be reduced (only literal
-    /// `resize` nodes read it). Such an image past it, or past the device's texture limit, is shown
-    /// from a copy reduced to fit, with a `media.image_reduced` warning. Any other image keeps its
-    /// own size. There is no limit but the device's by default. Drops what frames recorded so far
+    /// Sets the longest side an image is decoded at where its uses let it be reduced (only
+    /// `resize`, `transform` and `image_plane_3d` nodes read it). Such an image past it, or past
+    /// the device's texture limit, is shown from a copy reduced to fit, with a
+    /// `media.image_reduced` warning. Any other image keeps its own size. There is no limit but the device's by default. Drops what frames recorded so far
     /// when it changes.
     pub fn set_max_image_side(&mut self, pixels: u32) {
         let pixels = pixels.max(1);

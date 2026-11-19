@@ -295,6 +295,7 @@ fn record_shape_source(
         tex,
         domain,
         bounds: None,
+        reduced: None,
     })
 }
 

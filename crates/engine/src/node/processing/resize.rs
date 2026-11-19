@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams,
+    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams,
     processing::{
         RasterSampling,
         minify::{self, Minification},
@@ -117,9 +117,30 @@ struct ResizeUniforms {
     /// The mip level that a filtered minification reads.
     lod: f32,
     _pad: u32,
+    /// Texels of the source per pixel along its axes.
+    density: [f32; 2],
 }
 
 impl crate::gpu::frame_graph::RecordNode for Resize {
+    fn reads_reduced(&self) -> Option<crate::gpu::image_size::ReducedRead> {
+        use crate::gpu::image_size::ReducedRead;
+        let (Deferred::Value(width), Deferred::Value(height)) =
+            (&self.params.width, &self.params.height)
+        else {
+            return Some(ReducedRead::Unknown);
+        };
+        let mode = match self.params.mode {
+            ResizeModeDelegate::Stretch => ResizeMode::Stretch,
+            ResizeModeDelegate::Fit => ResizeMode::Fit,
+            ResizeModeDelegate::Fill => ResizeMode::Fill,
+        };
+        Some(ReducedRead::Fitted {
+            width: (*width).max(1) as f64,
+            height: (*height).max(1) as f64,
+            mode,
+        })
+    }
+
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         crate::gpu::mips::programs(programs)?;
         programs.compute(&RESIZE)
@@ -129,7 +150,7 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
         &self,
         cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
-        let source = cx.required_full(self.id, "source", self.source)?;
+        let source = cx.required_full_reduced(self.id, "source", self.source)?;
         let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
@@ -155,6 +176,7 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
             ],
             mode: evaluated.mode as u32,
             sampling: evaluated.sampling as u32,
+            density: source.density(),
             ..bytemuck::Zeroable::zeroed()
         };
         // Sources that don't publish bounds fill their whole storage texture.
@@ -170,7 +192,12 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
         let mut input = source.tex;
         let image = Size::new(bounds.size[0], bounds.size[1]);
         if evaluated.sampling == RasterSampling::Linear && image.width > 0 && image.height > 0 {
-            let footprint = footprint(evaluated.mode, bounds.size, params.size);
+            let shown = match source.reduced {
+                Some(shown) => [shown.width, shown.height],
+                None => bounds.size,
+            };
+            let footprint = footprint(evaluated.mode, shown, params.size);
+            let footprint = [0, 1].map(|axis| footprint[axis] * params.density[axis]);
             let mips = Minification::mips_fit(cx, image);
             if let Some(minification) = Minification::new(footprint, image, mips) {
                 params.footprint = minification.footprint;
@@ -200,6 +227,7 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
             tex,
             domain: lumen_gpu::TextureDomain::full_frame(size),
             bounds: None,
+            reduced: None,
         })
     }
 }

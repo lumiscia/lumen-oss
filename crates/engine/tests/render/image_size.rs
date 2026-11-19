@@ -1,8 +1,9 @@
-//! The size images are decoded at: where every use is a literal resize, reduced to their aspect
-//! ratio to fit the size limit, and to twice the size the composition shows them at.
+//! The size images are decoded at: where only resizes, transforms and image planes read them,
+//! reduced to fit the size limit, and to twice the size the composition shows them at.
 
 use lumen_engine::composition::Composition;
 use lumen_engine::diagnostic::Severity;
+use lumen_engine::gpu::RenderTarget;
 use lumen_engine::node::NodeId;
 use serde_json::{Value, json};
 
@@ -93,39 +94,120 @@ fn an_image_past_the_size_limit_renders_reduced_with_a_warning() {
 }
 
 #[test]
-fn an_image_past_the_size_limit_a_transform_places_keeps_its_own_size() {
+fn an_image_past_the_size_limit_renders_reduced_through_an_animated_transform() {
     let gpu = gpu();
+    // An expression's scale isn't known before rendering, so only the limit reduces the image.
     let composition = shown_at(
         (64, 32),
         json!([
             photo_in(),
             { "id": 2, "type": "transform", "in": { "source": 1 },
-              "params": { "scale_x": 0.25, "scale_y": 0.25 } },
+              "params": { "scale_x": "=0.5", "scale_y": "=0.5" } },
         ]),
     );
     let media = photo(64, 32);
     let mut renderer = gpu.renderer();
     let unlimited = render(&mut renderer, &composition, 0.0, &media);
+    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 64 * 32 * 4);
 
     let mut renderer = gpu.renderer();
     renderer.set_max_image_side(32);
     let limited = render(&mut renderer, &composition, 0.0, &media);
-    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 64 * 32 * 4);
-    assert_eq!(limited.rgba, unlimited.rgba);
-    assert!(renderer.take_diagnostics().is_empty());
+    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 32 * 16 * 4);
+    // Each pixel shows two by two texels of the full image, which the reduced one has averaged.
+    let difference = largest_channel_difference(&limited.rgba, &unlimited.rgba);
+    assert!(
+        difference <= 3,
+        "the reduced image is {difference} codes off"
+    );
+    let warnings = renderer.take_diagnostics();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].code, "media.image_reduced");
+}
+
+#[cfg(feature = "3d")]
+#[test]
+fn an_image_past_the_size_limit_renders_reduced_on_an_image_plane() {
+    use crate::support::scene::{framed, plate, render_3d};
+    let gpu = gpu();
+    let media = crate::support::scene::gradient();
+    let mut nodes = vec![plate(10)];
+    nodes.extend(framed(10));
+    let composition: Composition = render_3d(nodes).into();
+    let mut renderer = gpu.renderer();
+    let unlimited = render(&mut renderer, &composition, 0.0, &media);
+
+    let mut renderer = gpu.renderer();
+    renderer.set_max_image_side(16);
+    let limited = render(&mut renderer, &composition, 0.0, &media);
+    assert_eq!(renderer.cached_media_texture_count(), 1);
+    let warnings = renderer.take_diagnostics();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].code, "media.image_reduced");
+    assert!(
+        warnings[0].message.contains("16x16"),
+        "{}",
+        warnings[0].message
+    );
+    // The plane keeps its shape, and a ramp sampled from a quarter of its texels stays near it.
+    for (x, y) in [(0, 0), (63, 0), (0, 63), (63, 63), (32, 32)] {
+        assert_eq!(
+            limited.pixel(x, y)[3],
+            unlimited.pixel(x, y)[3],
+            "({x}, {y})"
+        );
+    }
+    // Magnified 4 times, the reduced ramp is interpolated in linear light across 16 codes a texel.
+    let difference = largest_channel_difference(&limited.rgba, &unlimited.rgba);
+    assert!(
+        difference <= 8,
+        "the reduced plane is {difference} codes off"
+    );
 }
 
 #[test]
-fn an_image_is_reduced_only_to_its_own_aspect_ratio() {
+fn an_image_past_the_device_limit_that_a_blur_reads_fails() {
     let gpu = gpu();
-    // 1000 × 9 fits 100 × 0.9 here. No smaller size has its aspect ratio, so it keeps its own.
+    let mut renderer = gpu.renderer();
+    let limit = renderer
+        .gpu_renderer()
+        .device
+        .limits()
+        .max_texture_dimension_2d;
+    let width = limit * 2;
+    let composition = shown_at(
+        (32, 16),
+        json!([
+            photo_in(),
+            resized(2, json!(32), json!(16)),
+            { "id": 3, "type": "blur", "in": { "source": 1 } },
+            { "id": 4, "type": "merge", "in": { "base": 2, "overlay": 3 } },
+        ]),
+    );
+    let media = TestMedia::default().image("photo", width, 2, RED.repeat(width as usize * 2));
+    let error = renderer
+        .render(&composition, 0.0, &media, RenderTarget::Owned)
+        .unwrap_err();
+    assert_eq!(error.code(), "media.too_large");
+    let message = error.to_string();
+    assert!(
+        message.contains("`resize`, `transform` and `image_plane_3d`"),
+        "{message}"
+    );
+}
+
+#[test]
+fn an_image_is_reduced_on_each_axis_whatever_its_aspect_ratio() {
+    let gpu = gpu();
+    // 1000 × 9 fits 200 × 1.8 here, so it is kept at 400 × 4, though no size that small has its
+    // aspect ratio.
     let fit = |after: Value| {
         shown_at(
-            (100, 100),
+            (200, 200),
             json!([
                 photo_in(),
                 { "id": 2, "type": "resize", "in": { "source": 1 },
-                  "params": { "width": 100, "height": 100, "mode": "fit" } },
+                  "params": { "width": 200, "height": 200, "mode": "fit" } },
                 after,
             ]),
         )
@@ -138,10 +220,7 @@ fn an_image_is_reduced_only_to_its_own_aspect_ratio() {
         0.0,
         &media,
     );
-    assert_eq!(
-        renderer.frame_graph_stats().adopted_bytes,
-        1000 * 9 * 4 + mip_bytes(1000, 9, 5)
-    );
+    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 400 * 4 * 4);
 
     let mut renderer = gpu.renderer();
     let unbounded = render(
@@ -151,7 +230,14 @@ fn an_image_is_reduced_only_to_its_own_aspect_ratio() {
         0.0,
         &media,
     );
-    assert_eq!(bounded.rgba, unbounded.rgba);
+    // The strip crosses rows 99 and 100, and each pixel averages about 5 by 5 texels of the full
+    // image or 2 by 2 of the reduced one.
+    assert!(bounded.pixel(100, 99)[3] > 0 && bounded.pixel(100, 100)[3] > 0);
+    let difference = largest_channel_difference(&bounded.rgba, &unbounded.rgba);
+    assert!(
+        difference <= 3,
+        "the reduced image is {difference} codes off"
+    );
 }
 
 #[test]
@@ -288,20 +374,42 @@ fn uses_of_one_image_take_the_largest_and_a_larger_one_decodes_it_again() {
 }
 
 #[test]
-fn an_image_a_transform_reads_keeps_its_own_size() {
+fn an_image_a_literal_transform_shows_at_a_quarter_is_decoded_at_half() {
     let gpu = gpu();
-    let composition = shown_at(
-        (400, 300),
-        json!([
-            photo_in(),
-            { "id": 2, "type": "transform", "in": { "source": 1 },
-              "params": { "scale_x": 0.1, "scale_y": 0.1 } },
-        ]),
-    );
+    let media = photo(800, 600);
+    let quarter = |scale: Value| {
+        shown_at(
+            (800, 600),
+            json!([
+                photo_in(),
+                { "id": 2, "type": "transform", "in": { "source": 1 },
+                  "params": { "scale_x": scale, "scale_y": scale } },
+            ]),
+        )
+    };
     let mut renderer = gpu.renderer();
-    render(&mut renderer, &composition, 0.0, &photo(2000, 1500));
-    assert_eq!(
-        renderer.frame_graph_stats().adopted_bytes,
-        2000 * 1500 * 4 + mip_bytes(2000, 1500, 5)
+    let reduced = render(&mut renderer, &quarter(json!(0.25)), 0.0, &media);
+    assert_eq!(renderer.cached_media_texture_count(), 1);
+    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 400 * 300 * 4);
+
+    // The same scale from an expression keeps the image at its own size.
+    let mut renderer = gpu.renderer();
+    let native = render(&mut renderer, &quarter(json!("=0.25")), 0.0, &media);
+    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 800 * 600 * 4);
+
+    // Both shrink about the image's centre, into 200 × 150 pixels from (300, 225).
+    for frame in [&reduced, &native] {
+        assert_eq!(frame.pixel(299, 300)[3], 0);
+        assert_eq!(frame.pixel(300, 300)[3], 255);
+        assert_eq!(frame.pixel(499, 374)[3], 255);
+        assert_eq!(frame.pixel(500, 374)[3], 0);
+        assert_eq!(frame.pixel(400, 375)[3], 0);
+    }
+    // Each pixel averages four by four texels of the full image, or two by two of the reduced one,
+    // which has averaged two by two of the full image's in linear light.
+    let difference = largest_channel_difference(&reduced.rgba, &native.rgba);
+    assert!(
+        difference <= 2,
+        "the reduced image is {difference} codes off"
     );
 }

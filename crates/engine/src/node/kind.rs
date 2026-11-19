@@ -148,6 +148,12 @@ macro_rules! node_kinds {
                 }
             }
 
+            fn reads_reduced(&self) -> Option<crate::gpu::image_size::ReducedRead> {
+                match self {
+                    $(Self::$variant(node) => node.reads_reduced(),)+
+                }
+            }
+
             fn literal_param_errors(&self) -> Vec<(&'static str, String)> {
                 match self {
                     $(Self::$variant(node) => node.literal_param_errors(),)+

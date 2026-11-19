@@ -287,6 +287,7 @@ fn add_sample(
         tex,
         domain,
         bounds: None,
+        reduced: None,
     })
 }
 

@@ -208,6 +208,7 @@ impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
                 tex,
                 domain,
                 bounds: None,
+                reduced: None,
             };
         }
         Ok(current)

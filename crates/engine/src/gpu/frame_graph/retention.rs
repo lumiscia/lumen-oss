@@ -234,8 +234,56 @@ impl FrameCx<'_> {
         self.input_full(required_input(node_id, port, input)?)
     }
 
-    /// Records `node_id` as is, for readers that read a raster through its domain.
+    /// [`Self::required`] for a reader that shows a reduced raster at its density.
+    pub(crate) fn required_reduced(
+        &mut self,
+        node_id: NodeId,
+        port: &str,
+        input: Option<NodeId>,
+    ) -> crate::Result<Raster> {
+        self.input_reduced(required_input(node_id, port, input)?)
+    }
+
+    /// [`Self::required_full`] for a reader that shows a reduced raster at its density.
+    pub(crate) fn required_full_reduced(
+        &mut self,
+        node_id: NodeId,
+        port: &str,
+        input: Option<NodeId>,
+    ) -> crate::Result<Raster> {
+        self.input_full_reduced(required_input(node_id, port, input)?)
+    }
+
+    /// [`Self::input_full`] for a reader that shows a reduced raster at its density. A reduced
+    /// raster covers all of its texture already.
+    pub(crate) fn input_full_reduced(&mut self, node_id: NodeId) -> crate::Result<Raster> {
+        let raster = self.input_reduced(node_id)?;
+        if raster.reduced.is_some() {
+            return Ok(raster);
+        }
+        self.full_frame_of(node_id, raster)
+    }
+
+    /// Records `node_id` as is, for readers that read a raster through its domain. Fails on an
+    /// image decoded at fewer texels than its pixels, which only the readers its decoded size was
+    /// chosen for read.
     pub(crate) fn input(&mut self, node_id: NodeId) -> crate::Result<Raster> {
+        let raster = self.input_reduced(node_id)?;
+        if raster.reduced.is_some() {
+            return Err(RenderError::Internal {
+                details: format!(
+                    "node {node_id} is an image decoded at fewer texels than its pixels, read by a \
+                     node that reads texels as pixels"
+                ),
+            }
+            .into());
+        }
+        Ok(raster)
+    }
+
+    /// Records `node_id` as is, which may be an image decoded at fewer texels than the device
+    /// pixels it covers (see [`Raster::reduced`]), for readers that sample it at its density.
+    pub(crate) fn input_reduced(&mut self, node_id: NodeId) -> crate::Result<Raster> {
         let node = self.scope.node(node_id).ok_or(RenderError::MissingNode {
             at: crate::error::At::node(node_id),
         })?;
@@ -441,6 +489,11 @@ impl FrameCx<'_> {
     /// Records `node_id` stored at its full display size, for readers that read texel for texel.
     pub(crate) fn input_full(&mut self, node_id: NodeId) -> crate::Result<Raster> {
         let raster = self.input(node_id)?;
+        self.full_frame_of(node_id, raster)
+    }
+
+    /// `raster`, the output of `node_id`, stored at its full display size.
+    fn full_frame_of(&mut self, node_id: NodeId, raster: Raster) -> crate::Result<Raster> {
         if raster.domain.is_full_frame() {
             return Ok(raster);
         }
@@ -454,6 +507,7 @@ impl FrameCx<'_> {
                 tex: full,
                 domain: TextureDomain::full_frame(raster.domain.display_size()),
                 bounds: None,
+                reduced: None,
             });
         }
         let full = self.full_frame(raster);

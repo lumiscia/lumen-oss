@@ -576,6 +576,7 @@ fn record(
         tex,
         domain,
         bounds: None,
+        reduced: None,
     })
 }
 

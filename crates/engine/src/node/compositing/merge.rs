@@ -211,6 +211,7 @@ impl crate::gpu::frame_graph::RecordNode for Merge {
             tex,
             domain,
             bounds: None,
+            reduced: None,
         })
     }
 
