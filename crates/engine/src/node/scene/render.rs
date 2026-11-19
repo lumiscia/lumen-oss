@@ -950,7 +950,7 @@ impl RecordNode for Render3d {
             &lighting.direct,
             &camera,
             aspect,
-            max,
+            max.min(lumen_3d::atlas_side(cx.pixel_scale())),
         );
         if let Some(atlas) = &atlas
             && !atlas.dropped.is_empty()

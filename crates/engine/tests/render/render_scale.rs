@@ -293,3 +293,127 @@ fn a_renderer_moves_between_scales_without_stale_output() {
         "back at full scale, frames are as before"
     );
 }
+
+/// How many pixels of `frame` have any alpha.
+fn covered(frame: &Frame) -> usize {
+    let pixels = frame.rgba.as_chunks::<4>().0;
+    pixels.iter().filter(|pixel| pixel[3] > 0).count()
+}
+
+/// Nodes, scale, and the check of the frame they render.
+type ProbeRow = (Value, f32, fn(&Frame));
+
+#[test]
+fn rectangles_keep_their_scaled_edges_and_thin_shapes_stay_thin() {
+    let gpu = gpu();
+    let solid =
+        json!({ "id": 1, "type": "background", "params": { "paint": [255, 255, 255, 255] } });
+    let rows: Vec<(&str, ProbeRow)> = vec![
+        (
+            // The right edge, 4, is exactly 2 device pixels.
+            "crop edges scale together",
+            (
+                json!([solid, { "id": 2, "type": "crop", "in": { "source": 1 },
+                    "params": { "x": 1, "y": 1, "width": 3, "height": 3 } }]),
+                0.5,
+                |frame| assert_eq!(covered(frame), 1),
+            ),
+        ),
+        (
+            "a shape one canvas pixel wide covers half a device pixel",
+            (
+                json!([{ "id": 1, "type": "shape", "params": {
+                    "width": 1, "height": 8, "position": [4, 4],
+                    "fill_paint": [255, 255, 255, 255] } }]),
+                0.5,
+                |frame| {
+                    let alpha = frame.pixel(2, 3)[3];
+                    assert!((120..=136).contains(&alpha), "alpha {alpha}");
+                    assert_eq!(frame.pixel(3, 3)[3], 0);
+                },
+            ),
+        ),
+        (
+            "a thin path keeps its scaled width",
+            (
+                json!([{ "id": 1, "type": "path", "params": {
+                    "data": "M 0 0 L 1 0 L 1 8 L 0 8 Z", "position": [4, 4],
+                    "fill_paint": [255, 255, 255, 255] } }]),
+                0.5,
+                |frame| {
+                    let alpha = frame.pixel(2, 3)[3];
+                    assert!((120..=136).contains(&alpha), "alpha {alpha}");
+                    assert_eq!(frame.pixel(3, 3)[3], 0);
+                },
+            ),
+        ),
+    ];
+    check_each(rows, |(nodes, scale, check)| {
+        let composition: Composition = scene((8, 8), nodes).into();
+        let frame = render(
+            scaled(&mut gpu.renderer(), scale),
+            &composition,
+            0.0,
+            &TestMedia::default(),
+        );
+        check(&frame);
+    });
+}
+
+#[test]
+fn a_blur_past_the_cap_looks_the_same_at_every_scale() {
+    let gpu = gpu();
+    let blurred = |radius: u32| -> Composition {
+        scene(
+            CANVAS,
+            json!([
+                { "id": 1, "type": "shape", "params": {
+                    "width": 90, "height": 60, "position": [3, 2],
+                    "fill_paint": [255, 255, 255, 255] } },
+                { "id": 2, "type": "blur", "in": { "source": 1 }, "params": { "radius": radius } },
+            ]),
+        )
+        .into()
+    };
+    let media = TestMedia::default();
+    let mut renderer = gpu.renderer();
+    let frames: Vec<_> = [700, 1400]
+        .map(|radius| render(scaled(&mut renderer, 0.5), &blurred(radius), 0.0, &media))
+        .into();
+    assert!(frames[0].rgba == frames[1].rgba, "radii past the cap match");
+}
+
+#[cfg(feature = "3d")]
+#[test]
+fn shadow_maps_shrink_with_the_render_scale() {
+    use crate::support::scene::{GroundView, light};
+
+    let gpu = gpu();
+    let composition: Composition = GroundView::WHOLE
+        .scene(
+            vec![
+                light(
+                    60,
+                    json!({ "light": "directional", "intensity": 3, "cast_shadows": true,
+                        "rotation": [-45, -90, 0] }),
+                ),
+                json!({ "id": 1, "type": "shape_3d", "params": {
+                    "size": [0.6, 0.2, 0.6], "position": [-1, 2, 0] } }),
+            ],
+            json!({}),
+        )
+        .into();
+    let held = |scale: f32| {
+        let mut renderer = gpu.renderer();
+        render(
+            scaled(&mut renderer, scale),
+            &composition,
+            0.0,
+            &TestMedia::default(),
+        );
+        renderer.frame_graph_stats().recorder.peak_frame_bytes
+    };
+    let (full, half) = (held(1.0), held(0.5));
+    // A 4096 square depth atlas is 64 MiB, and a 2048 square one 16 MiB.
+    assert!(full - half >= 32 << 20, "{full} bytes at 1, {half} at 0.5");
+}

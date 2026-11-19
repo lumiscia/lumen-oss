@@ -198,6 +198,7 @@ fn path_frame(
         repeated.as_ref(),
         canvas,
         band_capacity,
+        pixel_scale,
     ))
 }
 
@@ -211,7 +212,8 @@ pub(super) struct PathFrame {
 
 impl PathFrame {
     /// Fills in the bounds, transform, culling and motion of `uniforms` and bins `points` for a
-    /// canvas of `canvas` pixels.
+    /// canvas of `canvas` pixels at `pixel_scale`.
+    #[allow(clippy::too_many_arguments, reason = "a frame's flat inputs")]
     pub(super) fn new(
         mut uniforms: PathUniforms,
         points: Vec<PathPoint>,
@@ -220,12 +222,15 @@ impl PathFrame {
         repeated: Option<&RepeatedTransform<'_>>,
         canvas: [f32; 2],
         band_capacity: usize,
+        pixel_scale: f64,
     ) -> Self {
         let bounds = point_bounds(&points);
         uniforms.bounds_min = bounds.0;
+        // At least a canvas pixel across, which also keeps a paint's box from collapsing.
+        let least = pixel_scale as f32;
         uniforms.bounds_size = [
-            (bounds.1[0] - bounds.0[0]).max(1.0),
-            (bounds.1[1] - bounds.0[1]).max(1.0),
+            (bounds.1[0] - bounds.0[0]).max(least),
+            (bounds.1[1] - bounds.0[1]).max(least),
         ];
         uniforms.transform = transform.to_gpu();
         let [x, y] = uniforms.position;

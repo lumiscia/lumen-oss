@@ -291,6 +291,20 @@ describe("PreviewRunner", () => {
     expect(fake.rendered).toEqual([0, 1]);
   });
 
+  it("draws again on a redraw after a failed render", async () => {
+    const fake = await loaded();
+    fake.failNextRender(new Error("over the texture limit"));
+    fake.runner.setClock(fake.clock(0, 1));
+    await fake.advance(250);
+    expect(fake.failures).toHaveLength(1);
+
+    fake.runner.setClock(fake.clock(0, 0));
+    fake.runner.redraw();
+    await fake.settle();
+    expect(fake.failures).toHaveLength(1);
+    expect(fake.rendered.length).toBeGreaterThan(1);
+  });
+
   it("drops frames and still answers pause and seek when renders can't keep up", async () => {
     const RENDER_MS = 40;
     const FAST_FPS = 60;

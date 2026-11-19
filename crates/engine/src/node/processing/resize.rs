@@ -12,6 +12,7 @@ use lumen_gpu::Size;
 
 use super::crop::{pixel_extent, pixel_origin};
 use crate::gpu::frame_graph::{ComputeProgram, CropParams, dispatch_for};
+use crate::gpu::render_scale::device_rect;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("resize.wgsl"),
@@ -34,16 +35,16 @@ pub enum ResizeMode {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ResizeParams {
     /// Left edge of the output rectangle in pixels.
-    #[meta(step = 1, pixels)]
+    #[meta(step = 1)]
     pub x: i64,
     /// Top edge of the output rectangle in pixels.
-    #[meta(step = 1, pixels)]
+    #[meta(step = 1)]
     pub y: i64,
     /// Output width in pixels.
-    #[meta(min = 1, step = 1, pixels)]
+    #[meta(min = 1, step = 1)]
     pub width: i64,
     /// Output height in pixels.
-    #[meta(min = 1, step = 1, pixels)]
+    #[meta(min = 1, step = 1)]
     pub height: i64,
     /// How the source raster should fit the output bounds.
     #[meta()]
@@ -134,14 +135,23 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
             expr: &cx.expr(),
             pixel_scale: cx.pixel_scale(),
         })?;
+        let [x, y, width, height] = device_rect(
+            [
+                evaluated.x,
+                evaluated.y,
+                evaluated.width.max(1),
+                evaluated.height.max(1),
+            ],
+            cx.pixel_scale(),
+        );
         let mut params = ResizeUniforms {
             origin: [
-                pixel_origin(self.id, "x", evaluated.x)?,
-                pixel_origin(self.id, "y", evaluated.y)?,
+                pixel_origin(self.id, "x", x)?,
+                pixel_origin(self.id, "y", y)?,
             ],
             size: [
-                pixel_extent(self.id, "width", evaluated.width, 1)?,
-                pixel_extent(self.id, "height", evaluated.height, 1)?,
+                pixel_extent(self.id, "width", width, 1)?,
+                pixel_extent(self.id, "height", height, 1)?,
             ],
             mode: evaluated.mode as u32,
             sampling: evaluated.sampling as u32,

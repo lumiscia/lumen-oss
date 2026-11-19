@@ -100,7 +100,7 @@ fn shape_frame(
     let shutter = params
         .placement
         .shutter(&evaluated.placement, node_id, expr, pixel_scale)?;
-    let mut uniforms = shape_uniforms(&evaluated, shutter.as_ref());
+    let mut uniforms = shape_uniforms(&evaluated, shutter.as_ref(), pixel_scale);
     let (Some(repeat), Some(delegate)) = (&evaluated.repeat, &params.repeat) else {
         return Ok((uniforms, None));
     };
@@ -114,7 +114,7 @@ fn shape_frame(
         expr,
         pixel_scale,
     )?;
-    let (min, max) = shape_box(&evaluated);
+    let (min, max) = shape_box(&evaluated, pixel_scale);
     let copies = RepeatedTransform {
         base: &evaluated.placement.transform(),
         base_shutter: shutter.as_ref(),
@@ -128,20 +128,26 @@ fn shape_frame(
     Ok((uniforms, Some(copies)))
 }
 
+/// The size the shape draws at, in device pixels at `pixel_scale`: a canvas pixel at least across
+/// each way, or nothing for a side of 0 or NaN.
+fn drawn_size(params: &ShapeParams, pixel_scale: f64) -> [f32; 2] {
+    let size = [params.width.max(0.0) as f32, params.height.max(0.0) as f32];
+    // Also catches NaN, which `max` turned to 0.
+    if size.contains(&0.0) {
+        size
+    } else {
+        size.map(|side| side.max(pixel_scale as f32))
+    }
+}
+
 /// The untransformed box around what the shape draws: the stroke reaches half its width beyond
-/// the shape, which the shader draws at least a pixel across.
-fn shape_box(params: &ShapeParams) -> ([f32; 2], [f32; 2]) {
+/// the shape.
+fn shape_box(params: &ShapeParams, pixel_scale: f64) -> ([f32; 2], [f32; 2]) {
     let position = [
         params.placement.position.0 as f32,
         params.placement.position.1 as f32,
     ];
-    let size = [params.width.max(0.0) as f32, params.height.max(0.0) as f32];
-    // Also catches NaN, which `max` turned to 0.
-    let drawn = if size.contains(&0.0) {
-        size
-    } else {
-        size.map(|side| side.max(1.0))
-    };
+    let drawn = drawn_size(params, pixel_scale);
     let margin = if params.style.stroke_enabled {
         (params.style.stroke_width.max(0.0) * 0.5) as f32
     } else {
@@ -158,17 +164,17 @@ fn shape_box(params: &ShapeParams) -> ([f32; 2], [f32; 2]) {
 fn shape_uniforms(
     params: &ShapeParams,
     shutter: Option<&Shutter<DrawableTransform>>,
+    pixel_scale: f64,
 ) -> ShapeUniforms {
     let style = &params.style;
     let position = [
         params.placement.position.0 as f32,
         params.placement.position.1 as f32,
     ];
-    let size = [params.width.max(0.0) as f32, params.height.max(0.0) as f32];
-    // Also catches NaN, which `max` turned to 0.
+    let size = drawn_size(params, pixel_scale);
     let empty = size.contains(&0.0);
     let transform = params.placement.transform().to_gpu();
-    let (min, max) = shape_box(params);
+    let (min, max) = shape_box(params, pixel_scale);
     let motion = DrawableMotion::new(shutter, min, max);
     let [min_x, min_y, max_x, max_y] = motion.canvas_bounds(transform, min, max);
     ShapeUniforms {
@@ -302,7 +308,7 @@ mod tests {
             border_radius: -12.0,
             ..ShapeParams::default()
         };
-        assert_eq!(shape_uniforms(&params, None).border_radius, 0.0);
+        assert_eq!(shape_uniforms(&params, None, 1.0).border_radius, 0.0);
     }
 
     #[test]
@@ -312,7 +318,7 @@ mod tests {
                 width,
                 ..ShapeParams::default()
             };
-            assert_eq!(shape_uniforms(&params, None).flags, 0, "width {width}");
+            assert_eq!(shape_uniforms(&params, None, 1.0).flags, 0, "width {width}");
         }
     }
 }

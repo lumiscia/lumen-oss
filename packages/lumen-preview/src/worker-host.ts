@@ -204,6 +204,7 @@ export function createLumenPreviewWorkerHost({
     loop: boolean;
     playbackRevision: number;
     range: LumenPreviewRange | null;
+    renderScale: number;
   } = {
     audioRequestId: 0,
     canvas: null,
@@ -213,6 +214,7 @@ export function createLumenPreviewWorkerHost({
     loop: false,
     playbackRevision: 0,
     range: null,
+    renderScale: 1,
   };
   // The composition being loaded or shown, which a load or unload names with the page's load id.
   const composition: {
@@ -338,13 +340,12 @@ export function createLumenPreviewWorkerHost({
     controller.setLogLevel(message.logLevel);
     controller.setLookaheadCount(message.lookaheadCount);
     controller.setRenderScale(message.renderScale);
+    const scaleChanged = message.renderScale !== host.renderScale;
+    host.renderScale = message.renderScale;
     if (composition.durationFrames > 0) {
-      const { canvasSize } = composition;
       composition.canvasSize = outputSize(controller);
-      if (
-        canvasSize?.width !== composition.canvasSize.width ||
-        canvasSize.height !== composition.canvasSize.height
-      ) {
+      // A scale that rounds to the same size still draws the frame differently.
+      if (scaleChanged) {
         runner.redraw();
       }
     }
@@ -462,6 +463,7 @@ export function createLumenPreviewWorkerHost({
       controller.setLogLevel(message.logLevel);
       controller.setLookaheadCount(message.lookaheadCount);
       controller.setRenderScale(message.renderScale);
+      host.renderScale = message.renderScale;
     } catch (error) {
       scope.postMessage({
         code: "worker_failed",

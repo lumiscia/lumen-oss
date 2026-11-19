@@ -4,15 +4,21 @@ use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 use crate::node::motion::MAX_BOUNDED_MAGNITUDE;
 
 /// `radius` is the half-width, in canvas pixels, of the discrete box blur it replaces. A box of
-/// `2r + 1` pixels has variance `r(r + 1) / 3`, and the Gaussian matches it. The sigma is scaled to
-/// device pixels after, so a blur at any render scale is the full one scaled.
+/// `2r + 1` pixels has variance `r(r + 1) / 3`, and the Gaussian matches it. The sigma is capped
+/// in canvas pixels, then scaled to device pixels, so a blur at any render scale is the full one
+/// scaled, and the device kernel limit applies on its own.
 fn sigma_for_radius(radius: f64, scale: f64) -> f32 {
     let radius = radius.max(0.0);
-    ((radius * (radius + 1.0) / 3.0).sqrt() * scale).min(MAX_SIGMA) as f32
+    let sigma = (radius * (radius + 1.0) / 3.0).sqrt().min(MAX_SIGMA);
+    (sigma * scale).min(MAX_DEVICE_SIGMA) as f32
 }
 
-/// Beyond this the reduced chain would need more than ~65 taps per pass.
+/// The widest blur, as a sigma in canvas pixels.
 const MAX_SIGMA: f64 = 340.0;
+
+/// The widest sigma in device pixels: beyond this the reduced chain would need more than ~65 taps
+/// per pass.
+const MAX_DEVICE_SIGMA: f64 = 340.0;
 
 /// Sigma bands in which neighboring levels are crossfaded: the quarter level
 /// fades in over `QUARTER_BAND` and replaces the sixteenth over `SIXTEENTH_BAND`.
@@ -121,7 +127,7 @@ impl Padding {
         Self {
             full: kernel_reach(QUARTER_BAND.1),
             quarter: kernel_reach(reduced_sigma(SIXTEENTH_BAND.1, QUARTER_FACTOR)),
-            sixteenth: kernel_reach(reduced_sigma(MAX_SIGMA, SIXTEENTH_FACTOR)),
+            sixteenth: kernel_reach(reduced_sigma(MAX_DEVICE_SIGMA, SIXTEENTH_FACTOR)),
         }
     }
 

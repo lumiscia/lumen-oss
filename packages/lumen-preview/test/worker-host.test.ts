@@ -456,6 +456,12 @@ describe("createLumenPreviewWorkerHost", () => {
     await settle();
     expect(testCanvas).toEqual({ height: 5, width: 5 });
     expect(drawn).toEqual(["B", "B"]);
+
+    receive({ logLevel: "off", lookaheadCount: 0, renderScale: 0.6, type: "set-options" });
+    receive({ logLevel: "off", lookaheadCount: 0, renderScale: 0.9, type: "set-options" });
+    await settle();
+    expect(testCanvas).toEqual({ height: 2, width: 2 });
+    expect(drawn.length).toBeGreaterThanOrEqual(4);
   });
 
   it("releases what a composition stops naming, so swapping doesn't grow what is registered", async () => {

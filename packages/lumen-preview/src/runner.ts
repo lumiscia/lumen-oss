@@ -107,9 +107,10 @@ export class PreviewRunner<TTimer> {
     this.#wake();
   }
 
-  /** Renders the frame on screen again, after a change to how it looks. */
+  /** Renders the frame on screen again, after a change to how it looks, even after a failed render. */
   redraw(): void {
     this.#dirty = true;
+    this.#failed = false;
     this.#wake();
   }
 

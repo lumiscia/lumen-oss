@@ -61,6 +61,23 @@ pub(crate) fn explicit_extent(logical: u32, scale: f64) -> u32 {
     }
 }
 
+/// The rectangle `[x, y, width, height]` of canvas pixels in device pixels: its two corners are
+/// scaled and rounded, and the extent is what lies between them, so that rectangles that share an
+/// edge still share it. A positive extent keeps at least one device pixel.
+pub(crate) fn device_rect(rect: [i64; 4], scale: f64) -> [i64; 4] {
+    if scale == 1.0 {
+        return rect;
+    }
+    let [x, y, width, height] = rect;
+    let edge = |value: i64| (value as f64 * scale).round() as i64;
+    let extent = |origin: i64, length: i64, scaled_origin: i64| {
+        let scaled = edge(origin.saturating_add(length)) - scaled_origin;
+        if length > 0 { scaled.max(1) } else { scaled }
+    };
+    let (left, top) = (edge(x), edge(y));
+    [left, top, extent(x, width, left), extent(y, height, top)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +99,14 @@ mod tests {
         assert_eq!(size(10, 7, 1.5), Size::new(15, 11));
         assert_eq!(explicit_extent(0, 0.5), 0);
         assert_eq!(explicit_extent(9, 0.5), 5);
+    }
+
+    #[test]
+    fn rectangles_scale_by_their_corners() {
+        assert_eq!(device_rect([1, 1, 3, 3], 1.0), [1, 1, 3, 3]);
+        // The right edge, 4, lands exactly on 2 device pixels.
+        assert_eq!(device_rect([1, 1, 3, 3], 0.5), [1, 1, 1, 1]);
+        assert_eq!(device_rect([-3, 0, 6, 1], 0.5), [-2, 0, 4, 1]);
+        assert_eq!(device_rect([0, 0, 0, 0], 0.5), [0, 0, 0, 0]);
     }
 }
