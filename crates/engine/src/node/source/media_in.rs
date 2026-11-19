@@ -113,10 +113,7 @@ pub struct MediaIn {
 impl MediaIn {
     /// What the node shows at `ctx`'s frame.
     pub fn resolve(&self, ctx: &crate::expr::ExpressionContext<'_>) -> crate::Result<MediaInKind> {
-        let params = self.params.eval(&DelegateEvalContext {
-            node_id: self.id,
-            expr: ctx,
-        })?;
+        let params = self.params.eval(&DelegateEvalContext::new(self.id, ctx))?;
         Ok(match params.kind {
             MediaInSourceKind::Image => MediaInKind::Image {
                 image_id: params.source,
@@ -244,7 +241,9 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
         })?;
         let (kind, fps, mut size) = {
             let expr = cx.expr();
-            let size = self.native_size(&expr)?.unwrap_or_else(|| cx.canvas_size());
+            let size = self
+                .native_size(&expr)?
+                .unwrap_or_else(|| cx.logical_canvas_size());
             (self.resolve(&expr)?, expr.fps, size)
         };
         let tex = match kind {
@@ -278,6 +277,9 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
             } => {
                 let (identity, resolver) = resolve_as::<dyn VideoFrameResolver>(media, &stream_id)?;
                 cx.ensure_media_fits(&stream_id, size)?;
+                // Frames are decoded at their native size and converted into a raster at the
+                // render scale.
+                size = cx.device_size(size);
                 if let Some(details) = resolver.color_warning() {
                     cx.warn(
                         self.id,

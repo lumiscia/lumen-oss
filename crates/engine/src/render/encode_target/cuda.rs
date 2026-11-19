@@ -35,8 +35,7 @@ impl CudaTarget {
         renderer
             .check_output_size(composition)
             .map_err(|err| Error::engine("the output can't be rendered", err))?;
-        let settings = composition.render_settings();
-        let (width, height) = (settings.width, settings.height);
+        let lumen_gpu::Size { width, height } = renderer.output_size(composition);
         let pool = CudaNvencTargetPool::new(
             renderer.gpu_renderer(),
             lumen_gpu::Size::new(width, height),

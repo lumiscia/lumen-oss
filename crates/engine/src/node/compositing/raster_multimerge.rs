@@ -133,6 +133,7 @@ impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
         let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         // Compositing transparent over a pixel leaves it as it was, so the stack is written
         // only where some layer has texels, and a pass changes its base only within its

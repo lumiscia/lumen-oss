@@ -107,10 +107,7 @@ impl<N: JsonNode> Search<N> {
                 at: At::node(node_id),
             })?;
             let expr = cx.expr();
-            let ctx = DelegateEvalContext {
-                node_id,
-                expr: &expr,
-            };
+            let ctx = DelegateEvalContext::new(node_id, &expr);
             match node {
                 NodeKind::Camera3d(camera) => {
                     return Ok(Some(camera_3d(&camera.params.eval(&ctx)?, parent)));

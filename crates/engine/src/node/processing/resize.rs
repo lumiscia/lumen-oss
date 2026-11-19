@@ -34,16 +34,16 @@ pub enum ResizeMode {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ResizeParams {
     /// Left edge of the output rectangle in pixels.
-    #[meta(step = 1)]
+    #[meta(step = 1, pixels)]
     pub x: i64,
     /// Top edge of the output rectangle in pixels.
-    #[meta(step = 1)]
+    #[meta(step = 1, pixels)]
     pub y: i64,
     /// Output width in pixels.
-    #[meta(min = 1, step = 1)]
+    #[meta(min = 1, step = 1, pixels)]
     pub width: i64,
     /// Output height in pixels.
-    #[meta(min = 1, step = 1)]
+    #[meta(min = 1, step = 1, pixels)]
     pub height: i64,
     /// How the source raster should fit the output bounds.
     #[meta()]
@@ -132,6 +132,7 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
         let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         let mut params = ResizeUniforms {
             origin: [

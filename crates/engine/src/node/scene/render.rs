@@ -874,9 +874,13 @@ impl RecordNode for Render3d {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         let canvas = cx.canvas_size();
-        let pick = |value: u32, fallback: u32| if value == 0 { fallback } else { value };
+        let pick = |value: u32, fallback: u32| match cx.explicit_extent(value) {
+            0 => fallback,
+            value => value,
+        };
         let size = Size::new(
             pick(params.width, canvas.width),
             pick(params.height, canvas.height),

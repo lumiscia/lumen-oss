@@ -232,11 +232,7 @@ impl Clip {
             speed,
             content_fps: f64::from(content_fps),
             fps: f64::from(scope.scene.timeline.fps),
-            end: DelegateEvalContext {
-                node_id: self.id,
-                expr: ctx,
-            }
-            .eval_field("end", &self.params.end)?,
+            end: DelegateEvalContext::new(self.id, ctx).eval_field("end", &self.params.end)?,
         };
         let duration = if !plays_to_end {
             duration

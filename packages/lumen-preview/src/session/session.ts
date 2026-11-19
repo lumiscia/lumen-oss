@@ -219,6 +219,11 @@ export class LumenPreviewSession {
     this.#syncInputs(live);
   }
 
+  /** Sets `renderScale` and keeps every other input as it is. */
+  setRenderScale(renderScale: number): void {
+    this.setInputs({ ...this.#inputs, renderScale });
+  }
+
   dispose(): void {
     this.#teardown();
     this.#settleReady(stoppedError());
@@ -240,6 +245,8 @@ export class LumenPreviewSession {
     return {
       logLevel: this.#inputs.logLevel ?? "off",
       lookaheadCount: this.#inputs.lookaheadCount ?? DEFAULT_LOOKAHEAD_COUNT,
+      // A scale that can't be used was reported, and renders at the default.
+      renderScale: isRenderScale(this.#inputs.renderScale) ? this.#inputs.renderScale : 1,
     };
   }
 
@@ -247,7 +254,8 @@ export class LumenPreviewSession {
     const options = this.#desiredOptions();
     if (
       options.logLevel !== live.workerOptions.logLevel ||
-      options.lookaheadCount !== live.workerOptions.lookaheadCount
+      options.lookaheadCount !== live.workerOptions.lookaheadCount ||
+      options.renderScale !== live.workerOptions.renderScale
     ) {
       live.workerOptions = options;
       live.post({ ...options, type: "set-options" });
@@ -259,6 +267,11 @@ export class LumenPreviewSession {
     let next: PlaybackSettings;
     try {
       next = readPlaybackSettings(inputs);
+      if (inputs.renderScale !== undefined && !isRenderScale(inputs.renderScale)) {
+        throw new RangeError(
+          `renderScale must be a number above 0, got ${String(inputs.renderScale)}`,
+        );
+      }
     } catch (error) {
       const message = describeError(error);
       if (message !== this.#optionFailure) {
@@ -603,6 +616,10 @@ export class LumenPreviewSession {
     this.#inputs.onError?.(reported);
     return reported;
   }
+}
+
+function isRenderScale(renderScale: number | undefined): renderScale is number {
+  return renderScale !== undefined && Number.isFinite(renderScale) && renderScale > 0;
 }
 
 export function mountPreview(

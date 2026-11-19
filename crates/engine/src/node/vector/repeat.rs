@@ -85,10 +85,10 @@ pub struct Repeat {
     #[meta(min = 0, step = 1)]
     pub columns: u32,
     /// Position in pixels added for each column.
-    #[meta()]
+    #[meta(pixels)]
     pub position_offset: (f64, f64),
     /// Position in pixels added for each row.
-    #[meta()]
+    #[meta(pixels)]
     pub row_offset: (f64, f64),
     /// Clockwise rotation in degrees added for each copy.
     #[meta(step = 1)]
@@ -156,14 +156,15 @@ impl Repeat {
 
 impl RepeatDelegate {
     /// The offsets at either end of the shutter around `frame`, which gives the count and
-    /// columns. Only the offsets are evaluated there. `None` when motion blur is off or no offset
-    /// moves.
+    /// columns, with positions in device pixels at `pixel_scale`. Only the offsets are evaluated
+    /// there. `None` when motion blur is off or no offset moves.
     pub(crate) fn shutter(
         &self,
         frame: &Repeat,
         motion_blur: f64,
         node_id: NodeId,
         expr: &ExpressionContext<'_>,
+        pixel_scale: f64,
     ) -> crate::Result<Option<Shutter<Repeat>>> {
         let Some(offset) = motion::shutter_offset(motion_blur) else {
             return Ok(None);
@@ -174,15 +175,15 @@ impl RepeatDelegate {
         let at = |subframe: f64| -> crate::Result<Repeat> {
             let expr = expr.at_subframe(subframe);
             let ctx = DelegateEvalContext {
-                node_id,
-                expr: &expr,
+                pixel_scale,
+                ..DelegateEvalContext::new(node_id, &expr)
             };
             let offsets = || -> crate::Result<Repeat> {
                 Ok(Repeat {
                     count: frame.count,
                     columns: frame.columns,
-                    position_offset: ctx.eval_field("position_offset", &self.position_offset)?,
-                    row_offset: ctx.eval_field("row_offset", &self.row_offset)?,
+                    position_offset: ctx.eval_pixels("position_offset", &self.position_offset)?,
+                    row_offset: ctx.eval_pixels("row_offset", &self.row_offset)?,
                     rotation_offset: ctx.eval_field("rotation_offset", &self.rotation_offset)?,
                     scale_offset: ctx.eval_field("scale_offset", &self.scale_offset)?,
                     opacity_offset: ctx.eval_field("opacity_offset", &self.opacity_offset)?,

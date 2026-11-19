@@ -49,6 +49,8 @@ struct PropertyAttr {
     doc_overrides: Vec<(LitStr, LitStr)>,
     /// What `#[media(...)]` declares about the param.
     media: Option<MediaAttr>,
+    /// The param is a length in canvas pixels, scaled by the render scale once evaluated.
+    pixels: bool,
 }
 
 struct DelegateAttr {
@@ -56,12 +58,15 @@ struct DelegateAttr {
     kind: Option<Ident>,
     /// Adds an `Expr` variant evaluated through the enum's `ParamValue` impl.
     expressions: bool,
+    /// The evaluated struct scales its own pixel lengths through its `PixelScale` impl.
+    pixels: bool,
 }
 
 fn parse_delegate_attr(input: &DeriveInput) -> Result<DelegateAttr> {
     let mut name = None;
     let mut kind = None;
     let mut expressions = false;
+    let mut pixels = false;
     if let Some(attr) = optional_attr(&input.attrs, "delegate") {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("name") {
@@ -70,6 +75,8 @@ fn parse_delegate_attr(input: &DeriveInput) -> Result<DelegateAttr> {
                 kind = Some(ident_value(&meta)?);
             } else if meta.path.is_ident("expressions") {
                 expressions = true;
+            } else if meta.path.is_ident("pixels") {
+                pixels = true;
             } else {
                 return Err(meta.error("unknown delegate attribute key"));
             }
@@ -80,6 +87,7 @@ fn parse_delegate_attr(input: &DeriveInput) -> Result<DelegateAttr> {
         name: name.unwrap_or_else(|| format_ident!("{}Delegate", input.ident)),
         kind,
         expressions,
+        pixels,
     })
 }
 
@@ -97,6 +105,7 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
     let mut flatten = false;
     let mut doc_overrides = Vec::new();
     let mut param_keys = false;
+    let mut pixels = false;
 
     attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("flatten") {
@@ -129,6 +138,8 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
             solid = optional_bool(&meta)?;
         } else if meta.path.is_ident("required") {
             required = optional_bool(&meta)?;
+        } else if meta.path.is_ident("pixels") {
+            pixels = optional_bool(&meta)?;
         } else if !constraints.parse_key(&meta)? {
             return Err(meta.error("unknown meta attribute key"));
         }
@@ -169,6 +180,7 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
         flatten,
         doc_overrides,
         media,
+        pixels,
     })
 }
 

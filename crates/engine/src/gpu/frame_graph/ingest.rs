@@ -179,7 +179,8 @@ impl FrameCx<'_> {
         .into())
     }
 
-    /// The size image `source`, of `native` size, is decoded at for `node_id` to show it (see
+    /// The size image `source`, of `native` size, is decoded at for `node_id` to show it at the
+    /// render scale (see
     /// [`crate::gpu::image_size::decoded_size`]), with a warning once per composition when it is
     /// reduced to fit the size limit. Fails as `media.too_large` when it is past the device's
     /// limit and can't be reduced.
@@ -198,7 +199,8 @@ impl FrameCx<'_> {
         );
         let device_max = self.rec.device().limits().max_texture_dimension_2d.max(1);
         let max_image_side = self.settings.max_image_side;
-        let size = match decoded_size(&shown, source, native, max_image_side, device_max) {
+        let scale = self.pixel_scale();
+        let size = match decoded_size(&shown, source, native, max_image_side, device_max, scale) {
             Decoded::Native => native,
             Decoded::Reduced { size, limited } => {
                 if limited {
@@ -207,13 +209,20 @@ impl FrameCx<'_> {
                 size
             }
             Decoded::TooLarge => {
-                let side = native.width.max(native.height);
+                let shown = self.device_size(native);
+                let side = shown.width.max(shown.height);
+                let scaled = if shown == native {
+                    String::new()
+                } else {
+                    format!(" ({}x{} at the render scale)", shown.width, shown.height)
+                };
                 return Err(crate::error::MediaFailure::too_large(
                     source,
                     format!(
-                        "it is {}x{} pixels, over the {device_max}-pixel texture limit of this \
-                         device, and only an image every use of which is a `resize` to a literal \
-                         size, in the root composition, is shown reduced to its aspect ratio",
+                        "it is {}x{} pixels{scaled}, over the {device_max}-pixel texture limit of \
+                         this device, and only an image every use of which is a `resize` to a \
+                         literal size, in the root composition, is shown reduced to its aspect \
+                         ratio",
                         native.width, native.height
                     ),
                     u64::from(device_max),

@@ -24,10 +24,7 @@ pub fn selected_layer_for_frame(
     node: &Switch,
     ctx: &crate::expr::ExpressionContext<'_>,
 ) -> crate::Result<Option<usize>> {
-    let params = node.params.eval(&DelegateEvalContext {
-        node_id: node.id,
-        expr: ctx,
-    })?;
+    let params = node.params.eval(&DelegateEvalContext::new(node.id, ctx))?;
     Ok((params.selected_layer >= 0).then_some(params.selected_layer as usize))
 }
 

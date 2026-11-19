@@ -110,6 +110,7 @@ pub struct GradientStop {
 /// A linear, radial or conic gradient. Gradient fields take literals only.
 #[derive(Debug, Clone, PartialEq, lumen_macros::Delegate, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[delegate(pixels)]
 pub struct GradientPaint {
     /// Gradient shape. Required.
     #[meta(id = "type", name = "Type", required)]
@@ -170,6 +171,24 @@ pub(crate) static PAINT: ParamTypeDef = ParamTypeDef {
 impl Default for Paint {
     fn default() -> Self {
         Self::solid([0, 0, 0, 255])
+    }
+}
+
+/// A gradient in user space is placed in canvas pixels; one in the bounding box is in fractions
+/// of it, which scaling leaves alone.
+impl crate::node::PixelScale for GradientPaint {
+    fn scale_pixels(self, scale: f64) -> Self {
+        if self.units != GradientUnits::UserSpace {
+            return self;
+        }
+        Self {
+            start: self.start.scale_pixels(scale),
+            end: self.end.scale_pixels(scale),
+            center: self.center.scale_pixels(scale),
+            radius: self.radius.scale_pixels(scale),
+            focal: self.focal.scale_pixels(scale),
+            ..self
+        }
     }
 }
 

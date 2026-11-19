@@ -166,6 +166,18 @@ describe("LumenPreviewSession: lifecycle", () => {
     expect(worker.ofType("set-options")).toMatchObject([{ lookaheadCount: 2 }]);
   });
 
+  it("starts at the render scale it is given and sends a new one on its own", async () => {
+    const onError = vi.fn();
+    const { session, worker } = await started({ onError, renderScale: 0.5 });
+    expect(worker.ofType("start")[0]).toMatchObject({ renderScale: 0.5 });
+
+    session.setRenderScale(2);
+    expect(worker.ofType("set-options")).toMatchObject([{ lookaheadCount: 8, renderScale: 2 }]);
+    session.setRenderScale(0);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ code: "invalid_option" }));
+    expect(worker.ofType("set-options")).toHaveLength(1);
+  });
+
   it("reports a browser without WebGPU before it creates a worker", async () => {
     vi.stubGlobal("navigator", {});
     const preview = new LumenPreviewContext();

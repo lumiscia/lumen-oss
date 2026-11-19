@@ -34,16 +34,17 @@ pub(in crate::render) struct MetalTarget {
 impl MetalTarget {
     pub(super) fn open(
         composition: &Composition,
-        gpu: &lumen_gpu::GpuSettings,
+        media_store: &LocalMediaStore,
         output: &Path,
         encoder: &Encoder,
         quality: &EncoderQuality,
     ) -> anyhow::Result<(GpuCompositionRenderer, Self)> {
-        let renderer = pollster::block_on(GpuCompositionRenderer::new_with_settings(gpu))
-            .context("failed to initialize wgpu renderer")?;
+        let mut renderer =
+            pollster::block_on(GpuCompositionRenderer::new_with_settings(&media_store.gpu))
+                .context("failed to initialize wgpu renderer")?;
+        renderer.set_render_scale(media_store.render_scale)?;
         renderer.check_output_size(composition)?;
-        let settings = composition.render_settings();
-        let (width, height) = (settings.width, settings.height);
+        let lumen_gpu::Size { width, height } = renderer.output_size(composition);
         let pool = MetalVideoToolboxTargetPool::bgra8(
             renderer.gpu_renderer(),
             lumen_gpu::Size::new(width, height),

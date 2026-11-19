@@ -3,11 +3,12 @@ use bytemuck::{Pod, Zeroable};
 use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 use crate::node::motion::MAX_BOUNDED_MAGNITUDE;
 
-/// `radius` is the half-width of the discrete box blur it replaces. A box of
-/// `2r + 1` texels has variance `r(r + 1) / 3`, and the Gaussian matches it.
-fn sigma_for_radius(radius: f64) -> f32 {
+/// `radius` is the half-width, in canvas pixels, of the discrete box blur it replaces. A box of
+/// `2r + 1` pixels has variance `r(r + 1) / 3`, and the Gaussian matches it. The sigma is scaled to
+/// device pixels after, so a blur at any render scale is the full one scaled.
+fn sigma_for_radius(radius: f64, scale: f64) -> f32 {
     let radius = radius.max(0.0);
-    ((radius * (radius + 1.0) / 3.0).sqrt()).min(MAX_SIGMA) as f32
+    ((radius * (radius + 1.0) / 3.0).sqrt() * scale).min(MAX_SIGMA) as f32
 }
 
 /// Beyond this the reduced chain would need more than ~65 taps per pass.
@@ -57,15 +58,15 @@ fn within_limit(value: f64) -> bool {
     value.abs() < MAX_BOUNDED_MAGNITUDE
 }
 
-/// Canvas pixels past the pixels a blur of `radius` reads that it can still write, at its
-/// widest across the levels it may blur on, or `None` when `radius` is too large or not a
+/// Device pixels past the pixels a blur of `radius` at `scale` reads that it can still write, at
+/// its widest across the levels it may blur on, or `None` when `radius` is too large or not a
 /// number to be bounded. A reduced level reaches its kernel and one block more on each side
 /// for the box reduction and one for the bilinear read back.
-fn blur_reach(radius: f64) -> Option<u32> {
+fn blur_reach(radius: f64, scale: f64) -> Option<u32> {
     if !within_limit(radius) {
         return None;
     }
-    let sigma = f64::from(sigma_for_radius(radius));
+    let sigma = f64::from(sigma_for_radius(radius, scale));
     let level = |factor: u32| factor * (kernel_reach(reduced_sigma(sigma, factor)) + 2);
     let mut reach = kernel_reach(sigma);
     if sigma > QUARTER_BAND.0 {
@@ -78,18 +79,19 @@ fn blur_reach(radius: f64) -> Option<u32> {
     Some(reach + 1)
 }
 
-/// The canvas `[min_x, min_y, max_x, max_y]` that a blur of `radius` writes for a source whose
-/// pixels are within `data` and shifted by `offset` whole pixels. `None` when it cannot be
-/// bounded.
+/// The `[min_x, min_y, max_x, max_y]` that a blur of `radius` canvas pixels at render scale
+/// `scale` writes for a source whose device pixels are within `data` and shifted by `offset` whole
+/// device pixels. `None` when it cannot be bounded.
 pub(crate) fn blur_bounds(
     data: lumen_gpu::RectI,
     offset: [f64; 2],
     radius: f64,
+    scale: f64,
 ) -> Option<[f32; 4]> {
     if !offset.into_iter().all(within_limit) {
         return None;
     }
-    let reach = f64::from(blur_reach(radius)?);
+    let reach = f64::from(blur_reach(radius, scale)?);
     let [dx, dy] = offset.map(f64::round);
     let (x, y) = (f64::from(data.x) + dx, f64::from(data.y) + dy);
     Some(
@@ -146,11 +148,12 @@ impl Padding {
 
 /// Per-frame inputs of a Gaussian.
 pub(crate) struct GaussianSettings {
-    /// Blur radius in pixels, as exposed on the node.
+    /// Blur radius in canvas pixels, as exposed on the node, which the frame's render scale
+    /// scales.
     pub(crate) radius: f64,
     /// Texels outside the source read as transparent instead of clamping to the edge.
     pub(crate) transparent_edge: bool,
-    /// Shifts the source by this many pixels, rounded to whole pixels.
+    /// Shifts the source by this many device pixels, rounded to whole pixels.
     pub(crate) offset: [f64; 2],
 }
 
@@ -267,7 +270,7 @@ pub(crate) fn record_passes(
 
     let region = output.data_rect;
     let size = output.storage_size;
-    let sigma = sigma_for_radius(settings.radius);
+    let sigma = sigma_for_radius(settings.radius, cx.pixel_scale());
     let padding = Padding::new(shifted);
     let flag = |value: bool| if value { 1.0 } else { 0.0 };
     let params = BlurUniforms {

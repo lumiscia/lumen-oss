@@ -2,10 +2,10 @@ use bytemuck::{Pod, Zeroable};
 
 use super::paint::Paint;
 use crate::expr::ExpressionContext;
-use crate::node::NodeId;
 use crate::node::motion::{
     self, Lerp, MAX_BOUNDED_MAGNITUDE, MAX_MOTION_TAPS, ROUNDING_ERROR_FACTOR, Shutter,
 };
+use crate::node::{NodeId, PixelScale};
 
 pub(crate) const DRAWABLE_SHADER: &str = include_str!("drawable.wgsl");
 
@@ -127,7 +127,7 @@ impl Lerp for DrawableTransform {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct DrawablePlacement {
     /// Origin in pixels.
-    #[meta()]
+    #[meta(pixels)]
     pub position: (f64, f64),
     /// Scale multiplier per axis, about the anchor.
     #[meta()]
@@ -136,7 +136,7 @@ pub struct DrawablePlacement {
     #[meta(step = 1)]
     pub rotation: f64,
     /// Pivot for scale and rotation, in pixels relative to `position`.
-    #[meta()]
+    #[meta(pixels)]
     pub anchor: (f64, f64),
     /// Opacity multiplier.
     #[meta(min = 0, max = 1, step = 0.01)]
@@ -182,12 +182,14 @@ impl DrawablePlacementDelegate {
     }
 
     /// Evaluates the transform at either end of the shutter around `frame`, these params at the
-    /// frame. `None` when motion blur is off or nothing moves.
+    /// frame, with positions in device pixels at `pixel_scale`. `None` when motion blur is off or
+    /// nothing moves.
     pub(crate) fn shutter(
         &self,
         frame: &DrawablePlacement,
         node_id: NodeId,
         expr: &ExpressionContext<'_>,
+        pixel_scale: f64,
     ) -> crate::Result<Option<Shutter<DrawableTransform>>> {
         let Some(offset) = motion::shutter_offset(frame.motion_blur) else {
             return Ok(None);
@@ -195,10 +197,16 @@ impl DrawablePlacementDelegate {
         let at = |subframe: f64| -> crate::Result<DrawableTransform> {
             let expr = expr.at_subframe(subframe);
             Ok(DrawableTransform {
-                position: self.position.eval(node_id, "position", &expr)?,
+                position: self
+                    .position
+                    .eval(node_id, "position", &expr)?
+                    .scale_pixels(pixel_scale),
                 scale: self.scale.eval(node_id, "scale", &expr)?,
                 rotation: self.rotation.eval(node_id, "rotation", &expr)?,
-                anchor: self.anchor.eval(node_id, "anchor", &expr)?,
+                anchor: self
+                    .anchor
+                    .eval(node_id, "anchor", &expr)?
+                    .scale_pixels(pixel_scale),
                 opacity: frame.opacity,
             })
         };
@@ -227,7 +235,7 @@ pub struct DrawableStyle {
     #[meta()]
     pub stroke_paint: Paint,
     /// Stroke width in untransformed pixels.
-    #[meta(min = 0, step = 0.5)]
+    #[meta(min = 0, step = 0.5, pixels)]
     pub stroke_width: f64,
     /// Enables analytic distance-based edge antialiasing.
     #[meta()]

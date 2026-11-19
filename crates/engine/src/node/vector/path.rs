@@ -50,20 +50,20 @@ pub struct PathParams {
     /// pattern, as in SVG. Each dash has round caps, so a dash of length 0 draws a dot. No
     /// lengths, or only zeros, draw a solid stroke. Dashes are measured along the whole
     /// contour, and `trim_start` and `trim_end` then clip them.
-    #[meta(name = "Stroke dash")]
+    #[meta(name = "Stroke dash", pixels)]
     pub stroke_dash: DashPattern,
     /// Distance in untransformed pixels into the dash pattern at which each contour starts.
     /// Increasing it moves the dashes toward the start of the contour.
-    #[meta(name = "Stroke dash offset", step = 0.5)]
+    #[meta(name = "Stroke dash offset", step = 0.5, pixels)]
     pub stroke_dash_offset: f64,
     /// Distance in untransformed pixels that the fill grows outward by, or shrinks inward by
     /// when negative, rounding the corners it grows around. A shape shrunk past its middle
     /// vanishes. The stroke stays on the outline in `data`.
-    #[meta(step = 0.5)]
+    #[meta(step = 0.5, pixels)]
     pub offset: f64,
     /// Width in untransformed pixels over which the fill's edge fades out, centred on the
     /// edge. 0 keeps a sharp edge.
-    #[meta(min = 0, step = 0.5)]
+    #[meta(min = 0, step = 0.5, pixels)]
     pub feather: f64,
     /// Copies of the path drawn in one pass. Absent draws the path once.
     #[meta()]
@@ -97,27 +97,37 @@ pub struct Path {
 }
 
 /// Evaluates a path node's uniforms, points and bands at the frame of `expr` for a canvas of
-/// `canvas` pixels, blurring its motion only when `motion_blur` allows.
+/// `canvas` device pixels at `pixel_scale`, blurring its motion only when `motion_blur` allows.
 fn path_frame(
     params: &PathParamsDelegate,
     node_id: NodeId,
     expr: &crate::expr::ExpressionContext<'_>,
+    pixel_scale: f64,
     canvas: [f32; 2],
     band_capacity: usize,
     motion_blur: bool,
 ) -> crate::Result<PathFrame> {
-    let mut evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
+    let mut evaluated = params.eval(&DelegateEvalContext {
+        pixel_scale,
+        ..DelegateEvalContext::new(node_id, expr)
+    })?;
     if !motion_blur {
         evaluated.placement.motion_blur = 0.0;
     }
     let shutter = params
         .placement
-        .shutter(&evaluated.placement, node_id, expr)?;
+        .shutter(&evaluated.placement, node_id, expr, pixel_scale)?;
     let transform = evaluated.placement.transform();
     let repeat = match (&evaluated.repeat, &params.repeat) {
         (Some(repeat), Some(delegate)) if repeat.draws_copies() => Some((
             repeat,
-            delegate.shutter(repeat, evaluated.placement.motion_blur, node_id, expr)?,
+            delegate.shutter(
+                repeat,
+                evaluated.placement.motion_blur,
+                node_id,
+                expr,
+                pixel_scale,
+            )?,
         )),
         _ => None,
     };
@@ -134,10 +144,13 @@ fn path_frame(
         || peak_scale(evaluated.placement.scale, shutter.as_ref()),
         RepeatedTransform::peak_scale,
     );
-    let mut points =
-        parse_path_points(&evaluated.data, flattening_tolerance(peak), MAX_PATH_POINTS).map_err(
-            |details| RenderError::evaluating::<Path>(node_id, format!("`data` {details}")),
-        )?;
+    let mut points = parse_scaled_path_points(
+        &evaluated.data,
+        pixel_scale,
+        flattening_tolerance(peak),
+        MAX_PATH_POINTS,
+    )
+    .map_err(|details| RenderError::evaluating::<Path>(node_id, format!("`data` {details}")))?;
     let (x, y) = evaluated.placement.position;
     let style = &evaluated.style;
     let (trim_start, trim_end) = normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
@@ -294,7 +307,21 @@ pub(super) fn parse_path_points(
     tolerance: f32,
     max_points: usize,
 ) -> Result<Vec<PathPoint>, String> {
-    let path = build_lyon_path(data)?;
+    parse_scaled_path_points(data, 1.0, tolerance, max_points)
+}
+
+/// [`parse_path_points`] of the geometry in `data` scaled by `scale` about its origin, with
+/// `tolerance` in the scaled units.
+pub(super) fn parse_scaled_path_points(
+    data: &str,
+    scale: f64,
+    tolerance: f32,
+    max_points: usize,
+) -> Result<Vec<PathPoint>, String> {
+    let mut path = build_lyon_path(data)?;
+    if scale != 1.0 {
+        path = path.transformed(&lyon_path::geom::Scale::new(scale as f32));
+    }
 
     let mut tolerance = tolerance;
     for _ in 0..PATH_MAX_FLATTENING_ATTEMPTS {
@@ -756,6 +783,7 @@ impl crate::gpu::frame_graph::RecordNode for Path {
             &self.params,
             self.id,
             &cx.expr(),
+            cx.pixel_scale(),
             [canvas.width as f32, canvas.height as f32],
             super::path_bands::band_capacity(MAX_PATH_POINTS),
             cx.analytic_motion_blur(),

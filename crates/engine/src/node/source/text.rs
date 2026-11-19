@@ -14,6 +14,7 @@ use crate::node::vector::{
 };
 use crate::node::{
     Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, Override, ParamValue,
+    PixelScale,
 };
 
 use super::text_content::{
@@ -372,6 +373,8 @@ pub(crate) struct TextInstance {
     /// The number of span paints: one for each span, or the one of string content.
     pub(crate) paint_count: usize,
     pub(crate) size: lumen_gpu::Size,
+    /// Device pixels per canvas pixel. The text is shaped in canvas pixels and drawn scaled.
+    pub(crate) pixel_scale: f64,
     /// The size of what the glyphs are drawn to: the layer of blurred text, else the output.
     pub(crate) layer_size: lumen_gpu::Size,
     /// Whether binding measures where the text draws, to size its output.
@@ -484,8 +487,8 @@ impl TextInstance {
         let trace_started =
             tracing::enabled!(target: "lumen_text", tracing::Level::TRACE).then(trace_now_ms);
         let fields = DelegateEvalContext {
-            node_id: self.node_id,
-            expr: &expr,
+            pixel_scale: self.pixel_scale,
+            ..DelegateEvalContext::new(self.node_id, &expr)
         };
         let draw = self.draw.eval(&fields)?;
         let mut placement = self.placement.eval(&fields)?;
@@ -494,7 +497,9 @@ impl TextInstance {
         }
         let (position_x, position_y) = placement.position;
         let drawable = placement.transform();
-        let shutter = self.placement.shutter(&placement, self.node_id, &expr)?;
+        let shutter = self
+            .placement
+            .shutter(&placement, self.node_id, &expr, self.pixel_scale)?;
         let layout = self.layout.get(&fields)?;
         let span_styles = self
             .span_styles
@@ -524,7 +529,10 @@ impl TextInstance {
                     .filter(|family| !family.is_empty() && !text_system.has_family(family))
                     .map(str::to_string),
             );
-            let shaped = text_system.shape_changed(&layout.request(&span_styles));
+            let mut shaped = text_system.shape_changed(&layout.request(&span_styles));
+            if self.pixel_scale != 1.0 {
+                shaped = Arc::new(shaped.scaled(self.pixel_scale as f32));
+            }
             let key = TextShapeKey {
                 layout: match layout {
                     Cow::Owned(layout) => Some(layout),
@@ -698,6 +706,7 @@ impl TextInstance {
             &mut prepared.instances,
             &prepared.sources,
             &mut expr,
+            self.pixel_scale,
         )?;
         // A stroke takes its glyph's transform and fade. Outside strokes are drawn under the
         // glyphs, and centred ones over them.
@@ -910,8 +919,9 @@ impl TextGlyphParamsDelegate {
     }
 
     /// Transforms and fades each glyph instance by its params, evaluated with `expr` scoped
-    /// to the instance's glyph. Returns the box `[min_x, min_y, max_x, max_y]` that the
-    /// transformed glyphs cover before the text's own transform, if any were transformed.
+    /// to the instance's glyph, with offsets in device pixels at `pixel_scale`. Returns the box
+    /// `[min_x, min_y, max_x, max_y]` that the transformed glyphs cover before the text's own
+    /// transform, if any were transformed.
     fn apply(
         &self,
         node_id: NodeId,
@@ -919,6 +929,7 @@ impl TextGlyphParamsDelegate {
         instances: &mut [lumen_text::GpuGlyphInstance],
         sources: &[usize],
         expr: &mut ExpressionContext<'_>,
+        pixel_scale: f64,
     ) -> crate::Result<Option<[f32; 4]>> {
         if self.is_identity() {
             return Ok(None);
@@ -946,7 +957,7 @@ impl TextGlyphParamsDelegate {
                 opacity: opacity.eval(item, node_id, expr)?,
             }
             .to_gpu();
-            let (offset_x, offset_y) = offset.eval(item, node_id, expr)?;
+            let (offset_x, offset_y) = offset.eval(item, node_id, expr)?.scale_pixels(pixel_scale);
             let instance = &mut instances[index];
             instance.opacity *= transform.opacity;
             if transform.flags != 0 || (offset_x, offset_y) != (0.0, 0.0) {

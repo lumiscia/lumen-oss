@@ -66,7 +66,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             if let Some(value) = ::lumen_engine::node::NodeParams::evaluate_property(
                 &self.#field,
                 id,
-                &::lumen_engine::node::DelegateEvalContext { node_id: self.id, expr: ctx },
+                &::lumen_engine::node::DelegateEvalContext::new(self.id, ctx),
             ) {
                 return Some(value);
             }

@@ -31,7 +31,7 @@ pub enum NoiseMode {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct FractalNoiseParams {
     /// Size of the largest features in pixels.
-    #[meta(min = 1, step = 1)]
+    #[meta(min = 1, step = 1, pixels)]
     pub scale: f64,
     /// Layers of detail, from 1 to 8. Each adds features half the size, at half the strength.
     #[meta(min = 1, max = 8, step = 1)]
@@ -53,10 +53,10 @@ pub struct FractalNoiseParams {
     #[meta(min = -1, max = 1, step = 0.01)]
     pub brightness: f64,
     /// Moves the pattern right by this many pixels.
-    #[meta(name = "Offset X", step = 1)]
+    #[meta(name = "Offset X", step = 1, pixels)]
     pub offset_x: f64,
     /// Moves the pattern down by this many pixels.
-    #[meta(name = "Offset Y", step = 1)]
+    #[meta(name = "Offset Y", step = 1, pixels)]
     pub offset_y: f64,
     /// Output width in pixels. Use 0 to match the composition width.
     #[meta(min = 0, enforced_min, step = 1, constant)]
@@ -218,9 +218,13 @@ impl crate::gpu::frame_graph::RecordNode for FractalNoise {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
-        let dimension = |value: u32, canvas: u32| if value == 0 { canvas } else { value };
         let canvas = cx.canvas_size();
+        let dimension = |value: u32, canvas: u32| match cx.explicit_extent(value) {
+            0 => canvas,
+            value => value,
+        };
         let size = lumen_gpu::Size::new(
             dimension(params.width, canvas.width),
             dimension(params.height, canvas.height),

@@ -23,6 +23,12 @@ pub(crate) static DASH_PATTERN: ParamTypeDef = ParamTypeDef {
     schema: || serde_json::json!({ "$ref": "#/$defs/dashPattern" }),
 };
 
+impl crate::node::PixelScale for DashPattern {
+    fn scale_pixels(self, scale: f64) -> Self {
+        Self(self.0.scale_pixels(scale))
+    }
+}
+
 /// [`DashPattern`] whose lengths take literals or expressions. The whole pattern cannot be an
 /// expression.
 #[derive(Debug, Clone, Default, lumen_macros::StructuralHash)]

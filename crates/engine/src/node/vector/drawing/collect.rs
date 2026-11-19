@@ -71,7 +71,7 @@ pub(crate) fn resolve_outline<'e, N: JsonNode, G>(
     let mut at = node_id;
     loop {
         let (node, _evaluating) = node_of(at)?;
-        let ctx = DelegateEvalContext { node_id: at, expr };
+        let ctx = DelegateEvalContext::new(at, expr);
         let (source, transform) = match node {
             NodeKind::Offset2d(node) => {
                 let params = node.params.eval(&ctx)?;
@@ -217,7 +217,8 @@ struct Collector<'a, 'e> {
 }
 
 /// Evaluates the drawing `root` outputs, walking its nodes depth first in input order so that
-/// earlier inputs are drawn lower. Each node is evaluated once, however often it is reached.
+/// earlier inputs are drawn lower. Each node is evaluated once, however often it is reached. The
+/// drawing is placed under the render scale, so its lengths are in canvas pixels.
 pub(super) fn collect(
     cx: &crate::gpu::frame_graph::FrameCx<'_>,
     render_id: NodeId,
@@ -232,7 +233,18 @@ pub(super) fn collect(
         styles: HashMap::default(),
         reached: 0,
     };
-    let mut pending = vec![Step::Draw(root, identity())];
+    let placed = match cx.pixel_scale() {
+        1.0 => identity(),
+        scale => DrawableTransform {
+            position: (0.0, 0.0),
+            scale: (scale, scale),
+            rotation: 0.0,
+            anchor: (0.0, 0.0),
+            opacity: 1.0,
+        }
+        .to_gpu(),
+    };
+    let mut pending = vec![Step::Draw(root, placed)];
     while let Some(step) = pending.pop() {
         match step {
             Step::Draw(node_id, parent) => collector.draw(node_id, parent, &mut pending)?,
@@ -297,10 +309,9 @@ impl<'e> Collector<'_, 'e> {
         let _timed = self.cx.node_times().time(node);
         match node {
             NodeKind::Merge2d(merge) => {
-                let params = merge.params.eval(&DelegateEvalContext {
-                    node_id,
-                    expr: &self.expr,
-                })?;
+                let params = merge
+                    .params
+                    .eval(&DelegateEvalContext::new(node_id, &self.expr))?;
                 let placed = params.transform.drawable().to_gpu_from((0.0, 0.0));
                 let world = then(placed, parent);
                 pending.extend(
@@ -358,10 +369,7 @@ impl<'e> Collector<'_, 'e> {
         if let Some(style) = self.styles.get(&node_id) {
             return Ok(*style);
         }
-        let ctx = DelegateEvalContext {
-            node_id,
-            expr: &self.expr,
-        };
+        let ctx = DelegateEvalContext::new(node_id, &self.expr);
         let (input, style, paint, opacity) = match self.cx.node(node_id) {
             Some(NodeKind::Fill2d(fill)) => {
                 let params = fill.params.eval(&ctx)?;
@@ -430,13 +438,13 @@ impl<'e> Collector<'_, 'e> {
             unreachable!("only shadow nodes cast shadows")
         };
         let _timed = self.cx.node_times().time(shadow);
-        let params = node.params.eval(&DelegateEvalContext {
-            node_id,
-            expr: &self.expr,
-        })?;
+        let params = node
+            .params
+            .eval(&DelegateEvalContext::new(node_id, &self.expr))?;
         let mut casts = Vec::with_capacity(params.shadows.0.len());
         for (index, shadow) in params.shadows.0.iter().enumerate() {
-            if let Some(cast) = canvas_cast(node_id, index, shadow, &parent)? {
+            if let Some(cast) = canvas_cast(node_id, index, shadow, &parent, self.cx.pixel_scale())?
+            {
                 casts.push(cast);
             }
         }
@@ -460,13 +468,15 @@ impl<'e> Collector<'_, 'e> {
     }
 }
 
-/// `shadow`, whose lengths are in the pixels `parent` maps to the canvas, in canvas pixels.
-/// `None` when it is invisible.
+/// `shadow`, whose lengths are in the pixels `parent` maps to the device pixels of
+/// `pixel_scale`, in device pixels. `None` when it is invisible. The radius softens as it would
+/// in canvas pixels, scaled to device pixels.
 fn canvas_cast(
     node_id: NodeId,
     index: usize,
     shadow: &CastShadow,
     parent: &GpuDrawableTransform,
+    pixel_scale: f64,
 ) -> crate::Result<Option<Cast>> {
     let Paint::SolidColor(r, g, b, a) = shadow.color else {
         return Err(PropertyError::InvalidType {
@@ -490,7 +500,7 @@ fn canvas_cast(
         "shadows.radius",
         shadow.radius,
         0.0,
-    )?) * length;
+    )?) * (length / pixel_scale);
     let spread = f64::from(number::<Shadow2d>(
         node_id,
         "shadows.spread",
@@ -507,7 +517,7 @@ fn canvas_cast(
         color: [r, g, b, 255],
         opacity,
         offset: offset.map(|value| value as f32),
-        sigma: (radius * (radius + 1.0) / 3.0).sqrt(),
+        sigma: (radius * (radius + 1.0) / 3.0).sqrt() * pixel_scale,
         spread,
     }))
 }

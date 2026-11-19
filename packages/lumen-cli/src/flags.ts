@@ -19,6 +19,7 @@ export const flags = {
     "qp",
     "quality",
     "quality-config",
+    "scale",
   ],
   check: ["font-dir", "format", "media-root"],
   preview: [

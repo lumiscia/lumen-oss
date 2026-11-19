@@ -28,7 +28,8 @@ pub use clip_props::{ClipPropValue, ClipProps};
 pub use deferred::Deferred;
 pub use deferred::{ParamValue, truncated_int};
 pub use delegate::{
-    DelegateEvalContext, DelegateEvaluable, Delegated, NodeParams, Override, PropertyRead,
+    DelegateEvalContext, DelegateEvaluable, Delegated, NodeParams, Override, PixelScale,
+    PropertyRead,
 };
 pub use ids::NodeId;
 pub use kind::NodeKind;

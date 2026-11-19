@@ -34,14 +34,14 @@ pub struct ShapeParams {
     pub geometry_kind: ShapeGeometryKind,
     /// Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel
     /// wide.
-    #[meta(min = 0, step = 1)]
+    #[meta(min = 0, step = 1, pixels)]
     pub width: f64,
     /// Shape height in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel
     /// tall.
-    #[meta(min = 0, step = 1)]
+    #[meta(min = 0, step = 1, pixels)]
     pub height: f64,
     /// Corner radius for rectangle geometry.
-    #[meta(min = 0, step = 1)]
+    #[meta(min = 0, step = 1, pixels)]
     pub border_radius: f64,
     #[meta(flatten, doc(position = "Shape origin in pixels."))]
     pub placement: DrawablePlacement,
@@ -80,21 +80,26 @@ pub struct Shape {
     pub params: ShapeParamsDelegate,
 }
 
-/// Evaluates a rectangle or ellipse shape's uniforms at the frame of `expr`, and its copies when
-/// it repeats, blurring their motion only when `motion_blur` allows.
+/// Evaluates a rectangle or ellipse shape's uniforms at the frame of `expr` in device pixels at
+/// `pixel_scale`, and its copies when it repeats, blurring their motion only when `motion_blur`
+/// allows.
 fn shape_frame(
     params: &ShapeParamsDelegate,
     node_id: NodeId,
     expr: &crate::expr::ExpressionContext<'_>,
+    pixel_scale: f64,
     motion_blur: bool,
 ) -> crate::Result<(ShapeUniforms, Option<GpuCopies>)> {
-    let mut evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
+    let mut evaluated = params.eval(&DelegateEvalContext {
+        pixel_scale,
+        ..DelegateEvalContext::new(node_id, expr)
+    })?;
     if !motion_blur {
         evaluated.placement.motion_blur = 0.0;
     }
     let shutter = params
         .placement
-        .shutter(&evaluated.placement, node_id, expr)?;
+        .shutter(&evaluated.placement, node_id, expr, pixel_scale)?;
     let mut uniforms = shape_uniforms(&evaluated, shutter.as_ref());
     let (Some(repeat), Some(delegate)) = (&evaluated.repeat, &params.repeat) else {
         return Ok((uniforms, None));
@@ -102,8 +107,13 @@ fn shape_frame(
     if !repeat.draws_copies() {
         return Ok((uniforms, None));
     }
-    let repeat_shutter =
-        delegate.shutter(repeat, evaluated.placement.motion_blur, node_id, expr)?;
+    let repeat_shutter = delegate.shutter(
+        repeat,
+        evaluated.placement.motion_blur,
+        node_id,
+        expr,
+        pixel_scale,
+    )?;
     let (min, max) = shape_box(&evaluated);
     let copies = RepeatedTransform {
         base: &evaluated.placement.transform(),
@@ -201,8 +211,13 @@ impl crate::gpu::frame_graph::RecordNode for Shape {
         &self,
         cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
-        let (mut uniforms, copies) =
-            shape_frame(&self.params, self.id, &cx.expr(), cx.analytic_motion_blur())?;
+        let (mut uniforms, copies) = shape_frame(
+            &self.params,
+            self.id,
+            &cx.expr(),
+            cx.pixel_scale(),
+            cx.analytic_motion_blur(),
+        )?;
         record_shape_source(cx, &mut uniforms, copies.as_ref())
     }
 

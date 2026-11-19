@@ -68,6 +68,7 @@ impl crate::gpu::frame_graph::RecordNode for Exposure {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         let gpu_params = ExposureUniforms {
             exposure: params.exposure as f32,

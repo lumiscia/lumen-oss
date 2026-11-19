@@ -28,9 +28,12 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   fps(): number;
   height(): number;
   loadComposition(compositionJson: string): void;
+  outputHeight(): number;
+  outputWidth(): number;
   renderNow(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
   setFrame(frame: number): void;
   setLogLevel(level: LumenLogLevel): void;
+  setRenderScale(scale: number): void;
   width(): number;
 }
 
@@ -70,6 +73,10 @@ export interface LumenPreviewController {
   fps(): number;
   height(): number;
   loadComposition(compositionJson: string): void;
+  /** The height of rendered frames: the composition's at the render scale, rounded up. */
+  outputHeight(): number;
+  /** The width of rendered frames: the composition's at the render scale, rounded up. */
+  outputWidth(): number;
   /** Loads what the playhead's frame needs, then starts decoding the frames after it. */
   prepareFrame(): Promise<void>;
   registerFile(kind: FileMediaKind, sourceId: string, source: MediaSourceInput): Promise<void>;
@@ -89,6 +96,8 @@ export interface LumenPreviewController {
   setFrame(frame: number): void;
   setLogLevel(level: LumenLogLevel): void;
   setLookaheadCount(lookaheadCount: number): void;
+  /** Device pixels per composition pixel from the next frame, kept across loads. */
+  setRenderScale(scale: number): void;
   /** Limits lookahead to the range being played. It wraps round the range only if it loops. */
   setPlaybackRange(range: PlaybackRange | null): void;
   width(): number;
@@ -133,6 +142,14 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
     loadComposition(compositionJson: string): void {
       this.controller.loadComposition(compositionJson);
       this.requirements.reset();
+    }
+
+    outputHeight(): number {
+      return this.controller.outputHeight();
+    }
+
+    outputWidth(): number {
+      return this.controller.outputWidth();
     }
 
     async prepareFrame(): Promise<void> {
@@ -209,6 +226,10 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
 
     setLookaheadCount(lookaheadCount: number): void {
       this.requirements.setLookaheadCount(lookaheadCount);
+    }
+
+    setRenderScale(scale: number): void {
+      this.controller.setRenderScale(scale);
     }
 
     setPlaybackRange(range: PlaybackRange | null): void {

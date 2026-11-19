@@ -61,10 +61,7 @@ fn paint_delegate_evaluation_error_names_node_and_property_path() {
         Deferred::value(255),
     );
     let expr = ExpressionContext::default();
-    let ctx = DelegateEvalContext {
-        node_id: NodeId::new(7),
-        expr: &expr,
-    };
+    let ctx = DelegateEvalContext::new(NodeId::new(7), &expr);
 
     assert_eq!(
         ctx.eval_field("paint", &delegate).unwrap_err().to_string(),

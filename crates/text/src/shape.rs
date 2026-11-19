@@ -1032,6 +1032,70 @@ pub(crate) struct ShapedGlyph {
 }
 
 impl ShapedText {
+    /// This text with every length scaled by `scale`, keeping its lines as they were shaped.
+    /// Glyphs keep their place on each line and are rasterized at their scaled size, and the
+    /// decorations' own sizes scale with `fit_scale`.
+    pub fn scaled(&self, scale: f32) -> Self {
+        let scale4 = |rect: [f32; 4]| rect.map(|value| value * scale);
+        Self {
+            measurement: TextMeasurement {
+                width: self.measurement.width * scale,
+                height: self.measurement.height * scale,
+            },
+            bounds: scale4(self.bounds),
+            counts: self.counts,
+            segments: self
+                .segments
+                .iter()
+                .map(|segment| TextSegment {
+                    x: segment.x.map(|x| x * scale),
+                    baseline: segment.baseline * scale,
+                    shift: segment.shift * scale,
+                    line_top: segment.line_top * scale,
+                    line_height: segment.line_height * scale,
+                    ascent: segment.ascent * scale,
+                    descent: segment.descent * scale,
+                    ..segment.clone()
+                })
+                .collect(),
+            span_boxes: self
+                .span_boxes
+                .iter()
+                .map(|span_box| span_box.map(scale4))
+                .collect(),
+            span_metrics: self
+                .span_metrics
+                .iter()
+                .map(|metrics| TextSpanMetrics {
+                    underline_offset: metrics.underline_offset * scale,
+                    underline_thickness: metrics.underline_thickness * scale,
+                    strikeout_offset: metrics.strikeout_offset * scale,
+                    strikeout_thickness: metrics.strikeout_thickness * scale,
+                })
+                .collect(),
+            fit_scale: self.fit_scale * scale,
+            span_starts: self.span_starts.clone(),
+            paragraphs: self.paragraphs,
+            glyphs: self
+                .glyphs
+                .iter()
+                .map(|shaped| ShapedGlyph {
+                    glyph: cosmic_text::LayoutGlyph {
+                        font_size: shaped.glyph.font_size * scale,
+                        line_height_opt: shaped.glyph.line_height_opt.map(|height| height * scale),
+                        x: shaped.glyph.x * scale,
+                        y: shaped.glyph.y * scale,
+                        w: shaped.glyph.w * scale,
+                        ..shaped.glyph.clone()
+                    },
+                    line_y: shaped.line_y * scale,
+                    item: shaped.item,
+                    pivot: shaped.pivot.map(|value| value * scale),
+                })
+                .collect(),
+        }
+    }
+
     /// Number of glyphs, whitespace included, that [`Self::place`] returns.
     pub fn glyph_count(&self) -> usize {
         self.glyphs.len()

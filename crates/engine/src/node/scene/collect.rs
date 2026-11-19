@@ -31,7 +31,9 @@ use crate::gpu::frame_graph::{FrameCx, Raster};
 use crate::media::{AssetKind, MediaIdentity, ModelResolver, resolve_as};
 use crate::node::processing::RasterSampling;
 use crate::node::vector::paint::Paint;
-use crate::node::{DelegateEvalContext, DelegateEvaluable, Node, NodeId, NodeKind, required_input};
+use crate::node::{
+    DelegateEvalContext, DelegateEvaluable, Node, NodeId, NodeKind, PixelScale, required_input,
+};
 
 /// The most joint matrices one frame's scene may hold.
 const MAX_SCENE_JOINTS: usize = 1 << 16;
@@ -572,10 +574,7 @@ fn wired_material<'a, N: crate::node::JsonNode>(
     };
     let _timed = cx.node_times().time(node);
     let expr = cx.expr();
-    let ctx = DelegateEvalContext {
-        node_id: material_id,
-        expr: &expr,
-    };
+    let ctx = DelegateEvalContext::new(material_id, &expr);
     Ok((material, material.params.eval(&ctx)?))
 }
 
@@ -1010,10 +1009,7 @@ impl Collected {
     ) -> crate::Result<Option<Vec<(NodeId, Mat4)>>> {
         let node_id = node.id();
         let expr = cx.expr();
-        let ctx = DelegateEvalContext {
-            node_id,
-            expr: &expr,
-        };
+        let ctx = DelegateEvalContext::new(node_id, &expr);
         match node {
             NodeKind::Merge3d(merge) => {
                 let world = parent * placement(&merge.params.eval(&ctx)?.placement).matrix();
@@ -1187,10 +1183,12 @@ impl Collected {
                 let source = cx.input_native(source_node)?;
                 let display = source.domain.display_size();
                 let part = match params.region.0 {
-                    Some(region) => match plane_part(display, region) {
-                        Some(part) => part.fractions(display),
-                        None => return Ok(None),
-                    },
+                    Some(region) => {
+                        match plane_part(display, region.scale_pixels(cx.pixel_scale())) {
+                            Some(part) => part.fractions(display),
+                            None => return Ok(None),
+                        }
+                    }
                     None => None,
                 };
                 self.rasters.push((source_node, source));

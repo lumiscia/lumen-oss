@@ -116,7 +116,10 @@ fn run(args: &RenderArgs) -> Result<()> {
     let plan = args.plan()?;
     let composition = load_composition(&args.source)?;
     let render_plan = args.render_plan(&plan.output, &composition)?;
-    let media_store = args.source.media_store()?.explaining_missing_sources();
+    let media_store = args
+        .source
+        .scaled_media_store(args.scale)?
+        .explaining_missing_sources();
 
     if let Some(choice) = render_plan.encoder {
         return render_to_partial(&args.output, |partial| {

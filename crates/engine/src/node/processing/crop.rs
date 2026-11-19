@@ -11,16 +11,16 @@ const CROP: ComputeProgram = ComputeProgram::spatial("crop", SHADER);
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct CropParams {
     /// Left edge of the crop region in pixels.
-    #[meta(step = 1)]
+    #[meta(step = 1, pixels)]
     pub x: i64,
     /// Top edge of the crop region in pixels.
-    #[meta(step = 1)]
+    #[meta(step = 1, pixels)]
     pub y: i64,
     /// Width of the crop region in pixels.
-    #[meta(min = 0, step = 1)]
+    #[meta(min = 0, step = 1, pixels)]
     pub width: i64,
     /// Height of the crop region in pixels.
-    #[meta(min = 0, step = 1)]
+    #[meta(min = 0, step = 1, pixels)]
     pub height: i64,
 }
 
@@ -100,6 +100,7 @@ impl crate::gpu::frame_graph::RecordNode for Crop {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         let x = pixel_origin(self.id, "x", params.x)?;
         let y = pixel_origin(self.id, "y", params.y)?;

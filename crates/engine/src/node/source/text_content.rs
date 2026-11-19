@@ -512,11 +512,7 @@ mod tests {
             frame: 12.0,
             ..ExpressionContext::default()
         };
-        DelegateEvalContext {
-            node_id: NodeId::new(3),
-            expr: &expr,
-        }
-        .eval_field("content", content)
+        DelegateEvalContext::new(NodeId::new(3), &expr).eval_field("content", content)
     }
 
     /// The layout and style of each span of `content`.
@@ -528,11 +524,7 @@ mod tests {
             frame: 12.0,
             ..ExpressionContext::default()
         };
-        DelegateEvalContext {
-            node_id: NodeId::new(3),
-            expr: &expr,
-        }
-        .eval_field("content", spans)
+        DelegateEvalContext::new(NodeId::new(3), &expr).eval_field("content", spans)
     }
 
     #[test]
@@ -551,10 +543,7 @@ mod tests {
             frame: 30.0,
             ..ExpressionContext::default()
         };
-        let ctx = DelegateEvalContext {
-            node_id: NodeId::new(3),
-            expr: &expr,
-        };
+        let ctx = DelegateEvalContext::new(NodeId::new(3), &expr);
         let readout = r#"=concat("frame ", format(frame, 0, 4, "0"), " / 1200")"#;
         let content = parse(serde_json::json!(readout)).unwrap();
         assert_eq!(
@@ -829,10 +818,10 @@ mod tests {
 
         let node = features(serde_json::json!({ "tnum": 1, "liga": 1, "ss01": 2 }))
             .unwrap()
-            .eval(&DelegateEvalContext {
-                node_id: NodeId::new(3),
-                expr: &ExpressionContext::default(),
-            })
+            .eval(&DelegateEvalContext::new(
+                NodeId::new(3),
+                &ExpressionContext::default(),
+            ))
             .unwrap();
         let content = parse(serde_json::json!([
             { "text": "a" },
@@ -897,10 +886,7 @@ mod tests {
             };
             DelegateEvaluable::eval(
                 &probe,
-                &crate::node::DelegateEvalContext {
-                    node_id: NodeId::new(3),
-                    expr: &expr,
-                },
+                &crate::node::DelegateEvalContext::new(NodeId::new(3), &expr),
             )
             .map(|probe| probe.content)
         };

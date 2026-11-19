@@ -32,7 +32,7 @@ pub struct DirectionalBlurParams {
     #[meta(step = 1)]
     pub angle: f64,
     /// Length in pixels of the line each pixel is spread along, centred on it.
-    #[meta(min = 0, step = 1)]
+    #[meta(min = 0, step = 1, pixels)]
     pub distance: f64,
     /// What the source reads as beyond the canvas.
     #[meta()]
@@ -68,7 +68,7 @@ pub struct DirectionalBlur {
 pub struct RadialBlurParams {
     /// Centre of the spin in canvas pixels. The canvas centre, `[width / 2, height / 2]`, when
     /// absent.
-    #[meta()]
+    #[meta(pixels)]
     pub center: Option<(f64, f64)>,
     /// Arc in degrees each pixel is spread along about `center`, centred on it, up to 360.
     #[meta(min = 0, max = 360, step = 1)]
@@ -103,7 +103,7 @@ pub struct RadialBlur {
 pub struct ZoomBlurParams {
     /// Centre of the zoom in canvas pixels. The canvas centre, `[width / 2, height / 2]`, when
     /// absent.
-    #[meta()]
+    #[meta(pixels)]
     pub center: Option<(f64, f64)>,
     /// Length of the streak through each pixel, as a fraction of its distance from `center`.
     /// The streak runs both ways along the ray, sampled in equal ratios of scale, so it reaches
@@ -595,11 +595,13 @@ macro_rules! sweep_node {
             ) -> crate::Result<crate::gpu::frame_graph::Raster> {
                 let source = cx.required(self.id, "source", self.source)?;
                 let expr = cx.expr();
+                let scale = cx.pixel_scale();
                 let $params = self.params.eval(&DelegateEvalContext {
                     node_id: self.id,
                     expr: &expr,
+                    pixel_scale: scale,
                 })?;
-                let $render = [f64::from(expr.width), f64::from(expr.height)];
+                let $render = [f64::from(expr.width) * scale, f64::from(expr.height) * scale];
                 self::record(cx, source, $sweep)
             }
 $(

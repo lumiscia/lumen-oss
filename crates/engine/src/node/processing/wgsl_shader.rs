@@ -11,8 +11,9 @@
 //! | 4       | `input_sampler` | linear, clamp-to-edge `sampler`            |
 //! | 4 + i   | `input{i}`      | `texture_2d<f32>`, for `i` in `1..N`       |
 //!
-//! `LumenGlobals` holds `resolution` (`vec2<f32>`, the output's size in pixels), `time` (seconds),
-//! `frame`, and the `camera` input's camera: `view` (world to view), `projection` (view to clip,
+//! `LumenGlobals` holds `resolution` (`vec2<f32>`, the output's size in device pixels),
+//! `render_scale` (device pixels per composition pixel, which a shader counting in composition
+//! pixels multiplies its distances by), `time` (seconds), `frame`, and the `camera` input's camera: `view` (world to view), `projection` (view to clip,
 //! for the output's aspect ratio) and `camera_position`. Without a `camera` the matrices are the
 //! identity and the position is zero.
 //!
@@ -67,6 +68,8 @@ pub const PRELUDE: &str = concat!(
     resolution: vec2<f32>,
     // Composition frame index, rounded down at fractional frame times.
     frame: u32,
+    // Device pixels per composition pixel: 1 unless the host renders at another scale.
+    render_scale: f32,
 }
 @group(0) @binding(3) var<uniform> lumen: LumenGlobals;
 @group(0) @binding(4) var input_sampler: sampler;
@@ -112,8 +115,8 @@ const DEFAULT_SHADER: &str = concat!(
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
 pub struct WgslShaderParams {
     /// WGSL compute shader; the prelude provides inputs, `input_sampler`, `output` and `lumen`,
-    /// which holds `resolution`, `time`, `frame`, and from the `camera` input `view`, `projection`
-    /// and `camera_position`.
+    /// which holds `resolution`, `render_scale`, `time`, `frame`, and from the `camera` input
+    /// `view`, `projection` and `camera_position`.
     #[meta(
         name = "Shader source",
         format = "wgsl",
@@ -160,7 +163,7 @@ struct LumenGlobals {
     time: f32,
     resolution: [f32; 2],
     frame: u32,
-    _padding: u32,
+    render_scale: f32,
 }
 
 /// `input0` sits at binding 0; later inputs follow the prelude's sampler.
@@ -805,6 +808,7 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         let inputs = self
             .sources
@@ -842,7 +846,7 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
                     time: expr.time_seconds() as f32,
                     resolution: [size.width as f32, size.height as f32],
                     frame: expr.frame as u32,
-                    _padding: 0,
+                    render_scale: cx.pixel_scale() as f32,
                 },
             )
         };

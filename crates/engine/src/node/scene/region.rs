@@ -15,6 +15,25 @@ pub(crate) static REGION: ParamTypeDef = ParamTypeDef {
     schema: || serde_json::json!({ "$ref": "#/$defs/region" }),
 };
 
+/// The region in device pixels at `scale`: each edge is scaled and rounded, so regions that
+/// meet still meet.
+impl crate::node::PixelScale for [i64; 4] {
+    fn scale_pixels(self, scale: f64) -> Self {
+        if scale == 1.0 {
+            return self;
+        }
+        let [x, y, width, height] = self;
+        let edge = |value: i64| (value as f64 * scale).round() as i64;
+        let (left, top) = (edge(x), edge(y));
+        [
+            left,
+            top,
+            edge(x.saturating_add(width)) - left,
+            edge(y.saturating_add(height)) - top,
+        ]
+    }
+}
+
 /// [`Region`] whose four numbers take literals or expressions. The whole region cannot be an
 /// expression.
 #[derive(Debug, Clone, Default, lumen_macros::StructuralHash)]

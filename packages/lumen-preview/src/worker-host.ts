@@ -37,6 +37,7 @@ export type LumenPreviewWorkerCommand =
   | {
       logLevel: LumenLogLevel;
       lookaheadCount: number;
+      renderScale: number;
       type: "start";
       wasmUrl: string;
     }
@@ -82,6 +83,7 @@ export type LumenPreviewWorkerCommand =
   | {
       logLevel: LumenLogLevel;
       lookaheadCount: number;
+      renderScale: number;
       type: "set-options";
     }
   | {
@@ -317,8 +319,7 @@ export function createLumenPreviewWorkerHost({
         runner.seek(message.seekId, message.clock);
         break;
       case "set-options":
-        requireController().setLogLevel(message.logLevel);
-        requireController().setLookaheadCount(message.lookaheadCount);
+        setOptions(message);
         break;
       case "set-playback":
         followClock(message.clock);
@@ -330,6 +331,28 @@ export function createLumenPreviewWorkerHost({
         }
         break;
     }
+  }
+
+  function setOptions(message: Extract<LumenPreviewWorkerCommand, { type: "set-options" }>): void {
+    const controller = requireController();
+    controller.setLogLevel(message.logLevel);
+    controller.setLookaheadCount(message.lookaheadCount);
+    controller.setRenderScale(message.renderScale);
+    if (composition.durationFrames > 0) {
+      const { canvasSize } = composition;
+      composition.canvasSize = outputSize(controller);
+      if (
+        canvasSize?.width !== composition.canvasSize.width ||
+        canvasSize.height !== composition.canvasSize.height
+      ) {
+        runner.redraw();
+      }
+    }
+  }
+
+  /** The size frames render at, which the canvas takes. */
+  function outputSize(controller: LumenPreviewController): { height: number; width: number } {
+    return { height: controller.outputHeight() || 1, width: controller.outputWidth() || 1 };
   }
 
   function requireController(): LumenPreviewController {
@@ -438,6 +461,7 @@ export function createLumenPreviewWorkerHost({
       host.lifecycle = new MediaLifecycle(mediaLoader(controller), postMedia);
       controller.setLogLevel(message.logLevel);
       controller.setLookaheadCount(message.lookaheadCount);
+      controller.setRenderScale(message.renderScale);
     } catch (error) {
       scope.postMessage({
         code: "worker_failed",
@@ -478,10 +502,7 @@ export function createLumenPreviewWorkerHost({
         throw failedMedia(failure);
       }
       activeController.loadComposition(message.compositionJson);
-      composition.canvasSize = {
-        height: activeController.height() || 1,
-        width: activeController.width() || 1,
-      };
+      composition.canvasSize = outputSize(activeController);
       scope.postMessage({
         audioTimelineJson: activeController.audioTimeline() ?? null,
         fps: activeController.fps(),

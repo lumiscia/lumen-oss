@@ -45,6 +45,8 @@ struct PreviewState {
     duration_frames: u32,
     fps: f64,
     current_frame: u32,
+    /// Kept across loads and `clear`.
+    render_scale: f32,
 }
 
 impl Default for PreviewState {
@@ -59,6 +61,7 @@ impl Default for PreviewState {
             duration_frames: 0,
             fps: 30.0,
             current_frame: 0,
+            render_scale: 1.0,
         }
     }
 }
@@ -194,12 +197,50 @@ impl LumenPreviewController {
         Ok(self.state()?.current_frame)
     }
 
+    /// The composition's width, which expressions see whatever the render scale.
     pub fn width(&self) -> Result<u32, JsValue> {
         Ok(self.state()?.width as u32)
     }
 
+    /// The composition's height, which expressions see whatever the render scale.
     pub fn height(&self) -> Result<u32, JsValue> {
         Ok(self.state()?.height as u32)
+    }
+
+    /// Renders each canvas pixel at `scale` device pixels from the next frame, 1 by default, so
+    /// frames are `outputWidth` by `outputHeight` and look like the full render scaled. It is kept
+    /// across loads and does not compile the composition again. Fails unless `scale` is finite and
+    /// above 0.
+    #[wasm_bindgen(js_name = "setRenderScale")]
+    pub fn set_render_scale(&self, scale: f32) -> Result<(), JsValue> {
+        if !(scale.is_finite() && scale > 0.0) {
+            return Err(JsValue::from_str(&format!(
+                "render scale must be a finite number above 0, got {scale}"
+            )));
+        }
+        let mut state = self.state_mut()?;
+        state.render_scale = scale;
+        if let GpuSlot::Ready(renderer) = &mut state.gpu {
+            renderer.set_render_scale(scale)?;
+        }
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = "renderScale")]
+    pub fn render_scale(&self) -> Result<f32, JsValue> {
+        Ok(self.state()?.render_scale)
+    }
+
+    /// The width of rendered frames: the composition's width at the render scale, rounded up.
+    #[wasm_bindgen(js_name = "outputWidth")]
+    pub fn output_width(&self) -> Result<u32, JsValue> {
+        Ok(self.output_size()?.width)
+    }
+
+    /// The height of rendered frames: the composition's height at the render scale, rounded up.
+    #[wasm_bindgen(js_name = "outputHeight")]
+    pub fn output_height(&self) -> Result<u32, JsValue> {
+        Ok(self.output_size()?.height)
     }
 
     #[wasm_bindgen(js_name = "durationFrames")]
@@ -435,6 +476,16 @@ impl LumenPreviewController {
 // State borrows are never held across an `.await`, so commands always apply, even while a
 // render is creating the GPU device.
 impl LumenPreviewController {
+    /// Zero by zero until a composition loads.
+    fn output_size(&self) -> Result<lumen_gpu::Size, JsValue> {
+        let state = self.state()?;
+        let Some(composition) = &state.composition else {
+            return Ok(lumen_gpu::Size::new(0, 0));
+        };
+        lumen_engine::gpu::output_size(composition, state.render_scale)
+            .map_err(|error| js_error(&error))
+    }
+
     fn state(&self) -> Result<Ref<'_, PreviewState>, JsValue> {
         self.state
             .try_borrow()
@@ -497,6 +548,11 @@ impl LumenPreviewController {
             if state.gpu_generation != generation {
                 return Ok(());
             }
+            let scale = state.render_scale;
+            let created = created.and_then(|mut renderer| {
+                renderer.set_render_scale(scale)?;
+                Ok(renderer)
+            });
             state.gpu = match created {
                 Ok(renderer) => GpuSlot::Ready(Box::new(renderer)),
                 Err(error) => {
@@ -532,13 +588,11 @@ impl LumenPreviewController {
             .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
         tracing::trace!(target: "lumen_wasm", frame, "render preview frame");
         let size = renderer.render_frame(&canvas, composition, frame, &self.media)?;
-        state.width = size.width as usize;
-        state.height = size.height as usize;
         tracing::trace!(
             target: "lumen_wasm",
             frame,
-            width = state.width,
-            height = state.height,
+            width = size.width,
+            height = size.height,
             "rendered preview frame"
         );
         Ok(Some(renderer.submitted_work_done()))
@@ -764,6 +818,27 @@ mod tests {
                 .set_video_frame(stream_id.to_string(), frame, image)
                 .expect("set frame");
         }
+    }
+
+    #[test]
+    fn render_scale_sizes_frames_and_is_kept_across_loads() {
+        let controller = controller(8);
+        controller.set_render_scale(0.5).expect("set scale");
+        controller
+            .load_composition(&COMPOSITION_JSON.replace("\"width\": 8", "\"width\": 9"))
+            .expect("load composition");
+        assert_eq!(controller.render_scale().unwrap(), 0.5);
+        assert_eq!(
+            (controller.width().unwrap(), controller.height().unwrap()),
+            (9, 4)
+        );
+        assert_eq!(
+            (
+                controller.output_width().unwrap(),
+                controller.output_height().unwrap()
+            ),
+            (5, 2)
+        );
     }
 
     #[test]

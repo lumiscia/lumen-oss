@@ -11,6 +11,7 @@ mod image_size;
 #[cfg(feature = "ffmpeg")]
 mod media;
 pub(crate) mod mips;
+pub(crate) mod render_scale;
 mod renderer;
 #[cfg(test)]
 pub(crate) mod shader_layouts;
@@ -27,6 +28,7 @@ mod yuv;
 pub(crate) use caches::evictions;
 pub use caches::{CacheBudgets, CacheStats};
 pub use color::WORKING_COLOR_FORMAT;
+pub use render_scale::output_size;
 pub use renderer::{
     DEFAULT_MAX_TEXT_GLYPHS, FrameGraphStats, GpuCompositionRenderer, MAX_TEXT_GLYPHS_CEILING,
     OutputAlpha,

@@ -126,8 +126,9 @@ impl ShownSizes {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Decoded {
     Native,
-    /// Reduced to `size`, which has the native aspect ratio exactly, and to fit the size limit
-    /// when `limited`.
+    /// Reduced to `size`, and to fit the size limit when `limited`. Where every use is a literal
+    /// `resize`, `size` has the native aspect ratio exactly; elsewhere it is the native size at the
+    /// render scale, each side rounded up.
     Reduced {
         size: Size,
         limited: bool,
@@ -137,25 +138,33 @@ pub(crate) enum Decoded {
     TooLarge,
 }
 
-/// The size image `source`, of `native` size, is decoded at. Where the composition lets it be
-/// reduced, that is twice the size it is shown at when that is under half its own, and within
-/// `host_max` and `device_max` on a side. Elsewhere it keeps its size, if `device_max` allows.
+/// The size image `source`, of `native` size, is decoded at for a render at `render_scale`. Where
+/// the composition lets it be reduced, that is twice the size it is shown at when that is under
+/// half its own, and within `host_max` and `device_max` on a side. Elsewhere it is its size at the
+/// render scale, if `device_max` allows.
 pub(crate) fn decoded_size(
     shown: &ShownSizes,
     source: &str,
     native: Size,
     host_max: u32,
     device_max: u32,
+    render_scale: f64,
 ) -> Decoded {
-    let longest = native.width.max(native.height);
-    let fallback = if longest > device_max {
+    let scaled = super::render_scale::device_size(native.width, native.height, render_scale);
+    let fallback = if scaled.width.max(scaled.height) > device_max {
         Decoded::TooLarge
-    } else {
+    } else if scaled == native {
         Decoded::Native
+    } else {
+        Decoded::Reduced {
+            size: scaled,
+            limited: false,
+        }
     };
     let Some(scale) = shown.scale(source, native) else {
         return fallback;
     };
+    let scale = scale * render_scale;
     // Sizes with the native aspect ratio are multiples of the ratio in lowest terms.
     let multiples = gcd(native.width, native.height);
     let unit = Size::new(native.width / multiples, native.height / multiples);
@@ -170,11 +179,13 @@ pub(crate) fn decoded_size(
     if multiple == 0 {
         return fallback;
     }
-    if multiple >= multiples {
-        return Decoded::Native;
+    let size = Size::new(unit.width * multiple, unit.height * multiple);
+    let no_smaller = size.width >= scaled.width && size.height >= scaled.height;
+    if multiple >= multiples || (no_smaller && fallback != Decoded::TooLarge) {
+        return fallback;
     }
     Decoded::Reduced {
-        size: Size::new(unit.width * multiple, unit.height * multiple),
+        size,
         limited: limit_multiple < shown_multiple,
     }
 }
@@ -646,7 +657,7 @@ mod tests {
     #[test]
     fn an_image_is_reduced_to_twice_its_shown_size_only_under_half_of_it() {
         let native = Size::new(4000, 3000);
-        let decoded = |shown: &ShownSizes| decoded_size(shown, "photo", native, 16384, 16384);
+        let decoded = |shown: &ShownSizes| decoded_size(shown, "photo", native, 16384, 16384, 1.0);
         let reduced = |width, height| Decoded::Reduced {
             size: Size::new(width, height),
             limited: false,
@@ -670,6 +681,19 @@ mod tests {
             Decoded::Native
         );
         assert_eq!(decoded(&ShownSizes::default()), Decoded::Native);
+
+        // A render scale reduces every image, on each side rounded up, and composes with a
+        // resize's reduction.
+        let at_scale = |shown: &ShownSizes, native, scale| {
+            decoded_size(shown, "photo", native, 16384, 16384, scale)
+        };
+        let unused = ShownSizes::default();
+        assert_eq!(at_scale(&unused, native, 0.5), reduced(2000, 1500));
+        assert_eq!(at_scale(&unused, Size::new(101, 51), 0.5), reduced(51, 26));
+        let resized = fitted(400.0, 300.0, ResizeMode::Stretch);
+        assert_eq!(at_scale(&resized, native, 0.5), reduced(400, 300));
+        let enlarged = fitted(2100.0, 300.0, ResizeMode::Stretch);
+        assert_eq!(at_scale(&enlarged, native, 0.5), reduced(2000, 1500));
     }
 
     #[test]
@@ -681,7 +705,8 @@ mod tests {
                 "photo",
                 Size::new(1000, 9),
                 16384,
-                16384
+                16384,
+                1.0
             ),
             Decoded::Native
         );
@@ -696,7 +721,8 @@ mod tests {
                 "photo",
                 wide,
                 16384,
-                16384
+                16384,
+                1.0
             ),
             Decoded::Reduced {
                 size: Size::new(16384, 1),
@@ -704,7 +730,7 @@ mod tests {
             }
         );
         assert_eq!(
-            decoded_size(&ShownSizes::default(), "photo", wide, 16384, 16384),
+            decoded_size(&ShownSizes::default(), "photo", wide, 16384, 16384, 1.0),
             Decoded::TooLarge
         );
         // A host's lower limit keeps an image it can't reduce at its own size.
@@ -714,7 +740,8 @@ mod tests {
                 "photo",
                 Size::new(3200, 1600),
                 1600,
-                16384
+                16384,
+                1.0
             ),
             Decoded::Native
         );
@@ -725,7 +752,8 @@ mod tests {
                 "photo",
                 Size::new(16385, 3),
                 16384,
-                16384
+                16384,
+                1.0
             ),
             Decoded::TooLarge
         );

@@ -50,6 +50,13 @@ impl SurfaceCompositionRenderer {
         self.needs_compile = true;
     }
 
+    /// Renders at `scale` from the next frame without compiling again.
+    pub(crate) fn set_render_scale(&mut self, scale: f32) -> Result<(), JsValue> {
+        self.renderer
+            .set_render_scale(scale)
+            .map_err(|error| js_error(&error))
+    }
+
     pub(crate) fn render_frame<M: lumen_engine::media::MediaStore>(
         &mut self,
         canvas: &JsValue,
@@ -61,11 +68,8 @@ impl SurfaceCompositionRenderer {
         self.renderer
             .check_output_size(composition)
             .map_err(|e| render_error(frame, e))?;
-        self.gpu.prepare(
-            canvas,
-            composition.render_settings().width,
-            composition.render_settings().height,
-        )?;
+        let size = self.renderer.output_size(composition);
+        self.gpu.prepare(canvas, size.width, size.height)?;
         // An opaque canvas ignores alpha, and a premultiplied one composites it.
         self.renderer.set_output_alpha(
             if self.gpu.config.alpha_mode == lumen_gpu::wgpu::CompositeAlphaMode::Opaque {

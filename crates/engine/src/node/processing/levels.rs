@@ -80,6 +80,7 @@ impl crate::gpu::frame_graph::RecordNode for Levels {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         let gpu_params = LevelsUniforms {
             black_point: params.black_point as f32,
