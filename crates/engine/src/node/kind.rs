@@ -198,6 +198,7 @@ node_kinds! {
     Opacity(processing::opacity::Opacity),
     Blur(processing::blur::Blur),
     Channels(processing::channels::Channels),
+    ChromaKey(processing::chroma_key::ChromaKey),
     ColorCorrect(processing::color_correct::ColorCorrect),
     ColorGrade(processing::color_grade::ColorGrade),
     Exposure(processing::exposure::Exposure),

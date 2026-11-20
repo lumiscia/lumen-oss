@@ -310,6 +310,28 @@ Params:
 - **`green`** (`"source_red"` | `"source_green"` | `"source_blue"` | `"source_alpha"` | `"source_luma"` | `"other_red"` | `"other_green"` | `"other_blue"` | `"other_alpha"` | `"other_luma"` | `"zero"` | `"one"`; default `"source_green"`; literal only) Where the output's green comes from.
 - **`red`** (`"source_red"` | `"source_green"` | `"source_blue"` | `"source_alpha"` | `"source_luma"` | `"other_red"` | `"other_green"` | `"other_blue"` | `"other_alpha"` | `"other_luma"` | `"zero"` | `"one"`; default `"source_red"`; literal only) Where the output's red comes from.
 
+## `chroma_key`
+
+Removes a green or blue screen from a raster, in linear light.
+
+Each pixel's chromaticity, its colour divided by its brightness, is compared with the key color's, so a screen keys evenly from its shadows to its highlights. Pixels within `tolerance` of the key are removed, kept in full beyond `tolerance + softness`, and fade between. Near-black pixels have no reliable hue and are always kept. Then `spill` pulls the key's dominant channel down to the larger of the other two on the pixels that remain, which takes the green or blue cast out of edges and reflections. The result keeps the source's alpha times the matte. With `matte_only`, the output is white with that alpha instead, which can feed `merge`'s mask or `channels`.
+
+For example, `{ "key_color": [0, 177, 64, 255], "tolerance": 0.1, "softness": 0.1 }` on footage shot against a green screen leaves the subject over transparency.
+
+Category: processing. Output: raster.
+
+Inputs:
+
+- `source`: raster, required
+
+Params:
+
+- **`key_color`** ([paint](#type-paint); default `[0,255,0,255]`) The screen color. Must be a solid color; a gradient is an error.
+- **`matte_only`** (boolean; default `false`) Outputs the matte as white over transparent instead of the keyed image.
+- **`softness`** (number, at least 0; default `0.08`) How much further out the edge is feathered, from fully removed to fully kept. 0 is a hard edge at `tolerance`.
+- **`spill`** (number, 0 to 1; default `0.5`) How much of the key color's cast is removed from the colors that are kept, from 0 for none to 1 for all of it.
+- **`tolerance`** (number, at least 0; default `0.08`) How far a color may be from the key color in chromaticity, 0 for the same hue to 1.4 for the furthest, and still be fully removed.
+
 ## `color_correct`
 
 Corrects the colour of a raster. Each step works on the straight colour in linear light, in this order, and the alpha is untouched, so the defaults leave the raster unchanged.

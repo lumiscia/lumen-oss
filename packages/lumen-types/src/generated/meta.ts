@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1803,6 +1803,45 @@ export interface ChannelsNode extends CompositionNodeBase<"channels"> {
   };
 }
 
+/**
+ * Removes a green or blue screen from a raster, in linear light.
+ * 
+ * Each pixel's chromaticity, its colour divided by its brightness, is compared with the key
+ * color's, so a screen keys evenly from its shadows to its highlights. Pixels within
+ * `tolerance` of the key are removed, kept in full beyond `tolerance + softness`, and fade
+ * between. Near-black pixels have no reliable hue and are always kept. Then `spill` pulls the
+ * key's dominant channel down to the larger of the other two on the pixels that remain, which
+ * takes the green or blue cast out of edges and reflections. The result keeps the source's
+ * alpha times the matte. With `matte_only`, the output is white with that alpha instead, which
+ * can feed `merge`'s mask or `channels`.
+ * 
+ * For example, `{ "key_color": [0, 177, 64, 255], "tolerance": 0.1, "softness": 0.1 }` on
+ * footage shot against a green screen leaves the subject over transparency.
+ */
+export interface ChromaKeyNode extends CompositionNodeBase<"chroma_key"> {
+  readonly params?: {
+    /** The screen color. Must be a solid color; a gradient is an error. */
+    readonly key_color?: ExpressionValue<Paint>;
+    /** Outputs the matte as white over transparent instead of the keyed image. */
+    readonly matte_only?: ExpressionValue<boolean>;
+    /**
+     * How much further out the edge is feathered, from fully removed to fully kept. 0 is a hard
+     * edge at `tolerance`.
+     */
+    readonly softness?: ExpressionValue<number>;
+    /**
+     * How much of the key color's cast is removed from the colors that are kept, from 0 for none
+     * to 1 for all of it.
+     */
+    readonly spill?: ExpressionValue<number>;
+    /**
+     * How far a color may be from the key color in chromaticity, 0 for the same hue to 1.4 for
+     * the furthest, and still be fully removed.
+     */
+    readonly tolerance?: ExpressionValue<number>;
+  };
+}
+
 /** Plays a composition template, or its source, over a window of time. */
 export interface ClipNode extends CompositionNodeBase<"clip"> {
   readonly params?: {
@@ -3575,6 +3614,7 @@ export interface CompositionNodeByKind {
   readonly "boolean": BooleanNode;
   readonly "camera_3d": Camera3dNode;
   readonly "channels": ChannelsNode;
+  readonly "chroma_key": ChromaKeyNode;
   readonly "clip": ClipNode;
   readonly "color_correct": ColorCorrectNode;
   readonly "color_grade": ColorGradeNode;
@@ -3643,6 +3683,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "channels": Omit<ChannelsNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "chroma_key": Omit<ChromaKeyNode, "id"> & {
     readonly id?: number;
   };
   readonly "clip": Omit<ClipNode, "id"> & {
@@ -3809,6 +3852,7 @@ export interface NodeInputPortNameByKind {
   readonly "boolean": "a" | "b";
   readonly "camera_3d": never;
   readonly "channels": "other" | "source";
+  readonly "chroma_key": "source";
   readonly "clip": "source";
   readonly "color_correct": "source";
   readonly "color_grade": "source";
@@ -3869,6 +3913,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "boolean": never;
   readonly "camera_3d": never;
   readonly "channels": never;
+  readonly "chroma_key": never;
   readonly "clip": never;
   readonly "color_correct": never;
   readonly "color_grade": never;
@@ -3929,6 +3974,7 @@ export interface NodeOutputKindByKind {
   readonly "boolean": "raster";
   readonly "camera_3d": "scene";
   readonly "channels": "raster";
+  readonly "chroma_key": "raster";
   readonly "clip": "raster";
   readonly "color_correct": "raster";
   readonly "color_grade": "raster";
@@ -3989,6 +4035,7 @@ export interface NodeInputPortKindByKind {
   readonly "boolean": { readonly "a": "raster"; readonly "b": "raster" };
   readonly "camera_3d": {};
   readonly "channels": { readonly "source": "raster"; readonly "other": "raster" };
+  readonly "chroma_key": { readonly "source": "raster" };
   readonly "clip": { readonly "source": "raster" };
   readonly "color_correct": { readonly "source": "raster" };
   readonly "color_grade": { readonly "source": "raster" };
@@ -4109,6 +4156,22 @@ export const nodeInputPorts = {
    * `alpha` to `other_green`.
    */
   "channels": { "source": { kind: "raster", variadic: false }, "other": { kind: "raster", variadic: false } },
+  /**
+   * Removes a green or blue screen from a raster, in linear light.
+   * 
+   * Each pixel's chromaticity, its colour divided by its brightness, is compared with the key
+   * color's, so a screen keys evenly from its shadows to its highlights. Pixels within
+   * `tolerance` of the key are removed, kept in full beyond `tolerance + softness`, and fade
+   * between. Near-black pixels have no reliable hue and are always kept. Then `spill` pulls the
+   * key's dominant channel down to the larger of the other two on the pixels that remain, which
+   * takes the green or blue cast out of edges and reflections. The result keeps the source's
+   * alpha times the matte. With `matte_only`, the output is white with that alpha instead, which
+   * can feed `merge`'s mask or `channels`.
+   * 
+   * For example, `{ "key_color": [0, 177, 64, 255], "tolerance": 0.1, "softness": 0.1 }` on
+   * footage shot against a green screen leaves the subject over transparency.
+   */
+  "chroma_key": { "source": { kind: "raster", variadic: false } },
   /** Plays a composition template, or its source, over a window of time. */
   "clip": { "source": { kind: "raster", variadic: false } },
   /**
@@ -4513,6 +4576,7 @@ export const nodeMediaSources = {
   "boolean": {},
   "camera_3d": {},
   "channels": {},
+  "chroma_key": {},
   "clip": {},
   "color_correct": {},
   "color_grade": { "lut_source": { kinds: ["lut"] } },

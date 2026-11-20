@@ -2446,6 +2446,129 @@
           },
           {
             "additionalProperties": false,
+            "description": "Removes a green or blue screen from a raster, in linear light.\n\nEach pixel's chromaticity, its colour divided by its brightness, is compared with the key\ncolor's, so a screen keys evenly from its shadows to its highlights. Pixels within\n`tolerance` of the key are removed, kept in full beyond `tolerance + softness`, and fade\nbetween. Near-black pixels have no reliable hue and are always kept. Then `spill` pulls the\nkey's dominant channel down to the larger of the other two on the pixels that remain, which\ntakes the green or blue cast out of edges and reflections. The result keeps the source's\nalpha times the matte. With `matte_only`, the output is white with that alpha instead, which\ncan feed `merge`'s mask or `channels`.\n\nFor example, `{ \"key_color\": [0, 177, 64, 255], \"tolerance\": 0.1, \"softness\": 0.1 }` on\nfootage shot against a green screen leaves the subject over transparency.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "key_color": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0, 255, 0, 255],
+                    "description": "The screen color. Must be a solid color; a gradient is an error.",
+                    "title": "Key Color",
+                    "x-lumen-constraints": {
+                      "role": "color"
+                    },
+                    "x-lumen-kind": "paint"
+                  },
+                  "matte_only": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Outputs the matte as white over transparent instead of the keyed image.",
+                    "title": "Matte Only",
+                    "x-lumen-kind": "bool"
+                  },
+                  "softness": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.08,
+                    "description": "How much further out the edge is feathered, from fully removed to fully kept. 0 is a hard\nedge at `tolerance`.",
+                    "title": "Softness",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.005
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "spill": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.5,
+                    "description": "How much of the key color's cast is removed from the colors that are kept, from 0 for none\nto 1 for all of it.",
+                    "title": "Spill",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "tolerance": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.08,
+                    "description": "How far a color may be from the key color in chromaticity, 0 for the same hue to 1.4 for\nthe furthest, and still be fully removed.",
+                    "title": "Tolerance",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.005
+                    },
+                    "x-lumen-kind": "float"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "chroma_key"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Chroma Key",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Plays a composition template, or its source, over a window of time.",
             "properties": {
               "id": {

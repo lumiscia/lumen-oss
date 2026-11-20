@@ -5,6 +5,7 @@ mod binding;
 mod budgets;
 mod cache;
 mod channels;
+mod chroma_key;
 mod clips;
 mod color;
 mod color_correct;
