@@ -100,6 +100,26 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { alpha: "source_alpha", blue: "source_blue", green: "source_green", red: "source_red" },
   },
   {
+    kind: "chroma_key",
+    name: "Chroma Key",
+    description: "Removes a green or blue screen from a raster, in linear light.\n\nEach pixel's chromaticity, its colour divided by its brightness, is compared with the key\ncolor's, so a screen keys evenly from its shadows to its highlights. Pixels within\n`tolerance` of the key are removed, kept in full beyond `tolerance + softness`, and fade\nbetween. Near-black pixels have no reliable hue and are always kept. Then `spill` pulls the\nkey's dominant channel down to the larger of the other two on the pixels that remain, which\ntakes the green or blue cast out of edges and reflections. The result keeps the source's\nalpha times the matte. With `matte_only`, the output is white with that alpha instead, which\ncan feed `merge`'s mask or `channels`.\n\nFor example, `{ \"key_color\": [0, 177, 64, 255], \"tolerance\": 0.1, \"softness\": 0.1 }` on\nfootage shot against a green screen leaves the subject over transparency.",
+    category: "processing",
+    inputs: [
+      { name: "source", kind: "raster", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [
+      { id: "key_color", name: "Key Color", kind: "paint", description: "The screen color. Must be a solid color; a gradient is an error.", defaultValue: [0, 255, 0, 255], constraints: { role: "color" } },
+      { id: "matte_only", name: "Matte Only", kind: "bool", description: "Outputs the matte as white over transparent instead of the keyed image.", defaultValue: false },
+      { id: "softness", name: "Softness", kind: "float", description: "How much further out the edge is feathered, from fully removed to fully kept. 0 is a hard\nedge at `tolerance`.", defaultValue: 0.08, constraints: { min: 0, step: 0.005 } },
+      { id: "spill", name: "Spill", kind: "float", description: "How much of the key color's cast is removed from the colors that are kept, from 0 for none\nto 1 for all of it.", defaultValue: 0.5, constraints: { min: 0, max: 1, step: 0.05 } },
+      { id: "tolerance", name: "Tolerance", kind: "float", description: "How far a color may be from the key color in chromaticity, 0 for the same hue to 1.4 for\nthe furthest, and still be fully removed.", defaultValue: 0.08, constraints: { min: 0, step: 0.005 } },
+    ],
+    defaultParams: { key_color: [0, 255, 0, 255], matte_only: false, softness: 0.08, spill: 0.5, tolerance: 0.08 },
+  },
+  {
     kind: "clip",
     name: "Clip",
     description: "Plays a composition template, or its source, over a window of time.",
