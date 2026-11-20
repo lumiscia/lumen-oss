@@ -285,6 +285,27 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { edge_antialias: true, feather: 0, opacity: 1, paint: [255, 255, 255, 255] },
   },
   {
+    kind: "film_grain",
+    name: "Film Grain",
+    description: "Adds film grain to a raster: noise that follows the picture's brightness, in a pattern fixed to\nthe canvas, so it stays put as the source moves and looks the same at any render scale. Alpha\nis untouched. Set `seed` to `\"=frame\"` for grain that changes every frame, as in\n`{ \"amount\": 0.1, \"size\": 2, \"seed\": \"=frame\" }`.",
+    category: "processing",
+    inputs: [
+      { name: "source", kind: "raster", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [
+      { id: "amount", name: "Amount", kind: "float", description: "Grain strength: the standard deviation of the grain in sRGB-encoded units, at the\nbrightness where `response` makes it strongest.", defaultValue: 0.15, constraints: { min: 0, step: 0.01 } },
+      { id: "monochrome", name: "Monochrome", kind: "bool", description: "Uses one grain for all channels, which adds no colour noise, rather than one per channel.", defaultValue: true },
+      { id: "response", name: "Response", kind: "float", description: "How much the strength follows the brightness. 0 grains every brightness alike, and 1\ngrains midtones only, leaving black and white clean.", defaultValue: 0.5, constraints: { min: 0, max: 1, step: 0.05 } },
+      { id: "roughness", name: "Roughness", kind: "float", description: "Mixes in a coarser grain four times the size, for a paper-like tooth, without changing the\nstrength. 0 is fine grain only and 1 coarse grain only.", defaultValue: 0, constraints: { min: 0, max: 1, step: 0.05 } },
+      { id: "seed", name: "Seed", kind: "int", description: "Picks an unrelated pattern. Use an expression such as `=frame` to animate the grain.", defaultValue: 0, constraints: { step: 1 } },
+      { id: "size", name: "Size", kind: "float", description: "Size of one grain in composition pixels.", defaultValue: 1.5, constraints: { min: 0.5, step: 0.1 } },
+    ],
+    defaultParams: { amount: 0.15, monochrome: true, response: 0.5, roughness: 0, seed: 0, size: 1.5 },
+  },
+  {
     kind: "fractal_noise",
     name: "Fractal Noise",
     description: "Generates opaque grey fractal noise, the same for a given seed and evolution.",

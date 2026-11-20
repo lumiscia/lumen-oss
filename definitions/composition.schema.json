@@ -3688,6 +3688,148 @@
           },
           {
             "additionalProperties": false,
+            "description": "Adds film grain to a raster: noise that follows the picture's brightness, in a pattern fixed to\nthe canvas, so it stays put as the source moves and looks the same at any render scale. Alpha\nis untouched. Set `seed` to `\"=frame\"` for grain that changes every frame, as in\n`{ \"amount\": 0.1, \"size\": 2, \"seed\": \"=frame\" }`.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.15,
+                    "description": "Grain strength: the standard deviation of the grain in sRGB-encoded units, at the\nbrightness where `response` makes it strongest.",
+                    "title": "Amount",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "monochrome": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Uses one grain for all channels, which adds no colour noise, rather than one per channel.",
+                    "title": "Monochrome",
+                    "x-lumen-kind": "bool"
+                  },
+                  "response": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.5,
+                    "description": "How much the strength follows the brightness. 0 grains every brightness alike, and 1\ngrains midtones only, leaving black and white clean.",
+                    "title": "Response",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "roughness": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Mixes in a coarser grain four times the size, for a paper-like tooth, without changing the\nstrength. 0 is fine grain only and 1 coarse grain only.",
+                    "title": "Roughness",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "seed": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0,
+                    "description": "Picks an unrelated pattern. Use an expression such as `=frame` to animate the grain.",
+                    "title": "Seed",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "size": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.5,
+                    "description": "Size of one grain in composition pixels.",
+                    "title": "Size",
+                    "x-lumen-constraints": {
+                      "min": 0.5,
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "film_grain"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Film Grain",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Generates opaque grey fractal noise, the same for a given seed and evolution.",
             "properties": {
               "id": {

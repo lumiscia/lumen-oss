@@ -15,6 +15,7 @@ mod edits;
 mod effects;
 #[cfg(feature = "3d")]
 mod face_materials;
+mod film_grain;
 mod frame_graph;
 mod geometry;
 mod glow;

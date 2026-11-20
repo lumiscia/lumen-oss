@@ -201,6 +201,7 @@ node_kinds! {
     ColorCorrect(processing::color_correct::ColorCorrect),
     ColorGrade(processing::color_grade::ColorGrade),
     Exposure(processing::exposure::Exposure),
+    FilmGrain(processing::film_grain::FilmGrain),
     Halftone(processing::halftone::Halftone),
     HueSaturation(processing::hue_saturation::HueSaturation),
     Levels(processing::levels::Levels),

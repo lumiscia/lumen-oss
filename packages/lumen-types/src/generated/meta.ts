@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -2047,6 +2047,38 @@ export interface Fill2dNode extends CompositionNodeBase<"fill_2d"> {
   };
 }
 
+/**
+ * Adds film grain to a raster: noise that follows the picture's brightness, in a pattern fixed to
+ * the canvas, so it stays put as the source moves and looks the same at any render scale. Alpha
+ * is untouched. Set `seed` to `"=frame"` for grain that changes every frame, as in
+ * `{ "amount": 0.1, "size": 2, "seed": "=frame" }`.
+ */
+export interface FilmGrainNode extends CompositionNodeBase<"film_grain"> {
+  readonly params?: {
+    /**
+     * Grain strength: the standard deviation of the grain in sRGB-encoded units, at the
+     * brightness where `response` makes it strongest.
+     */
+    readonly amount?: ExpressionValue<number>;
+    /** Uses one grain for all channels, which adds no colour noise, rather than one per channel. */
+    readonly monochrome?: ExpressionValue<boolean>;
+    /**
+     * How much the strength follows the brightness. 0 grains every brightness alike, and 1
+     * grains midtones only, leaving black and white clean.
+     */
+    readonly response?: ExpressionValue<number>;
+    /**
+     * Mixes in a coarser grain four times the size, for a paper-like tooth, without changing the
+     * strength. 0 is fine grain only and 1 coarse grain only.
+     */
+    readonly roughness?: ExpressionValue<number>;
+    /** Picks an unrelated pattern. Use an expression such as `=frame` to animate the grain. */
+    readonly seed?: ExpressionValue<number>;
+    /** Size of one grain in composition pixels. */
+    readonly size?: ExpressionValue<number>;
+  };
+}
+
 /** Generates opaque grey fractal noise, the same for a given seed and evolution. */
 export interface FractalNoiseNode extends CompositionNodeBase<"fractal_noise"> {
   readonly params?: {
@@ -3522,6 +3554,7 @@ export interface CompositionNodeByKind {
   readonly "exposure": ExposureNode;
   readonly "extrude_3d": Extrude3dNode;
   readonly "fill_2d": Fill2dNode;
+  readonly "film_grain": FilmGrainNode;
   readonly "fractal_noise": FractalNoiseNode;
   readonly "glow": GlowNode;
   readonly "halftone": HalftoneNode;
@@ -3606,6 +3639,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "fill_2d": Omit<Fill2dNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "film_grain": Omit<FilmGrainNode, "id"> & {
     readonly id?: number;
   };
   readonly "fractal_noise": Omit<FractalNoiseNode, "id"> & {
@@ -3748,6 +3784,7 @@ export interface NodeInputPortNameByKind {
   readonly "exposure": "source";
   readonly "extrude_3d": "geometry" | "material" | "side_material";
   readonly "fill_2d": "geometry";
+  readonly "film_grain": "source";
   readonly "fractal_noise": never;
   readonly "glow": "source";
   readonly "halftone": "source";
@@ -3806,6 +3843,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "exposure": never;
   readonly "extrude_3d": never;
   readonly "fill_2d": never;
+  readonly "film_grain": never;
   readonly "fractal_noise": never;
   readonly "glow": never;
   readonly "halftone": never;
@@ -3864,6 +3902,7 @@ export interface NodeOutputKindByKind {
   readonly "exposure": "raster";
   readonly "extrude_3d": "scene";
   readonly "fill_2d": "drawing";
+  readonly "film_grain": "raster";
   readonly "fractal_noise": "raster";
   readonly "glow": "raster";
   readonly "halftone": "raster";
@@ -3922,6 +3961,7 @@ export interface NodeInputPortKindByKind {
   readonly "exposure": { readonly "source": "raster" };
   readonly "extrude_3d": { readonly "geometry": "geometry"; readonly "material": "material"; readonly "side_material": "material" };
   readonly "fill_2d": { readonly "geometry": "geometry" };
+  readonly "film_grain": { readonly "source": "raster" };
   readonly "fractal_noise": {};
   readonly "glow": { readonly "source": "raster" };
   readonly "halftone": { readonly "source": "raster" };
@@ -4096,6 +4136,13 @@ export const nodeInputPorts = {
   "extrude_3d": { "geometry": { kind: "geometry", variadic: false }, "material": { kind: "material", variadic: false }, "side_material": { kind: "material", variadic: false } },
   /** Fills its geometry's outline with a paint, as a drawing of one drawable. */
   "fill_2d": { "geometry": { kind: "geometry", variadic: false } },
+  /**
+   * Adds film grain to a raster: noise that follows the picture's brightness, in a pattern fixed to
+   * the canvas, so it stays put as the source moves and looks the same at any render scale. Alpha
+   * is untouched. Set `seed` to `"=frame"` for grain that changes every frame, as in
+   * `{ "amount": 0.1, "size": 2, "seed": "=frame" }`.
+   */
+  "film_grain": { "source": { kind: "raster", variadic: false } },
   /** Generates opaque grey fractal noise, the same for a given seed and evolution. */
   "fractal_noise": {},
   /**
@@ -4423,6 +4470,7 @@ export const nodeMediaSources = {
   "exposure": {},
   "extrude_3d": {},
   "fill_2d": {},
+  "film_grain": {},
   "fractal_noise": {},
   "glow": {},
   "halftone": {},
