@@ -8,9 +8,9 @@ use crate::{
             parse_hex_color,
         },
         builtins::{
-            FROM_TO, handle_x_error, is_key_value, key_morph_error, key_name, key_order_error,
-            key_value_error, kind_error, mixed_keys_error, param, range_error, unknown_easing,
-            unusable_result,
+            FROM_TO, SMOOTH_NEEDS_KEYS, handle_x_error, is_key_value, key_morph_error, key_name,
+            key_order_error, key_value_error, kind_error, mixed_keys_error, param, range_error,
+            unknown_easing, unusable_result,
         },
         functions,
         path::morph,
@@ -728,6 +728,12 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
             && NamedEasing::from_name(name).is_none()
         {
             return Err(error(unknown_easing(name)));
+        }
+        if let ExprNode::Literal(ExpressionValue::String(name)) = arg
+            && &**name == "smooth"
+            && matches!(spec.builtin, BuiltinFn::Ease | BuiltinFn::Tween)
+        {
+            return Err(error(SMOOTH_NEEDS_KEYS.to_string()));
         }
         if let Some(kind) = static_kind(arg)
             && let Some(details) = kind_error(spec, index, kind, second_is_key)

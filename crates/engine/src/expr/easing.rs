@@ -21,7 +21,8 @@ impl NamedEasing {
             return t;
         }
         match self {
-            Self::Linear => t,
+            // `keyframes` shapes `Smooth` from the neighbouring keys, so on its own it is linear.
+            Self::Linear | Self::Smooth => t,
             Self::Hold if t < 1.0 => 0.0,
             Self::Hold => 1.0,
             Self::InQuad => t * t,

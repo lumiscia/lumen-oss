@@ -432,31 +432,41 @@ export function cubicBezier(out: Arg<Vec2>, in_: Arg<Vec2>): Expr<Easing> {
 /**
  * A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour, path data or text.
  * `ease` is how the curve leaves this key toward the next. Text that isn't path data can't
- * interpolate, so a key holding it needs the `'hold'` easing.
+ * interpolate, so a key holding it needs the `'hold'` easing. The `'smooth'` easing passes through
+ * every key with continuous speed, taking each key's slope from its neighbours; it doesn't
+ * overshoot, and applies to numbers, vectors and colours.
  */
 export function key(at: Num, value: Num, ease?: EasingArg): Expr<Key<number>>;
 /**
  * A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour, path data or text.
  * `ease` is how the curve leaves this key toward the next. Text that isn't path data can't
- * interpolate, so a key holding it needs the `'hold'` easing.
+ * interpolate, so a key holding it needs the `'hold'` easing. The `'smooth'` easing passes through
+ * every key with continuous speed, taking each key's slope from its neighbours; it doesn't
+ * overshoot, and applies to numbers, vectors and colours.
  */
 export function key(at: Num, value: Arg<Vec2>, ease?: EasingArg): Expr<Key<Vec2>>;
 /**
  * A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour, path data or text.
  * `ease` is how the curve leaves this key toward the next. Text that isn't path data can't
- * interpolate, so a key holding it needs the `'hold'` easing.
+ * interpolate, so a key holding it needs the `'hold'` easing. The `'smooth'` easing passes through
+ * every key with continuous speed, taking each key's slope from its neighbours; it doesn't
+ * overshoot, and applies to numbers, vectors and colours.
  */
 export function key(at: Num, value: Arg<Vec3Value>, ease?: EasingArg): Expr<Key<Vec3Value>>;
 /**
  * A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour, path data or text.
  * `ease` is how the curve leaves this key toward the next. Text that isn't path data can't
- * interpolate, so a key holding it needs the `'hold'` easing.
+ * interpolate, so a key holding it needs the `'hold'` easing. The `'smooth'` easing passes through
+ * every key with continuous speed, taking each key's slope from its neighbours; it doesn't
+ * overshoot, and applies to numbers, vectors and colours.
  */
 export function key(at: Num, value: Arg<Color>, ease?: EasingArg): Expr<Key<Color>>;
 /**
  * A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour, path data or text.
  * `ease` is how the curve leaves this key toward the next. Text that isn't path data can't
- * interpolate, so a key holding it needs the `'hold'` easing.
+ * interpolate, so a key holding it needs the `'hold'` easing. The `'smooth'` easing passes through
+ * every key with continuous speed, taking each key's slope from its neighbours; it doesn't
+ * overshoot, and applies to numbers, vectors and colours.
  */
 export function key(at: Num, value: Arg<string>, ease?: EasingArg): Expr<Key<string>>;
 export function key(at: Num, value: AnyArg, ease?: EasingArg): Expr<Key> {
@@ -466,7 +476,10 @@ export function key(at: Num, value: AnyArg, ease?: EasingArg): Expr<Key> {
 /**
  * The value of keys ordered by `at` at time `t`, usually `frame`. `ease` may be left out; it is the
  * easing of keys without one and defaults to `'linear'`. Before the first key and after the last,
- * the value holds. Keys at the same `at` jump.
+ * the value holds. Keys at the same `at` jump. With `'smooth'`, the curve is a cubic Hermite spline
+ * through the keys: it has continuous speed at every key, takes the slope at a key from the keys
+ * either side (one-sided next to an end, a jump or a key with another easing), and is limited per
+ * component so it doesn't overshoot between keys.
  */
 export function keyframes<T extends KeyValue>(
   t: Num,
@@ -475,7 +488,10 @@ export function keyframes<T extends KeyValue>(
 /**
  * The value of keys ordered by `at` at time `t`, usually `frame`. `ease` may be left out; it is the
  * easing of keys without one and defaults to `'linear'`. Before the first key and after the last,
- * the value holds. Keys at the same `at` jump.
+ * the value holds. Keys at the same `at` jump. With `'smooth'`, the curve is a cubic Hermite spline
+ * through the keys: it has continuous speed at every key, takes the slope at a key from the keys
+ * either side (one-sided next to an end, a jump or a key with another easing), and is limited per
+ * component so it doesn't overshoot between keys.
  */
 export function keyframes<T extends KeyValue>(
   t: Num,

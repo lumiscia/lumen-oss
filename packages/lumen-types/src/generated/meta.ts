@@ -620,7 +620,7 @@ export const expressionBuiltins = [
         "name": "ease"
       }
     ],
-    "doc": "A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour, path data or text. `ease` is how the curve leaves this key toward the next. Text that isn't path data can't interpolate, so a key holding it needs the `'hold'` easing.",
+    "doc": "A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour, path data or text. `ease` is how the curve leaves this key toward the next. Text that isn't path data can't interpolate, so a key holding it needs the `'hold'` easing. The `'smooth'` easing passes through every key with continuous speed, taking each key's slope from its neighbours; it doesn't overshoot, and applies to numbers, vectors and colours.",
     "maxArgs": 3,
     "minArgs": 2,
     "name": "key",
@@ -641,7 +641,7 @@ export const expressionBuiltins = [
         "name": "keys"
       }
     ],
-    "doc": "The value of keys ordered by `at` at time `t`, usually `frame`. `ease` may be left out; it is the easing of keys without one and defaults to `'linear'`. Before the first key and after the last, the value holds. Keys at the same `at` jump.",
+    "doc": "The value of keys ordered by `at` at time `t`, usually `frame`. `ease` may be left out; it is the easing of keys without one and defaults to `'linear'`. Before the first key and after the last, the value holds. Keys at the same `at` jump. With `'smooth'`, the curve is a cubic Hermite spline through the keys: it has continuous speed at every key, takes the slope at a key from the keys either side (one-sided next to an end, a jump or a key with another easing), and is limited per component so it doesn't overshoot between keys.",
     "maxArgs": null,
     "minArgs": 2,
     "name": "keyframes",
@@ -1145,6 +1145,7 @@ export type ExpressionBuiltinName = (typeof expressionBuiltins)[number]["name"];
 export const easingNames = [
   "linear",
   "hold",
+  "smooth",
   "in_quad",
   "out_quad",
   "in_out_quad",

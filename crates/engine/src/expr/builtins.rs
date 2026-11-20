@@ -186,7 +186,11 @@ pub fn evaluate_builtin(
             number(1)?,
         ))),
         BuiltinFn::Tween => {
-            let ease = args.get(4).map(easing).transpose().map_err(named)?;
+            let ease = args
+                .get(4)
+                .map(pointwise_easing)
+                .transpose()
+                .map_err(named)?;
             let start = number(2)?;
             let t = ease
                 .unwrap_or(Easing::LINEAR)
@@ -200,7 +204,7 @@ pub fn evaluate_builtin(
             Ok(ExpressionValue::Number(easing.apply(number(0)?)))
         }
         BuiltinFn::Ease => {
-            let easing = easing(&args[0]).map_err(named)?;
+            let easing = pointwise_easing(&args[0]).map_err(named)?;
             Ok(ExpressionValue::Number(easing.apply(number(1)?)))
         }
         BuiltinFn::CubicBezier => {
@@ -362,6 +366,19 @@ fn easing(value: &ExpressionValue) -> Result<Easing, String> {
     }
 }
 
+/// The easing of a call that applies it to one progress value, which `'smooth'` can't be.
+fn pointwise_easing(value: &ExpressionValue) -> Result<Easing, String> {
+    let easing = easing(value)?;
+    if easing == Easing::Named(NamedEasing::Smooth) {
+        return Err(SMOOTH_NEEDS_KEYS.to_string());
+    }
+    Ok(easing)
+}
+
+/// Why `'smooth'` is an error outside `key` and `keyframes`.
+pub(crate) const SMOOTH_NEEDS_KEYS: &str = "the 'smooth' easing only applies between keyframes, since it needs the neighbouring keys; \
+     for an eased `t` use `smoothstep` or another easing";
+
 /// Why `x` can't be the x component of a `cubic_bezier` handle, if it can't.
 pub(crate) fn handle_x_error(x: f64) -> Option<&'static str> {
     (!(0.0..=1.0).contains(&x)).then_some("the x components of `out` and `in` must be in 0..=1")
@@ -433,10 +450,99 @@ fn keyframes(t: f64, args: &[ExpressionValue]) -> Result<ExpressionValue, String
     if ease == Easing::Named(NamedEasing::Hold) {
         return Ok(key.value.clone());
     }
+    if ease == Easing::Named(NamedEasing::Smooth) {
+        return smooth(t, &keys, index, default);
+    }
     let eased = ease.apply((t - key.at) / (next.at - key.at));
     interpolate(&key.value, &next.value, eased)
         .map_err(|error| key_morph_error(&error, [&key_name(key.at), &key_name(next.at)]))?
         .ok_or_else(|| mixed_keys_error(key.value.kind(), next.value.kind()))
+}
+
+/// The value at `t`, in the segment after `keys[index]`, of the cubic Hermite spline through the
+/// keys whose segments ease with `'smooth'`.
+///
+/// A key's slope is the difference of the keys either side over their times, or the slope of the
+/// segment when the other side is an end, a jump or a segment with another easing. Each
+/// component's slopes are limited so the curve stays between the two keys' values.
+fn smooth(t: f64, keys: &[&Key], index: usize, default: Easing) -> Result<ExpressionValue, String> {
+    let (key, next) = (keys[index], keys[index + 1]);
+    let (Some((from, count)), Some((to, _))) = (components(&key.value), components(&next.value))
+    else {
+        return Err(format!(
+            "{}: smooth applies to numbers, vectors and colours",
+            key_name(key.at)
+        ));
+    };
+    if t == key.at {
+        return Ok(key.value.clone());
+    }
+    let smooth_from = |at: usize| {
+        keys[at].ease.unwrap_or(default) == Easing::Named(NamedEasing::Smooth)
+            && keys[at].at < keys[at + 1].at
+    };
+    // Each neighbour as the components and time of the key beyond this segment's end.
+    let before = (index > 0 && smooth_from(index - 1))
+        .then(|| components(&keys[index - 1].value).map(|(value, _)| (value, keys[index - 1].at)))
+        .flatten();
+    let after = (index + 2 < keys.len() && smooth_from(index + 1))
+        .then(|| components(&keys[index + 2].value).map(|(value, _)| (value, keys[index + 2].at)))
+        .flatten();
+    let span = next.at - key.at;
+    let s = (t - key.at) / span;
+    let (s2, s3) = (s * s, s * s * s);
+    let mut value = [0.0; 4];
+    for (c, out) in value.iter_mut().enumerate().take(count) {
+        let secant = (to[c] - from[c]) / span;
+        let start = before.map_or(secant, |(v, at)| {
+            let earlier = (from[c] - v[c]) / (key.at - at);
+            key_slope(earlier, secant, (to[c] - v[c]) / (next.at - at))
+        });
+        let end = after.map_or(secant, |(v, at)| {
+            let later = (v[c] - to[c]) / (at - next.at);
+            key_slope(secant, later, (v[c] - from[c]) / (at - key.at))
+        });
+        *out = (2.0 * s3 - 3.0 * s2 + 1.0) * from[c]
+            + (s3 - 2.0 * s2 + s) * span * start
+            + (-2.0 * s3 + 3.0 * s2) * to[c]
+            + (s3 - s2) * span * end;
+    }
+    Ok(match key.value {
+        ExpressionValue::Vec2(_) => ExpressionValue::Vec2((value[0], value[1])),
+        ExpressionValue::Vec3(_) => ExpressionValue::Vec3([value[0], value[1], value[2]]),
+        ExpressionValue::Color(_) => {
+            let [r, g, b, a] = value;
+            ExpressionValue::Color(if a.abs() > f64::EPSILON {
+                [r / a, g / a, b / a, a]
+            } else {
+                [0.0; 4]
+            })
+        }
+        _ => ExpressionValue::Number(value[0]),
+    })
+}
+
+/// A key's value as the components `smooth` interpolates, and how many there are. Colours are
+/// premultiplied, as `interpolate` mixes them. `None` for values that don't interpolate smoothly.
+fn components(value: &ExpressionValue) -> Option<([f64; 4], usize)> {
+    match value {
+        ExpressionValue::Vec2((x, y)) => Some(([*x, *y, 0.0, 0.0], 2)),
+        ExpressionValue::Vec3([x, y, z]) => Some(([*x, *y, *z, 0.0], 3)),
+        ExpressionValue::Color([r, g, b, a]) => Some(([r * a, g * a, b * a, *a], 4)),
+        other => other.as_f64().map(|number| ([number, 0.0, 0.0, 0.0], 1)),
+    }
+}
+
+/// The slope at a key between segments of slopes `before` and `after`, where `central` is the
+/// difference of its neighbours over their times. A key that is a turning point or a flat
+/// stretch has none, and no slope is more than three times either segment's, as Fritsch and
+/// Carlson limit them, so the curve stays between the values of the keys of each segment.
+fn key_slope(before: f64, after: f64, central: f64) -> f64 {
+    if before * after <= 0.0 {
+        return 0.0;
+    }
+    let limit = 3.0 * before.abs().min(after.abs());
+    central.clamp(-limit, limit)
 }
 
 /// The default easing and the keys of `keyframes`' arguments after `t`, checked to be at least
