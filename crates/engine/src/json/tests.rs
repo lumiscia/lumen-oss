@@ -1485,8 +1485,8 @@ fn a_raster_wired_into_a_solid_s_geometry_points_at_the_2d_geometry_nodes() {
     assert_eq!(
         wrong,
         [
-            "node 4: input `geometry` takes a geometry, but node 5 outputs a raster: build the outline from path_2d, shape_2d and offset_2d nodes",
-            "node 6: input `geometry` takes a geometry, but node 5 outputs a raster: build the outline from path_2d, shape_2d and offset_2d nodes",
+            "node 4: input `geometry` takes a geometry, but node 5 outputs a raster: build the outline from path_2d, shape_2d, text_2d and offset_2d nodes",
+            "node 6: input `geometry` takes a geometry, but node 5 outputs a raster: build the outline from path_2d, shape_2d, text_2d and offset_2d nodes",
         ]
     );
 }

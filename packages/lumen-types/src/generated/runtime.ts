@@ -57,7 +57,7 @@ export type DiagnosticCode =
   | "composition.cycle"
   /** A `text` or `text_3d` node's font family resolved to no font, so it renders in a fallback. */
   | "font.fallback"
-  /** A `text_3d` node's glyphs have no outlines to extrude, such as colour emoji, so they are left out. */
+  /** A `text_2d` or `text_3d` node's glyphs have no outlines, such as colour emoji, so they are left out. */
   | "font.no_outlines"
   /** A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none. */
   | "scene.shadow_limit"
@@ -142,7 +142,7 @@ export const diagnosticCodes = [
   { code: "audio.invalid", severity: "error", foundBy: "check", meaning: "Audio tracks or clips are duplicated, unknown, too many in one composition, or have invalid timing or gain, or a gain expression reads a node, a glyph, text or an undeclared prop." },
   { code: "composition.cycle", severity: "error", foundBy: "check", meaning: "Templates instantiate themselves." },
   { code: "font.fallback", severity: "warning", foundBy: "check, render", meaning: "A `text` or `text_3d` node's font family resolved to no font, so it renders in a fallback." },
-  { code: "font.no_outlines", severity: "warning", foundBy: "render", meaning: "A `text_3d` node's glyphs have no outlines to extrude, such as colour emoji, so they are left out." },
+  { code: "font.no_outlines", severity: "warning", foundBy: "render", meaning: "A `text_2d` or `text_3d` node's glyphs have no outlines, such as colour emoji, so they are left out." },
   { code: "scene.shadow_limit", severity: "warning", foundBy: "render", meaning: "A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none." },
   { code: "scene.model_primitives_skipped", severity: "warning", foundBy: "render", meaning: "A `model_3d`'s model has points, lines, or triangle strips or fans, which aren't drawn." },
   { code: "media.color_unsupported", severity: "warning", foundBy: "render", meaning: "A video's colour tags name a transfer or primaries the engine doesn't convert, so it renders as SDR or BT.709 in their place, or an image's ICC profile can't be honoured, so it renders as sRGB." },

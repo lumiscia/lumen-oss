@@ -429,7 +429,7 @@ fn wrong_kind_hint(expected: PortKind, actual: PortKind) -> &'static str {
         }
         (Scene, _) => "show the raster in the scene through an image_plane_3d",
         (Geometry, Drawing) => "wire in the geometry the drawing's fill_2d or stroke_2d styles",
-        (Geometry, _) => "build the outline from path_2d, shape_2d and offset_2d nodes",
+        (Geometry, _) => "build the outline from path_2d, shape_2d, text_2d and offset_2d nodes",
         (Drawing, _) => "build the drawing from fill_2d, stroke_2d, shadow_2d and merge_2d nodes",
     }
 }
@@ -1029,7 +1029,7 @@ impl fmt::Display for Warning {
         write!(
             f,
             "{}: {}",
-            self.at.of_kind(self.kind.node_kind()),
+            OfKind(&self.at, self.kind.node_kind()),
             self.kind
         )
     }
@@ -1045,12 +1045,10 @@ pub enum WarningKind {
         lumen_text::DEFAULT_FONT_FAMILY
     )]
     FontFallback { family: String },
-    /// Glyphs of a `text_3d` node have no outlines to extrude, as a font that draws them from
+    /// Glyphs of a `text_2d` or `text_3d` node have no outlines, as a font that draws them from
     /// colour or bitmap tables, such as emoji, has none, so they are left out.
     #[code("font.no_outlines")]
-    #[error(
-        "{glyphs} glyphs have no outlines to extrude, such as colour emoji, so they are left out"
-    )]
+    #[error("{glyphs} glyphs have no outlines, such as colour emoji, so they are left out")]
     NoOutlines { glyphs: usize },
     /// A `render_3d` scene has more lights casting shadows than it draws shadows for.
     #[code("scene.shadow_limit")]
@@ -1098,14 +1096,14 @@ pub enum WarningKind {
 }
 
 impl WarningKind {
-    /// The kind of node that raises this warning, as its message names it.
-    fn node_kind(&self) -> &'static str {
+    /// The kind of node that raises this warning, as its message names it, if only one kind does.
+    fn node_kind(&self) -> Option<&'static str> {
         match self {
-            Self::FontFallback { .. } => "text",
-            Self::NoOutlines { .. } => "text_3d",
-            Self::ShadowLimit { .. } => "render_3d",
-            Self::UnsupportedColor { .. } | Self::ImageReduced { .. } => "media_in",
-            Self::ModelPrimitivesSkipped { .. } => "model_3d",
+            Self::FontFallback { .. } => Some("text"),
+            Self::NoOutlines { .. } => None,
+            Self::ShadowLimit { .. } => Some("render_3d"),
+            Self::UnsupportedColor { .. } | Self::ImageReduced { .. } => Some("media_in"),
+            Self::ModelPrimitivesSkipped { .. } => Some("model_3d"),
         }
     }
 

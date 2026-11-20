@@ -3,6 +3,7 @@
 //! strokes and another for the shadows.
 
 use std::hash::BuildHasher;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use foldhash::HashMap;
@@ -19,8 +20,9 @@ use super::super::renderer::{
 };
 use super::super::repeat::Drawn;
 use super::super::shape::ShapeGeometryKind;
-use super::Path2d;
-use super::collect::{Geometry, Record, Source, Style, Use};
+use super::collect::{Geometry, MAX_DRAWABLES, Record, Source, Style, Use};
+use super::text::{TextCache, TextGlyphs};
+use super::{Path2d, Render2d, Text2d};
 use crate::composition::SceneId;
 use crate::error::RenderError;
 use crate::gpu::frame_graph::Timed;
@@ -367,6 +369,8 @@ struct BuiltPath {
 /// What a path was built from beside its data, which a kept build must match.
 #[derive(PartialEq)]
 struct PathKey {
+    /// The id of the text a text outline was shaped as, or 0.
+    text: u64,
     transform: GpuDrawableTransform,
     casts: Vec<[f32; 2]>,
     needs: Vec<PathNeed>,
@@ -376,26 +380,30 @@ struct PathKey {
 
 struct KeptPath {
     key: PathKey,
-    built: BuiltPath,
+    /// One path of a `path_2d`, or each path a text is drawn as.
+    built: Vec<BuiltPath>,
     last_used: u64,
 }
 
-/// Paths `render_2d` built on earlier frames from path nodes whose params don't read the frame,
-/// kept while later frames draw them the same way.
+/// Paths `render_2d` built on earlier frames from path and text nodes whose params don't read
+/// the frame, kept while later frames draw them the same way, and the texts recent frames shaped.
 #[derive(Default)]
 pub(crate) struct DrawingCache {
     paths: HashMap<(SceneId, NodeId, NodeId, usize), KeptPath>,
+    pub(crate) texts: TextCache,
 }
 
 impl DrawingCache {
-    /// Drops the paths that neither this frame nor the last one drew.
+    /// Drops the paths and texts that neither this frame nor the last one drew.
     pub(crate) fn begin_frame(&mut self, tick: u64) {
         self.paths
             .retain(|_, kept| kept.last_used.saturating_add(1) >= tick);
+        self.texts.begin_frame(tick);
     }
 
     pub(crate) fn clear(&mut self) {
         self.paths.clear();
+        self.texts.clear();
     }
 }
 
@@ -664,11 +672,13 @@ impl Drawing {
     }
 }
 
-/// Builds the buffers for `record`, drawn on a canvas of `canvas` pixels. Paths from nodes
-/// `keeps` says don't read the frame are kept for later frames. `timed` starts timing a path
-/// node, which its paths are built under.
+/// Builds the buffers for `record`, drawn on a canvas of `canvas` pixels, with the glyphs each
+/// text node in it was shaped as in `texts`. Paths from nodes `keeps` says don't read the frame
+/// are kept for later frames. `timed` starts timing a path or text node, which its paths are
+/// built under.
 pub(super) fn build<'t>(
     record: &Record,
+    texts: &HashMap<NodeId, Arc<TextGlyphs>>,
     keeps: &dyn Fn(NodeId) -> bool,
     timed: &dyn Fn(NodeId) -> Timed<'t>,
     canvas: [f32; 2],
@@ -700,36 +710,74 @@ pub(super) fn build<'t>(
                 .1 += 1;
         }
     }
-    let mut placed_paths = Vec::with_capacity(instances.len());
+    // The paths each instance is drawn from, placed in the drawing's buffers.
+    let mut placed_paths: Vec<Vec<PlacedPath>> = Vec::with_capacity(instances.len());
     let mut ordinals: HashMap<NodeId, usize> = HashMap::default();
     for instance in &instances {
         let geometry = &record.geometries[instance.geometry];
-        let Source::Path { node, data } = &geometry.source else {
-            unreachable!("only paths are instanced")
-        };
-        let _timed = timed(*node);
-        let ordinal = ordinals.entry(*node).or_default();
-        let slot = (keeping.scene, keeping.render, *node, *ordinal);
+        let node = geometry
+            .source
+            .path_node()
+            .expect("only paths and texts are instanced");
+        let _timed = timed(node);
+        let ordinal = ordinals.entry(node).or_default();
+        let slot = (keeping.scene, keeping.render, node, *ordinal);
         *ordinal += 1;
-        let key = path_key(record, instance, canvas);
-        let keep = keeps(*node);
+        let text = matches!(geometry.source, Source::Text { .. }).then(|| &texts[&node]);
+        let key = path_key(record, instance, canvas, text.map_or(0, |text| text.id));
+        let keep = keeps(node);
+        let turn = instance.measured.turn;
         if keep
             && let Some(kept) = keeping.cache.paths.get_mut(&slot)
             && kept.key == key
         {
             kept.last_used = keeping.tick;
-            placed_paths.push(drawing.place(&kept.built, instance.measured.turn));
+            placed_paths.push(
+                kept.built
+                    .iter()
+                    .map(|path| drawing.place(path, turn))
+                    .collect(),
+            );
             continue;
         }
-        let points = take_points(&mut parsed, *node, tolerance(instance), data)?;
-        let path = build_path(record, instance, geometry, points, canvas);
-        placed_paths.push(drawing.place(&path, instance.measured.turn));
+        let built: Vec<BuiltPath> = match (&geometry.source, text) {
+            (Source::Path { data, .. }, _) => {
+                let points = take_points(&mut parsed, node, tolerance(instance), data)?;
+                let bounds = point_bounds(&points);
+                vec![build_path(
+                    record, instance, geometry, points, bounds, canvas,
+                )]
+            }
+            (Source::Text { .. }, Some(text)) => {
+                let paths = keeping
+                    .cache
+                    .texts
+                    .paths(text, tolerance(instance), keeping.tick)
+                    .map_err(|details| RenderError::evaluating::<Text2d>(node, details))?;
+                paths
+                    .chunks
+                    .iter()
+                    .map(|points| {
+                        build_path(
+                            record,
+                            instance,
+                            geometry,
+                            points.clone(),
+                            paths.bounds,
+                            canvas,
+                        )
+                    })
+                    .collect()
+            }
+            _ => unreachable!("only paths and texts are instanced"),
+        };
+        placed_paths.push(built.iter().map(|path| drawing.place(path, turn)).collect());
         if keep {
             keeping.cache.paths.insert(
                 slot,
                 KeptPath {
                     key,
-                    built: path,
+                    built,
                     last_used: keeping.tick,
                 },
             );
@@ -742,14 +790,11 @@ pub(super) fn build<'t>(
         };
         let geometry = &record.geometries[drawable.geometry];
         match geometry.source {
-            Source::Path { .. } => {
+            Source::Path { .. } | Source::Text { .. } => {
                 let instance = instance_of[index];
-                drawing.push_path(
-                    drawable,
-                    geometry.offset,
-                    &instances[instance],
-                    &placed_paths[instance],
-                );
+                for path in &placed_paths[instance] {
+                    drawing.push_path(drawable, geometry.offset, &instances[instance], path);
+                }
             }
             Source::Shape {
                 kind,
@@ -762,6 +807,13 @@ pub(super) fn build<'t>(
                 };
                 drawing.push_shape(drawable, geometry, transform, (kind, size, border_radius));
             }
+        }
+        if drawing.drawables.len() > MAX_DRAWABLES {
+            return Err(RenderError::evaluating::<Render2d>(
+                keeping.render,
+                format!("the drawing holds more than {MAX_DRAWABLES} drawables"),
+            )
+            .into());
         }
     }
     Ok(drawing)
@@ -782,10 +834,11 @@ fn instances(
         let Some(transform) = placed[index] else {
             continue;
         };
-        if !matches!(
-            record.geometries[drawable.geometry].source,
-            Source::Path { .. }
-        ) {
+        if record.geometries[drawable.geometry]
+            .source
+            .path_node()
+            .is_none()
+        {
             continue;
         }
         let placement = placement_key(&transform);
@@ -834,10 +887,11 @@ fn instances(
     (instances, instance_of)
 }
 
-fn path_key(record: &Record, instance: &Instance, canvas: [f32; 2]) -> PathKey {
+fn path_key(record: &Record, instance: &Instance, canvas: [f32; 2], text: u64) -> PathKey {
     let geometry = &record.geometries[instance.geometry];
     let uses = instance.uses.iter().map(|&index| &record.uses[index]);
     PathKey {
+        text,
         transform: instance.measured.transform,
         casts: uses
             .clone()
@@ -877,12 +931,14 @@ fn take_points(
 }
 
 /// Measures and bins the outline of `instance` for every drawable it draws, from its flattened
-/// `points`.
+/// `points`, with a paint in bounding-box units spanning `paint_bounds`, a box of untransformed
+/// points.
 fn build_path(
     record: &Record,
     instance: &Instance,
     geometry: &Geometry,
     mut points: Vec<PathPoint>,
+    paint_bounds: ([f32; 2], [f32; 2]),
     canvas: [f32; 2],
 ) -> BuiltPath {
     let needs: Vec<(Option<[f32; 2]>, PathNeed)> = instance
@@ -900,16 +956,10 @@ fn build_path(
     if let Some(dash) = &instance.dash {
         set_dash_phases(&mut points, dash);
     }
-    let original = point_bounds(&points);
+    let (low, high) = paint_bounds;
     let paint_box = (
-        [
-            geometry.position[0] + original.0[0],
-            geometry.position[1] + original.0[1],
-        ],
-        [
-            (original.1[0] - original.0[0]).max(1.0),
-            (original.1[1] - original.0[1]).max(1.0),
-        ],
+        [geometry.position[0] + low[0], geometry.position[1] + low[1]],
+        [(high[0] - low[0]).max(1.0), (high[1] - low[1]).max(1.0)],
     );
     let mut position = geometry.position;
     if let Some(turn) = instance.measured.turn {

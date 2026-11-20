@@ -60,12 +60,16 @@ const code = (value: string): string => `\`${value}\``;
 
 const slug = (name: string): string => `type-${name.toLowerCase()}`;
 
-/** A description with its source line wraps joined, keeping paragraph breaks. */
+/** A description with its source line wraps joined, keeping paragraph breaks and fenced code blocks. */
 const paragraphs = (description: unknown): string[] =>
   typeof description === "string"
     ? description
         .split("\n\n")
-        .map((paragraph) => paragraph.replace(/\s*\n\s*/gu, " ").trim())
+        .map((paragraph) =>
+          paragraph.startsWith("```")
+            ? paragraph.trim()
+            : paragraph.replace(/\s*\n\s*/gu, " ").trim(),
+        )
         .filter((paragraph) => paragraph !== "")
     : [];
 

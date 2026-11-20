@@ -757,6 +757,12 @@ impl FrameGraph {
         self.state.shaders.source_lookups
     }
 
+    /// How many texts `text_2d` nodes have been shaped as.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn texts_shaped(&self) -> usize {
+        self.state.drawings.texts.shaped
+    }
+
     /// The domain `node` of the root graph had in the frame last recorded.
     #[cfg(feature = "test-hooks")]
     pub(crate) fn node_domain(
@@ -1000,7 +1006,6 @@ impl<'a> FrameCx<'a> {
     }
 
     /// The most glyphs a text node may draw.
-    #[cfg(feature = "3d")]
     pub(crate) fn max_text_glyphs(&self) -> usize {
         self.settings.max_text_glyphs
     }

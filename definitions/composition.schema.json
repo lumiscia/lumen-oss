@@ -3533,7 +3533,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front\ncap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a\n`material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the\nside walls and the bevel instead, leaving the caps to `material`. The geometry's pixel coordinates, after its own\nposition, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with\nY flipped, since 2D Y points down and 3D Y up. Pixel (0, 0) is the origin that `placement`\nmoves and turns the solid about, and nothing re-centres the solid on it: the geometry's\n`position` and `anchor` decide where it sits about that origin, so a `shape_2d` at `position`\n(0, 0) lies to the right of and below it on screen, and 100 pixels across it is 1 unit wide.\nThe extrusion is centred on Z = 0. The outline is filled by the nonzero rule, as a `text_3d`\nglyph is, so holes of a path stay open whichever way they wind and overlapping subpaths join;\nopen subpaths are closed by a straight segment. Curves are flattened to within 0.001 world\nunits, so a larger or smaller `units_per_pixel` keeps them as smooth. An ellipse has as many\nsides as that takes, at least 16 and at most 256, and each corner of a rounded rectangle a\nquarter of as many for its own radius, at least 4 and at most 64. A path's flattening\ncoarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,\n262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a\nrender error. An `offset_2d` in the geometry is not supported yet and fails the render. The\nmesh is built again only when the outline, `units_per_pixel` or the bevel change, or the\n`depth` of a bevelled one, so animating the placement, the material or a plain extrusion's\ndepth costs no more than for a `shape_3d`.",
+            "description": "A 2D outline, a `path_2d`, `shape_2d` or `text_2d` wired into `geometry`, extruded into a solid:\na front cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a\n`material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the\nside walls and the bevel instead, leaving the caps to `material`. The geometry's pixel coordinates, after its own\nposition, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with\nY flipped, since 2D Y points down and 3D Y up. Pixel (0, 0) is the origin that `placement`\nmoves and turns the solid about, and nothing re-centres the solid on it: the geometry's\n`position` and `anchor` decide where it sits about that origin, so a `shape_2d` at `position`\n(0, 0) lies to the right of and below it on screen, and 100 pixels across it is 1 unit wide.\nThe extrusion is centred on Z = 0. The outline is filled by the nonzero rule, as a `text_3d`\nglyph is, so holes of a path stay open whichever way they wind and overlapping subpaths join;\nopen subpaths are closed by a straight segment. Curves are flattened to within 0.001 world\nunits, so a larger or smaller `units_per_pixel` keeps them as smooth. An ellipse has as many\nsides as that takes, at least 16 and at most 256, and each corner of a rounded rectangle a\nquarter of as many for its own radius, at least 4 and at most 64. The flattening of a path or\na text coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,\n262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a\nrender error. An `offset_2d` in the geometry is not supported yet and fails the render. The\nmesh is built again only when the outline, `units_per_pixel` or the bevel change, or the\n`depth` of a bevelled one, so animating the placement, the material or a plain extrusion's\ndepth costs no more than for a `shape_3d`.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -4857,7 +4857,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "A 2D profile, a `path_2d` or `shape_2d` wired into `geometry`, spun around the world Y axis\ninto a solid of revolution, lit, single-sided and white unless a `material_3d` is wired into\n`material`. The geometry's pixel coordinates, after its own position, scale, rotation and\nanchor, become world units at `units_per_pixel` each: a point's X is its distance from the axis\nand its Y, flipped since 2D Y points down and 3D Y up, its height, so pixel (0, 0) is on the\naxis at height 0, which is the origin that `placement` moves and turns the solid about. Points\nleft of the axis are put on it. Each contour becomes a strip of quads around the axis, shaded\nsmoothly around it, and along the profile except at corners sharper than 30°, which stay hard.\nA closed contour makes a closed ring solid whose faces point out of the area it encloses,\nwhichever way it winds. An open contour makes a surface whose front faces the right-hand side of\nthe direction it is drawn in, and which is seen from both sides only if its material is\n`double_sided`. A point on the axis is a pole, where the surface closes to a point, such as the\ntip of a cone or the top of a dome; the quads there are triangles, so no triangle without\narea is left in the mesh, and a closed contour's edge along the axis draws nothing. Contours\nare spun separately, so one inside another is a separate solid and not a hole. A solid takes\nat most 256 contours, 16384 profile points, 262144 vertices and 786432 indices in all, which\nis the profile's vertices times the steps around; more is a render error. The mesh is built\nagain only when the profile, `units_per_pixel`, `segments` or `sweep` change, so animating the\nplacement or the material costs no more than for a `shape_3d`.",
+            "description": "A 2D profile, a `path_2d`, `shape_2d` or `text_2d` wired into `geometry`, spun around the world Y axis\ninto a solid of revolution, lit, single-sided and white unless a `material_3d` is wired into\n`material`. The geometry's pixel coordinates, after its own position, scale, rotation and\nanchor, become world units at `units_per_pixel` each: a point's X is its distance from the axis\nand its Y, flipped since 2D Y points down and 3D Y up, its height, so pixel (0, 0) is on the\naxis at height 0, which is the origin that `placement` moves and turns the solid about. Points\nleft of the axis are put on it. Each contour becomes a strip of quads around the axis, shaded\nsmoothly around it, and along the profile except at corners sharper than 30°, which stay hard.\nA closed contour makes a closed ring solid whose faces point out of the area it encloses,\nwhichever way it winds. An open contour makes a surface whose front faces the right-hand side of\nthe direction it is drawn in, and which is seen from both sides only if its material is\n`double_sided`. A point on the axis is a pole, where the surface closes to a point, such as the\ntip of a cone or the top of a dome; the quads there are triangles, so no triangle without\narea is left in the mesh, and a closed contour's edge along the axis draws nothing. Contours\nare spun separately, so one inside another is a separate solid and not a hole. A solid takes\nat most 256 contours, 16384 profile points, 262144 vertices and 786432 indices in all, which\nis the profile's vertices times the steps around; more is a render error. The mesh is built\nagain only when the profile, `units_per_pixel`, `segments` or `sweep` change, so animating the\nplacement or the material costs no more than for a `shape_3d`.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -10356,6 +10356,357 @@
             "x-lumen-outputs": [
               {
                 "kind": "raster",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "The outlines of text's glyphs, without paint, so fills, strokes, offsets and shadows style\ntype as they do any other geometry, and one `text_2d` can feed several of them:\n\n```json\n{ \"id\": 1, \"type\": \"text_2d\", \"params\": { \"content\": \"Lumen\", \"font_size\": 240, \"position\": [960, 540], \"alignment_horizontal\": \"center\", \"alignment_vertical\": \"middle\" } },\n{ \"id\": 2, \"type\": \"offset_2d\", \"params\": { \"offset\": 12 }, \"in\": { \"geometry\": 1 } },\n{ \"id\": 3, \"type\": \"fill_2d\", \"params\": { \"paint\": \"#ee5b24\" }, \"in\": { \"geometry\": 2 } },\n{ \"id\": 4, \"type\": \"fill_2d\", \"params\": { \"paint\": \"#ffffff\" }, \"in\": { \"geometry\": 1 } },\n{ \"id\": 5, \"type\": \"stroke_2d\", \"params\": { \"paint\": \"#111111\", \"width\": 4 }, \"in\": { \"geometry\": 1 } },\n{ \"id\": 6, \"type\": \"merge_2d\", \"in\": { \"drawings\": [3, 4, 5] } },\n{ \"id\": 7, \"type\": \"render_2d\", \"in\": { \"drawing\": 6 } }\n```\n\nThe text is shaped as a `text` node with the same font, size and layout shapes it, with its\nkerning, ligatures, font fallback and wrapping, so with left and top alignment a white fill\nlines up with a white `text` node at the same `position`. The outline covers what the glyphs\ncover by the nonzero rule, as fonts expect, so contours that overlap, as in variable fonts,\nand glyphs that overlap each other fill as one, and a stroke follows only the outline's\nedge, measuring trim and dash along each of its contours. Glyphs are shaped and outlined\nagain only when the text, font or layout change, not when the transform or the styles\nanimate. Text of more than 8192 outline points is drawn as several outlines one after\nanother, glyph by glyph, which shadows and translucent paints treat as separate drawables\nwhere they overlap. Curves are flattened for the largest scale `render_2d` draws them at,\ncoarser where a text would pass 1048576 points.\n\nIt suits titles and short lines. A moving paragraph costs far more than a `text` node, whose\nglyphs are drawn from cached images, since its outline is placed again every frame. One\nstyle covers the whole text: rich text spans, decorations and the `glyph_*` params of a\n`text` node have no counterpart.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "alignment_horizontal": {
+                    "default": "left",
+                    "description": "How lines align with each other, and which point of the text's box sits at `position`:\nits left edge, centre or right edge. Justified lines anchor at the left edge.",
+                    "enum": ["left", "center", "right", "justify"],
+                    "title": "Alignment Horizontal",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Left",
+                        "name": "left",
+                        "value": 0
+                      },
+                      {
+                        "label": "Center",
+                        "name": "center",
+                        "value": 1
+                      },
+                      {
+                        "label": "Right",
+                        "name": "right",
+                        "value": 2
+                      },
+                      {
+                        "label": "Justify",
+                        "name": "justify",
+                        "value": 3
+                      }
+                    ],
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "TextAlignmentHorizontal"
+                  },
+                  "alignment_vertical": {
+                    "default": "top",
+                    "description": "Which point of the text's box sits at `position` vertically: the top of its first line,\nits middle, or the bottom of its last line.",
+                    "enum": ["top", "middle", "bottom"],
+                    "title": "Alignment Vertical",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Top",
+                        "name": "top",
+                        "value": 0
+                      },
+                      {
+                        "label": "Middle",
+                        "name": "middle",
+                        "value": 1
+                      },
+                      {
+                        "label": "Bottom",
+                        "name": "bottom",
+                        "value": 2
+                      }
+                    ],
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "TextAlignmentVertical"
+                  },
+                  "anchor": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0],
+                    "description": "Pivot for scale and rotation, in pixels relative to `position`.",
+                    "title": "Anchor",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "content": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "Text",
+                    "description": "Text to outline, in one style. Line breaks start new lines. Whitespace has no outline, and\nglyphs that their font draws from colour or bitmap tables, such as emoji, have none either\nand are left out with a `font.no_outlines` warning. A node outlines at most as many glyphs\nas the host's text glyph limit lets a `text` node draw, 16384 unless the host sets\nanother, and one glyph's outline has at most 4096 commands; more is a render error.",
+                    "title": "Content",
+                    "x-lumen-constraints": {
+                      "multiline": true,
+                      "recommendedRows": 4
+                    },
+                    "x-lumen-kind": "string"
+                  },
+                  "font_family": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "Roboto",
+                    "description": "Font family name, or `asset:<id>` for a font asset of the host's. A family no font answers\nto falls back as a `text` node's does.",
+                    "title": "Font Family",
+                    "x-lumen-constraints": {
+                      "format": "font_family"
+                    },
+                    "x-lumen-kind": "string"
+                  },
+                  "font_features": {
+                    "$ref": "#/$defs/fontFeatures",
+                    "default": {},
+                    "description": "OpenType features by four-character tag, such as `{ \"tnum\": 1, \"liga\": 0 }`. 0 turns a\nfeature off, 1 turns it on and larger values select an alternate. Values take literals\nor expressions, but the whole map cannot be an expression.",
+                    "title": "Font Features",
+                    "x-lumen-kind": "font_features"
+                  },
+                  "font_size": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 64.0,
+                    "description": "Font size in pixels: the height of the font's em square. 0 draws nothing, and so does\nanything under 0.000001. At most 1000000, as are `max_width`, `letter_spacing` and\n`line_height`.",
+                    "title": "Font Size",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "font_style": {
+                    "anyOf": [
+                      {
+                        "enum": ["normal", "italic", "oblique"],
+                        "type": "string",
+                        "x-lumen-type": "TextFontStyle"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "normal",
+                    "description": "Font style.",
+                    "title": "Font Style",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Normal",
+                        "name": "normal",
+                        "value": 0
+                      },
+                      {
+                        "label": "Italic",
+                        "name": "italic",
+                        "value": 1
+                      },
+                      {
+                        "label": "Oblique",
+                        "name": "oblique",
+                        "value": 2
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "font_weight": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 400,
+                    "description": "Font weight. Variable fonts render any value in their weight range.",
+                    "title": "Font Weight",
+                    "x-lumen-constraints": {
+                      "max": 1000.0,
+                      "min": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "letter_spacing": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Extra space after every glyph in pixels. Negative values tighten the text.",
+                    "title": "Letter Spacing",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "line_height": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Distance between lines in pixels. Use 0 for 1.2 × the font size.",
+                    "title": "Line Height",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "max_width": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Maximum line width in pixels, at which lines wrap. Use 0 for automatic width.",
+                    "title": "Max Width",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "position": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0],
+                    "description": "Where the point of the text's box that the alignments pick sits, in pixels.",
+                    "title": "Position",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "rotation": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Clockwise rotation in degrees, about the anchor.",
+                    "title": "Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0],
+                    "description": "Scale multiplier per axis, about the anchor.",
+                    "title": "Scale",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "text_transform": {
+                    "anyOf": [
+                      {
+                        "enum": ["none", "uppercase", "lowercase", "capitalize"],
+                        "type": "string",
+                        "x-lumen-type": "TextTransform"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "none",
+                    "description": "Case applied to the text.",
+                    "title": "Text Transform",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "None",
+                        "name": "none",
+                        "value": 0
+                      },
+                      {
+                        "label": "Uppercase",
+                        "name": "uppercase",
+                        "value": 1
+                      },
+                      {
+                        "label": "Lowercase",
+                        "name": "lowercase",
+                        "value": 2
+                      },
+                      {
+                        "label": "Capitalize",
+                        "name": "capitalize",
+                        "value": 3
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "text_2d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Text 2D",
+            "type": "object",
+            "x-lumen-category": "vector",
+            "x-lumen-inputs": [],
+            "x-lumen-outputs": [
+              {
+                "kind": "geometry",
                 "name": "output"
               }
             ]

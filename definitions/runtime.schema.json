@@ -352,7 +352,7 @@
         {
           "code": "font.no_outlines",
           "foundBy": "render",
-          "meaning": "A `text_3d` node's glyphs have no outlines to extrude, such as colour emoji, so they are left out.",
+          "meaning": "A `text_2d` or `text_3d` node's glyphs have no outlines, such as colour emoji, so they are left out.",
           "severity": "warning"
         },
         {

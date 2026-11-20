@@ -6,6 +6,7 @@ use super::super::drawable::MIN_SCALE;
 use super::super::path::{POINT_CLOSED, parse_path_points};
 use super::super::shape::ShapeGeometryKind;
 use super::collect::{Outline, Source};
+use super::text::TextGlyphs;
 
 /// Fewest sides a flattened ellipse has, and most, whatever its size.
 const MIN_CIRCLE_SIDES: usize = 16;
@@ -29,11 +30,13 @@ pub(crate) fn circle_sides(radius: f64, tolerance: f64) -> usize {
 /// The contours of `outline`'s source, laid out and transformed to pixels, with curves flattened
 /// to within `tolerance` world units when a pixel is `scale` world units across. An ellipse, or the
 /// corner of a rounded rectangle, has as many sides as [`circle_sides`] gives its radius. Flattening
-/// a path coarsens the tolerance until the path has at most `max_points` points. Empty when the
-/// transform scales an axis to nothing, or a shape has no area. The error says what is wrong
-/// with the path data, as that of a `path_2d` is.
+/// a path or a text coarsens the tolerance until it has at most `max_points` points. A text's
+/// glyphs are `text`, which it is shaped as. Empty when the transform scales an axis to nothing,
+/// or a shape has no area. The error says what is wrong with the path data, as that of a
+/// `path_2d` is, or which limit the text passes.
 pub(crate) fn flatten(
     outline: &Outline,
+    text: Option<&TextGlyphs>,
     scale: f64,
     tolerance: f64,
     max_points: usize,
@@ -97,6 +100,21 @@ pub(crate) fn flatten(
                 }
             };
             vec![(points, true)]
+        }
+        Source::Text { .. } => {
+            let Some(text) = text else {
+                unreachable!("a text is shaped before it is flattened")
+            };
+            let pixels = (tolerance / world).min(f64::from(f32::MAX)) as f32;
+            text.contours(pixels, max_points)?
+                .into_iter()
+                .map(|contour| {
+                    (
+                        contour.into_iter().map(|p| p.map(f64::from)).collect(),
+                        true,
+                    )
+                })
+                .collect()
         }
     };
     Ok(local

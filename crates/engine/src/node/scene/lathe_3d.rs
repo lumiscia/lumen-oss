@@ -57,7 +57,7 @@ impl Default for Lathe3dParams {
     }
 }
 
-/// A 2D profile, a `path_2d` or `shape_2d` wired into `geometry`, spun around the world Y axis
+/// A 2D profile, a `path_2d`, `shape_2d` or `text_2d` wired into `geometry`, spun around the world Y axis
 /// into a solid of revolution, lit, single-sided and white unless a `material_3d` is wired into
 /// `material`. The geometry's pixel coordinates, after its own position, scale, rotation and
 /// anchor, become world units at `units_per_pixel` each: a point's X is its distance from the axis

@@ -278,7 +278,7 @@ pub const CODE_DOCS: &[CodeDoc] = &[
     CodeDoc {
         code: "font.no_outlines",
         found_by: FoundBy::Render,
-        meaning: "A `text_3d` node's glyphs have no outlines to extrude, such as colour emoji, so they are left out.",
+        meaning: "A `text_2d` or `text_3d` node's glyphs have no outlines, such as colour emoji, so they are left out.",
     },
     CodeDoc {
         code: "scene.shadow_limit",

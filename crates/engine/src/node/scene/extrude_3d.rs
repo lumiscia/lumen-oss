@@ -62,8 +62,8 @@ impl Default for Extrude3dParams {
     }
 }
 
-/// A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front
-/// cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
+/// A 2D outline, a `path_2d`, `shape_2d` or `text_2d` wired into `geometry`, extruded into a solid:
+/// a front cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
 /// `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
 /// side walls and the bevel instead, leaving the caps to `material`. The geometry's pixel coordinates, after its own
 /// position, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with
@@ -76,8 +76,8 @@ impl Default for Extrude3dParams {
 /// open subpaths are closed by a straight segment. Curves are flattened to within 0.001 world
 /// units, so a larger or smaller `units_per_pixel` keeps them as smooth. An ellipse has as many
 /// sides as that takes, at least 16 and at most 256, and each corner of a rounded rectangle a
-/// quarter of as many for its own radius, at least 4 and at most 64. A path's flattening
-/// coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,
+/// quarter of as many for its own radius, at least 4 and at most 64. The flattening of a path or
+/// a text coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,
 /// 262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a
 /// render error. An `offset_2d` in the geometry is not supported yet and fails the render. The
 /// mesh is built again only when the outline, `units_per_pixel` or the bevel change, or the
