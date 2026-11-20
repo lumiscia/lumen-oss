@@ -52,11 +52,15 @@ fn draw(composition: &Composition, media: &TestMedia) -> Frame {
 }
 
 fn render_error(composition: &Composition) -> String {
+    render_error_at(composition, 0.0)
+}
+
+fn render_error_at(composition: &Composition, at: f64) -> String {
     gpu()
         .renderer()
         .render(
             composition,
-            0.0,
+            at,
             &grey_plate(8, |_, _| 255),
             RenderTarget::Owned,
         )
@@ -304,4 +308,55 @@ fn animated_corners_smear_along_their_motion_with_motion_blur() {
         255,
         "the square's middle stays solid"
     );
+}
+
+#[test]
+fn a_degenerate_frame_is_an_error_even_when_every_shutter_tap_is_valid() {
+    // The sides sweep through each other at frame 1, but the shutter's taps all sit off it.
+    let closing = |sign: f64| format!("=vec2(32 + {sign} * 32 * (frame - 1), 0)");
+    let closing_low = |sign: f64| format!("=vec2(32 + {sign} * 32 * (frame - 1), 64)");
+    let params = json!({
+        "top_left": closing(-1.0), "top_right": closing(1.0),
+        "bottom_right": closing_low(1.0), "bottom_left": closing_low(-1.0),
+        "motion_blur": 360,
+    });
+    let composition: Composition = scene(
+        (64, 64),
+        json!([
+            plate_node(),
+            { "id": 2, "type": "corner_pin", "in": { "source": 1 }, "params": params },
+        ]),
+    )
+    .frames(3)
+    .into();
+    let error = render_error_at(&composition, 1.0);
+    assert!(
+        error.contains("corner_pin") && error.contains("convex"),
+        "{error}"
+    );
+}
+
+#[test]
+fn corners_are_canvas_pixels_at_any_render_scale() {
+    let mut renderer = gpu().renderer();
+    renderer.set_render_scale(0.5).expect("a valid scale");
+    let media = grey_plate(8, |_, _| 255);
+    let frame = render(
+        &mut renderer,
+        &pin(64, [[20.0, 20.0], [60.0, 20.0], [60.0, 60.0], [20.0, 60.0]]),
+        0.0,
+        &media,
+    );
+    assert_eq!((frame.width, frame.height), (32, 32));
+    // The quad covers 10 to 30 of the half-size frame.
+    for (x, y, alpha) in [
+        (20, 20, 255),
+        (12, 12, 255),
+        (26, 26, 255),
+        (5, 20, 0),
+        (20, 5, 0),
+        (31, 31, 0),
+    ] {
+        assert_eq!(frame.pixel(x, y)[3], alpha, "pixel ({x}, {y})");
+    }
 }

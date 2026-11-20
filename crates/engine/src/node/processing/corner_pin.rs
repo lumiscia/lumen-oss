@@ -2,6 +2,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::error::RenderError;
 use crate::gpu::frame_graph::ComputeProgram;
+use crate::gpu::mips::full_levels;
 use crate::node::motion::{self, Lerp, MAX_BOUNDED_MAGNITUDE, ROUNDING_ERROR_FACTOR, Shutter};
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams,
@@ -23,6 +24,9 @@ const CORNERS: [&str; 4] = ["top_left", "top_right", "bottom_right", "bottom_lef
 /// Pixels past the quad's bounds that its antialiased edge and the filtering of the source reach,
 /// with a pixel to spare.
 const BOUNDS_PAD: f64 = 2.0;
+
+/// Points per side of the grid over a quad at which the source's footprint is measured.
+const FOOTPRINT_GRID: usize = 5;
 
 /// The smallest `|cross|` of two consecutive edges of a quad, as a fraction of the square of its
 /// largest side, below which it counts as flat.
@@ -120,13 +124,14 @@ struct Pin {
 }
 
 impl Quad {
-    fn of(params: &CornerPinParams, pixel_scale: f64) -> Self {
-        let device = |(x, y): (f64, f64)| [x * pixel_scale, y * pixel_scale];
+    /// The quad of evaluated `params`, whose corners are already in device pixels.
+    fn of(params: &CornerPinParams) -> Self {
+        let corner = |(x, y): (f64, f64)| [x, y];
         Self([
-            device(params.top_left),
-            device(params.top_right),
-            device(params.bottom_right),
-            device(params.bottom_left),
+            corner(params.top_left),
+            corner(params.top_right),
+            corner(params.bottom_right),
+            corner(params.bottom_left),
         ])
     }
 
@@ -243,10 +248,15 @@ impl Quad {
 
     fn pin(&self, size: [f64; 2]) -> Pin {
         let rows = self.inverse_homography(size);
-        let footprint = self
-            .0
-            .iter()
-            .map(|&corner| footprint(&rows, corner))
+        // The corners, and a grid over the quad's interior, since a steep pin can cover the most
+        // texels per pixel away from its corners.
+        let steps = FOOTPRINT_GRID - 1;
+        let footprint = (0..FOOTPRINT_GRID * FOOTPRINT_GRID)
+            .map(|index| {
+                let unit = |step: usize| step as f64 / steps as f64;
+                let at = self.at_unit([unit(index % FOOTPRINT_GRID), unit(index / FOOTPRINT_GRID)]);
+                footprint(&rows, at)
+            })
             .fold([0.0_f64; 2], |most, here| {
                 [most[0].max(here[0]), most[1].max(here[1])]
             });
@@ -300,7 +310,7 @@ impl CornerPin {
         };
         let shutter = Shutter {
             open: at(-offset)?,
-            frame: Quad::of(evaluated, pixel_scale),
+            frame: Quad::of(evaluated),
             close: at(offset)?,
         };
         Ok((!shutter.is_static())
@@ -383,9 +393,12 @@ impl crate::gpu::frame_graph::RecordNode for CornerPin {
             let taps = self.taps(&evaluated, &expr, pixel_scale)?;
             (evaluated, taps)
         };
-        let frame_quad = [Quad::of(&evaluated, pixel_scale)];
-        let quads = taps.as_deref().unwrap_or(&frame_quad);
-        if let Some(problem) = quads.iter().find_map(Quad::problem) {
+        let frame_quad = Quad::of(&evaluated);
+        let quads = taps.as_deref().unwrap_or(std::slice::from_ref(&frame_quad));
+        if let Some(problem) = std::iter::once(&frame_quad)
+            .chain(taps.iter().flatten())
+            .find_map(Quad::problem)
+        {
             return Err(RenderError::evaluating::<CornerPin>(self.id, problem).into());
         }
         let bounds = cx.bounds_of(bounds_of_quads(quads));
@@ -400,7 +413,8 @@ impl crate::gpu::frame_graph::RecordNode for CornerPin {
         let out_size = domain.storage_size;
         let tex = cx.storage_target(out_size);
         // The source needs the levels that the pixels farthest from reading it at its own size
-        // read, which are at the corners of the quad.
+        // read. The footprint is measured at the corners and over a grid, so a level of margin
+        // covers the pixels between the samples.
         let mips = Minification::mips_fit(cx, source.domain.storage_size);
         let mut levels = 1;
         for (tap, quad) in params.taps.iter_mut().zip(quads) {
@@ -413,9 +427,11 @@ impl crate::gpu::frame_graph::RecordNode for CornerPin {
             };
             if evaluated.sampling == RasterSampling::Linear {
                 let footprint = pin.footprint.map(|texels| texels as f32);
-                if let Some(filter) = Minification::new(footprint, source.domain.storage_size, mips)
-                {
-                    levels = levels.max(filter.levels());
+                let filter = Minification::new(footprint, source.domain.storage_size, mips)
+                    .filter(|filter| filter.levels() > 1);
+                if let Some(filter) = filter {
+                    let margin = (filter.levels() + 1).min(full_levels(source.domain.storage_size));
+                    levels = levels.max(margin);
                 }
             }
         }
@@ -431,5 +447,35 @@ impl crate::gpu::frame_graph::RecordNode for CornerPin {
 
     fn analytic_shutter(&self) -> Option<&crate::node::Deferred<f64>> {
         Some(&self.params.motion_blur)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lumen_gpu::Size;
+
+    #[test]
+    fn the_footprint_counts_the_pixels_between_the_corners() {
+        let quad = Quad([
+            [75.77, 79.13],
+            [56.15, 46.75],
+            [64.71, 53.38],
+            [122.41, 137.28],
+        ]);
+        let size = Size::new(1024, 1024);
+        let levels = |footprint: [f64; 2]| {
+            Minification::new(footprint.map(|texels| texels as f32), size, true)
+                .map_or(1, Minification::levels)
+        };
+        let corners = quad
+            .0
+            .map(|corner| footprint(&quad.inverse_homography([1024.0; 2]), corner))
+            .into_iter()
+            .fold([0.0_f64; 2], |most, here| {
+                [most[0].max(here[0]), most[1].max(here[1])]
+            });
+        // The pixel at (61.5, 55.5) reads a level the corners' footprint does not reach.
+        assert!(levels(quad.pin([1024.0; 2]).footprint) > levels(corners));
     }
 }
