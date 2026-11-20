@@ -4,6 +4,7 @@ mod alpha;
 mod binding;
 mod budgets;
 mod cache;
+mod channels;
 mod clips;
 mod color;
 mod color_correct;

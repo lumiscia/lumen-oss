@@ -2067,6 +2067,385 @@
           },
           {
             "additionalProperties": false,
+            "description": "Builds each channel of a raster from a channel of `source`, a channel of `other`, the luma of\neither, 0 or 1. The output covers the area of `source`, and `other` is read at the same canvas\npixels, as transparent outside its own area. Choosing an `other_*` value with nothing connected\nto `other` is an error. Colour is taken unpremultiplied and the result is premultiplied by the\noutput alpha.\n\nTo set a raster's alpha from another raster's luma, connect it to `other` and set `alpha` to\n`other_luma`. To use the green channel of a matte as alpha, connect the matte to `other` and set\n`alpha` to `other_green`.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "alpha": {
+                    "default": "source_alpha",
+                    "description": "Where the output's alpha comes from.",
+                    "enum": [
+                      "source_red",
+                      "source_green",
+                      "source_blue",
+                      "source_alpha",
+                      "source_luma",
+                      "other_red",
+                      "other_green",
+                      "other_blue",
+                      "other_alpha",
+                      "other_luma",
+                      "zero",
+                      "one"
+                    ],
+                    "title": "Alpha",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Source Red",
+                        "name": "source_red",
+                        "value": 0
+                      },
+                      {
+                        "label": "Source Green",
+                        "name": "source_green",
+                        "value": 1
+                      },
+                      {
+                        "label": "Source Blue",
+                        "name": "source_blue",
+                        "value": 2
+                      },
+                      {
+                        "label": "Source Alpha",
+                        "name": "source_alpha",
+                        "value": 3
+                      },
+                      {
+                        "label": "Source Luma",
+                        "name": "source_luma",
+                        "value": 4
+                      },
+                      {
+                        "label": "Other Red",
+                        "name": "other_red",
+                        "value": 5
+                      },
+                      {
+                        "label": "Other Green",
+                        "name": "other_green",
+                        "value": 6
+                      },
+                      {
+                        "label": "Other Blue",
+                        "name": "other_blue",
+                        "value": 7
+                      },
+                      {
+                        "label": "Other Alpha",
+                        "name": "other_alpha",
+                        "value": 8
+                      },
+                      {
+                        "label": "Other Luma",
+                        "name": "other_luma",
+                        "value": 9
+                      },
+                      {
+                        "label": "Zero",
+                        "name": "zero",
+                        "value": 10
+                      },
+                      {
+                        "label": "One",
+                        "name": "one",
+                        "value": 11
+                      }
+                    ],
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "ChannelSource"
+                  },
+                  "blue": {
+                    "default": "source_blue",
+                    "description": "Where the output's blue comes from.",
+                    "enum": [
+                      "source_red",
+                      "source_green",
+                      "source_blue",
+                      "source_alpha",
+                      "source_luma",
+                      "other_red",
+                      "other_green",
+                      "other_blue",
+                      "other_alpha",
+                      "other_luma",
+                      "zero",
+                      "one"
+                    ],
+                    "title": "Blue",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Source Red",
+                        "name": "source_red",
+                        "value": 0
+                      },
+                      {
+                        "label": "Source Green",
+                        "name": "source_green",
+                        "value": 1
+                      },
+                      {
+                        "label": "Source Blue",
+                        "name": "source_blue",
+                        "value": 2
+                      },
+                      {
+                        "label": "Source Alpha",
+                        "name": "source_alpha",
+                        "value": 3
+                      },
+                      {
+                        "label": "Source Luma",
+                        "name": "source_luma",
+                        "value": 4
+                      },
+                      {
+                        "label": "Other Red",
+                        "name": "other_red",
+                        "value": 5
+                      },
+                      {
+                        "label": "Other Green",
+                        "name": "other_green",
+                        "value": 6
+                      },
+                      {
+                        "label": "Other Blue",
+                        "name": "other_blue",
+                        "value": 7
+                      },
+                      {
+                        "label": "Other Alpha",
+                        "name": "other_alpha",
+                        "value": 8
+                      },
+                      {
+                        "label": "Other Luma",
+                        "name": "other_luma",
+                        "value": 9
+                      },
+                      {
+                        "label": "Zero",
+                        "name": "zero",
+                        "value": 10
+                      },
+                      {
+                        "label": "One",
+                        "name": "one",
+                        "value": 11
+                      }
+                    ],
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "ChannelSource"
+                  },
+                  "green": {
+                    "default": "source_green",
+                    "description": "Where the output's green comes from.",
+                    "enum": [
+                      "source_red",
+                      "source_green",
+                      "source_blue",
+                      "source_alpha",
+                      "source_luma",
+                      "other_red",
+                      "other_green",
+                      "other_blue",
+                      "other_alpha",
+                      "other_luma",
+                      "zero",
+                      "one"
+                    ],
+                    "title": "Green",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Source Red",
+                        "name": "source_red",
+                        "value": 0
+                      },
+                      {
+                        "label": "Source Green",
+                        "name": "source_green",
+                        "value": 1
+                      },
+                      {
+                        "label": "Source Blue",
+                        "name": "source_blue",
+                        "value": 2
+                      },
+                      {
+                        "label": "Source Alpha",
+                        "name": "source_alpha",
+                        "value": 3
+                      },
+                      {
+                        "label": "Source Luma",
+                        "name": "source_luma",
+                        "value": 4
+                      },
+                      {
+                        "label": "Other Red",
+                        "name": "other_red",
+                        "value": 5
+                      },
+                      {
+                        "label": "Other Green",
+                        "name": "other_green",
+                        "value": 6
+                      },
+                      {
+                        "label": "Other Blue",
+                        "name": "other_blue",
+                        "value": 7
+                      },
+                      {
+                        "label": "Other Alpha",
+                        "name": "other_alpha",
+                        "value": 8
+                      },
+                      {
+                        "label": "Other Luma",
+                        "name": "other_luma",
+                        "value": 9
+                      },
+                      {
+                        "label": "Zero",
+                        "name": "zero",
+                        "value": 10
+                      },
+                      {
+                        "label": "One",
+                        "name": "one",
+                        "value": 11
+                      }
+                    ],
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "ChannelSource"
+                  },
+                  "red": {
+                    "default": "source_red",
+                    "description": "Where the output's red comes from.",
+                    "enum": [
+                      "source_red",
+                      "source_green",
+                      "source_blue",
+                      "source_alpha",
+                      "source_luma",
+                      "other_red",
+                      "other_green",
+                      "other_blue",
+                      "other_alpha",
+                      "other_luma",
+                      "zero",
+                      "one"
+                    ],
+                    "title": "Red",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Source Red",
+                        "name": "source_red",
+                        "value": 0
+                      },
+                      {
+                        "label": "Source Green",
+                        "name": "source_green",
+                        "value": 1
+                      },
+                      {
+                        "label": "Source Blue",
+                        "name": "source_blue",
+                        "value": 2
+                      },
+                      {
+                        "label": "Source Alpha",
+                        "name": "source_alpha",
+                        "value": 3
+                      },
+                      {
+                        "label": "Source Luma",
+                        "name": "source_luma",
+                        "value": 4
+                      },
+                      {
+                        "label": "Other Red",
+                        "name": "other_red",
+                        "value": 5
+                      },
+                      {
+                        "label": "Other Green",
+                        "name": "other_green",
+                        "value": 6
+                      },
+                      {
+                        "label": "Other Blue",
+                        "name": "other_blue",
+                        "value": 7
+                      },
+                      {
+                        "label": "Other Alpha",
+                        "name": "other_alpha",
+                        "value": 8
+                      },
+                      {
+                        "label": "Other Luma",
+                        "name": "other_luma",
+                        "value": 9
+                      },
+                      {
+                        "label": "Zero",
+                        "name": "zero",
+                        "value": 10
+                      },
+                      {
+                        "label": "One",
+                        "name": "one",
+                        "value": 11
+                      }
+                    ],
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "ChannelSource"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "channels"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Channels",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              },
+              {
+                "kind": "raster",
+                "name": "other",
+                "optional": true,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Plays a composition template, or its source, over a window of time.",
             "properties": {
               "id": {

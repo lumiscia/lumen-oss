@@ -217,6 +217,12 @@ pub(crate) trait RecordNode {
         Vec::new()
     }
 
+    /// The params whose literal values need an input that isn't wired, with what is wrong, for
+    /// checks that run before a render.
+    fn unwired_input_param_errors(&self) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
+
     /// The families the node names as literals, each with its param path, for checks that run
     /// before a render.
     fn literal_font_families(&self) -> Vec<(String, &str)> {

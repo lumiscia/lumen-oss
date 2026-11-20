@@ -1,4 +1,5 @@
 pub mod blur;
+pub mod channels;
 pub mod color_correct;
 pub mod color_curves;
 pub mod color_grade;
