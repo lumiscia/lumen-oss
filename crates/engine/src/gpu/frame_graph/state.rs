@@ -1,7 +1,7 @@
 //! What recording keeps from frame to frame, split by what it serves: the walk of the graph,
 //! retained outputs, text, media, runtime shaders and 3D.
 
-use std::{collections::hash_map::Entry, sync::Arc};
+use std::sync::Arc;
 
 use foldhash::{HashMap, HashSet};
 use lumen_gpu::{Recorder, Size, TexRef};
@@ -15,14 +15,14 @@ use crate::{
 };
 
 use super::{
-    CachedShader, GraphNodeKey, InstanceKey, MemoKey, PathId, Raster, ShaderParts, Staticness,
-    VideoFrameKey,
+    CachedShader, GraphNodeKey, InstanceKey, MemoKey, PathId, Raster, ShaderKey, ShaderParts,
+    Staticness, VideoFrameKey,
     retention::{HoldTrack, source_changed},
 };
 
 /// Frames a retained output stays without being read.
 const RETAINED_IDLE_FRAMES: u64 = 600;
-/// Distinct runtime shader sources kept, parsed and assembled.
+/// Runtime shaders kept, parsed and assembled, by source and by composition shader.
 const MAX_SHADERS: usize = 64;
 /// Frames the import texture of a video source stays without being used.
 #[cfg(feature = "ffmpeg")]
@@ -353,44 +353,84 @@ struct ShaderEntry {
     last_used: u64,
 }
 
-/// Runtime shader sources, parsed and assembled, by their source and inputs.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum ShaderCacheKey {
+    Shared(u64),
+    Source(Arc<str>),
+}
+
+/// Runtime shaders, parsed and assembled, by the composition shader or source and the inputs.
 #[derive(Default)]
 pub(super) struct ShaderCache {
-    entries: HashMap<(Arc<str>, usize), ShaderEntry>,
+    entries: HashMap<(ShaderCacheKey, usize), ShaderEntry>,
     next_shader: u64,
+    /// Lookups that hashed a shader's source.
+    #[cfg(feature = "test-hooks")]
+    pub(super) source_lookups: u64,
 }
 
 impl ShaderCache {
+    /// A composition shader is found by its id after its first lookup, which finds it by its
+    /// source, so composition shaders of the same source share what was built from it.
     pub(super) fn cached_shader(
         &mut self,
         tick: u64,
-        source: &str,
+        key: ShaderKey<'_>,
         inputs: usize,
         build: impl FnOnce() -> crate::Result<ShaderParts>,
     ) -> crate::Result<CachedShader> {
-        let key = (Arc::<str>::from(source), inputs);
-        let cached = self.entries.len();
-        let entry = match self.entries.entry(key) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(vacant) => {
+        if let ShaderKey::Shared(id, _) = key
+            && let Some(shader) = self.lookup(tick, &(ShaderCacheKey::Shared(id), inputs))
+        {
+            return Ok(shader);
+        }
+        #[cfg(feature = "test-hooks")]
+        {
+            self.source_lookups += 1;
+        }
+        let source = match key {
+            ShaderKey::Shared(_, source) => Arc::clone(source),
+            ShaderKey::Source(source) => Arc::from(source),
+        };
+        let source_key = (ShaderCacheKey::Source(source), inputs);
+        let shader = match self.lookup(tick, &source_key) {
+            Some(shader) => shader,
+            None => {
                 let (interface, assembled, layout) = build()?;
                 self.next_shader += 1;
-                vacant.insert(ShaderEntry {
-                    shader: CachedShader {
-                        id: self.next_shader,
-                        interface,
-                        assembled: assembled.into(),
-                        layout: layout.into(),
-                    },
-                    last_used: tick,
-                })
+                let shader = CachedShader {
+                    id: self.next_shader,
+                    interface,
+                    assembled: assembled.into(),
+                    layout: layout.into(),
+                };
+                self.insert(tick, source_key, shader.clone());
+                shader
             }
         };
+        if let ShaderKey::Shared(id, _) = key {
+            self.insert(tick, (ShaderCacheKey::Shared(id), inputs), shader.clone());
+        }
+        Ok(shader)
+    }
+
+    fn lookup(&mut self, tick: u64, key: &(ShaderCacheKey, usize)) -> Option<CachedShader> {
+        let entry = self.entries.get_mut(key)?;
         entry.last_used = tick;
-        let shader = entry.shader.clone();
-        // Only a new source evicts, and not what this frame used: a frame using more than the limit
+        Some(entry.shader.clone())
+    }
+
+    fn insert(&mut self, tick: u64, key: (ShaderCacheKey, usize), shader: CachedShader) {
+        self.entries.insert(
+            key,
+            ShaderEntry {
+                shader,
+                last_used: tick,
+            },
+        );
+        // Only a new entry evicts, and not what this frame used: a frame using more than the limit
         // keeps them all, rather than compile again each frame.
-        if self.entries.len() > cached && self.entries.len() > MAX_SHADERS {
+        if self.entries.len() > MAX_SHADERS {
             let oldest = self
                 .entries
                 .iter()
@@ -401,7 +441,6 @@ impl ShaderCache {
                 self.entries.remove(&oldest);
             }
         }
-        Ok(shader)
     }
 
     fn clear(&mut self) {

@@ -269,6 +269,11 @@ export type WgslUniformValues<TUniforms extends WgslUniforms> = [keyof TUniforms
   : { readonly [TName in keyof TUniforms]?: WgslUniformValue<TUniforms[TName]> };
 
 export interface WgslShaderOptions<TUniforms extends WgslUniforms> {
+  /**
+   * Letters, digits and `_`, not starting with a digit. With a name, nodes use the shader as
+   * `shader:<name>`, and adding one puts the source in the composition's `shaders` once.
+   */
+  readonly name?: string;
   readonly uniforms?: TUniforms;
   /** WGSL source that reads `uniforms.<name>`; the struct and its binding are appended. */
   readonly shader: string;

@@ -24,7 +24,7 @@ pub fn derive_structural_hash(input: TokenStream) -> TokenStream {
     }
 }
 
-#[proc_macro_derive(Node, attributes(node, input, params))]
+#[proc_macro_derive(Node, attributes(node, input, params, structural_hash))]
 pub fn derive_node(input: TokenStream) -> TokenStream {
     match schema::expand_node(parse_macro_input!(input as syn::DeriveInput)) {
         Ok(tokens) => tokens.into(),

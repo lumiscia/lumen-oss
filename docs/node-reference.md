@@ -599,7 +599,7 @@ Inputs:
 
 Params:
 
-- **`shader`** (string; default `""`) WGSL compute shader; the prelude provides inputs, `input_sampler`, `output` and `lumen`, which holds `resolution`, `render_scale`, `time`, `frame`, and from the `camera` input `view`, `projection` and `camera_position`.
+- **`shader`** (string; default `""`) WGSL compute shader, or `shader:<name>` for the composition's `shaders` entry of that name; the prelude provides inputs, `input_sampler`, `output` and `lumen`, which holds `resolution`, `render_scale`, `time`, `frame`, and from the `camera` input `view`, `projection` and `camera_position`.
 - **`uniforms`** ([shaderUniforms](#type-shaderuniforms); default `{}`; literal as a whole) Uniform struct field values by name; unset fields are zero.
 
 ## `zoom_blur`

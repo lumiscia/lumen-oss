@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { Composition } from "../src/composition.js";
 import { frame, rgb, time } from "../src/expression.js";
 import { wgslShader } from "../src/shader.js";
+import { defineComposition } from "../src/template.js";
 
 const body = `diagnostic(off, derivative_uniformity);
 
@@ -73,5 +74,39 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     expect(() => tint.node({ tint: "#ff000080" })).toThrow(
       "Uniform `tint` is a vec3, so its colour cannot have alpha.",
     );
+  });
+
+  test("a named shader used in a template and the root is in `shaders` once", () => {
+    const ripple = wgslShader({ name: "ripple", uniforms: { strength: "f32" }, shader: body });
+    const card = defineComposition({
+      name: "card",
+      build: () => ripple.node({ strength: 1 }),
+    });
+    const root = new Composition();
+    root.addNode(card.clip());
+    root.addNode({ ...ripple.node({ strength: 0.5 }), id: 5 });
+    const json = root.toJSON();
+
+    expect(json.shaders).toEqual({ ripple: ripple.source });
+    expect(json.nodes.find((node) => node.id === 5)?.params).toEqual({
+      shader: "shader:ripple",
+      uniforms: { strength: 0.5 },
+    });
+    expect(json.compositions?.card?.nodes[0]?.params).toEqual({
+      shader: "shader:ripple",
+      uniforms: { strength: 1 },
+    });
+
+    const impostor = wgslShader({ name: "ripple", shader: body });
+    expect(() => root.addNode(impostor.node())).toThrow(
+      "Shader `ripple` already exists with another source.",
+    );
+    expect(() => wgslShader({ name: "2d", shader: body })).toThrow("Shader name `2d`");
+  });
+
+  test("a shader reference no node defines throws when the composition is serialised", () => {
+    const composition = new Composition();
+    composition.addNode({ id: 1, type: "wgsl_shader", params: { shader: "shader:missing" } });
+    expect(() => composition.toJSON()).toThrow("Node `1` uses shader `missing`");
   });
 });

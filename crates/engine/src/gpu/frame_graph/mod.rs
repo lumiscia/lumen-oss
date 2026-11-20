@@ -287,17 +287,26 @@ impl Programs<'_> {
         &mut self,
         node: NodeId,
         label: &str,
-        source: &str,
+        key: ShaderKey<'_>,
         inputs: usize,
         build: impl FnOnce() -> crate::Result<ShaderParts>,
     ) -> crate::Result<CachedShader> {
         let shader = self
             .st
             .shaders
-            .cached_shader(self.st.tick, source, inputs, build)?;
+            .cached_shader(self.st.tick, key, inputs, build)?;
         dynamic_program(self.rec, node, label, &shader)?;
         Ok(shader)
     }
+}
+
+/// What a runtime shader is cached by.
+#[derive(Clone, Copy)]
+pub(crate) enum ShaderKey<'a> {
+    /// A shader the composition holds, by its id, and its source.
+    Shared(u64, &'a Arc<str>),
+    /// Source an expression computed.
+    Source(&'a str),
 }
 
 /// What a shader from runtime source is cached as: its parsed interface, the assembled shader
@@ -735,6 +744,11 @@ impl FrameGraph {
 
     pub(crate) fn output(&self) -> Option<Raster> {
         self.state.output
+    }
+
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn shader_source_lookups(&self) -> u64 {
+        self.state.shaders.source_lookups
     }
 
     /// The domain `node` of the root graph had in the frame last recorded.

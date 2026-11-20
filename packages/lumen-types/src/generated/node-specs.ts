@@ -1108,7 +1108,7 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { name: "output", kind: "raster" },
     ],
     params: [
-      { id: "shader", name: "Shader source", kind: "string", description: "WGSL compute shader; the prelude provides inputs, `input_sampler`, `output` and `lumen`,\nwhich holds `resolution`, `render_scale`, `time`, `frame`, and from the `camera` input\n`view`, `projection` and `camera_position`.", defaultValue: "", constraints: { format: "wgsl", multiline: true, recommendedRows: 10 } },
+      { id: "shader", name: "Shader source", kind: "string", description: "WGSL compute shader, or `shader:<name>` for the composition's `shaders` entry of that name;\nthe prelude provides inputs, `input_sampler`, `output` and `lumen`, which holds\n`resolution`, `render_scale`, `time`, `frame`, and from the `camera` input `view`,\n`projection` and `camera_position`.", defaultValue: "", constraints: { format: "wgsl", multiline: true, recommendedRows: 10 } },
       { id: "uniforms", name: "Shader uniforms", kind: "shader_uniforms", description: "Uniform struct field values by name; unset fields are zero.", defaultValue: {} },
     ],
     defaultParams: { shader: "", uniforms: {} },

@@ -96,6 +96,32 @@ as `asset:<id>` or a `media` alias. Faces that don't carry that name answer to i
 own, so a font asset or a renamed file shapes as asked, and can't be picked by its internal family
 name instead of another font of that name.
 
+## Shaders
+
+The top-level `shaders` maps names to WGSL source. A `wgsl_shader` in the root or any template
+uses an entry by setting `shader` to `shader:<name>`, so a shader used by many nodes is written
+once. Names are letters, digits and `_`, not starting with a digit. An expression may pick an
+entry or an inline source: `=if(frame < 120, 'shader:grain', 'shader:halftone')`.
+
+```json
+{
+  "shaders": { "grain": "@compute @workgroup_size(8, 8, 1) fn cs_main(...) { ... }" },
+  "nodes": [
+    {
+      "id": 2,
+      "type": "wgsl_shader",
+      "params": { "shader": "shader:grain", "uniforms": { "amount": 0.3 } }
+    }
+  ]
+}
+```
+
+Building a composition checks each entry, and each distinct inline source, once. A broken entry
+is one error at `/shaders/<name>` that lists the nodes using it, and a broken inline source is one
+error at the first node holding it that lists the others. A literal `shader:<name>` naming no
+entry fails the check; an expression picking one fails the frame that picks it. Rendering finds
+each node's shader without reading its source again.
+
 ## Supplying media
 
 A host gives a render its media through one method, `MediaStore::resolve(source, kind)`. `source`
@@ -322,7 +348,7 @@ for diagnostic in lumen_engine::json::check(&json, Some(&fonts), Some(&my_assets
 
 `json::parse` fails with the same errors, in a `ParseError` whose `diagnostics()` lists them.
 Checking runs in phases: the document's shape, its `functions`, every graph's nodes, every graph's
-connections, then the graphs, clips, props, settings and audio. Each phase reports all it finds,
+connections, then the graphs, clips, props, settings, audio and shaders. Each phase reports all it finds,
 and a phase with errors ends the check, since later ones would mostly repeat them. At most 50
 diagnostics are reported.
 
@@ -370,7 +396,8 @@ rendering:
 
 - media that is missing or fails to decode;
 - expressions that fail on some frames only, such as a division that is only invalid at frame 0;
-- `wgsl_shader` code that doesn't compile;
+- `wgsl_shader` code that doesn't compile, beyond the bindings, uniform struct and workgroup size
+  `check` reads;
 - encoders that won't open;
 - fonts that fall back at shaping time, including families set by expressions.
 

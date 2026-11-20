@@ -204,7 +204,21 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(input_tex, vec2<i32>(id.xy), vec4<f32>(1.0));
 }
 ";
+    // What the shader declares is checked when the composition is built.
     let matrix = "struct P { m: mat4x4<f32> }\n@group(0) @binding(1) var<uniform> p: P;";
+    for (shader, expected) in [
+        (matrix.to_string(), "unsupported type `mat4x4<f32>`"),
+        (
+            DECLARED_SHADER.replace("rgba16float", "rgba8unorm"),
+            "`texture_storage_2d<rgba8unorm, ...>` is not supported; declare \
+             `texture_storage_2d<rgba16float, write>`",
+        ),
+    ] {
+        let error = lumen_engine::json::parse_value(&shader_scene(&shader, json!({}), &[BLACK]).0)
+            .expect_err(expected)
+            .to_string();
+        assert!(error.contains(expected), "{expected}: {error}");
+    }
     let rows = [
         (
             DECLARED_SHADER,
@@ -216,19 +230,12 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
             json!({ "values": [1, 0, 0] }),
             "uniforms.values: vec4<f32> needs 4 components",
         ),
-        (matrix, json!({}), "unsupported type `mat4x4<f32>`"),
         (
             &fill_shader("vec4<f32>(1.0"),
             json!({}),
             "GPU validation failed",
         ),
         (write_only_input, json!({}), "GPU validation failed"),
-        (
-            &DECLARED_SHADER.replace("rgba16float", "rgba8unorm"),
-            json!({}),
-            "`texture_storage_2d<rgba8unorm, ...>` is not supported; declare \
-             `texture_storage_2d<rgba16float, write>`",
-        ),
     ];
     for (shader, uniforms, expected) in rows {
         let composition = Composition::from(shader_scene(shader, uniforms, &[BLACK]));
@@ -304,6 +311,91 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         )
         .frames([0.0, 1.0, 2.0, 3.0]),
     ]);
+}
+
+fn with_shaders(mut scene: Scene, shaders: Value) -> Scene {
+    scene.0["shaders"] = shaders;
+    scene
+}
+
+#[test]
+fn composition_shaders_render_as_their_inline_source_does() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let media = TestMedia::default();
+    let uniforms = json!({
+        "strength": 0.25, "center": [64, "=frame * 2"], "tint": "#ff0000", "steps": 2
+    });
+    let inline = Composition::from(
+        shader_scene(JSON_UNIFORMS_SHADER, uniforms.clone(), &[BLACK]).frames(12),
+    );
+    let named = Composition::from(with_shaders(
+        shader_scene("shader:ripple", uniforms, &[BLACK]).frames(12),
+        json!({ "ripple": JSON_UNIFORMS_SHADER }),
+    ));
+    for at in [0.0, 6.0] {
+        let expected = render(&mut renderer, &inline, at, &media).rgba;
+        assert_eq!(
+            render(&mut renderer, &named, at, &media).rgba,
+            expected,
+            "frame {at}"
+        );
+    }
+
+    let fills = json!({
+        "red": fill_shader("vec4<f32>(1.0, 0.0, 0.0, 1.0)"),
+        "green": fill_shader("vec4<f32>(0.0, 1.0, 0.0, 1.0)"),
+    });
+    let picked = |shader: &str| {
+        Composition::from(with_shaders(
+            shader_scene(shader, json!({}), &[BLACK]).frames(2),
+            fills.clone(),
+        ))
+    };
+    let picks = picked("=if(frame < 1, 'shader:red', 'shader:green')");
+    assert_eq!(
+        render(&mut renderer, &picks, 0.0, &media).rgba[..4],
+        [255, 0, 0, 255]
+    );
+    assert_eq!(
+        render(&mut renderer, &picks, 1.0, &media).rgba[..4],
+        [0, 255, 0, 255]
+    );
+    let missing = picked("=if(frame < 1, 'shader:red', 'shader:blue')");
+    render(&mut renderer, &missing, 0.0, &media);
+    let error = renderer
+        .render(&missing, 1.0, &media, RenderTarget::Owned)
+        .expect_err("`blue` is not a shader")
+        .to_string();
+    assert!(
+        error.contains("node 10") && error.contains("no shader named `blue` in `shaders`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn identical_shader_nodes_record_without_hashing_their_source() {
+    let copy = "
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    textureStore(output, vec2<i32>(id.xy), textureLoad(input0, vec2<i32>(id.xy), 0));
+}
+";
+    let mut nodes = vec![background(1, [10, 20, 30, 255])];
+    nodes.extend((2..22).map(|id| {
+        json!({ "id": id, "type": "wgsl_shader", "in": { "source": id - 1 }, "params": { "shader": copy } })
+    }));
+    let composition = Composition::from(scene((8, 4), json!(nodes)).frames(2));
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let media = TestMedia::default();
+    let before = renderer.shader_source_lookups();
+    let frame = render(&mut renderer, &composition, 0.0, &media);
+    assert_eq!(frame.rgba[..4], [10, 20, 30, 255]);
+    // The twenty nodes share one shader, which only its first lookup finds by its source.
+    assert_eq!(renderer.shader_source_lookups() - before, 1);
+    render(&mut renderer, &composition, 1.0, &media);
+    assert_eq!(renderer.shader_source_lookups() - before, 1);
 }
 
 /// How far, times 1000, a colour uniform's decoded value is from the prelude decoding `ENCODED`.

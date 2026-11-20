@@ -33,16 +33,28 @@
 //! values (`#rrggbb`, `rgb(...)`) arrive as linear light, premultiplied by their alpha; numbers
 //! and vectors arrive as written.
 
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
 use crate::{
-    error::RenderError,
+    composition::CompositionBuilder,
+    error::{At, DocumentError, LumenError, RenderError},
     expr::{ExpressionContext, ExpressionValue},
     node::{
-        Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, ShaderUniformValue,
+        Deferred, DelegateEvalContext, NodeId, NodeKind, NodeParams, ShaderUniformValue,
         ShaderUniforms,
     },
 };
 
-use crate::gpu::frame_graph::{ComputeProgram, Staticness, dispatch_for};
+use crate::gpu::frame_graph::{ComputeProgram, ShaderKey, Staticness, dispatch_for};
+
+/// What a `shader` value starts with to name an entry of the composition's `shaders`.
+pub(crate) const SHADER_PREFIX: &str = "shader:";
 
 /// WebGPU's default `maxSampledTexturesPerShaderStage`, guaranteed on every adapter.
 pub const MAX_INPUTS: usize = 16;
@@ -114,9 +126,10 @@ const DEFAULT_SHADER: &str = concat!(
 /// Runs a custom WGSL compute shader over one or more rasters.
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
 pub struct WgslShaderParams {
-    /// WGSL compute shader; the prelude provides inputs, `input_sampler`, `output` and `lumen`,
-    /// which holds `resolution`, `render_scale`, `time`, `frame`, and from the `camera` input
-    /// `view`, `projection` and `camera_position`.
+    /// WGSL compute shader, or `shader:<name>` for the composition's `shaders` entry of that name;
+    /// the prelude provides inputs, `input_sampler`, `output` and `lumen`, which holds
+    /// `resolution`, `render_scale`, `time`, `frame`, and from the `camera` input `view`,
+    /// `projection` and `camera_position`.
     #[meta(
         name = "Shader source",
         format = "wgsl",
@@ -144,6 +157,202 @@ pub struct WgslShader {
     /// identity and zero.
     #[input(scene, optional)]
     pub camera: Option<NodeId>,
+    /// The shader a literal `shader` stands for, set when the composition is built. The `shader`
+    /// param and the composition's `shaders` identify it.
+    #[structural_hash(skip)]
+    pub(crate) shared: Option<Arc<SharedShader>>,
+}
+
+/// A shader source the composition holds once, checked when the composition is built.
+#[derive(Debug)]
+pub(crate) struct SharedShader {
+    /// Unique in the process, so recording finds the shader without hashing its source.
+    id: u64,
+    source: Arc<str>,
+    interface: Arc<ShaderInterface>,
+}
+
+impl SharedShader {
+    fn new(source: Arc<str>, interface: ShaderInterface) -> Arc<Self> {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        Arc::new(Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            source,
+            interface: Arc::new(interface),
+        })
+    }
+}
+
+/// The composition's `shaders` by name.
+pub(crate) type ShaderTable = BTreeMap<String, Arc<SharedShader>>;
+
+/// Checks the composition's `shaders` and every distinct literal `shader` source once each, and
+/// gives each `wgsl_shader` with a literal `shader` the shader it stands for. A broken shader is
+/// one error, which lists the nodes using it.
+pub(crate) fn resolve_shaders(
+    parts: &mut CompositionBuilder,
+) -> Result<ShaderTable, Vec<LumenError>> {
+    let CompositionBuilder {
+        scene,
+        compositions,
+        shaders,
+        ..
+    } = parts;
+    let mut errors = Vec::new();
+    let mut table = ShaderTable::new();
+    // The error of each broken entry, and the nodes naming it.
+    let mut broken: BTreeMap<&str, (String, Vec<At>)> = BTreeMap::new();
+    for (name, source) in shaders.iter() {
+        if !is_identifier(name) {
+            errors.push(shader_entry_error(
+                name,
+                "a shader name must be letters, digits and `_`, not starting with a digit",
+            ));
+            continue;
+        }
+        match ShaderInterface::parse(source) {
+            Ok(interface) => {
+                table.insert(
+                    name.clone(),
+                    SharedShader::new(source.as_str().into(), interface),
+                );
+            }
+            Err(details) => {
+                broken.insert(name, (details, Vec::new()));
+            }
+        }
+    }
+
+    // Each distinct inline source, or the index of its error in `broken_inline`.
+    let mut inline: HashMap<Arc<str>, Result<Arc<SharedShader>, usize>> = HashMap::new();
+    let mut broken_inline: Vec<(String, Vec<At>)> = Vec::new();
+    let graphs = std::iter::once((None, &mut scene.graph)).chain(
+        compositions
+            .iter_mut()
+            .map(|(name, template)| (Some(name.as_str()), &mut template.scene.graph)),
+    );
+    for (template, graph) in graphs {
+        let mut ids: Vec<NodeId> = graph
+            .nodes
+            .iter()
+            .filter(|(_, node)| matches!(node, NodeKind::WgslShader(_)))
+            .map(|(&id, _)| id)
+            .collect();
+        ids.sort_by_key(|&id| (graph.position(id), id));
+        for id in ids {
+            let Some(NodeKind::WgslShader(node)) = graph.nodes.get_mut(&id) else {
+                continue;
+            };
+            node.shared = None;
+            let Deferred::Value(literal) = &node.params.shader else {
+                continue;
+            };
+            let at = At::param(id, "shader").in_template(template);
+            if let Some(name) = literal.strip_prefix(SHADER_PREFIX) {
+                if let Some(shared) = table.get(name) {
+                    node.shared = Some(shared.clone());
+                } else if let Some((_, users)) = broken.get_mut(name) {
+                    users.push(at);
+                } else {
+                    errors.push(
+                        DocumentError::InvalidParam {
+                            at,
+                            details: format!("shader: no shader named `{name}` in `shaders`"),
+                        }
+                        .into(),
+                    );
+                }
+                continue;
+            }
+            let source = if literal.trim().is_empty() {
+                DEFAULT_SHADER
+            } else {
+                literal.as_str()
+            };
+            match inline.get(source) {
+                Some(Ok(shared)) => node.shared = Some(shared.clone()),
+                Some(Err(index)) => broken_inline[*index].1.push(at),
+                None => match ShaderInterface::parse(source) {
+                    Ok(interface) => {
+                        let shared = SharedShader::new(source.into(), interface);
+                        inline.insert(shared.source.clone(), Ok(shared.clone()));
+                        node.shared = Some(shared);
+                    }
+                    Err(details) => {
+                        inline.insert(source.into(), Err(broken_inline.len()));
+                        broken_inline.push((details, vec![at]));
+                    }
+                },
+            }
+        }
+    }
+
+    for (name, (details, users)) in broken {
+        let used_by = if users.is_empty() {
+            String::new()
+        } else {
+            format!("; used by {}", node_list(&users))
+        };
+        errors.push(shader_entry_error(name, &format!("{details}{used_by}")));
+    }
+    for (details, users) in broken_inline {
+        let also = match &users[1..] {
+            [] => String::new(),
+            others => format!("; the same source is in {}", node_list(others)),
+        };
+        errors.push(
+            DocumentError::InvalidParam {
+                at: users[0].clone(),
+                details: format!("shader: {details}{also}"),
+            }
+            .into(),
+        );
+    }
+    if errors.is_empty() {
+        Ok(table)
+    } else {
+        Err(errors)
+    }
+}
+
+/// Letters, digits and `_`, not starting with a digit, as function names are.
+fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|char| char.is_ascii_alphanumeric() || char == '_')
+}
+
+fn shader_entry_error(name: &str, details: &str) -> LumenError {
+    DocumentError::Invalid {
+        at: At::default(),
+        pointer: format!("/shaders/{}", crate::diagnostic::escape(name)),
+        details: format!("`shaders.{name}`: {details}"),
+    }
+    .into()
+}
+
+/// The nodes `users` are in, such as `node 3, node 2 of composition `intro``.
+fn node_list(users: &[At]) -> String {
+    users
+        .iter()
+        .map(|at| {
+            let node = at.node.expect("a shader's user is a node");
+            match &at.template {
+                Some(template) => format!("node {node} of composition `{template}`"),
+                None => format!("node {node}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The shader a frame records a node with.
+enum Picked {
+    Shared(Arc<SharedShader>),
+    /// Source an expression computed.
+    Source(String),
 }
 
 const IDENTITY: [[f32; 4]; 4] = [
@@ -679,20 +888,18 @@ fn strip_comments(source: &str) -> String {
     out
 }
 
-/// The parts a recorded frame caches a shader from `source` as, with `inputs` inputs.
+/// The parts a recorded frame caches the shader `source`, of `interface`, as with `inputs` inputs.
 fn record_parts(
     node_id: NodeId,
+    interface: Arc<ShaderInterface>,
     source: &str,
     inputs: usize,
     max_uniform_size: u64,
 ) -> crate::Result<crate::gpu::frame_graph::ShaderParts> {
     use lumen_gpu::{LayoutEntry, LayoutKind};
 
-    let interface = ShaderInterface::parse(source)
-        .and_then(|interface| {
-            interface.check_uniform_size(max_uniform_size)?;
-            Ok(interface)
-        })
+    interface
+        .check_uniform_size(max_uniform_size)
         .map_err(|details| shader_error(node_id, format!("shader: {details}")))?;
     let assembled = interface.assemble(source, inputs);
     let mut layout = vec![
@@ -707,12 +914,67 @@ fn record_parts(
     layout.extend(
         (0..inputs).map(|index| LayoutEntry::compute(input_binding(index), LayoutKind::Texture)),
     );
-    Ok((std::sync::Arc::new(interface) as _, assembled, layout))
+    Ok((interface as _, assembled, layout))
 }
 
 impl WgslShader {
     fn label(&self) -> String {
         format!("wgsl-shader:{}", self.id.0)
+    }
+
+    /// The shader of a frame: the literal's, or the entry or source the expression picks.
+    fn pick(&self, cx: &crate::gpu::frame_graph::FrameCx<'_>) -> crate::Result<Picked> {
+        if let (Deferred::Value(_), Some(shared)) = (&self.params.shader, &self.shared) {
+            return Ok(Picked::Shared(shared.clone()));
+        }
+        let source: String = DelegateEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
+        }
+        .eval_field("shader", &self.params.shader)?;
+        let Some(name) = source.strip_prefix(SHADER_PREFIX) else {
+            return Ok(Picked::Source(source));
+        };
+        cx.composition()
+            .shader(name)
+            .map(|shared| Picked::Shared(shared.clone()))
+            .ok_or_else(|| {
+                shader_error(
+                    self.id,
+                    format!("shader: no shader named `{name}` in `shaders`"),
+                )
+            })
+    }
+
+    /// The parsed and assembled shader of `picked`, with `inputs` inputs.
+    fn cached_shader(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+        picked: &Picked,
+        inputs: usize,
+    ) -> crate::Result<crate::gpu::frame_graph::CachedShader> {
+        let max_uniform_size = cx.rec.device().limits().max_uniform_buffer_binding_size;
+        match picked {
+            Picked::Shared(shared) => {
+                cx.cached_shader(ShaderKey::Shared(shared.id, &shared.source), inputs, || {
+                    let interface = shared.interface.clone();
+                    record_parts(self.id, interface, &shared.source, inputs, max_uniform_size)
+                })
+            }
+            Picked::Source(source) => {
+                let source = if source.trim().is_empty() {
+                    DEFAULT_SHADER
+                } else {
+                    source.as_str()
+                };
+                cx.cached_shader(ShaderKey::Source(source), inputs, || {
+                    let interface = ShaderInterface::parse(source)
+                        .map_err(|details| shader_error(self.id, format!("shader: {details}")))?;
+                    record_parts(self.id, interface.into(), source, inputs, max_uniform_size)
+                })
+            }
+        }
     }
 
     fn check_input_count(&self) -> crate::Result<()> {
@@ -777,17 +1039,14 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
         let inputs = self.sources.len();
         self.check_input_count()?;
         programs.compute(&SANITISE)?;
-        let Deferred::Value(source) = &self.params.shader else {
+        let (Deferred::Value(_), Some(shared)) = (&self.params.shader, &self.shared) else {
             return Ok(());
         };
-        let source = if source.trim().is_empty() {
-            DEFAULT_SHADER
-        } else {
-            source.as_str()
-        };
         let max_uniform_size = programs.limits().max_uniform_buffer_binding_size;
-        let shader = programs.dynamic(self.id, &self.label(), source, inputs, || {
-            record_parts(self.id, source, inputs, max_uniform_size)
+        let key = ShaderKey::Shared(shared.id, &shared.source);
+        let shader = programs.dynamic(self.id, &self.label(), key, inputs, || {
+            let interface = shared.interface.clone();
+            record_parts(self.id, interface, &shared.source, inputs, max_uniform_size)
         })?;
         let Deferred::Value(uniforms) = &self.params.uniforms else {
             return Ok(());
@@ -805,11 +1064,13 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
         use lumen_gpu::Res;
 
-        let params = self.params.eval(&DelegateEvalContext {
+        let picked = self.pick(cx)?;
+        let uniform_values = DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
             pixel_scale: cx.pixel_scale(),
-        })?;
+        }
+        .eval_field("uniforms", &self.params.uniforms)?;
         let inputs = self
             .sources
             .iter()
@@ -817,16 +1078,7 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
             .collect::<crate::Result<Vec<_>>>()?;
         self.check_input_count()?;
         let first = inputs[0];
-        let user_source = if params.shader.trim().is_empty() {
-            DEFAULT_SHADER
-        } else {
-            params.shader.as_str()
-        };
-        let input_count = inputs.len();
-        let max_uniform_size = cx.rec.device().limits().max_uniform_buffer_binding_size;
-        let shader = cx.cached_shader(user_source, input_count, || {
-            record_parts(self.id, user_source, input_count, max_uniform_size)
-        })?;
+        let shader = self.cached_shader(cx, &picked, inputs.len())?;
         let interface = shader
             .interface
             .downcast_ref::<ShaderInterface>()
@@ -837,7 +1089,7 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
             let expr = cx.expr();
             (
                 interface
-                    .uniform_bytes(self.id, &params.uniforms, &expr)?
+                    .uniform_bytes(self.id, &uniform_values, &expr)?
                     .to_vec(),
                 LumenGlobals {
                     view: camera.view,

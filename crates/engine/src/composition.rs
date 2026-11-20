@@ -1,11 +1,15 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     audio::AudioTimeline,
     error::{At, GraphValidationError, LumenError},
     expr::{BuiltinFn, ExprNode, ExpressionValue},
     graph::Graph,
-    node::{ClipPropValue, Node, NodeId, NodeKind, compositing::clip::Clip},
+    node::{
+        ClipPropValue, Node, NodeId, NodeKind,
+        compositing::clip::Clip,
+        processing::wgsl_shader::{ShaderTable, SharedShader, resolve_shaders},
+    },
 };
 
 #[derive(Debug, Clone, lumen_macros::StructuralHash)]
@@ -32,6 +36,8 @@ pub struct Composition {
     /// Each template's name and `media_output` node, in name order. A template's [`SceneId`] is
     /// its position here.
     templates: Vec<(String, NodeId)>,
+    /// The parsed `shaders`, by name.
+    shaders: ShaderTable,
 }
 
 /// Which scene of a composition a graph belongs to: the root, or one of its templates. The same
@@ -68,6 +74,9 @@ pub struct CompositionBuilder {
     pub audio: Option<AudioTimeline>,
     /// Templates that `clip` nodes instantiate, by name.
     pub compositions: BTreeMap<String, CompositionTemplate>,
+    /// WGSL sources by name, which `wgsl_shader` nodes of the root and every template use as
+    /// `shader:<name>`.
+    pub shaders: BTreeMap<String, String>,
 }
 
 /// A reusable composition with its own canvas, timeline and props. Its node ids are its own, so
@@ -253,6 +262,11 @@ impl Composition {
     pub fn into_builder(self) -> CompositionBuilder {
         self.parts
     }
+
+    /// The `shaders` entry named `name`.
+    pub(crate) fn shader(&self, name: &str) -> Option<&Arc<SharedShader>> {
+        self.shaders.get(name)
+    }
 }
 
 impl CompositionBuilder {
@@ -265,15 +279,29 @@ impl CompositionBuilder {
             },
             audio: None,
             compositions: BTreeMap::new(),
+            shaders: BTreeMap::new(),
         }
     }
 
     /// Validates the composition: the timeline and canvas of the root and each template, its
     /// graphs, the clips that instantiate templates, the props its expressions read, that no
-    /// template instantiates itself, the defaults of template props, and its audio timeline.
-    pub fn build(self) -> Result<Composition, Vec<LumenError>> {
-        self.validate()?;
+    /// template instantiates itself, the defaults of template props, its audio timeline, and its
+    /// shaders.
+    pub fn build(mut self) -> Result<Composition, Vec<LumenError>> {
+        let validated = self.validate();
+        let shaders = match (validated, resolve_shaders(&mut self)) {
+            (Ok(()), Ok(shaders)) => shaders,
+            (validated, shaders) => {
+                return Err(validated
+                    .err()
+                    .into_iter()
+                    .chain(shaders.err())
+                    .flatten()
+                    .collect());
+            }
+        };
         Ok(Composition {
+            shaders,
             fingerprint: fingerprint(&self),
             output: self.scene.graph.output(),
             templates: self
@@ -582,7 +610,7 @@ fn settings_problems(scene: &Scene) -> Vec<(String, String)> {
 }
 
 /// Identifies the exact content of a composition and its templates: their canvases, timelines,
-/// props, and every node's inputs, params, literal values and expression sources.
+/// props, every node's inputs, params, literal values and expression sources, and its shaders.
 fn fingerprint(composition: &CompositionBuilder) -> u64 {
     crate::fingerprint::fingerprint(composition)
 }
@@ -902,6 +930,24 @@ mod fingerprint_tests {
         let expected = parse(&value).fingerprint();
         // The call's source is unchanged; only the body it expands to differs.
         value["functions"]["thickness()"] = json!("frame / 3");
+        assert_ne!(expected, parse(&value).fingerprint());
+    }
+
+    #[test]
+    fn composition_shader_sources_change_the_fingerprint() {
+        let mut value = scene();
+        value["shaders"] = json!({ "fill": "// one" });
+        value["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "id": 9, "type": "wgsl_shader", "params": { "shader": "shader:fill" } }));
+        value["connections"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "from_node": 2, "to_node": 9, "to_port": "source" }));
+        let expected = parse(&value).fingerprint();
+        // The node's `shader` is unchanged; only the entry it names differs.
+        value["shaders"]["fill"] = json!("// two");
         assert_ne!(expected, parse(&value).fingerprint());
     }
 

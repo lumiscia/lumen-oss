@@ -21,6 +21,8 @@ export type LumenComposition = {
   };
   readonly nodes: readonly CompositionNode[];
   readonly render_settings: RenderSettings;
+  /** WGSL shader sources by name, which `wgsl_shader` nodes here and in every template use as `shader:<name>`. */
+  readonly shaders?: Readonly<Record<string, string>>;
   readonly timeline: Timeline;
   readonly [key: string]: unknown;
 };

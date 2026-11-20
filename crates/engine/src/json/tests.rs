@@ -1800,3 +1800,100 @@ fn a_masked_shadow_catcher_is_reported_at_the_materials_alpha_mode() {
         )]
     );
 }
+
+/// A background, the wgsl_shader nodes `shaders` from id 2 on reading it, and the output, with
+/// `entries` as the composition's `shaders` and a template `intro` of one shader node.
+fn shader_document(entries: Value, shaders: &[&str], intro: &str) -> Value {
+    let mut nodes = vec![serde_json::json!({ "id": 1, "type": "background" })];
+    let mut connections = Vec::new();
+    for (index, shader) in shaders.iter().enumerate() {
+        let id = index + 2;
+        nodes.push(
+            serde_json::json!({ "id": id, "type": "wgsl_shader", "params": { "shader": shader } }),
+        );
+        connections.push(serde_json::json!({ "from_node": 1, "to_node": id, "to_port": "source" }));
+    }
+    nodes.push(serde_json::json!({ "id": 99, "type": "media_output" }));
+    connections.push(serde_json::json!({ "from_node": 2, "to_node": 99, "to_port": "source" }));
+    serde_json::json!({
+        "timeline": { "fps": 30, "duration_frames": 1 },
+        "render_settings": { "width": 16, "height": 16 },
+        "shaders": entries,
+        "compositions": { "intro": {
+            "nodes": [
+                { "id": 1, "type": "wgsl_shader", "params": { "shader": intro } },
+                { "id": 2, "type": "media_output" },
+                { "id": 3, "type": "background" }
+            ],
+            "connections": [
+                { "from_node": 3, "to_node": 1, "to_port": "source" },
+                { "from_node": 1, "to_node": 2, "to_port": "source" }
+            ]
+        } },
+        "nodes": nodes,
+        "connections": connections
+    })
+}
+
+#[test]
+fn a_broken_shader_is_reported_once_with_the_nodes_using_it() {
+    let broken = "@group(1) @binding(0) var t: texture_2d<f32>;";
+    let document = shader_document(
+        serde_json::json!({ "grain": broken }),
+        &[
+            "shader:grain",
+            "shader:grain",
+            "@binding(7) var x: f32;",
+            "@binding(7) var x: f32;",
+        ],
+        "shader:grain",
+    );
+    let diagnostics = check_value(&document, None, None);
+    let found: Vec<_> = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic.code,
+                diagnostic.path.as_str(),
+                diagnostic.message.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (
+                "document.invalid",
+                "/shaders/grain",
+                "`shaders.grain`: only `@group(0)` is available; used by node 2, node 3, node 1 \
+                 of composition `intro`"
+            ),
+            (
+                "node.invalid_param",
+                "/nodes/3/params/shader",
+                "node 4: shader: `@binding(7)` is reserved for the prelude; declare only bindings \
+                 0-2; the same source is in node 5"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn shader_references_and_names_are_checked() {
+    let valid = "@compute @workgroup_size(8, 8, 1) fn cs_main() {}";
+    let document = shader_document(
+        serde_json::json!({ "grain": valid, "2d": valid }),
+        &["shader:grain", "shader:missing"],
+        "shader:grain",
+    );
+    assert_eq!(
+        codes_and_paths(&check_value(&document, None, None)),
+        [
+            ("document.invalid", "/shaders/2d", None),
+            ("node.invalid_param", "/nodes/2/params/shader", Some(3)),
+        ]
+    );
+    let mut fixed = document.clone();
+    fixed["shaders"] = serde_json::json!({ "grain": valid, "missing": valid });
+    assert!(check_value(&fixed, None, None).is_empty());
+}
