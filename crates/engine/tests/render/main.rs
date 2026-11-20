@@ -60,6 +60,8 @@ mod scene_output;
 #[cfg(feature = "3d")]
 mod scene_planes;
 #[cfg(feature = "3d")]
+mod scene_projection;
+#[cfg(feature = "3d")]
 mod scene_regions;
 #[cfg(feature = "3d")]
 mod scene_shadows;

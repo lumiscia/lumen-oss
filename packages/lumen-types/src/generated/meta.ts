@@ -2619,7 +2619,19 @@ export interface Light3dNode extends CompositionNodeBase<"light_3d"> {
  * `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest
  * of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.
  * Its alpha counts where the material blends or masks, through `opacity` or the colour's alpha.
- * Wired into any other object, a material with a texture fails the render.
+ * Wired into any other object, a material with a texture fails the render, unless it has a
+ * `projector`; an `image_plane_3d` shows its own source and fails with either.
+ * 
+ * A scene wired into `projector` projects the `texture` from its camera, chosen as `render_3d`
+ * would choose it, in place of texture coordinates, so it shows on any object but an image
+ * plane, `instance_3d` copies included. Each point of the surface takes the texel the projector
+ * sees it at: the texture fills the projector's view at the texture's own aspect ratio, with the
+ * camera's `fov` or `ortho_height`, `near` and `far`. Faces turned away from the projector,
+ * points outside its view and, with `projector_occlusion`, points it can't see show `color`
+ * alone. The projector stands where its own scene places it, whatever places the objects, at the
+ * frame being drawn, so a moving camera moves the projection: a plate projected onto geometry
+ * wants a still `camera_3d` of its own, apart from the camera the scene is drawn from. A
+ * `projector` without a `texture` fails the render.
  * 
  * `alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose
  * material is unlit and double-sided, with the opaque objects so it orders correctly where cards
@@ -2660,6 +2672,11 @@ export interface Material3dNode extends CompositionNodeBase<"material_3d"> {
      * opaque objects.
      */
     readonly opacity?: ExpressionValue<number>;
+    /**
+     * With a `projector` wired, surfaces the projector can't see, behind surfaces that cast
+     * shadows, show the colour alone.
+     */
+    readonly projector_occlusion?: ExpressionValue<boolean>;
     /** Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says. */
     readonly receive_shadows?: ExpressionValue<boolean>;
     /** 0 is a mirror finish, 1 fully diffuse. */
@@ -2779,9 +2796,12 @@ export interface Merge3dNode extends CompositionNodeBase<"merge_3d"> {
  * A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex
  * colours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets
  * and animation clips. A raster wired into `texture` shows on the surfaces of the material
- * `texture_material` names, such as a screen. The model's own lights and a camera are added with
- * `lights` and `camera`. Points, lines, and triangle strips and fans aren't drawn, with a
- * `scene.model_primitives_skipped` warning.
+ * `texture_material` names, such as a screen. With a scene wired into `projector` as well, the
+ * texture is projected onto those surfaces from the scene's camera instead, as a `material_3d`'s
+ * `projector` projects its texture, where faces turned away and points out of view show white;
+ * naming the model's only material projects a plate onto all of it. The model's own lights and a
+ * camera are added with `lights` and `camera`. Points, lines, and triangle strips and fans aren't
+ * drawn, with a `scene.model_primitives_skipped` warning.
  */
 export interface Model3dNode extends CompositionNodeBase<"model_3d"> {
   readonly params?: {
@@ -2828,6 +2848,11 @@ export interface Model3dNode extends CompositionNodeBase<"model_3d"> {
     readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
+    /**
+     * With a `projector` wired, the surfaces showing `texture` that the projector can't see,
+     * behind surfaces that cast shadows, show white.
+     */
+    readonly projector_occlusion?: ExpressionValue<boolean>;
     /** Darkens where shadows fall on its lit surfaces. */
     readonly receive_shadows?: ExpressionValue<boolean>;
     /**
@@ -4181,13 +4206,13 @@ export interface NodeInputPortNameByKind {
   readonly "lens_distortion": "source";
   readonly "levels": "source";
   readonly "light_3d": never;
-  readonly "material_3d": "texture";
+  readonly "material_3d": "projector" | "texture";
   readonly "media_in": never;
   readonly "media_output": "source";
   readonly "merge": "base" | "mask" | "overlay";
   readonly "merge_2d": "drawings";
   readonly "merge_3d": "objects";
-  readonly "model_3d": "texture";
+  readonly "model_3d": "projector" | "texture";
   readonly "motion_blur": "source";
   readonly "offset_2d": "geometry";
   readonly "opacity": "source";
@@ -4376,13 +4401,13 @@ export interface NodeInputPortKindByKind {
   readonly "lens_distortion": { readonly "source": "raster" };
   readonly "levels": { readonly "source": "raster" };
   readonly "light_3d": {};
-  readonly "material_3d": { readonly "texture": "raster" };
+  readonly "material_3d": { readonly "texture": "raster"; readonly "projector": "scene" };
   readonly "media_in": {};
   readonly "media_output": { readonly "source": "raster" };
   readonly "merge": { readonly "base": "raster"; readonly "overlay": "raster"; readonly "mask": "raster" };
   readonly "merge_2d": { readonly "drawings": "drawing" };
   readonly "merge_3d": { readonly "objects": "scene" };
-  readonly "model_3d": { readonly "texture": "raster" };
+  readonly "model_3d": { readonly "texture": "raster"; readonly "projector": "scene" };
   readonly "motion_blur": { readonly "source": "raster" };
   readonly "offset_2d": { readonly "geometry": "geometry" };
   readonly "opacity": { readonly "source": "raster" };
@@ -4802,13 +4827,25 @@ export const nodeInputPorts = {
    * `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest
    * of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.
    * Its alpha counts where the material blends or masks, through `opacity` or the colour's alpha.
-   * Wired into any other object, a material with a texture fails the render.
+   * Wired into any other object, a material with a texture fails the render, unless it has a
+   * `projector`; an `image_plane_3d` shows its own source and fails with either.
+   * 
+   * A scene wired into `projector` projects the `texture` from its camera, chosen as `render_3d`
+   * would choose it, in place of texture coordinates, so it shows on any object but an image
+   * plane, `instance_3d` copies included. Each point of the surface takes the texel the projector
+   * sees it at: the texture fills the projector's view at the texture's own aspect ratio, with the
+   * camera's `fov` or `ortho_height`, `near` and `far`. Faces turned away from the projector,
+   * points outside its view and, with `projector_occlusion`, points it can't see show `color`
+   * alone. The projector stands where its own scene places it, whatever places the objects, at the
+   * frame being drawn, so a moving camera moves the projection: a plate projected onto geometry
+   * wants a still `camera_3d` of its own, apart from the camera the scene is drawn from. A
+   * `projector` without a `texture` fails the render.
    * 
    * `alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose
    * material is unlit and double-sided, with the opaque objects so it orders correctly where cards
    * cross. As a glTF `MASK` material does, it shows only the texels that reach `alpha_cutoff`.
    */
-  "material_3d": { "texture": { kind: "raster", variadic: false } },
+  "material_3d": { "texture": { kind: "raster", variadic: false }, "projector": { kind: "scene", variadic: false } },
   /** Binds an external image or video frame as a GPU texture. */
   "media_in": {},
   /**
@@ -4829,11 +4866,14 @@ export const nodeInputPorts = {
    * A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex
    * colours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets
    * and animation clips. A raster wired into `texture` shows on the surfaces of the material
-   * `texture_material` names, such as a screen. The model's own lights and a camera are added with
-   * `lights` and `camera`. Points, lines, and triangle strips and fans aren't drawn, with a
-   * `scene.model_primitives_skipped` warning.
+   * `texture_material` names, such as a screen. With a scene wired into `projector` as well, the
+   * texture is projected onto those surfaces from the scene's camera instead, as a `material_3d`'s
+   * `projector` projects its texture, where faces turned away and points out of view show white;
+   * naming the model's only material projects a plate onto all of it. The model's own lights and a
+   * camera are added with `lights` and `camera`. Points, lines, and triangle strips and fans aren't
+   * drawn, with a `scene.model_primitives_skipped` warning.
    */
-  "model_3d": { "texture": { kind: "raster", variadic: false } },
+  "model_3d": { "texture": { kind: "raster", variadic: false }, "projector": { kind: "scene", variadic: false } },
   /**
    * Blurs everything that moves in its source, including what analytic motion blur can't see:
    * animated sizes, path data, motion upstream of a transform and motion inside video. Analytic

@@ -149,14 +149,31 @@ pub struct Morph {
     pub targets: u32,
 }
 
+/// The most projectors whose textures one frame's surfaces show.
+pub const MAX_PROJECTORS: usize = 8;
+
+/// A camera a surface's texture is projected from, in place of the mesh's texture coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Projector {
+    /// Where the projector is in the world and how it projects.
+    pub camera: Camera,
+    /// The texture's width over its height, which the projection spans.
+    pub aspect: f32,
+    /// Whether surfaces it can't see, behind those that cast shadows, show none of the texture.
+    pub occlusion: bool,
+}
+
 /// How an object's surface is shaded, in linear light.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Surface<T> {
     /// Linear colour with straight alpha, which the texture and base colour map are multiplied by.
     pub base_color: [f32; 4],
     /// A Lumen raster, premultiplied and sRGB-encoded, whose texels colour the surface through
-    /// the mesh's texture coordinates.
+    /// the mesh's texture coordinates, or from `projector`.
     pub texture: Option<T>,
+    /// Projects `texture` onto the surface where the projector's view reaches a face turned
+    /// towards it; elsewhere the surface shows its base colour alone.
+    pub projector: Option<Projector>,
     /// Samples `texture` at the nearest texel of its full size wherever it is shown, instead of
     /// filtering it.
     pub nearest: bool,
@@ -202,6 +219,7 @@ impl<T> Default for Surface<T> {
         Self {
             base_color: [1.0; 4],
             texture: None,
+            projector: None,
             nearest: false,
             maps: Maps::default(),
             map_uvs: [MapUv::default(); 5],

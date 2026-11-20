@@ -163,6 +163,10 @@ pub struct Material3dParams {
     /// pixel the one texel under it at any size, for pixel art.
     #[meta()]
     pub sampling: RasterSampling,
+    /// With a `projector` wired, surfaces the projector can't see, behind surfaces that cast
+    /// shadows, show the colour alone.
+    #[meta()]
+    pub projector_occlusion: bool,
 }
 
 impl Default for Material3dParams {
@@ -182,6 +186,7 @@ impl Default for Material3dParams {
             unlit_shadows: 0.0,
             shadow_catcher: false,
             sampling: RasterSampling::Linear,
+            projector_occlusion: true,
         }
     }
 }
@@ -206,7 +211,19 @@ impl Material3dParams {
 /// `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest
 /// of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.
 /// Its alpha counts where the material blends or masks, through `opacity` or the colour's alpha.
-/// Wired into any other object, a material with a texture fails the render.
+/// Wired into any other object, a material with a texture fails the render, unless it has a
+/// `projector`; an `image_plane_3d` shows its own source and fails with either.
+///
+/// A scene wired into `projector` projects the `texture` from its camera, chosen as `render_3d`
+/// would choose it, in place of texture coordinates, so it shows on any object but an image
+/// plane, `instance_3d` copies included. Each point of the surface takes the texel the projector
+/// sees it at: the texture fills the projector's view at the texture's own aspect ratio, with the
+/// camera's `fov` or `ortho_height`, `near` and `far`. Faces turned away from the projector,
+/// points outside its view and, with `projector_occlusion`, points it can't see show `color`
+/// alone. The projector stands where its own scene places it, whatever places the objects, at the
+/// frame being drawn, so a moving camera moves the projection: a plate projected onto geometry
+/// wants a still `camera_3d` of its own, apart from the camera the scene is drawn from. A
+/// `projector` without a `texture` fails the render.
 ///
 /// `alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose
 /// material is unlit and double-sided, with the opaque objects so it orders correctly where cards
@@ -225,6 +242,9 @@ pub struct Material3d {
 
     #[input(raster, optional)]
     pub texture: Option<OutputRef>,
+    /// A scene whose camera projects `texture` onto the surfaces, usually a `camera_3d` alone.
+    #[input(scene, optional)]
+    pub projector: Option<OutputRef>,
 }
 
 impl Material3d {
@@ -478,6 +498,10 @@ pub struct Model3dParams {
     /// `particles_3d` holding it that names one, or none.
     #[meta()]
     pub matte: String,
+    /// With a `projector` wired, the surfaces showing `texture` that the projector can't see,
+    /// behind surfaces that cast shadows, show white.
+    #[meta()]
+    pub projector_occlusion: bool,
     #[meta(flatten)]
     pub placement: Placement3d,
 }
@@ -496,6 +520,7 @@ impl Default for Model3dParams {
             lights: false,
             camera: String::new(),
             matte: String::new(),
+            projector_occlusion: true,
             placement: Placement3d::default(),
         }
     }
@@ -504,9 +529,12 @@ impl Default for Model3dParams {
 /// A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex
 /// colours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets
 /// and animation clips. A raster wired into `texture` shows on the surfaces of the material
-/// `texture_material` names, such as a screen. The model's own lights and a camera are added with
-/// `lights` and `camera`. Points, lines, and triangle strips and fans aren't drawn, with a
-/// `scene.model_primitives_skipped` warning.
+/// `texture_material` names, such as a screen. With a scene wired into `projector` as well, the
+/// texture is projected onto those surfaces from the scene's camera instead, as a `material_3d`'s
+/// `projector` projects its texture, where faces turned away and points out of view show white;
+/// naming the model's only material projects a plate onto all of it. The model's own lights and a
+/// camera are added with `lights` and `camera`. Points, lines, and triangle strips and fans aren't
+/// drawn, with a `scene.model_primitives_skipped` warning.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "model_3d",
@@ -521,6 +549,9 @@ pub struct Model3d {
 
     #[input(optional)]
     pub texture: Option<OutputRef>,
+    /// A scene whose camera projects `texture` onto the surfaces it shows on.
+    #[input(scene, optional)]
+    pub projector: Option<OutputRef>,
 }
 
 impl Model3d {

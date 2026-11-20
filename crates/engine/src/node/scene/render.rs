@@ -5,8 +5,8 @@
 
 use bytemuck::{Pod, Zeroable};
 use lumen_3d::{
-    Blending, Bounds, Camera, DrawKey, Draws, Filter, LightKind, Lighting, Map, MapUv, Object,
-    Projection, Row, Sampler, ShadowAtlas, Wrap,
+    Blending, Bounds, Camera, DrawKey, Draws, Filter, LightKind, Lighting, MAX_PROJECTORS, Map,
+    MapUv, Object, Projection, Projector, Row, Sampler, ShadowAtlas, Wrap,
 };
 use lumen_gpu::{
     DEPTH_FORMAT, DepthTest, LayoutEntry, LayoutKind, RenderTargetSpec, Res, Size, TargetLoad,
@@ -66,6 +66,7 @@ const LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(28, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
     LayoutEntry::staged(29, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
     LayoutEntry::staged(30, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(31, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
 ];
 /// What drawing depth or normals binds: the vertices, what cuts out masked and blended surfaces,
 /// and the normal map.
@@ -86,6 +87,7 @@ const DATA_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(28, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
     LayoutEntry::staged(29, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
     LayoutEntry::staged(30, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(31, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
 ];
 /// What resolving the mattes binds: the first matte target, the params, the output and the second
 /// target.
@@ -123,6 +125,7 @@ const SHADOW_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(28, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
     LayoutEntry::staged(29, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
     LayoutEntry::staged(30, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(31, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
 ];
 
 const SCENE_3D: RenderProgram = RenderProgram {
@@ -223,6 +226,8 @@ pub(crate) const FLAG_VERTEX_COLORS: u32 = 16384;
 pub(crate) const FLAG_MAP_UVS: u32 = 32768;
 /// The object draws only its `part` of the textured quad.
 pub(crate) const FLAG_PART: u32 = 65536;
+/// The object's raster is projected from its row of the projector table.
+pub(crate) const FLAG_PROJECTED: u32 = 131072;
 pub(crate) const LIGHT_DIRECTIONAL: u32 = 0;
 pub(crate) const LIGHT_POINT: u32 = 1;
 pub(crate) const LIGHT_SPOT: u32 = 2;
@@ -331,8 +336,26 @@ pub(crate) struct GpuObject {
     pub(crate) unlit_shadows: f32,
     /// The channel of the mattes the object's coverage goes to, or [`NO_MATTE`].
     pub(crate) matte: u32,
+    /// The object's row of the projector table, with [`FLAG_PROJECTED`]; 0 otherwise.
+    pub(crate) projector: u32,
+    _pad: [u32; 3],
     /// [`Object::part`]'s edges, or the whole quad's.
     pub(crate) part: [f32; 4],
+}
+
+/// One row of the projector table; keep in sync with `Projector` in `scene.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Projector", source = SHADER)]
+pub(crate) struct GpuProjector {
+    /// World to the projector's clip space, whose X and Y span its texture from -1 to 1.
+    pub(crate) view_proj: [[f32; 4]; 4],
+    pub(crate) position: [f32; 3],
+    pub(crate) orthographic: u32,
+    /// The projector's +Z axis in world space, back towards it.
+    pub(crate) back: [f32; 3],
+    /// The projector's view in the shadow views, or -1 for a projector without occlusion.
+    pub(crate) shadow: i32,
 }
 
 /// One map's row of the map coordinates table; keep in sync with `MapUv` in `scene.wgsl`.
@@ -513,14 +536,22 @@ const VARIANTS: [(DepthTest, Option<wgpu::Face>); 6] = [
 ];
 
 /// `object`'s row of the object table, adding its maps' rows of the map coordinates table to
-/// `map_uvs` when any moves its coordinates or reads the second set.
+/// `map_uvs` when any moves its coordinates or reads the second set, and pointing at its row of
+/// the projector table, which holds `projectors`.
 fn gpu_object(
     object: &Object<GpuMesh, TexRef>,
     row: &Row,
     map_uvs: &mut Vec<GpuMapUv>,
+    projectors: &[Projector],
 ) -> GpuObject {
     let surface = &object.surface;
     let mut flags = 0;
+    let projector = surface
+        .projector
+        .and_then(|projector| projectors.iter().position(|&listed| listed == projector));
+    if projector.is_some() {
+        flags |= FLAG_PROJECTED;
+    }
     let first_map_uv = map_uvs.len() as u32;
     if surface.map_uvs != [MapUv::default(); 5] {
         flags |= FLAG_MAP_UVS;
@@ -605,7 +636,46 @@ fn gpu_object(
         first_map_uv,
         unlit_shadows: surface.unlit_shadows,
         matte: object.matte.map_or(NO_MATTE, u32::from),
+        projector: projector.unwrap_or(0) as u32,
+        _pad: [0; 3],
         part: object.part.unwrap_or([0.0, 0.0, 1.0, 1.0]),
+    }
+}
+
+/// The distinct projectors of the objects `draws` draws, in the order they are first drawn.
+fn projectors(
+    objects: &[Object<GpuMesh, TexRef>],
+    draws: &Draws<GpuMesh, TexRef>,
+) -> Result<Vec<Projector>, String> {
+    let mut projectors: Vec<Projector> = Vec::new();
+    let projected = draws
+        .rows
+        .iter()
+        .filter_map(|row| objects[row.object].surface.projector);
+    for projector in projected {
+        if projectors.contains(&projector) {
+            continue;
+        }
+        if projectors.len() == MAX_PROJECTORS {
+            return Err(format!(
+                "the scene's materials project textures from more than {MAX_PROJECTORS} \
+                 projectors"
+            ));
+        }
+        projectors.push(projector);
+    }
+    Ok(projectors)
+}
+
+/// `projector`'s row of the projector table, whose occlusion reads shadow view `shadow`.
+fn gpu_projector(projector: &Projector, shadow: Option<u32>) -> GpuProjector {
+    let camera = &projector.camera;
+    GpuProjector {
+        view_proj: (camera.projection_matrix(projector.aspect) * camera.view()).to_cols_array_2d(),
+        position: camera.position().into(),
+        orthographic: u32::from(matches!(camera.projection, Projection::Orthographic { .. })),
+        back: camera.back().into(),
+        shadow: shadow.map_or(-1, |view| view as i32),
     }
 }
 
@@ -694,11 +764,13 @@ fn gpu_shadow_views(atlas: &ShadowAtlas) -> Vec<GpuShadowView> {
         .collect()
 }
 
-/// The shadow views of `lights` over the objects `draws` draws, when any of them casts shadows.
+/// The shadow views of `lights` and `projectors` over the objects `draws` draws, when any of them
+/// casts shadows.
 fn shadow_atlas(
     objects: &[Object<GpuMesh, TexRef>],
     draws: &Draws<GpuMesh, TexRef>,
     lights: &[lumen_3d::Light],
+    projectors: &[Projector],
     camera: &Camera,
     aspect: f32,
     max_side: u32,
@@ -718,7 +790,9 @@ fn shadow_atlas(
             receivers = receivers.union(object.bounds);
         }
     }
-    ShadowAtlas::plan(lights, camera, aspect, casters, receivers, max_side)
+    ShadowAtlas::plan(
+        lights, projectors, camera, aspect, casters, receivers, max_side,
+    )
 }
 
 pub(super) fn render_error(node_id: crate::node::NodeId, details: String) -> LumenError {
@@ -819,7 +893,9 @@ impl Render3d {
         let globals = cx.rec.uniform(&globals(
             &camera, aspect, 0, &no_lights, params, [0.0; 4], 1,
         ));
-        let tables = Tables::new(cx, collected, &draws, 1)?;
+        let projectors =
+            projectors(&scene.objects, &draws).map_err(|details| render_error(self.id, details))?;
+        let tables = Tables::new(cx, collected, &draws, 1, (&projectors, None))?;
         let target = cx.rec.acquire(
             size,
             COLOR_FORMAT,
@@ -847,6 +923,7 @@ impl Render3d {
                 ),
                 (28, tables.weights),
                 (29, tables.map_uvs),
+                (31, tables.projectors),
             ];
             for (texture, sampler, map) in [
                 (10, 15, run.key.maps.base_color),
@@ -1076,11 +1153,14 @@ impl Render3d {
         mattes: usize,
     ) -> crate::Result<(Raster, Raster)> {
         let max = cx.rec.device().limits().max_texture_dimension_2d;
-        if collected
-            .scene
-            .lights
-            .iter()
-            .any(|light| light.shadow.is_some())
+        let scene = &collected.scene;
+        if scene.lights.iter().any(|light| light.shadow.is_some())
+            || scene.objects.iter().any(|object| {
+                object
+                    .surface
+                    .projector
+                    .is_some_and(|projector| projector.occlusion)
+            })
         {
             collected.place_bounds();
         }
@@ -1120,10 +1200,13 @@ impl Render3d {
         } else {
             Lighting::of(&scene.lights)
         };
+        let projectors =
+            projectors(&scene.objects, &draws).map_err(|details| render_error(self.id, details))?;
         let atlas = shadow_atlas(
             &scene.objects,
             &draws,
             &lighting.direct,
+            &projectors,
             &camera,
             aspect,
             max.min(lumen_3d::atlas_side(cx.pixel_scale())),
@@ -1160,7 +1243,7 @@ impl Render3d {
         ));
         let lights = cx.rec.storage_parts(&[bytemuck::cast_slice(&lights)]);
         let views = atlas.as_ref().map_or(1, |atlas| atlas.views.len() as u32);
-        let tables = Tables::new(cx, &collected, &draws, views)?;
+        let tables = Tables::new(cx, &collected, &draws, views, (&projectors, atlas.as_ref()))?;
 
         let color = cx.rec.acquire(
             target_size,
@@ -1212,6 +1295,7 @@ impl Render3d {
             map_uvs,
             weights,
             joints,
+            projectors,
             runs,
         } = tables;
 
@@ -1282,6 +1366,7 @@ impl Render3d {
                 (28, weights),
                 (29, map_uvs),
                 (30, instances),
+                (31, projectors),
             ];
             for (slot, map) in (0..).zip(maps) {
                 let (texture, sampler) = match map {
@@ -1350,6 +1435,7 @@ fn shadow_pass(
         map_uvs,
         weights,
         joints,
+        projectors,
         ref runs,
     } = tables;
     let shadow_views = match &atlas {
@@ -1404,6 +1490,7 @@ fn shadow_pass(
                     (28, weights),
                     (29, map_uvs),
                     (30, instances),
+                    (31, projectors),
                 ];
                 let load = if cast == 0 {
                     TargetLoad::Clear
@@ -1592,26 +1679,43 @@ struct Tables {
     map_uvs: Res,
     weights: Res,
     joints: Res,
+    projectors: Res,
     runs: Vec<(Res, Res)>,
 }
 
 impl Tables {
     /// The tables of `collected`'s objects that `draws` draws, into `views` shadow views when
-    /// they are drawn into the shadow atlas.
+    /// they are drawn into the shadow atlas, with the table of `projectors`, which take their
+    /// views in `atlas`.
     fn new(
         cx: &mut FrameCx<'_>,
         collected: &Collected,
         draws: &Draws<GpuMesh, TexRef>,
         views: u32,
+        (projectors, atlas): (&[Projector], Option<&ShadowAtlas>),
     ) -> crate::Result<Self> {
         let scene = &collected.scene;
         let mut map_uvs = Vec::new();
         let objects: Vec<GpuObject> = draws
             .rows
             .iter()
-            .map(|row| gpu_object(&scene.objects[row.object], row, &mut map_uvs))
+            .map(|row| gpu_object(&scene.objects[row.object], row, &mut map_uvs, projectors))
             .collect();
         let objects = cx.rec.storage_parts(&[bytemuck::cast_slice(&objects)]);
+        let mut projector_rows: Vec<GpuProjector> = projectors
+            .iter()
+            .enumerate()
+            .map(|(index, projector)| {
+                let view = atlas.and_then(|atlas| atlas.projector_view[index]);
+                gpu_projector(projector, view)
+            })
+            .collect();
+        if projector_rows.is_empty() {
+            projector_rows.push(GpuProjector::zeroed());
+        }
+        let projectors = cx
+            .rec
+            .storage_parts(&[bytemuck::cast_slice(&projector_rows)]);
         // A storage binding can't be empty.
         if map_uvs.is_empty() {
             map_uvs.push(GpuMapUv::zeroed());
@@ -1668,6 +1772,7 @@ impl Tables {
             map_uvs,
             weights,
             joints,
+            projectors,
             runs,
         })
     }

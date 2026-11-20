@@ -3,7 +3,7 @@
 
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
-use crate::{Bounds, Camera, Light, LightKind, Projection};
+use crate::{Bounds, Camera, Light, LightKind, Projection, Projector};
 
 /// Lights asking for shadows past this many, in scene order, cast none.
 pub const MAX_SHADOW_LIGHTS: usize = 8;
@@ -54,6 +54,8 @@ pub struct ShadowAtlas {
     pub views: Vec<ShadowView>,
     /// Each light's first view, or `None` for a light without shadows.
     pub first_view: Vec<Option<u32>>,
+    /// Each projector's view, or `None` for a projector without occlusion.
+    pub projector_view: Vec<Option<u32>>,
     /// The lights asking for shadows past the first [`MAX_SHADOW_LIGHTS`], which cast none.
     pub dropped: Vec<usize>,
 }
@@ -61,24 +63,27 @@ pub struct ShadowAtlas {
 impl ShadowAtlas {
     /// The views the first [`MAX_SHADOW_LIGHTS`] of `lights` asking for shadows cast them from,
     /// for casters within `casters` onto receivers within `receivers` that `camera` sees with an
-    /// image `aspect` times as wide as it is tall, in an atlas no wider or taller than `max_side`.
-    /// Lights whose place or direction isn't finite cast none, and don't count. `None` when no
-    /// light casts shadows.
+    /// image `aspect` times as wide as it is tall, then a view of the casters from each of
+    /// `projectors` asking for occlusion, over its frustum, in an atlas no wider or taller than
+    /// `max_side`. Lights whose place or direction isn't finite cast none, and don't count, and
+    /// projectors whose view isn't finite take none. `None` when there are no views.
     pub fn plan(
         lights: &[Light],
+        projectors: &[Projector],
         camera: &Camera,
         aspect: f32,
         casters: Bounds,
         receivers: Bounds,
         max_side: u32,
     ) -> Option<Self> {
-        if casters.is_empty() || receivers.is_empty() {
+        if casters.is_empty() {
             return None;
         }
         let mut casting = Vec::new();
         let mut dropped = Vec::new();
         for (index, light) in lights.iter().enumerate() {
-            let asks = light.shadow.is_some()
+            let asks = !receivers.is_empty()
+                && light.shadow.is_some()
                 && view_count(light.kind) > 0
                 && light.position.is_finite()
                 && light.direction.is_finite();
@@ -91,7 +96,12 @@ impl ShadowAtlas {
                 dropped.push(index);
             }
         }
-        let count: u32 = casting.iter().map(|&i| view_count(lights[i].kind)).sum();
+        let occluding = projectors.iter().filter(|projector| projector.occlusion);
+        let count: u32 = casting
+            .iter()
+            .map(|&i| view_count(lights[i].kind))
+            .sum::<u32>()
+            + occluding.count() as u32;
         if count == 0 {
             return None;
         }
@@ -112,6 +122,14 @@ impl ShadowAtlas {
                 views.extend(light_views);
             }
         }
+        let mut projector_view = vec![None; projectors.len()];
+        for (index, projector) in projectors.iter().enumerate() {
+            let view = projector_view_of(projector, tile);
+            if projector.occlusion && finite(&view) {
+                projector_view[index] = Some(views.len() as u32);
+                views.push(view);
+            }
+        }
         if views.is_empty() {
             return None;
         }
@@ -121,6 +139,7 @@ impl ShadowAtlas {
             rows,
             views,
             first_view,
+            projector_view,
             dropped,
         })
     }
@@ -216,13 +235,38 @@ fn views_of(
         }
         LightKind::Ambient => return None,
     };
-    let finite = |view: &ShadowView| {
-        view.view_proj.is_finite()
-            && view.depth.is_finite()
-            && view.texel.is_finite()
-            && view.texel > 0.0
-    };
     views.iter().all(finite).then_some(views)
+}
+
+fn finite(view: &ShadowView) -> bool {
+    view.view_proj.is_finite()
+        && view.depth.is_finite()
+        && view.texel.is_finite()
+        && view.texel > 0.0
+}
+
+/// The view `projector` sees casters from: its own projection, over its frustum.
+fn projector_view_of(projector: &Projector, tile: u32) -> ShadowView {
+    let camera = &projector.camera;
+    let view = camera.view();
+    let (near, far) = (camera.near, camera.far);
+    // A texel's width along the frustum's wider side.
+    let wide = projector.aspect.max(1.0) / tile as f32;
+    let view_proj = camera.projection_matrix(projector.aspect) * view;
+    match camera.projection {
+        Projection::Perspective { fov_y } => ShadowView {
+            view_proj,
+            depth: -view.row(2) / far,
+            texel: 2.0 * (fov_y * 0.5).tan() * far * wide,
+            perspective: true,
+        },
+        Projection::Orthographic { height } => ShadowView {
+            view_proj,
+            depth: (-view.row(2) - Vec4::new(0.0, 0.0, 0.0, near)) / (far - near),
+            texel: height * wide,
+            perspective: false,
+        },
+    }
 }
 
 /// Just short of how near along `direction` the part of `casters` within a view from `position`,
@@ -547,7 +591,8 @@ mod tests {
         let mark = Vec3::new(0.3, 1.0, -0.2);
         let fits = [20.0, 500.0, 5000.0].map(|half| {
             let scene = ground(half);
-            let atlas = ShadowAtlas::plan(&[sun], &camera, 16.0 / 9.0, scene, scene, 8192).unwrap();
+            let atlas =
+                ShadowAtlas::plan(&[sun], &[], &camera, 16.0 / 9.0, scene, scene, 8192).unwrap();
             let view = atlas.views[0];
             (view.texel, texel_of(&view, atlas.tile, mark).truncate())
         });
@@ -578,7 +623,7 @@ mod tests {
                 }),
                 ..aimed(LightKind::Directional, Vec3::new(2.0, 5.0, 3.0))
             };
-            ShadowAtlas::plan(&[sun], &camera, 16.0 / 9.0, scene, scene, 8192)
+            ShadowAtlas::plan(&[sun], &[], &camera, 16.0 / 9.0, scene, scene, 8192)
                 .unwrap()
                 .views[0]
         });
@@ -610,9 +655,16 @@ mod tests {
             )
         };
         for lights in [[point], [spot]] {
-            let atlas =
-                ShadowAtlas::plan(&lights, &Camera::default(), 1.0, casters, receivers, 8192)
-                    .unwrap();
+            let atlas = ShadowAtlas::plan(
+                &lights,
+                &[],
+                &Camera::default(),
+                1.0,
+                casters,
+                receivers,
+                8192,
+            )
+            .unwrap();
             let mut seen = 0;
             for view in &atlas.views {
                 for corner in casters.corners() {
@@ -636,8 +688,16 @@ mod tests {
         let scene = ground(5000.0);
         let spot = aimed(LightKind::Spot, Vec3::new(0.0, 4.0, 0.0));
         let point = light(LightKind::Point, Mat4::from_translation(Vec3::Y * 3.0));
-        let atlas =
-            ShadowAtlas::plan(&[spot, point], &Camera::default(), 1.0, scene, scene, 8192).unwrap();
+        let atlas = ShadowAtlas::plan(
+            &[spot, point],
+            &[],
+            &Camera::default(),
+            1.0,
+            scene,
+            scene,
+            8192,
+        )
+        .unwrap();
         // The box's top is 3 m below the spot light and 2 m below the point light.
         for view in [atlas.views[0], atlas.views[1 + 3]] {
             let clip = view.view_proj * Vec3::Y.extend(1.0);
@@ -651,7 +711,7 @@ mod tests {
     fn a_directional_view_covers_what_the_camera_sees_and_orders_depth_from_the_light() {
         let sun = aimed(LightKind::Directional, Vec3::new(2.0, 5.0, 3.0));
         let camera = Camera::default();
-        let atlas = ShadowAtlas::plan(&[sun], &camera, 1.0, scene(), scene(), 8192).unwrap();
+        let atlas = ShadowAtlas::plan(&[sun], &[], &camera, 1.0, scene(), scene(), 8192).unwrap();
         assert_eq!((atlas.tile, atlas.size()), (4096, (4096, 4096)));
         let view = atlas.views[0];
         // The camera, 5 m out with a 40° view, sees the floor to 15 m away, so the view is
@@ -682,8 +742,8 @@ mod tests {
                 ),
                 ..Camera::default()
             };
-            let atlas =
-                ShadowAtlas::plan(&[sun], &camera, 16.0 / 9.0, scene(), scene(), 8192).unwrap();
+            let atlas = ShadowAtlas::plan(&[sun], &[], &camera, 16.0 / 9.0, scene(), scene(), 8192)
+                .unwrap();
             let view = atlas.views[0];
             let fractions = marks.map(|mark| texel_of(&view, atlas.tile, mark).truncate().fract());
             let (texel, start) = *first.get_or_insert((view.texel, fractions));
@@ -704,6 +764,7 @@ mod tests {
         let point = light(LightKind::Point, Mat4::from_translation(Vec3::Y * 3.0));
         let atlas = ShadowAtlas::plan(
             &[spot, point],
+            &[],
             &Camera::default(),
             1.0,
             scene(),
@@ -759,8 +820,16 @@ mod tests {
         };
         let mut lights = vec![unshadowed, lost];
         lights.extend([sun; MAX_SHADOW_LIGHTS + 2]);
-        let atlas =
-            ShadowAtlas::plan(&lights, &Camera::default(), 1.0, scene(), scene(), 8192).unwrap();
+        let atlas = ShadowAtlas::plan(
+            &lights,
+            &[],
+            &Camera::default(),
+            1.0,
+            scene(),
+            scene(),
+            8192,
+        )
+        .unwrap();
         assert_eq!(atlas.views.len(), MAX_SHADOW_LIGHTS);
         assert_eq!(atlas.first_view[..3], [None, None, Some(0)]);
         assert_eq!(atlas.dropped, [10, 11]);
@@ -770,6 +839,7 @@ mod tests {
         assert_eq!(
             ShadowAtlas::plan(
                 &[sun],
+                &[],
                 &Camera::default(),
                 1.0,
                 Bounds::EMPTY,
@@ -781,6 +851,7 @@ mod tests {
         assert_eq!(
             ShadowAtlas::plan(
                 &[unshadowed],
+                &[],
                 &Camera::default(),
                 1.0,
                 scene(),
@@ -789,8 +860,8 @@ mod tests {
             ),
             None
         );
-        let small =
-            ShadowAtlas::plan(&[sun], &Camera::default(), 1.0, scene(), scene(), 1000).unwrap();
+        let small = ShadowAtlas::plan(&[sun], &[], &Camera::default(), 1.0, scene(), scene(), 1000)
+            .unwrap();
         assert_eq!(small.tile, 1000);
     }
 
@@ -805,6 +876,7 @@ mod tests {
         };
         let atlas = ShadowAtlas::plan(
             &[sun, point, far],
+            &[],
             &Camera::default(),
             1.0,
             huge,
@@ -817,8 +889,46 @@ mod tests {
             assert!(view.view_proj.is_finite() && view.depth.is_finite() && view.texel > 0.0);
         }
         assert_eq!(
-            ShadowAtlas::plan(&[far], &Camera::default(), 1.0, huge, huge, 8192),
+            ShadowAtlas::plan(&[far], &[], &Camera::default(), 1.0, huge, huge, 8192),
             None
+        );
+    }
+
+    #[test]
+    fn projectors_asking_for_occlusion_see_the_casters_through_their_own_frustum() {
+        let sun = aimed(LightKind::Directional, Vec3::new(2.0, 5.0, 3.0));
+        let projector = |occlusion| Projector {
+            camera: Camera::default(),
+            aspect: 2.0,
+            occlusion,
+        };
+        let projectors = [projector(false), projector(true)];
+        // Projectors need casters but no receivers, which only lights shadow.
+        let atlas = ShadowAtlas::plan(
+            &[sun],
+            &projectors,
+            &Camera::default(),
+            1.0,
+            scene(),
+            Bounds::EMPTY,
+            8192,
+        )
+        .unwrap();
+        assert_eq!(atlas.first_view, [None]);
+        assert_eq!(atlas.projector_view, [None, Some(0)]);
+        let view = atlas.views[0];
+        let camera = Camera::default();
+        assert_eq!(
+            view.view_proj,
+            camera.projection_matrix(2.0) * camera.view()
+        );
+        // 5 m in front of the projector is 5 m of its 1000 m reach.
+        let depth = view.depth.truncate().dot(Vec3::ZERO) + view.depth.w;
+        assert!((depth - 0.005).abs() < 1e-6);
+        assert_eq!(
+            ShadowAtlas::plan(&[], &projectors, &camera, 1.0, Bounds::EMPTY, scene(), 8192),
+            None,
+            "nothing occludes a scene without casters"
         );
     }
 }

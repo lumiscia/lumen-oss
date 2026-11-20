@@ -7,7 +7,9 @@ use lumen_3d::model::{ModelScene, Pose};
 use lumen_3d::{Camera, MAX_SCENE_NODES, Projection};
 
 use super::instance::MAX_NESTING;
-use super::{model_error, model_playback, model_seconds, open_model, placement, pose, vec3};
+use super::{
+    held_frames, model_error, model_playback, model_seconds, open_model, placement, pose, vec3,
+};
 use crate::error::{At, RenderError};
 use crate::gpu::frame_graph::FrameCx;
 use crate::node::scene::{Camera3dParams, Model3d, Model3dParams, Projection3d};
@@ -168,6 +170,16 @@ impl<N: JsonNode> Search<N> {
             return Ok(None);
         };
         let clip = scene.animation(&params.animation).map_err(error)?;
+        if let Some(clip) = clip
+            && node.animates()
+        {
+            cx.held_on(held_frames(
+                scene.clip_span(clip),
+                params,
+                f64::from(cx.expr().fps),
+                cx.frame_time().value(),
+            ));
+        }
         let seconds = model_seconds(&cx.expr());
         let pose = scene.pose(model_playback(clip, params, seconds));
         let root = parent * placement(&params.placement).matrix();

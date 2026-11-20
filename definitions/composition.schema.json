@@ -5878,7 +5878,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "How a surface responds to light, for the 3D objects it is wired into through their `material`\ninput. One `material_3d` can be wired to any number of objects, which then share its params,\nso changing it changes them all. Each param takes an expression as it does on any node.\nObjects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses\nan unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by\n`color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest\nof the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.\nIts alpha counts where the material blends or masks, through `opacity` or the colour's alpha.\nWired into any other object, a material with a texture fails the render.\n\n`alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose\nmaterial is unlit and double-sided, with the opaque objects so it orders correctly where cards\ncross. As a glTF `MASK` material does, it shows only the texels that reach `alpha_cutoff`.",
+            "description": "How a surface responds to light, for the 3D objects it is wired into through their `material`\ninput. One `material_3d` can be wired to any number of objects, which then share its params,\nso changing it changes them all. Each param takes an expression as it does on any node.\nObjects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses\nan unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by\n`color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest\nof the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.\nIts alpha counts where the material blends or masks, through `opacity` or the colour's alpha.\nWired into any other object, a material with a texture fails the render, unless it has a\n`projector`; an `image_plane_3d` shows its own source and fails with either.\n\nA scene wired into `projector` projects the `texture` from its camera, chosen as `render_3d`\nwould choose it, in place of texture coordinates, so it shows on any object but an image\nplane, `instance_3d` copies included. Each point of the surface takes the texel the projector\nsees it at: the texture fills the projector's view at the texture's own aspect ratio, with the\ncamera's `fov` or `ortho_height`, `near` and `far`. Faces turned away from the projector,\npoints outside its view and, with `projector_occlusion`, points it can't see show `color`\nalone. The projector stands where its own scene places it, whatever places the objects, at the\nframe being drawn, so a moving camera moves the projection: a plate projected onto geometry\nwants a still `camera_3d` of its own, apart from the camera the scene is drawn from. A\n`projector` without a `texture` fails the render.\n\n`alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose\nmaterial is unlit and double-sided, with the opaque objects so it orders correctly where cards\ncross. As a glTF `MASK` material does, it shows only the texels that reach `alpha_cutoff`.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -6028,6 +6028,20 @@
                     },
                     "x-lumen-kind": "float"
                   },
+                  "projector_occlusion": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "With a `projector` wired, surfaces the projector can't see, behind surfaces that cast\nshadows, show the colour alone.",
+                    "title": "Projector Occlusion",
+                    "x-lumen-kind": "bool"
+                  },
                   "receive_shadows": {
                     "anyOf": [
                       {
@@ -6151,6 +6165,12 @@
               {
                 "kind": "raster",
                 "name": "texture",
+                "optional": true,
+                "variadic": false
+              },
+              {
+                "kind": "scene",
+                "name": "projector",
                 "optional": true,
                 "variadic": false
               }
@@ -6847,7 +6867,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex\ncolours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets\nand animation clips. A raster wired into `texture` shows on the surfaces of the material\n`texture_material` names, such as a screen. The model's own lights and a camera are added with\n`lights` and `camera`. Points, lines, and triangle strips and fans aren't drawn, with a\n`scene.model_primitives_skipped` warning.",
+            "description": "A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex\ncolours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets\nand animation clips. A raster wired into `texture` shows on the surfaces of the material\n`texture_material` names, such as a screen. With a scene wired into `projector` as well, the\ntexture is projected onto those surfaces from the scene's camera instead, as a `material_3d`'s\n`projector` projects its texture, where faces turned away and points out of view show white;\nnaming the model's only material projects a plate onto all of it. The model's own lights and a\ncamera are added with `lights` and `camera`. Points, lines, and triangle strips and fans aren't\ndrawn, with a `scene.model_primitives_skipped` warning.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -6991,6 +7011,20 @@
                     },
                     "x-lumen-kind": "vec3"
                   },
+                  "projector_occlusion": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "With a `projector` wired, the surfaces showing `texture` that the projector can't see,\nbehind surfaces that cast shadows, show white.",
+                    "title": "Projector Occlusion",
+                    "x-lumen-kind": "bool"
+                  },
                   "receive_shadows": {
                     "anyOf": [
                       {
@@ -7088,6 +7122,12 @@
               {
                 "kind": "raster",
                 "name": "texture",
+                "optional": true,
+                "variadic": false
+              },
+              {
+                "kind": "scene",
+                "name": "projector",
                 "optional": true,
                 "variadic": false
               }

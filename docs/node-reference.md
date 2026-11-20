@@ -1063,7 +1063,9 @@ Params:
 
 ## `material_3d`
 
-How a surface responds to light, for the 3D objects it is wired into through their `material` input. One `material_3d` can be wired to any number of objects, which then share its params, so changing it changes them all. Each param takes an expression as it does on any node. Objects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses an unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`. Its alpha counts where the material blends or masks, through `opacity` or the colour's alpha. Wired into any other object, a material with a texture fails the render.
+How a surface responds to light, for the 3D objects it is wired into through their `material` input. One `material_3d` can be wired to any number of objects, which then share its params, so changing it changes them all. Each param takes an expression as it does on any node. Objects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses an unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`. Its alpha counts where the material blends or masks, through `opacity` or the colour's alpha. Wired into any other object, a material with a texture fails the render, unless it has a `projector`; an `image_plane_3d` shows its own source and fails with either.
+
+A scene wired into `projector` projects the `texture` from its camera, chosen as `render_3d` would choose it, in place of texture coordinates, so it shows on any object but an image plane, `instance_3d` copies included. Each point of the surface takes the texel the projector sees it at: the texture fills the projector's view at the texture's own aspect ratio, with the camera's `fov` or `ortho_height`, `near` and `far`. Faces turned away from the projector, points outside its view and, with `projector_occlusion`, points it can't see show `color` alone. The projector stands where its own scene places it, whatever places the objects, at the frame being drawn, so a moving camera moves the projection: a plate projected onto geometry wants a still `camera_3d` of its own, apart from the camera the scene is drawn from. A `projector` without a `texture` fails the render.
 
 `alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose material is unlit and double-sided, with the opaque objects so it orders correctly where cards cross. As a glTF `MASK` material does, it shows only the texels that reach `alpha_cutoff`.
 
@@ -1072,6 +1074,7 @@ Category: scene. Output: material.
 Inputs:
 
 - `texture`: raster, optional
+- `projector`: scene, optional
 
 Params:
 
@@ -1083,6 +1086,7 @@ Params:
 - **`emissive`** (number, at least 0; default `0`) Light the surface gives off on its own, as a multiple of its base colour.
 - **`metallic`** (number, 0 to 1; default `0`) 0 is a dielectric such as plastic, 1 a bare metal.
 - **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier. With `alpha_mode` `blend`, anything below 1 is drawn blended, after opaque objects.
+- **`projector_occlusion`** (boolean; default `true`) With a `projector` wired, surfaces the projector can't see, behind surfaces that cast shadows, show the colour alone.
 - **`receive_shadows`** (boolean; default `true`) Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says.
 - **`roughness`** (number, 0 to 1; default `0.5`) 0 is a mirror finish, 1 fully diffuse.
 - **`sampling`** (`"nearest"` | `"linear"`; default `"linear"`) How a shape reads its `texture`, as `sampling` on `image_plane_3d`: `nearest` gives each pixel the one texel under it at any size, for pixel art.
@@ -1109,13 +1113,14 @@ Params:
 
 ## `model_3d`
 
-A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex colours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets and animation clips. A raster wired into `texture` shows on the surfaces of the material `texture_material` names, such as a screen. The model's own lights and a camera are added with `lights` and `camera`. Points, lines, and triangle strips and fans aren't drawn, with a `scene.model_primitives_skipped` warning.
+A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex colours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets and animation clips. A raster wired into `texture` shows on the surfaces of the material `texture_material` names, such as a screen. With a scene wired into `projector` as well, the texture is projected onto those surfaces from the scene's camera instead, as a `material_3d`'s `projector` projects its texture, where faces turned away and points out of view show white; naming the model's only material projects a plate onto all of it. The model's own lights and a camera are added with `lights` and `camera`. Points, lines, and triangle strips and fans aren't drawn, with a `scene.model_primitives_skipped` warning.
 
 Category: scene. Output: scene.
 
 Inputs:
 
 - `texture`: raster, optional
+- `projector`: scene, optional
 
 Params:
 
@@ -1128,6 +1133,7 @@ Params:
 - **`lights`** (boolean; default `false`) Adds the model's own `KHR_lights_punctual` lights to the scene, where its nodes place them, as `light_3d` nodes there would light it: a directional light's intensity, in lux, and a point or spot light's, in candela, are `light_3d` intensities as they are, so a point light of intensity `I` lights a surface `d` metres away as a directional one of `I / d²` does. A spot light's cone fades from its inner angle out to its outer one. They cast no shadows, and a scene they light gets no default lights.
 - **`matte`** (string; default `""`) The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
+- **`projector_occlusion`** (boolean; default `true`) With a `projector` wired, the surfaces showing `texture` that the projector can't see, behind surfaces that cast shadows, show white.
 - **`receive_shadows`** (boolean; default `true`) Darkens where shadows fall on its lit surfaces.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z, applied before the rotation.

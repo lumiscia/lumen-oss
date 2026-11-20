@@ -33,6 +33,9 @@ const FLAG_VERTEX_COLORS: u32 = 16384u;
 const FLAG_MAP_UVS: u32 = 32768u;
 // Draws only `Object::part` of the textured quad.
 const FLAG_PART: u32 = 65536u;
+// The raster is projected from the object's row of `projectors` rather than read through its
+// texture coordinates.
+const FLAG_PROJECTED: u32 = 131072u;
 // No vertex extras, in `Object::extras`.
 const NO_EXTRAS: u32 = 0xffffffffu;
 // A run of objects drawn once, in `Run::first_instance`.
@@ -134,6 +137,8 @@ struct Object {
     unlit_shadows: f32,
     // The channel of the mattes its coverage goes to, from 0 to 3, or above 3 for none.
     matte: u32,
+    // With `FLAG_PROJECTED`, its row of `projectors`.
+    projector: u32,
     // With `FLAG_PART`, the part of the textured quad drawn: its left, top, right and bottom
     // edges in its texture coordinates.
     part: vec4<f32>,
@@ -204,6 +209,18 @@ struct ShadowView {
     perspective: u32,
 }
 
+// A camera that projects an object's raster.
+struct Projector {
+    // World to the projector's clip space, whose X and Y span the raster from -1 to 1.
+    view_proj: mat4x4<f32>,
+    position: vec3<f32>,
+    orthographic: u32,
+    // The projector's +Z axis in world space, back towards it.
+    back: vec3<f32>,
+    // The projector's shadow view, which hides what it can't see, or -1 without occlusion.
+    shadow: i32,
+}
+
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var<storage, read> objects: array<Object>;
 @group(0) @binding(2) var<storage, read> vertices: array<Vertex>;
@@ -247,6 +264,7 @@ struct ShadowView {
 @group(0) @binding(28) var<storage, read> weights: array<f32>;
 @group(0) @binding(29) var<storage, read> map_uvs: array<MapUv>;
 @group(0) @binding(30) var<storage, read> instances: array<Instance>;
+@group(0) @binding(31) var<storage, read> projectors: array<Projector>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -453,6 +471,7 @@ struct ShadowOut {
     @location(3) @interpolate(flat) object: u32,
     @location(4) uv1: vec2<f32>,
     @location(5) alpha: f32,
+    @location(6) world: vec3<f32>,
 }
 
 // The vertex seen from one shadow view, squeezed into its tile. Draw instances go through the views
@@ -472,18 +491,50 @@ fn vs_shadow(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     out.object = vertex.object;
     out.uv1 = vertex.uv1;
     out.alpha = vertex.color.a;
+    out.world = vertex.world.xyz;
     return out;
 }
 
-// Whether `o` is solid where it reads `uv` and `uv1` with vertex alpha `alpha`, which is where it
-// blocks light and is drawn into depth and normal output: everywhere for an opaque surface, where
-// a masked one's alpha reaches its cutoff and where a blended one's reaches half.
-fn solid(o: Object, uv: vec2<f32>, uv1: vec2<f32>, vertex_alpha: f32) -> bool {
+// The geometric normal of the face being drawn, on the side the view sees, from the change in its
+// world position across the target, whose Y points down.
+fn seen_face(world_dx: vec3<f32>, world_dy: vec3<f32>) -> vec3<f32> {
+    return unit(cross(world_dy, world_dx));
+}
+
+// Where `o`'s projector shows its raster at `world`, in the raster's texture coordinates.
+fn projected_uv(o: Object, world: vec3<f32>) -> vec2<f32> {
+    let clip = projectors[o.projector].view_proj * vec4<f32>(world, 1.0);
+    let ndc = clip.xy / clip.w;
+    return vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+}
+
+// Whether `o`'s projector reaches `world`, on a face whose seen side's normal is `face`: within
+// its view, and on a face turned towards it.
+fn in_projection(o: Object, world: vec3<f32>, face: vec3<f32>) -> bool {
+    let projector = projectors[o.projector];
+    let clip = projector.view_proj * vec4<f32>(world, 1.0);
+    if (clip.w <= 0.0 || any(abs(clip.xy) > vec2<f32>(clip.w)) || clip.z < 0.0 || clip.z > clip.w) {
+        return false;
+    }
+    let towards = select(projector.position - world, projector.back, projector.orthographic != 0u);
+    return dot(face, towards) > 0.0;
+}
+
+// Whether `o` is solid where it reads `uv` and `uv1` with vertex alpha `alpha`, at `world` on a
+// face whose seen side's normal is `face`, which is where it blocks light and is drawn into depth
+// and normal output: everywhere for an opaque surface, where a masked one's alpha reaches its
+// cutoff and where a blended one's reaches half. A projected raster counts where the projector
+// reaches, whatever it can't see.
+fn solid(o: Object, uv: vec2<f32>, uv1: vec2<f32>, vertex_alpha: f32, world: vec3<f32>, face: vec3<f32>) -> bool {
     if (!has(o.flags, FLAG_MASK) && !has(o.flags, FLAG_BLEND)) {
         return true;
     }
     var alpha = o.base_color.a * vertex_alpha;
-    if (has(o.flags, FLAG_RASTER)) {
+    if (has(o.flags, FLAG_PROJECTED)) {
+        if (in_projection(o, world, face)) {
+            alpha *= textureSampleLevel(raster_tex, raster_sampler, projected_uv(o, world), 0.0).a;
+        }
+    } else if (has(o.flags, FLAG_RASTER)) {
         // Level 0 reads no shared mip texel, so its footprint is none.
         let at = in_part(o, uv, vec2<f32>(0.0), vec2<f32>(0.0));
         alpha *= textureSampleLevel(raster_tex, raster_sampler, at.uv, 0.0).a;
@@ -499,10 +550,12 @@ fn solid(o: Object, uv: vec2<f32>, uv1: vec2<f32>, vertex_alpha: f32) -> bool {
 // Writes depth from the view's light within its tile, where the surface is solid.
 @fragment
 fn fs_shadow(in: ShadowOut) -> @builtin(frag_depth) f32 {
+    // Derivatives need uniform control flow, so they come before anything branches.
+    let face = seen_face(dpdx(in.world), dpdy(in.world));
     if (any(abs(in.view_clip.xy) > vec2<f32>(in.view_clip.z))) {
         discard;
     }
-    if (!solid(objects[in.object], in.uv, in.uv1, in.alpha)) {
+    if (!solid(objects[in.object], in.uv, in.uv1, in.alpha, in.world, face)) {
         discard;
     }
     return clamp(in.depth, 0.0, 1.0);
@@ -805,6 +858,13 @@ fn shadow_visibility(light: Light, world: vec3<f32>, face: vec3<f32>, pixel: vec
             index += select(5u, 4u, d.z > 0.0);
         }
     }
+    return mix(1.0, view_visibility(index, world, face, light.shadow_softness, pixel), fade);
+}
+
+// How much of `world` shadow view `index` sees, on a face whose geometric normal `face` points to
+// the view's side, past whatever its depth holds, filtered over a disc of taps `softness` world
+// units across. The taps turn from pixel to pixel by `pixel`, so that supersampling smooths them.
+fn view_visibility(index: u32, world: vec3<f32>, face: vec3<f32>, softness: f32, pixel: vec2<f32>) -> f32 {
     let view = shadow_views[index];
     let texel = view.texel * select(1.0, max(dot(view.depth.xyz, world) + view.depth.w, 0.0), view.perspective != 0u);
     // Lifted off the surface by about a texel, so it doesn't shadow itself where a texel of the
@@ -828,7 +888,7 @@ fn shadow_visibility(light: Light, world: vec3<f32>, face: vec3<f32>, pixel: vec
     let b = shadow_coords(view, size, p + t2 * texel) - center;
     let det = a.x * b.y - b.x * a.y;
     let texel_depth = texel * length(view.depth.xyz);
-    let radius = clamp(light.shadow_softness / texel, 1.0, MAX_SHADOW_RADIUS);
+    let radius = clamp(softness / texel, 1.0, MAX_SHADOW_RADIUS);
     // Each tap blends the four texels around it, up to a texel away along each axis.
     var bias = 0.1 * texel_depth;
     var gradient = vec2<f32>(0.0);
@@ -857,7 +917,20 @@ fn shadow_visibility(light: Light, world: vec3<f32>, face: vec3<f32>, pixel: vec
         let reference = min(center.z + dot(gradient, at - center.xy) - bias, 1.0);
         lit += textureSampleCompareLevel(shadow_map, shadow_sampler, at / size, reference);
     }
-    return mix(1.0, lit / f32(SHADOW_TAPS), fade);
+    return lit / f32(SHADOW_TAPS);
+}
+
+// How much of `o`'s projected raster shows at `world`, on a face whose seen side's normal is
+// `face`: none where the projector doesn't reach, and, with occlusion, as much as it sees.
+fn projection_weight(o: Object, world: vec3<f32>, face: vec3<f32>, pixel: vec2<f32>) -> f32 {
+    if (!in_projection(o, world, face)) {
+        return 0.0;
+    }
+    let projector = projectors[o.projector];
+    if (projector.shadow < 0) {
+        return 1.0;
+    }
+    return view_visibility(u32(projector.shadow), world, face, 0.0, pixel);
 }
 
 struct Incoming {
@@ -1004,22 +1077,36 @@ fn shade(in: VsOut, front: bool) -> vec4<f32> {
     let world_dx = dpdx(in.world);
     let world_dy = dpdy(in.world);
     let o = objects[in.object];
-    let raster = has(o.flags, FLAG_RASTER);
+    let projected = has(o.flags, FLAG_PROJECTED);
+    let raster_uv = select(in.uv, projected_uv(o, in.world), projected);
+    let raster_dx = dpdx(raster_uv);
+    let raster_dy = dpdy(raster_uv);
+    // The raster's texel, and how much of it shows: all of it, or as much as the projector casts.
     var texel = vec4<f32>(1.0);
-    if (raster) {
-        let at = in_part(o, pixel_centre_uv(in.clip.xy, in.uv, uv_dx, uv_dy), uv_dx, uv_dy);
+    var shows = 0.0;
+    if (has(o.flags, FLAG_RASTER)) {
+        let at = in_part(o, pixel_centre_uv(in.clip.xy, raster_uv, raster_dx, raster_dy), raster_dx, raster_dy);
         texel = raster_texel(at.uv, at.dx, at.dy);
+        shows = 1.0;
+        if (projected) {
+            let face = seen_face(world_dx, world_dy);
+            shows = projection_weight(o, in.world, face, in.clip.xy);
+        }
     }
-    var emissive = o.emissive * texel.rgb * in.tint;
+    let shown_texel = mix(vec4<f32>(1.0), texel, shows);
+    // The emissive and base colours without the raster.
+    var glow = o.emissive * in.tint;
     if (has(o.flags, FLAG_EMISSIVE_MAP)) {
         let at = map_coords(o, SLOT_EMISSIVE, uvs);
-        emissive *= textureSampleGrad(emissive_map, emissive_sampler, at.uv, at.dx, at.dy).rgb;
+        glow *= textureSampleGrad(emissive_map, emissive_sampler, at.uv, at.dx, at.dy).rgb;
     }
+    var plain = o.base_color * in.color * vec4<f32>(in.tint, 1.0);
     if (has(o.flags, FLAG_BASE_COLOR_MAP)) {
         let at = map_coords(o, SLOT_BASE_COLOR, uvs);
-        texel *= textureSampleGrad(base_color_map, base_color_sampler, at.uv, at.dx, at.dy);
+        plain *= textureSampleGrad(base_color_map, base_color_sampler, at.uv, at.dx, at.dy);
     }
-    var base = o.base_color * texel * in.color * vec4<f32>(in.tint, 1.0);
+    let emissive = glow * shown_texel.rgb;
+    var base = plain * shown_texel;
     // A shadow catcher shows none of its colour, and catches shadows as much as its alpha covers
     // it, with its raster's and maps', which hide nothing where they are 0.
     let catcher = has(o.flags, FLAG_SHADOW_CATCHER);
@@ -1036,9 +1123,10 @@ fn shade(in: VsOut, front: bool) -> vec4<f32> {
         base.a = 1.0;
     }
     if (has(o.flags, FLAG_UNLIT) && !catcher) {
-        // A raster shown unlit keeps its colours as in 2D, whatever the exposure and tone mapping.
-        let shown = base.rgb + emissive;
-        var color = select(display(shown), shown, raster);
+        // A raster shown unlit keeps its colours as in 2D, whatever the exposure and tone mapping,
+        // and the surface shows as it does without one where none of the raster shows.
+        let unlit = plain.rgb + glow;
+        var color = mix(display(unlit), unlit * texel.rgb, shows);
         if (o.unlit_shadows > 0.0 && has(o.flags, FLAG_RECEIVE_SHADOWS)) {
             let v = view_direction(in.world);
             let n = shading_normal(o, in.normal, v, front, uvs, world_dx, world_dy);
@@ -1164,7 +1252,9 @@ fn shading_normal(
 // `depth_near` to 1 at `depth_far`, as opaque grey.
 @fragment
 fn fs_depth(in: VsOut) -> Shaded {
-    if (!solid(objects[in.object], in.uv, in.uv1, in.color.a)) {
+    // Derivatives need uniform control flow, so they come before anything branches.
+    let face = seen_face(dpdx(in.world), dpdy(in.world));
+    if (!solid(objects[in.object], in.uv, in.uv1, in.color.a, in.world, face)) {
         discard;
     }
     let distance = dot(globals.camera_position - in.world, globals.camera_back);
@@ -1181,7 +1271,7 @@ fn fs_normal(in: VsOut, @builtin(front_facing) front: bool) -> Shaded {
     let world_dx = dpdx(in.world);
     let world_dy = dpdy(in.world);
     let o = objects[in.object];
-    if (!solid(o, in.uv, in.uv1, in.color.a)) {
+    if (!solid(o, in.uv, in.uv1, in.color.a, in.world, seen_face(world_dx, world_dy))) {
         discard;
     }
     let n = shading_normal(o, in.normal, view_direction(in.world), front, uvs, world_dx, world_dy);
