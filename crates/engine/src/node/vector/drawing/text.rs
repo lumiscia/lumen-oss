@@ -37,8 +37,6 @@ const MAX_TEXT_POINTS: usize = 1 << 20;
 const MAX_CHUNK_POINTS: usize = MAX_PATH_POINTS / 2;
 /// Doublings of the flattening tolerance tried before an outline is too complex.
 const FLATTENING_ATTEMPTS: usize = 12;
-/// Points that joining overlapping contours may add, per point of the contours, besides 512.
-const CROSSING_ROOM: usize = 4;
 
 fn text_error(node: NodeId, details: impl Into<String>) -> LumenError {
     RenderError::evaluating::<Text2d>(node, details).into()
@@ -519,14 +517,14 @@ impl TextGlyphs {
         for contours in glyphs {
             let count = point_count(&contours);
             if points + count > MAX_CHUNK_POINTS && !chunk.is_empty() {
-                chunks.push(chunk_points(std::mem::take(&mut chunk)));
+                chunks.push(chunk_points(std::mem::take(&mut chunk))?);
                 points = 0;
             }
             points += count;
             chunk.extend(contours);
         }
         if !chunk.is_empty() {
-            chunks.push(chunk_points(chunk));
+            chunks.push(chunk_points(chunk)?);
         }
         let bounds = chunks
             .iter()
@@ -544,9 +542,9 @@ impl TextGlyphs {
 
 /// The path points of `contours`, joined where they overlap so that the even-odd rule the paths
 /// are filled by covers what the nonzero rule does.
-fn chunk_points(contours: Vec<Vec<[f32; 2]>>) -> Vec<PathPoint> {
-    let contours = nonzero_boundary(&contours, MAX_PATH_POINTS).unwrap_or(contours);
-    contour_points(&contours)
+fn chunk_points(contours: Vec<Vec<[f32; 2]>>) -> Result<Vec<PathPoint>, String> {
+    let contours = nonzero_boundary(&contours, MAX_PATH_POINTS)?.unwrap_or(contours);
+    Ok(contour_points(&contours))
 }
 
 /// Collects a tessellation's points and triangles, refusing the vertex past `max_vertices`.
@@ -576,9 +574,18 @@ impl FillGeometryBuilder for Triangles {
 
 /// The boundary of the area closed `contours` fill by the nonzero rule, as closed contours that
 /// fill it by the even-odd rule too: where contours overlap, they are joined, turning where
-/// they cross. `None` when `contours` are that boundary already, or when finding it fails or
-/// takes more than `max_points` points.
-fn nonzero_boundary(contours: &[Vec<[f32; 2]>], max_points: usize) -> Option<Vec<Vec<[f32; 2]>>> {
+/// they cross. `None` when `contours` are that boundary already. An error when finding it fails or
+/// takes more than `max_points` points, since the contours as they are would fill wrongly.
+fn nonzero_boundary(
+    contours: &[Vec<[f32; 2]>],
+    max_points: usize,
+) -> Result<Option<Vec<Vec<[f32; 2]>>>, String> {
+    let too_complex = || {
+        format!(
+            "overlapping glyphs make an outline of more than {max_points} points; \
+             overlap the glyphs less or split the text into several nodes"
+        )
+    };
     // The tessellator's own thresholds suit outlines some hundreds of units across, so outlines
     // are filled at that size, scaled by a power of two that leaves every point as exact.
     let extent = contours
@@ -604,17 +611,12 @@ fn nonzero_boundary(contours: &[Vec<[f32; 2]>], max_points: usize) -> Option<Vec
                 close: true,
             }))
     });
-    // Overlaps in a real outline add a few points each, so joining its contours is given little
-    // room beyond their own points.
     let input = point_count(contours);
     let mut built = Triangles {
         points: Vec::new(),
         triangles: Vec::new(),
         scale,
-        max_vertices: input
-            .saturating_mul(CROSSING_ROOM)
-            .saturating_add(512)
-            .min(max_points),
+        max_vertices: max_points,
     };
     FillTessellator::new()
         .tessellate(
@@ -622,7 +624,7 @@ fn nonzero_boundary(contours: &[Vec<[f32; 2]>], max_points: usize) -> Option<Vec
             &FillOptions::default().with_fill_rule(FillRule::NonZero),
             &mut built,
         )
-        .ok()?;
+        .map_err(|_| too_complex())?;
     let Triangles {
         points,
         mut triangles,
@@ -680,7 +682,7 @@ fn nonzero_boundary(contours: &[Vec<[f32; 2]>], max_points: usize) -> Option<Vec
                 .is_some_and(|&count| count == 1)
         });
     if unchanged {
-        return None;
+        return Ok(None);
     }
 
     let mut next: HashMap<u32, Vec<u32>> = HashMap::default();
@@ -702,7 +704,10 @@ fn nonzero_boundary(contours: &[Vec<[f32; 2]>], max_points: usize) -> Option<Vec
             outlines.push(contour);
         }
     }
-    (point_count(&outlines) <= max_points).then_some(outlines)
+    if point_count(&outlines) > max_points {
+        return Err(too_complex());
+    }
+    Ok(Some(outlines))
 }
 
 #[cfg(test)]
@@ -735,23 +740,37 @@ mod tests {
         // Two squares wound the same way overlap in a 5 by 5 square, which even-odd would leave
         // empty.
         let joined = nonzero_boundary(&[square([0.0, 0.0], 10.0), square([5.0, 5.0], 10.0)], 1024)
+            .unwrap()
             .expect("the squares overlap");
         assert_eq!(joined.len(), 1, "{joined:?}");
         assert_eq!(area(&joined).abs(), 175.0);
         // A square inside another wound the same way is covered by it.
         let nested = nonzero_boundary(&[square([0.0, 0.0], 10.0), square([2.0, 2.0], 4.0)], 1024)
+            .unwrap()
             .expect("the inner square is no edge");
         assert_eq!(nested.len(), 1, "{nested:?}");
         assert_eq!(area(&nested).abs(), 100.0);
     }
 
     #[test]
+    fn a_boundary_past_the_point_limit_is_an_error() {
+        let squares: Vec<_> = (0..8).map(|i| square([i as f32, i as f32], 10.0)).collect();
+        assert!(nonzero_boundary(&squares, 16).is_err());
+    }
+
+    #[test]
     fn contours_that_are_their_boundary_stay_as_they_are() {
         let mut hole = square([2.0, 2.0], 4.0);
         hole.reverse();
-        assert!(nonzero_boundary(&[square([0.0, 0.0], 10.0), hole], 1024).is_none());
         assert!(
-            nonzero_boundary(&[square([0.0, 0.0], 4.0), square([10.0, 0.0], 4.0)], 1024).is_none()
+            nonzero_boundary(&[square([0.0, 0.0], 10.0), hole], 1024)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            nonzero_boundary(&[square([0.0, 0.0], 4.0), square([10.0, 0.0], 4.0)], 1024)
+                .unwrap()
+                .is_none()
         );
     }
 }
