@@ -244,6 +244,11 @@ pub fn model(id: u32, params: Value) -> Value {
 
 /// A 1 x 1 PNG of `rgba`, stored without compression.
 pub fn texel_png(rgba: [u8; 4]) -> Vec<u8> {
+    rgba_png(1, 1, &rgba)
+}
+
+/// A PNG of straight `rgba` rows, at most 65535 bytes of them, stored without compression.
+pub fn rgba_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     let crc = |bytes: &[u8]| {
         let mut crc = !0u32;
         for &byte in bytes {
@@ -261,19 +266,29 @@ pub fn texel_png(rgba: [u8; 4]) -> Vec<u8> {
         chunk.extend(crc(&chunk[4..]).to_be_bytes());
         chunk
     };
-    // One row: no filter, then the texel.
-    let row = [0, rgba[0], rgba[1], rgba[2], rgba[3]];
-    let (a, b) = row.iter().fold((1u32, 0u32), |(a, b), &byte| {
+    // Each row: no filter, then its texels.
+    let rows: Vec<u8> = rgba
+        .chunks(width as usize * 4)
+        .flat_map(|row| std::iter::once(0).chain(row.iter().copied()))
+        .collect();
+    let stored = u16::try_from(rows.len()).expect("one stored block");
+    let (a, b) = rows.iter().fold((1u32, 0u32), |(a, b), &byte| {
         (
             (a + u32::from(byte)) % 65521,
             (b + a + u32::from(byte)) % 65521,
         )
     });
-    let mut zlib = vec![0x78, 0x01, 0x01, 5, 0, !5, !0];
-    zlib.extend(row);
+    let mut zlib = vec![0x78, 0x01, 0x01];
+    zlib.extend(stored.to_le_bytes());
+    zlib.extend((!stored).to_le_bytes());
+    zlib.extend(rows);
     zlib.extend(((b << 16) | a).to_be_bytes());
+    let mut header = [0u8; 13];
+    header[..4].copy_from_slice(&width.to_be_bytes());
+    header[4..8].copy_from_slice(&height.to_be_bytes());
+    header[8..].copy_from_slice(&[8, 6, 0, 0, 0]);
     let mut png = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
-    png.extend(chunk(b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]));
+    png.extend(chunk(b"IHDR", &header));
     png.extend(chunk(b"IDAT", &zlib));
     png.extend(chunk(b"IEND", &[]));
     png

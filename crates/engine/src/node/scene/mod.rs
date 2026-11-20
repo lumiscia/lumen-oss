@@ -83,6 +83,21 @@ impl Default for Placement3d {
     }
 }
 
+/// How a surface's alpha decides what it shows.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum")]
+pub enum MaterialAlphaMode {
+    /// Draws the surface blended where its alpha is below 1, after the opaque objects.
+    #[default]
+    Blend = 0,
+    /// Draws the surface with the opaque objects, writing depth, showing the texels whose alpha
+    /// reaches `alpha_cutoff` at full opacity and discarding the rest.
+    Mask = 1,
+}
+
 /// How a surface responds to light.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Material3dParams {
@@ -99,9 +114,21 @@ pub struct Material3dParams {
     /// Light the surface gives off on its own, as a multiple of its base colour.
     #[meta(min = 0, step = 0.1)]
     pub emissive: f64,
-    /// Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.
+    /// Opacity multiplier. With `alpha_mode` `blend`, anything below 1 is drawn blended, after
+    /// opaque objects.
     #[meta(min = 0, max = 1, step = 0.01)]
     pub opacity: f64,
+    /// `blend` draws the surface blended where its alpha is below 1. `mask` draws it with the
+    /// opaque objects, so it writes depth and crossing masked surfaces order correctly: texels
+    /// whose alpha, the colour's times `opacity` times the texture's or raster's, is below
+    /// `alpha_cutoff` are discarded and the rest show at full opacity. Masked surfaces cast
+    /// shadows shaped by the cut-out. It takes precedence over `opaque` on an `image_plane_3d`,
+    /// and with `shadow_catcher` fails `check`.
+    #[meta()]
+    pub alpha_mode: MaterialAlphaMode,
+    /// The alpha a texel needs to show when `alpha_mode` is `mask`. Not read otherwise.
+    #[meta(min = 0, max = 1, step = 0.01)]
+    pub alpha_cutoff: f64,
     /// Shows the base colour as is, ignoring lights.
     #[meta()]
     pub unlit: bool,
@@ -143,6 +170,8 @@ impl Default for Material3dParams {
             roughness: 0.5,
             emissive: 0.0,
             opacity: 1.0,
+            alpha_mode: MaterialAlphaMode::Blend,
+            alpha_cutoff: 0.5,
             unlit: false,
             double_sided: false,
             cast_shadows: true,
@@ -173,8 +202,12 @@ impl Material3dParams {
 /// an unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by
 /// `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest
 /// of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.
-/// Its alpha counts where the material blends, through `opacity` or the colour's alpha. Wired
-/// into any other object, a material with a texture fails the render.
+/// Its alpha counts where the material blends or masks, through `opacity` or the colour's alpha.
+/// Wired into any other object, a material with a texture fails the render.
+///
+/// `alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose
+/// material is unlit and double-sided, with the opaque objects so it orders correctly where cards
+/// cross. As a glTF `MASK` material does, it shows only the texels that reach `alpha_cutoff`.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "material_3d",
@@ -190,6 +223,21 @@ pub struct Material3d {
     #[input(raster, optional)]
     pub texture: Option<NodeId>,
 }
+
+impl Material3d {
+    /// What is wrong with a node whose JSON `params` set `alpha_mode` to `mask` and
+    /// `shadow_catcher` to true, if they do.
+    pub(crate) fn mask_conflict(
+        params: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<String> {
+        (params.get("alpha_mode").and_then(|mode| mode.as_str()) == Some("mask")
+            && params.get("shadow_catcher") == Some(&serde_json::Value::Bool(true)))
+        .then(|| MASKED_CATCHER.to_string())
+    }
+}
+
+/// Why a shadow catcher can't be masked.
+const MASKED_CATCHER: &str = "a shadow catcher's alpha sets its coverage; it can't be masked";
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,

@@ -34,7 +34,10 @@ use crate::{
     gpu::frame_graph::RecordNode,
     graph::{Connection, Graph},
     media::{AssetKind, AssetResolver, Found, MediaLocation, asset_id, resolve_asset_of},
-    node::{NodeId, NodeKind, scene::Instance3d},
+    node::{
+        NodeId, NodeKind,
+        scene::{Instance3d, Material3d},
+    },
 };
 
 pub use evaluate::{EvaluateRequest, evaluate_param};
@@ -940,6 +943,18 @@ fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Grap
             errors.push(
                 DocumentError::InvalidParam {
                     at: At::param(id, "copies"),
+                    details,
+                }
+                .into(),
+            );
+            continue;
+        }
+        if let (NodeKind::Material3d(_), Some(params)) = (&node_kind, params)
+            && let Some(details) = Material3d::mask_conflict(params)
+        {
+            errors.push(
+                DocumentError::InvalidParam {
+                    at: At::param(id, "alpha_mode"),
                     details,
                 }
                 .into(),

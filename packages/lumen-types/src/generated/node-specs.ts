@@ -417,7 +417,7 @@ export const nodeSpecs: readonly NodeSpec[] = [
   {
     kind: "material_3d",
     name: "Material 3D",
-    description: "How a surface responds to light, for the 3D objects it is wired into through their `material`\ninput. One `material_3d` can be wired to any number of objects, which then share its params,\nso changing it changes them all. Each param takes an expression as it does on any node.\nObjects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses\nan unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by\n`color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest\nof the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.\nIts alpha counts where the material blends, through `opacity` or the colour's alpha. Wired\ninto any other object, a material with a texture fails the render.",
+    description: "How a surface responds to light, for the 3D objects it is wired into through their `material`\ninput. One `material_3d` can be wired to any number of objects, which then share its params,\nso changing it changes them all. Each param takes an expression as it does on any node.\nObjects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses\nan unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by\n`color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest\nof the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.\nIts alpha counts where the material blends or masks, through `opacity` or the colour's alpha.\nWired into any other object, a material with a texture fails the render.\n\n`alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose\nmaterial is unlit and double-sided, with the opaque objects so it orders correctly where cards\ncross. As a glTF `MASK` material does, it shows only the texels that reach `alpha_cutoff`.",
     category: "scene",
     inputs: [
       { name: "texture", kind: "raster", optional: true, variadic: false },
@@ -426,12 +426,14 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { name: "output", kind: "material" },
     ],
     params: [
+      { id: "alpha_cutoff", name: "Alpha Cutoff", kind: "float", description: "The alpha a texel needs to show when `alpha_mode` is `mask`. Not read otherwise.", defaultValue: 0.5, constraints: { min: 0, max: 1, step: 0.01 } },
+      { id: "alpha_mode", name: "Alpha Mode", kind: "enum", description: "`blend` draws the surface blended where its alpha is below 1. `mask` draws it with the\nopaque objects, so it writes depth and crossing masked surfaces order correctly: texels\nwhose alpha, the colour's times `opacity` times the texture's or raster's, is below\n`alpha_cutoff` are discarded and the rest show at full opacity. Masked surfaces cast\nshadows shaped by the cut-out. It takes precedence over `opaque` on an `image_plane_3d`,\nand with `shadow_catcher` fails `check`.", defaultValue: "blend", enumOptions: [{ name: "blend", label: "Blend", value: 0 }, { name: "mask", label: "Mask", value: 1 }] },
       { id: "cast_shadows", name: "Cast Shadows", kind: "bool", description: "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,\nsuch as a bulb around a point light, needs this off.", defaultValue: true },
       { id: "color", name: "Color", kind: "color", description: "Base colour, which multiplies the `texture` on a shape and the raster on an image plane.\nMust be a solid color; a gradient fails `check`.", defaultValue: [255, 255, 255, 255], constraints: { role: "color" } },
       { id: "double_sided", name: "Double Sided", kind: "bool", description: "Draws the back of each face too.", defaultValue: false },
       { id: "emissive", name: "Emissive", kind: "float", description: "Light the surface gives off on its own, as a multiple of its base colour.", defaultValue: 0, constraints: { min: 0, step: 0.1 } },
       { id: "metallic", name: "Metallic", kind: "float", description: "0 is a dielectric such as plastic, 1 a bare metal.", defaultValue: 0, constraints: { min: 0, max: 1, step: 0.05 } },
-      { id: "opacity", name: "Opacity", kind: "float", description: "Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.", defaultValue: 1, constraints: { min: 0, max: 1, step: 0.01 } },
+      { id: "opacity", name: "Opacity", kind: "float", description: "Opacity multiplier. With `alpha_mode` `blend`, anything below 1 is drawn blended, after\nopaque objects.", defaultValue: 1, constraints: { min: 0, max: 1, step: 0.01 } },
       { id: "receive_shadows", name: "Receive Shadows", kind: "bool", description: "Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says.", defaultValue: true },
       { id: "roughness", name: "Roughness", kind: "float", description: "0 is a mirror finish, 1 fully diffuse.", defaultValue: 0.5, constraints: { min: 0, max: 1, step: 0.05 } },
       { id: "sampling", name: "Sampling", kind: "enum", description: "How a shape reads its `texture`, as `sampling` on `image_plane_3d`: `nearest` gives each\npixel the one texel under it at any size, for pixel art.", defaultValue: "linear", enumOptions: [{ name: "nearest", label: "Nearest", value: 0 }, { name: "linear", label: "Linear", value: 1 }] },
@@ -439,7 +441,7 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { id: "unlit", name: "Unlit", kind: "bool", description: "Shows the base colour as is, ignoring lights.", defaultValue: false },
       { id: "unlit_shadows", name: "Unlit Shadows", kind: "float", description: "How much an unlit surface darkens where shadows fall on it, from 0, which shows none, to\n1, where a fully shadowed point is black. Lit surfaces ignore it, as do surfaces that\ndon't receive shadows.", defaultValue: 0, constraints: { min: 0, max: 1, step: 0.05 } },
     ],
-    defaultParams: { cast_shadows: true, color: [255, 255, 255, 255], double_sided: false, emissive: 0, metallic: 0, opacity: 1, receive_shadows: true, roughness: 0.5, sampling: "linear", shadow_catcher: false, unlit: false, unlit_shadows: 0 },
+    defaultParams: { alpha_cutoff: 0.5, alpha_mode: "blend", cast_shadows: true, color: [255, 255, 255, 255], double_sided: false, emissive: 0, metallic: 0, opacity: 1, receive_shadows: true, roughness: 0.5, sampling: "linear", shadow_catcher: false, unlit: false, unlit_shadows: 0 },
   },
   {
     kind: "media_in",

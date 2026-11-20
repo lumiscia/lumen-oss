@@ -1510,7 +1510,9 @@ export type Light3dKind = "directional" | "point" | "spot" | "ambient";
 export type Light3dLight = Light3dKind;
 export type LoopMode = "clamp" | "repeat" | "ping_pong";
 export type MaskMode = "alpha" | "luma";
+export type Material3dAlphaMode = MaterialAlphaMode;
 export type Material3dSampling = RasterSampling;
+export type MaterialAlphaMode = "blend" | "mask";
 export type MediaInAlpha = AlphaMode;
 export type MediaInKind = MediaInSourceKind;
 export type MediaInLoopMode = LoopMode;
@@ -2272,11 +2274,26 @@ export interface Light3dNode extends CompositionNodeBase<"light_3d"> {
  * an unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by
  * `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest
  * of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.
- * Its alpha counts where the material blends, through `opacity` or the colour's alpha. Wired
- * into any other object, a material with a texture fails the render.
+ * Its alpha counts where the material blends or masks, through `opacity` or the colour's alpha.
+ * Wired into any other object, a material with a texture fails the render.
+ * 
+ * `alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose
+ * material is unlit and double-sided, with the opaque objects so it orders correctly where cards
+ * cross. As a glTF `MASK` material does, it shows only the texels that reach `alpha_cutoff`.
  */
 export interface Material3dNode extends CompositionNodeBase<"material_3d"> {
   readonly params?: {
+    /** The alpha a texel needs to show when `alpha_mode` is `mask`. Not read otherwise. */
+    readonly alpha_cutoff?: ExpressionValue<number>;
+    /**
+     * `blend` draws the surface blended where its alpha is below 1. `mask` draws it with the
+     * opaque objects, so it writes depth and crossing masked surfaces order correctly: texels
+     * whose alpha, the colour's times `opacity` times the texture's or raster's, is below
+     * `alpha_cutoff` are discarded and the rest show at full opacity. Masked surfaces cast
+     * shadows shaped by the cut-out. It takes precedence over `opaque` on an `image_plane_3d`,
+     * and with `shadow_catcher` fails `check`.
+     */
+    readonly alpha_mode?: MaterialAlphaMode;
     /**
      * Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is
      * at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,
@@ -2294,7 +2311,10 @@ export interface Material3dNode extends CompositionNodeBase<"material_3d"> {
     readonly emissive?: ExpressionValue<number>;
     /** 0 is a dielectric such as plastic, 1 a bare metal. */
     readonly metallic?: ExpressionValue<number>;
-    /** Opacity multiplier. Anything below 1 is drawn blended, after opaque objects. */
+    /**
+     * Opacity multiplier. With `alpha_mode` `blend`, anything below 1 is drawn blended, after
+     * opaque objects.
+     */
     readonly opacity?: ExpressionValue<number>;
     /** Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says. */
     readonly receive_shadows?: ExpressionValue<boolean>;
@@ -3939,8 +3959,12 @@ export const nodeInputPorts = {
    * an unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by
    * `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest
    * of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.
-   * Its alpha counts where the material blends, through `opacity` or the colour's alpha. Wired
-   * into any other object, a material with a texture fails the render.
+   * Its alpha counts where the material blends or masks, through `opacity` or the colour's alpha.
+   * Wired into any other object, a material with a texture fails the render.
+   * 
+   * `alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose
+   * material is unlit and double-sided, with the opaque objects so it orders correctly where cards
+   * cross. As a glTF `MASK` material does, it shows only the texels that reach `alpha_cutoff`.
    */
   "material_3d": { "texture": { kind: "raster", variadic: false } },
   /** Binds an external image or video frame as a GPU texture. */

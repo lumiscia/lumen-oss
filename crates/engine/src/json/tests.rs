@@ -1772,3 +1772,31 @@ fn check_finds_asset_references_the_host_lacks_or_holds_as_another_kind() {
             .all(|diagnostic| diagnostic.code == "media.not_found")
     );
 }
+
+#[test]
+fn a_masked_shadow_catcher_is_reported_at_the_materials_alpha_mode() {
+    let diagnostics = check_value(
+        &scene_document(
+            serde_json::json!([
+                { "id": 4, "type": "material_3d", "params": { "alpha_mode": "mask", "shadow_catcher": true } },
+                { "id": 5, "type": "material_3d", "params": { "alpha_mode": "mask" } },
+                { "id": 6, "type": "material_3d", "params": { "shadow_catcher": true } }
+            ]),
+            serde_json::json!([]),
+        ),
+        None,
+        None,
+    );
+    let invalid: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "node.invalid_param")
+        .map(|diagnostic| (diagnostic.path.as_str(), diagnostic.message.as_str()))
+        .collect();
+    assert_eq!(
+        invalid,
+        [(
+            "/nodes/3/params/alpha_mode",
+            "node 4: a shadow catcher's alpha sets its coverage; it can't be masked"
+        )]
+    );
+}
