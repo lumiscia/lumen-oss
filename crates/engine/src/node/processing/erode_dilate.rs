@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::gpu::frame_graph::{ComputeProgram, RECORD_STORAGE_TEXTURE, Raster, dispatch_for};
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 const SHADER: &str = include_str!("erode_dilate.wgsl");
 
@@ -70,7 +70,7 @@ pub struct ErodeDilate {
     #[params]
     pub params: ErodeDilateParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 #[repr(C)]

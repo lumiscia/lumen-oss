@@ -1,6 +1,7 @@
 use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     graph::{Connection, Graph},
+    node::OutputPort,
     node::{
         Deferred, NodeId, NodeKind,
         media_output::MediaOutput,
@@ -61,6 +62,7 @@ impl CompositionFixture for SimplePipeline {
         graph
             .connect(Connection {
                 from_node: background,
+                from_port: OutputPort::DEFAULT,
                 to_node: exposure,
                 to_port: "source".to_string(),
             })
@@ -68,6 +70,7 @@ impl CompositionFixture for SimplePipeline {
         graph
             .connect(Connection {
                 from_node: exposure,
+                from_port: OutputPort::DEFAULT,
                 to_node: output,
                 to_port: "source".to_string(),
             })

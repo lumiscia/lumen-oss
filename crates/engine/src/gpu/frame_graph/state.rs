@@ -16,7 +16,7 @@ use crate::{
 
 use super::{
     CachedShader, GraphNodeKey, InstanceKey, MemoKey, PathId, Raster, ShaderKey, ShaderParts,
-    Staticness, VideoFrameKey,
+    SlotKey, Staticness, VideoFrameKey,
     retention::{HoldTrack, source_changed},
 };
 
@@ -41,7 +41,8 @@ pub(super) struct RecordState {
     pub(super) font_generation: Option<u64>,
     pub(super) tick: u64,
     pub(super) paths: HashMap<(PathId, NodeId), PathId>,
-    pub(super) memo: HashMap<MemoKey, Raster>,
+    /// The rasters this frame recorded, by the output of the node they are.
+    pub(super) memo: HashMap<(MemoKey, crate::node::OutputPort), Raster>,
     pub(super) full_frames: HashMap<(TexRef, u32, u32), Raster>,
     pub(super) statics: HashMap<GraphNodeKey, Staticness>,
     /// The textures of external targets, by the address of the texture.
@@ -57,6 +58,9 @@ pub(super) struct RecordState {
     pub(super) text: TextState,
     pub(super) media: MediaState,
     pub(super) shaders: ShaderCache,
+    /// The walks `render_3d` nodes have made of their scenes.
+    #[cfg(feature = "test-hooks")]
+    pub(super) scene_walks: u64,
     #[cfg(feature = "3d")]
     pub(super) scene: SceneState,
     pub(super) luts: crate::node::processing::color_grade::LutCache,
@@ -154,11 +158,11 @@ pub(super) struct Slot {
 /// The outputs of static subtrees kept across frames, and what they read.
 #[derive(Default)]
 pub(super) struct Retained {
-    pub(super) slots: HashMap<GraphNodeKey, Slot>,
+    pub(super) slots: HashMap<SlotKey, Slot>,
     /// Slots made so far.
     pub(super) generation: u64,
     /// Slots retained this frame, which hold nothing until it is submitted.
-    pub(super) pending: Vec<GraphNodeKey>,
+    pub(super) pending: Vec<SlotKey>,
     pub(super) bytes: u64,
     /// The identity each source had, as the kind it was read as, when something kept across frames
     /// read it, or `None` if it didn't resolve. Kept outputs don't read their sources again, so
@@ -168,7 +172,7 @@ pub(super) struct Retained {
     pub(super) static_models: Vec<String>,
     /// What each output that is static while its models hold a pose or its params' values hold
     /// found out when it was recorded this frame, for the outputs reading it again.
-    pub(super) held_memo: HashMap<MemoKey, HoldTrack>,
+    pub(super) held_memo: HashMap<(MemoKey, crate::node::OutputPort), HoldTrack>,
     /// Passes reads of retained outputs skipped.
     pub(super) skipped_passes: u64,
 }
@@ -185,7 +189,7 @@ impl Retained {
         self.slots.values().flat_map(|slot| &slot.models)
     }
 
-    pub(super) fn release(&mut self, recorder: &mut Recorder, key: GraphNodeKey) {
+    pub(super) fn release(&mut self, recorder: &mut Recorder, key: SlotKey) {
         if let Some(slot) = self.slots.remove(&key) {
             recorder.release(slot.raster.tex);
             if let Some(full) = slot.full {
@@ -461,6 +465,9 @@ pub(super) struct SceneState {
     pub(super) buffers: HashMap<CopyListKey, KeptBuffer>,
     /// What `particles_3d` nodes sample their surfaces from and place their particles into.
     pub(super) particles: crate::node::scene::collect::ParticleCache,
+    /// The scenes walked this frame for nodes recording more than one output from a walk, with
+    /// what each walk found out for retention.
+    pub(super) walks: HashMap<MemoKey, (Arc<crate::node::scene::collect::Collected>, HoldTrack)>,
 }
 
 /// An `instance_3d` in a graph, and which of the lists of copies it draws from.
@@ -502,6 +509,7 @@ pub(super) struct KeptBuffer {
 impl SceneState {
     /// Drops the placements that neither this frame nor the last one read.
     fn begin_frame(&mut self, tick: u64) {
+        self.walks.clear();
         self.placements
             .retain(|_, kept| kept.last_used.saturating_add(1) >= tick);
         self.flattened
@@ -521,6 +529,7 @@ impl SceneState {
     }
 
     fn reset(&mut self, recorder: &mut Recorder) {
+        self.walks.clear();
         self.placements.clear();
         self.flattened.clear();
         for (_, kept) in self.buffers.drain() {

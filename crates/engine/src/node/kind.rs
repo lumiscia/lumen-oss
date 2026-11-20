@@ -53,7 +53,7 @@ macro_rules! node_kinds {
             pub(crate) fn set_input(
                 &mut self,
                 port: &str,
-                source: NodeId,
+                source: super::OutputRef,
             ) -> Result<(), GraphValidationError> {
                 match self {
                     $(Self::$variant(node) => node.set_input_json(port, source),)+
@@ -80,7 +80,13 @@ macro_rules! node_kinds {
                 }
             }
 
-            fn input_ports(&self) -> Vec<Option<NodeId>> {
+            fn output_port_defs(&self) -> &'static [super::OutputPortDef] {
+                match self {
+                    $(Self::$variant(node) => node.output_port_defs(),)+
+                }
+            }
+
+            fn input_ports(&self) -> Vec<Option<super::OutputRef>> {
                 match self {
                     $(Self::$variant(node) => node.input_ports(),)+
                 }
@@ -121,6 +127,22 @@ macro_rules! node_kinds {
             fn record(&self, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
                 match self {
                     $(Self::$variant(node) => node.record(cx),)+
+                }
+            }
+
+            fn canonical_port(&self, port: super::OutputPort) -> super::OutputPort {
+                match self {
+                    $(Self::$variant(node) => node.canonical_port(port),)+
+                }
+            }
+
+            fn record_output(
+                &self,
+                cx: &mut FrameCx<'_>,
+                port: super::OutputPort,
+            ) -> crate::Result<Raster> {
+                match self {
+                    $(Self::$variant(node) => node.record_output(cx, port),)+
                 }
             }
 

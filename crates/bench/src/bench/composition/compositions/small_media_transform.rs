@@ -1,6 +1,7 @@
 use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     graph::{Connection, Graph},
+    node::OutputPort,
     node::{
         Deferred, NodeId, NodeKind,
         media_output::MediaOutput,
@@ -100,6 +101,7 @@ fn build_small_media_transform(with_exposure: bool) -> Composition {
     graph
         .connect(Connection {
             from_node: media,
+            from_port: OutputPort::DEFAULT,
             to_node: transform,
             to_port: "source".to_string(),
         })
@@ -108,6 +110,7 @@ fn build_small_media_transform(with_exposure: bool) -> Composition {
         graph
             .connect(Connection {
                 from_node: transform,
+                from_port: OutputPort::DEFAULT,
                 to_node: exposure,
                 to_port: "source".to_string(),
             })
@@ -119,6 +122,7 @@ fn build_small_media_transform(with_exposure: bool) -> Composition {
     graph
         .connect(Connection {
             from_node: output_source,
+            from_port: OutputPort::DEFAULT,
             to_node: output,
             to_port: "source".to_string(),
         })
@@ -223,8 +227,8 @@ mod tests {
         else {
             panic!("expected filtered media output")
         };
-        assert_eq!(direct_output.source, Some(NodeId::new(2)));
-        assert_eq!(filtered_exposure.source, Some(NodeId::new(2)));
-        assert_eq!(filtered_output.source, Some(NodeId::new(3)));
+        assert_eq!(direct_output.source, Some(NodeId::new(2).into()));
+        assert_eq!(filtered_exposure.source, Some(NodeId::new(2).into()));
+        assert_eq!(filtered_output.source, Some(NodeId::new(3).into()));
     }
 }

@@ -3,6 +3,7 @@ use lumen_engine::node::vector::drawable::{DrawablePlacementDelegate, DrawableSt
 use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     graph::{Connection, Graph},
+    node::OutputPort,
     node::{
         Deferred, NodeId, NodeKind,
         compositing::raster_multimerge::{RasterMultiMerge, RasterMultiMergeParamsDelegate},
@@ -280,6 +281,7 @@ impl CompositionFixture for AntialiasingStress {
             graph
                 .connect(Connection {
                     from_node: layer,
+                    from_port: OutputPort::DEFAULT,
                     to_node: merge,
                     to_port: "layers".to_string(),
                 })
@@ -288,6 +290,7 @@ impl CompositionFixture for AntialiasingStress {
         graph
             .connect(Connection {
                 from_node: merge,
+                from_port: OutputPort::DEFAULT,
                 to_node: output,
                 to_port: "source".to_string(),
             })

@@ -354,6 +354,12 @@ impl GpuCompositionRenderer {
         self.text_atlas_texture.clone()
     }
 
+    /// The walks `render_3d` nodes have made of their scenes, in every frame so far.
+    #[cfg(feature = "test-hooks")]
+    pub fn scene_walk_count(&self) -> u64 {
+        self.graph.scene_walks()
+    }
+
     /// The passes the frame last recorded.
     #[cfg(feature = "test-hooks")]
     pub fn recorded_pass_count(&self) -> usize {

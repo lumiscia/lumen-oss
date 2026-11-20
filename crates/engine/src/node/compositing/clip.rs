@@ -18,7 +18,9 @@ use crate::{
     composition::{CompositionTemplate, TemplateRef},
     error::LumenError,
     expr::ExpressionContext,
-    node::{ClipPropValue, ClipProps, Deferred, DelegateEvalContext, NodeId, NodeParams},
+    node::{
+        ClipPropValue, ClipProps, Deferred, DelegateEvalContext, NodeId, NodeParams, OutputRef,
+    },
     scope::{FrameTime, PropValues, Routed, Scope},
 };
 
@@ -89,7 +91,7 @@ pub struct Clip {
     pub params: ClipParamsDelegate,
     /// The branch to play when no `composition` is set.
     #[input(optional)]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 /// When a clip shows and at which of its content's frames.
@@ -261,7 +263,7 @@ impl Clip {
         };
         let Some(template) = self.template(scope)? else {
             return Ok(self.source.map(|source| Routed {
-                node: source,
+                input: source,
                 frame: local,
                 scope: scope.clone(),
                 instance: Some(self.id),
@@ -273,7 +275,7 @@ impl Clip {
             unreachable!("a scope's output is a media output node");
         };
         Ok(output.source.map(|source| Routed {
-            node: source,
+            input: source,
             frame: local,
             scope: child,
             instance: Some(self.id),

@@ -23,7 +23,7 @@ use crate::node::source::text::{
 };
 use crate::node::source::text_content::FontFeatures;
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, Delegated, NodeId, NodeParams, ParamTypeDef,
+    DelegateEvalContext, DelegateEvaluable, Delegated, NodeId, NodeParams, OutputRef, ParamTypeDef,
     PropertyRead,
 };
 
@@ -411,7 +411,7 @@ pub struct Offset2d {
     pub params: Offset2dParamsDelegate,
 
     #[input(geometry)]
-    pub geometry: Option<NodeId>,
+    pub geometry: Option<OutputRef>,
 }
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -457,7 +457,7 @@ pub struct Fill2d {
     pub params: Fill2dParamsDelegate,
 
     #[input(geometry)]
-    pub geometry: Option<NodeId>,
+    pub geometry: Option<OutputRef>,
 }
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -518,7 +518,7 @@ pub struct Stroke2d {
     pub params: Stroke2dParamsDelegate,
 
     #[input(geometry)]
-    pub geometry: Option<NodeId>,
+    pub geometry: Option<OutputRef>,
 }
 
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
@@ -549,7 +549,7 @@ pub struct Shadow2d {
     pub params: Shadow2dParamsDelegate,
 
     #[input(drawing)]
-    pub drawing: Option<NodeId>,
+    pub drawing: Option<OutputRef>,
 }
 
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
@@ -573,7 +573,7 @@ pub struct Merge2d {
     pub params: Merge2dParamsDelegate,
 
     #[input(drawing, optional, variadic)]
-    pub drawings: Vec<NodeId>,
+    pub drawings: Vec<OutputRef>,
 }
 
 /// Rasterizes a drawing in one pass over the canvas: each 16 by 16 pixel tile composites the
@@ -585,5 +585,5 @@ pub struct Render2d {
     pub id: NodeId,
 
     #[input(drawing)]
-    pub drawing: Option<NodeId>,
+    pub drawing: Option<OutputRef>,
 }

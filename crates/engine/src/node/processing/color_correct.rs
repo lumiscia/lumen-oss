@@ -3,7 +3,7 @@ use bytemuck::{Pod, Zeroable};
 use super::color_curves::{ColorCurves, MAX_CURVE_POINTS};
 use crate::gpu::frame_graph::ComputeProgram;
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
-use crate::node::{NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams, OutputRef};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -97,7 +97,7 @@ pub struct ColorCorrect {
     #[params]
     pub params: ColorCorrectParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 #[repr(C)]

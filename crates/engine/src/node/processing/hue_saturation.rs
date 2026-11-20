@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
-use crate::node::{NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams, OutputRef};
 
 use crate::gpu::frame_graph::ComputeProgram;
 
@@ -49,7 +49,7 @@ pub struct HueSaturation {
     pub params: HueSaturationParamsDelegate,
 
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 #[repr(C)]

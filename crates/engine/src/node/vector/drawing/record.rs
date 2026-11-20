@@ -130,7 +130,7 @@ impl RecordNode for Render2d {
 
     fn record(&self, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
         let root = required_input(self.id, "drawing", self.drawing)?;
-        let record = collect(cx, self.id, root)?;
+        let record = collect(cx, self.id, root.node)?;
         let mut texts = HashMap::default();
         for geometry in &record.geometries {
             if let Source::Text { node, params } = &geometry.source

@@ -5,7 +5,7 @@ use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::mips::full_levels;
 use crate::node::motion::{self, Lerp, MAX_BOUNDED_MAGNITUDE, ROUNDING_ERROR_FACTOR, Shutter};
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams,
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef,
     processing::{
         RasterSampling,
         minify::{self, Minification},
@@ -94,7 +94,7 @@ pub struct CornerPin {
     #[params]
     pub params: CornerPinParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 /// The unit square's corners, clockwise from the top left, which a quad's corners are the images

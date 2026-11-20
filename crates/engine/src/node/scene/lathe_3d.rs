@@ -3,7 +3,7 @@
 use super::Placement3d;
 #[cfg(feature = "3d")]
 use super::text_3d::check_length;
-use crate::node::{NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams, OutputRef};
 
 /// Fewest and most steps around the axis.
 #[cfg(feature = "3d")]
@@ -89,7 +89,7 @@ pub struct Lathe3d {
     pub params: Lathe3dParamsDelegate,
 
     #[input(geometry)]
-    pub geometry: Option<NodeId>,
+    pub geometry: Option<OutputRef>,
     #[input(material, optional)]
-    pub material: Option<NodeId>,
+    pub material: Option<OutputRef>,
 }

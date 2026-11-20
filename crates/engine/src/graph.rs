@@ -5,13 +5,18 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     error::{At, DocumentError, GraphValidationError, LumenError},
     gpu::frame_graph::RecordNode,
-    node::{InputPortDef, Node, NodeId, NodeKind, PortKind},
+    node::{
+        InputPortDef, Node, NodeId, NodeKind, OutputPort, OutputPortDef, OutputRef, OutputSet,
+        PortKind,
+    },
 };
 
 /// An edge as authors write it. `connect` stores it in the target node's input field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Connection {
     pub from_node: NodeId,
+    /// The output of `from_node` the edge reads.
+    pub from_port: OutputPort,
     pub to_node: NodeId,
     pub to_port: String,
 }
@@ -22,6 +27,10 @@ pub struct Graph {
     pub nodes: HashMap<NodeId, NodeKind>,
     /// Each node's index in the document's `nodes`, for a graph read from JSON.
     pub(crate) positions: HashMap<NodeId, usize>,
+    /// The outputs the input fields read of each node whose kind names outputs, which
+    /// [`Graph::index_reads`] notes as a composition is built.
+    #[structural_hash(skip)]
+    reads: HashMap<NodeId, OutputSet>,
 }
 
 impl Graph {
@@ -34,11 +43,34 @@ impl Graph {
         self.positions.get(&id).copied()
     }
 
-    /// Wires the output of `from_node` into the named input of `to_node`. A variadic input
-    /// appends; any other input takes one connection.
+    /// The outputs of node `id` that the input fields read, when its kind names outputs; none
+    /// otherwise.
+    pub(crate) fn reads(&self, id: NodeId) -> OutputSet {
+        self.reads.get(&id).copied().unwrap_or_default()
+    }
+
+    /// Notes the outputs the input fields read of each node whose kind names outputs.
+    pub(crate) fn index_reads(&mut self) {
+        self.reads.clear();
+        for node in self.nodes.values() {
+            for read in node.input_ports().into_iter().flatten() {
+                let names_outputs = self
+                    .nodes
+                    .get(&read.node)
+                    .is_some_and(|source| !source.output_port_defs().is_empty());
+                if names_outputs {
+                    self.reads.entry(read.node).or_default().insert(read.port);
+                }
+            }
+        }
+    }
+
+    /// Wires output `from_port` of `from_node` into the named input of `to_node`. A variadic
+    /// input appends; any other input takes one connection.
     pub fn connect(&mut self, connection: Connection) -> crate::Result<()> {
         let Connection {
             from_node,
+            from_port,
             to_node,
             to_port,
         } = connection;
@@ -54,7 +86,7 @@ impl Graph {
                 .ok_or(GraphValidationError::MissingTargetNode {
                     at: At::node(to_node),
                 })?;
-        Ok(target.set_input(&to_port, from_node)?)
+        Ok(target.set_input(&to_port, OutputRef::new(from_node, from_port))?)
     }
 
     /// The `media_output` node of a graph that passed [`Graph::validate`].
@@ -103,7 +135,13 @@ impl Graph {
             check_supported(node, cfg!(feature = "3d"), &mut errors);
             check_inputs(
                 node,
-                |source| self.nodes.get(&source).map(Node::output_kind),
+                |source| {
+                    let node = self.nodes.get(&source.node)?;
+                    Some((
+                        node.port_kind(source.port)?,
+                        node.output_port_def(source.port),
+                    ))
+                },
                 &mut errors,
             );
             errors.extend(
@@ -120,6 +158,7 @@ impl Graph {
 
             let node_sources = sources.entry(*key).or_default();
             for source in node.input_ports().into_iter().flatten() {
+                let source = source.node;
                 // A missing source is its own validation error, not part of a cycle.
                 if self.nodes.contains_key(&source) {
                     node_sources.push(source);
@@ -146,9 +185,9 @@ impl Graph {
     }
 }
 
-/// Each input `node` declares, with the sources wired into it: one for a single input if
+/// Each input `node` declares, with the outputs wired into it: one for a single input if
 /// connected, any number for a variadic one.
-fn wired_inputs(node: &dyn Node) -> Vec<(&'static InputPortDef, Vec<NodeId>)> {
+fn wired_inputs(node: &dyn Node) -> Vec<(&'static InputPortDef, Vec<OutputRef>)> {
     let defs = node.input_port_defs();
     let inputs = node.input_ports();
     // A node has at most one variadic input, which holds the entries the single inputs don't.
@@ -186,12 +225,12 @@ fn check_supported(node: &NodeKind, supports_3d: bool, errors: &mut Vec<LumenErr
     }
 }
 
-/// Reports each required input of `node` left unwired, and each source wired into an input of
-/// another kind. `output_kind` gives the kind a source outputs, or `None` for a missing source,
-/// which is reported on its own.
+/// Reports each required input of `node` left unwired, and each output wired into an input of
+/// another kind. `output_kind` gives the kind an output outputs, with its name unless it is the
+/// default output, or `None` for a missing source, which is reported on its own.
 fn check_inputs(
     node: &dyn Node,
-    output_kind: impl Fn(NodeId) -> Option<PortKind>,
+    output_kind: impl Fn(OutputRef) -> Option<(PortKind, Option<&'static OutputPortDef>)>,
     errors: &mut Vec<LumenError>,
 ) {
     for (input, sources) in wired_inputs(node) {
@@ -205,14 +244,15 @@ fn check_inputs(
             );
         }
         for source in sources {
-            if let Some(actual) = output_kind(source)
+            if let Some((actual, output)) = output_kind(source)
                 && actual != input.kind
             {
                 errors.push(
                     GraphValidationError::WrongInputKind {
                         at: At::node(node.id()),
-                        port: input.name.to_string(),
-                        source_node: source,
+                        port: input.name,
+                        source_node: source.node,
+                        source_output: output,
                         expected: input.kind,
                         actual,
                     }
@@ -309,11 +349,11 @@ mod tests {
     struct TestScene {
         id: NodeId,
         #[input(scene, optional, variadic)]
-        children: Vec<NodeId>,
+        children: Vec<OutputRef>,
         #[input(optional)]
-        texture: Option<NodeId>,
+        texture: Option<OutputRef>,
         #[input(material, optional)]
-        material: Option<NodeId>,
+        material: Option<OutputRef>,
     }
 
     /// A raster node with a required scene input.
@@ -322,7 +362,7 @@ mod tests {
     struct TestRender {
         id: NodeId,
         #[input(scene)]
-        scene: Option<NodeId>,
+        scene: Option<OutputRef>,
     }
 
     const RASTER: NodeId = NodeId::new(1);
@@ -331,10 +371,10 @@ mod tests {
     const MISSING: NodeId = NodeId::new(9);
 
     fn errors(node: &dyn Node) -> Vec<String> {
-        let output_kind = |id| match id {
-            RASTER => Some(PortKind::Raster),
-            SCENE => Some(PortKind::Scene),
-            DRAWING => Some(PortKind::Drawing),
+        let output_kind = |source: OutputRef| match source.node {
+            RASTER => Some((PortKind::Raster, None)),
+            SCENE => Some((PortKind::Scene, None)),
+            DRAWING => Some((PortKind::Drawing, None)),
             _ => None,
         };
         let mut errors = Vec::new();
@@ -349,7 +389,7 @@ mod tests {
     fn a_source_of_the_wrong_kind_is_named_with_both_kinds() {
         let render = TestRender {
             id: NodeId::new(3),
-            scene: Some(RASTER),
+            scene: Some(RASTER.into()),
         };
         assert_eq!(
             errors(&render),
@@ -359,7 +399,7 @@ mod tests {
         );
         let scene = TestScene {
             id: NodeId::new(4),
-            texture: Some(SCENE),
+            texture: Some(SCENE.into()),
             ..TestScene::default()
         };
         assert_eq!(
@@ -370,7 +410,7 @@ mod tests {
         );
         let scene = TestScene {
             id: NodeId::new(4),
-            texture: Some(DRAWING),
+            texture: Some(DRAWING.into()),
             ..TestScene::default()
         };
         assert_eq!(
@@ -387,7 +427,7 @@ mod tests {
         for source in [RASTER, SCENE] {
             let object = TestScene {
                 id: NodeId::new(5),
-                material: Some(source),
+                material: Some(source.into()),
                 ..TestScene::default()
             };
             let actual = if source == RASTER {
@@ -422,7 +462,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(shader(None), Vec::<String>::new());
-        assert_eq!(shader(Some(NodeId::new(2))), ["node.unsupported"]);
+        assert_eq!(shader(Some(NodeId::new(2).into())), ["node.unsupported"]);
     }
 
     #[test]
@@ -470,8 +510,8 @@ mod tests {
         assert_eq!(errors(&TestScene::default()), Vec::<String>::new());
         let scene = TestScene {
             id: NodeId::new(4),
-            children: vec![SCENE, RASTER, MISSING, SCENE],
-            texture: Some(RASTER),
+            children: vec![SCENE.into(), RASTER.into(), MISSING.into(), SCENE.into()],
+            texture: Some(RASTER.into()),
             material: None,
         };
         assert_eq!(

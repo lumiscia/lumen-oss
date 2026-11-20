@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::gpu::frame_graph::ComputeProgram;
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -62,7 +62,7 @@ pub struct FilmGrain {
     #[params]
     pub params: FilmGrainParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 #[repr(C)]

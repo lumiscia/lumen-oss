@@ -997,7 +997,7 @@ impl Case {
             .nodes
             .values()
             .find_map(|node| match node {
-                NodeKind::MediaOutput(output) => output.source,
+                NodeKind::MediaOutput(output) => output.source.map(|source| source.node),
                 _ => None,
             })
             .expect("scene has a media_output");

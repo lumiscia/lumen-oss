@@ -23,7 +23,7 @@ use crate::{
     expr::{ExpressionContext, HeldCache},
     media::{MediaIdentity, MediaStore},
     node::{
-        Deferred, MediaValue, Node, NodeId, NodeKind,
+        Deferred, MediaValue, Node, NodeId, NodeKind, OutputPort, OutputRef, OutputSet,
         compositing::clip::Clip,
         source::text::{TextDraw, TextInstance},
     },
@@ -183,7 +183,21 @@ impl Raster {
 /// What the renderer and the loader ask of a node kind. A rule about one kind of node is a method
 /// here that the kind overrides, not a `match` on `NodeKind` elsewhere.
 pub(crate) trait RecordNode {
+    /// Records the node's default output.
     fn record(&self, cx: &mut FrameCx<'_>) -> crate::Result<Raster>;
+
+    /// The output a read of `port` gets: `port` itself, unless the node's default output is one of
+    /// those its kind names, which reads of either then share.
+    fn canonical_port(&self, port: OutputPort) -> OutputPort {
+        port
+    }
+
+    /// Records the canonical output `port`. Only a node kind that names outputs records more than
+    /// its default output.
+    fn record_output(&self, cx: &mut FrameCx<'_>, port: OutputPort) -> crate::Result<Raster> {
+        debug_assert_eq!(port, OutputPort::DEFAULT);
+        self.record(cx)
+    }
 
     /// Builds every program this node may record with, whatever its params are at a frame.
     fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()>;
@@ -245,9 +259,17 @@ pub(crate) struct Programs<'a> {
     rec: &'a mut Recorder,
     st: &'a mut RecordState,
     output_format: wgpu::TextureFormat,
+    /// The outputs of the node building its programs that its graph reads.
+    reads: OutputSet,
 }
 
 impl Programs<'_> {
+    /// The outputs of the node building its programs that its graph reads, each canonical.
+    #[cfg(feature = "3d")]
+    pub(crate) fn reads(&self) -> OutputSet {
+        self.reads
+    }
+
     pub(crate) fn output_format(&self) -> wgpu::TextureFormat {
         self.output_format
     }
@@ -354,6 +376,8 @@ struct PathId(u32);
 type InstanceKey = (SceneId, PathId, NodeId);
 /// A node of one graph, wherever it is reached from.
 type GraphNodeKey = (SceneId, NodeId);
+/// An output of a node of one graph, by its canonical port, wherever it is reached from.
+type SlotKey = (SceneId, OutputRef);
 /// A node reached along one path, in one sample of the `motion_blur` that path samples, or in
 /// sample 0 outside one.
 type MemoKey = (InstanceKey, u32);
@@ -520,7 +544,7 @@ impl FrameGraph {
                 imports: &mut self.imports,
             };
             let output = cx.scope.output;
-            let raster = cx.input(output);
+            let raster = cx.input(output.into());
             let bound = cx.bound;
             // A font loaded during the walk may have changed what it measured.
             if font_generation(media) == generation {
@@ -611,6 +635,7 @@ impl FrameGraph {
             rec: &mut self.recorder,
             st: &mut self.state,
             output_format,
+            reads: OutputSet::default(),
         };
         let mut pending = vec![(
             SceneId::Root,
@@ -626,6 +651,7 @@ impl FrameGraph {
             let Some(node) = graph.nodes.get(&id) else {
                 continue;
             };
+            programs.reads = reads_of(graph, node);
             node.programs(&mut programs)
                 .map_err(|error| in_scene(error, template))?;
             match node {
@@ -648,13 +674,17 @@ impl FrameGraph {
                             .unwrap_or_default(),
                         Deferred::Expr(_) => &switch.layers,
                     };
-                    pending.extend(layers.iter().map(|&layer| (scene, template, graph, layer)));
+                    pending.extend(
+                        layers
+                            .iter()
+                            .map(|layer| (scene, template, graph, layer.node)),
+                    );
                 }
                 _ => pending.extend(
                     node.input_ports()
                         .into_iter()
                         .flatten()
-                        .map(|input| (scene, template, graph, input)),
+                        .map(|input| (scene, template, graph, input.node)),
                 ),
             }
         }
@@ -771,10 +801,21 @@ impl FrameGraph {
         node: NodeId,
     ) -> Option<TextureDomain> {
         let graph = SceneId::Root;
-        let recorded = self.state.memo.iter().find_map(|((key, _), raster)| {
+        let recorded = self.state.memo.iter().find_map(|(((key, _), _), raster)| {
             (key.0 == graph && key.2 == node).then_some(raster.domain)
         });
-        recorded.or_else(|| Some(self.state.retained.slots.get(&(graph, node))?.raster.domain))
+        recorded.or_else(|| {
+            let mut kept = self.state.retained.slots.iter();
+            kept.find_map(|((scene, read), slot)| {
+                (*scene == graph && read.node == node).then_some(slot.raster.domain)
+            })
+        })
+    }
+
+    /// The walks `render_3d` nodes have made of their scenes.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn scene_walks(&self) -> u64 {
+        self.state.scene_walks
     }
 
     pub(crate) fn output_desc(&self) -> Option<TextureDesc> {
@@ -856,6 +897,16 @@ impl FrameGraph {
     pub(crate) fn retained_bytes(&self) -> u64 {
         self.state.retained.bytes
     }
+}
+
+/// The outputs of `node` that `graph`'s input fields read, each canonical; its default output when
+/// nothing in the graph reads it, as when it is reached some other way.
+fn reads_of<N: Node + RecordNode + ?Sized>(graph: &crate::graph::Graph, node: &N) -> OutputSet {
+    let reads = graph.reads(node.id());
+    if reads == OutputSet::default() {
+        return OutputSet::from_iter([node.canonical_port(OutputPort::DEFAULT)]);
+    }
+    reads.iter().map(|port| node.canonical_port(port)).collect()
 }
 
 fn font_generation(media: Option<&dyn MediaStore>) -> Option<u64> {
@@ -1003,6 +1054,19 @@ impl<'a> FrameCx<'a> {
         self.st
             .diagnostics
             .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
+    }
+
+    /// The outputs of `node`, in the graph being recorded, that its input fields read, each
+    /// canonical.
+    #[cfg(feature = "3d")]
+    pub(crate) fn outputs_read<N: Node + RecordNode>(&self, node: &N) -> OutputSet {
+        reads_of(&self.scope.scene.graph, node)
+    }
+
+    /// Counts a walk a `render_3d` makes of its scene.
+    #[cfg(all(feature = "3d", feature = "test-hooks"))]
+    pub(crate) fn count_scene_walk(&mut self) {
+        self.st.scene_walks += 1;
     }
 
     /// The most glyphs a text node may draw.
@@ -1260,19 +1324,19 @@ impl<'a> FrameCx<'a> {
     /// as 3D. Content that draws less than its canvas is padded with transparency to it, and
     /// content that draws more is cropped.
     #[cfg(feature = "3d")]
-    pub(crate) fn input_native(&mut self, node_id: NodeId) -> crate::Result<Raster> {
-        match self.clip_native(node_id)? {
+    pub(crate) fn input_native(&mut self, read: OutputRef) -> crate::Result<Raster> {
+        match self.clip_native(read.node)? {
             Some(raster) => Ok(raster),
-            None => self.input_full(node_id),
+            None => self.input_full(read),
         }
     }
 
     /// [`Self::input_native`] for a reader that shows a reduced raster at its density.
     #[cfg(feature = "3d")]
-    pub(crate) fn input_native_reduced(&mut self, node_id: NodeId) -> crate::Result<Raster> {
-        match self.clip_native(node_id)? {
+    pub(crate) fn input_native_reduced(&mut self, read: OutputRef) -> crate::Result<Raster> {
+        match self.clip_native(read.node)? {
             Some(raster) => Ok(raster),
-            None => self.input_full_reduced(node_id),
+            None => self.input_full_reduced(read),
         }
     }
 
@@ -1373,16 +1437,17 @@ impl<'a> FrameCx<'a> {
         result
     }
 
-    /// Records `node_id` as sample `index` of the `motion_blur` being recorded, at `frame`.
+    /// Records what `read` reads as sample `index` of the `motion_blur` being recorded, at
+    /// `frame`.
     pub(crate) fn input_sample(
         &mut self,
-        node_id: NodeId,
+        read: OutputRef,
         index: u32,
         frame: FrameTime,
     ) -> crate::Result<Raster> {
         self.sample = index;
         self.frame = frame;
-        self.input(node_id)
+        self.input(read)
     }
 
     fn record_routed(&mut self, routed: Routed<'a>) -> crate::Result<Raster> {
@@ -1393,7 +1458,7 @@ impl<'a> FrameCx<'a> {
             let next = PathId(self.st.paths.len() as u32 + 1);
             self.path = *self.st.paths.entry((path, instance)).or_insert(next);
         }
-        let result = self.input(routed.node);
+        let result = self.input(routed.input);
         self.path = path;
         self.scope = scope;
         self.frame = frame;
@@ -1485,13 +1550,13 @@ pub(crate) fn ensure_texture_fits(
     .into())
 }
 
-/// Records `node`, or fails when the textures it acquires itself are larger than the device
-/// allows. The textures its inputs acquire are theirs to check. A failure names the template
-/// `node` is in.
-fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
+/// Records `node`'s canonical output `port`, or fails when the textures it acquires itself are
+/// larger than the device allows. The textures its inputs acquire are theirs to check. A failure
+/// names the template `node` is in.
+fn record_node(node: &NodeKind, port: OutputPort, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
     let outer = cx.rec.replace_largest_acquired_texture(Size::new(0, 0));
     let raster = node
-        .record(cx)
+        .record_output(cx, port)
         .map_err(|error| locate_media_failure(node, &cx.scope, error));
     let largest = cx.rec.replace_largest_acquired_texture(outer);
     let raster = raster.and_then(|raster| {

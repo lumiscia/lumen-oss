@@ -1163,13 +1163,19 @@ Params:
 
 ## `render_3d`
 
-Draws a 3D scene into a raster, with a transparent background unless it shows its environment map; or, by `output`, its depth or normals, for 2D effects such as fog.
+Draws a 3D scene into a raster, with a transparent background unless it shows its environment map; or, by `output`, its depth or normals, for 2D effects such as fog. Its `color`, `depth` and `normal` outputs read each of them from the one render.
 
 Category: scene. Output: raster.
 
 Inputs:
 
 - `scene`: scene, required
+
+Outputs beside `output`, which a connection's `from_port` names:
+
+- `color`: raster
+- `depth`: raster
+- `normal`: raster
 
 Params:
 
@@ -1184,7 +1190,7 @@ Params:
 - **`fog_color`** ([color](#type-color); default `[255,255,255,255]`) Colour surfaces fade to with distance. Must be a solid color; a gradient fails `check`.
 - **`fog_density`** (number, at least 0; default `0`) How quickly surfaces fade into the fog: the fraction of their colour left after `d` world units is e^(-density * d). 0 turns fog off.
 - **`height`** (integer, at least 0; default `0`; literal only) Output height in pixels. Use 0 to match the composition height.
-- **`output`** (`"color"` | `"depth"` | `"normal"`; default `"color"`; literal only) What the raster holds: the lit scene, its depth or its normals. A composition that needs more than one draws the same scene with a `render_3d` for each.
+- **`output`** (`"color"` | `"depth"` | `"normal"`; default `"color"`; literal only) What the default `output` holds: the lit scene, its depth or its normals. The `color`, `depth` and `normal` outputs each hold one whatever this is, and one `render_3d` draws all that are read with one walk of the scene.
 - **`supersample`** (integer, 1 to 4; default `2`) Renders this many times wider and taller, then averages down, to antialias edges.
 - **`tone_mapping`** (`"none"` | `"aces"` | `"agx"`; default `"none"`; literal only) How light brighter than white is brought into range.
 - **`width`** (integer, at least 0; default `0`; literal only) Output width in pixels. Use 0 to match the composition width.

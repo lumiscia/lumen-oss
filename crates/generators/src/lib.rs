@@ -10,8 +10,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use lumen_engine::{
     audio::AudioClip,
     node::{
-        EnumDef, InputPortDef, MediaParam, NodeCategory, NodeKind, NodeParams, NodeSchemaDef,
-        PortKind, PropertyDef, PropertyKind,
+        DEFAULT_OUTPUT, EnumDef, InputPortDef, MediaParam, NodeCategory, NodeKind, NodeParams,
+        NodeSchemaDef, PortKind, PropertyDef, PropertyKind,
     },
 };
 use serde_json::{Map, Value, json};
@@ -520,7 +520,7 @@ fn node_schema_json(schema: &NodeSchemaDef) -> Result<Value> {
         "description": schema.description,
         "x-lumen-category": category_name(schema.category),
         "x-lumen-inputs": schema.inputs.iter().map(input_port_json).collect::<Vec<_>>(),
-        "x-lumen-outputs": [{ "name": "output", "kind": schema.output.name() }],
+        "x-lumen-outputs": output_ports_json(schema),
         "type": "object",
         "required": ["id", "type"],
         "properties": {
@@ -534,6 +534,16 @@ fn node_schema_json(schema: &NodeSchemaDef) -> Result<Value> {
         },
         "additionalProperties": false
     }))
+}
+
+/// `output`, then the outputs the kind names beside it, in the order their ports count.
+fn output_ports_json(schema: &NodeSchemaDef) -> Vec<Value> {
+    let default = json!({ "name": DEFAULT_OUTPUT, "kind": schema.output.name() });
+    let named = schema
+        .outputs
+        .iter()
+        .map(|output| json!({ "name": output.name, "kind": output.kind.name() }));
+    std::iter::once(default).chain(named).collect()
 }
 
 fn input_port_json(input: &InputPortDef) -> Value {

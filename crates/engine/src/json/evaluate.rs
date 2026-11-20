@@ -160,7 +160,7 @@ impl Walk {
             return Ok(());
         };
         for Routed {
-            node: input,
+            input,
             frame,
             scope,
             instance,
@@ -169,7 +169,7 @@ impl Walk {
             if scope.id == SceneId::Root {
                 let sampling =
                     sampling || (instance.is_some() && matches!(node, NodeKind::MotionBlur(_)));
-                self.visit(&scope, input, frame, sampling, depth + 1)?;
+                self.visit(&scope, input.node, frame, sampling, depth + 1)?;
             }
         }
         Ok(())
@@ -184,7 +184,7 @@ fn reads(scope: &Scope<'_>, node_id: NodeId, target: NodeId, seen: &mut HashSet<
                 node.input_ports()
                     .into_iter()
                     .flatten()
-                    .any(|input| reads(scope, input, target, seen))
+                    .any(|input| reads(scope, input.node, target, seen))
             })
 }
 

@@ -252,7 +252,7 @@ impl<'a> Magnification<'a> {
         let mut consumers: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for (&id, node) in nodes {
             for input in node.input_ports().into_iter().flatten() {
-                consumers.entry(input).or_default().push(id);
+                consumers.entry(input.node).or_default().push(id);
             }
         }
         Self {

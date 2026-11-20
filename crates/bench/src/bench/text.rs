@@ -258,7 +258,7 @@ fn run_case(
         NodeId::new(2),
         NodeKind::MediaOutput(MediaOutput {
             id: NodeId::new(2),
-            source: Some(NodeId::new(1)),
+            source: Some(NodeId::new(1).into()),
         }),
     );
     let composition = CompositionBuilder::new(

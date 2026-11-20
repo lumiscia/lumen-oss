@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::node::{DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 
@@ -53,9 +53,9 @@ pub struct Boolean {
     pub params: BooleanParamsDelegate,
 
     #[input()]
-    pub a: Option<NodeId>,
+    pub a: Option<OutputRef>,
     #[input()]
-    pub b: Option<NodeId>,
+    pub b: Option<OutputRef>,
 }
 
 const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[

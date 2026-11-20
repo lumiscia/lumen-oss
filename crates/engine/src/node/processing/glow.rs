@@ -3,7 +3,7 @@ use bytemuck::{Pod, Zeroable};
 use crate::error::PropertyError;
 use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef, vector::paint::Paint,
 };
 
 use super::displacement_map::EdgeMode;
@@ -68,7 +68,7 @@ pub struct Glow {
     #[params]
     pub params: GlowParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 #[repr(C)]

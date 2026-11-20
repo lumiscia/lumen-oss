@@ -8,15 +8,14 @@ use foldhash::HashSet;
 use lumen_gpu::TextureDomain;
 
 use super::{
-    FrameCx, MemoKey, Raster, RecordNode, Staticness,
+    FrameCx, MemoKey, Raster, RecordNode, SlotKey, Staticness,
     state::{Retained, Slot},
 };
 use crate::{
-    composition::SceneId,
     error::RenderError,
     expr::{ExpressionValue, same_value},
     media::{AssetKind, MediaIdentity, MediaStore},
-    node::{Node, NodeId, NodeKind, required_input},
+    node::{Node, NodeId, NodeKind, OutputPort, OutputRef, required_input},
     scope::{FrameTime, MAX_GRAPH_DEPTH},
 };
 
@@ -101,7 +100,7 @@ impl Retention {
 
     /// Notes in the output being recorded that it reads the kept output `key`, which holds only
     /// on the frames the slot is correct on.
-    fn hold_slot(&mut self, retained: &Retained, key: (SceneId, NodeId)) {
+    fn hold_slot(&mut self, retained: &Retained, key: SlotKey) {
         let Some(track) = self.holds.last_mut() else {
             return;
         };
@@ -188,20 +187,20 @@ impl FrameCx<'_> {
         self.retention.held_on(frames);
     }
 
-    /// What keeps `raster`, the output of `node`, the same from frame to frame, if anything.
+    /// What keeps `raster`, what `read` reads, the same from frame to frame, if anything.
     pub(crate) fn stable_raster(
         &self,
-        node: NodeId,
+        read: OutputRef,
         raster: Raster,
     ) -> Option<crate::gpu::mips::Stable> {
         use crate::gpu::mips::Stable;
-        let graph = self.scope.id;
-        if let Some(slot) = self.st.retained.slots.get(&(graph, node))
+        let key = self.slot_key(read);
+        if let Some(slot) = self.st.retained.slots.get(&key)
             && (slot.raster.tex == raster.tex || slot.full == Some(raster.tex))
         {
             return Some(Stable::Slot {
-                graph,
-                node,
+                graph: key.0,
+                node: read.node,
                 generation: slot.generation,
             });
         }
@@ -219,7 +218,7 @@ impl FrameCx<'_> {
         &mut self,
         node_id: NodeId,
         port: &str,
-        input: Option<NodeId>,
+        input: Option<OutputRef>,
     ) -> crate::Result<Raster> {
         self.input(required_input(node_id, port, input)?)
     }
@@ -229,7 +228,7 @@ impl FrameCx<'_> {
         &mut self,
         node_id: NodeId,
         port: &str,
-        input: Option<NodeId>,
+        input: Option<OutputRef>,
     ) -> crate::Result<Raster> {
         self.input_full(required_input(node_id, port, input)?)
     }
@@ -239,7 +238,7 @@ impl FrameCx<'_> {
         &mut self,
         node_id: NodeId,
         port: &str,
-        input: Option<NodeId>,
+        input: Option<OutputRef>,
     ) -> crate::Result<Raster> {
         self.input_reduced(required_input(node_id, port, input)?)
     }
@@ -249,31 +248,32 @@ impl FrameCx<'_> {
         &mut self,
         node_id: NodeId,
         port: &str,
-        input: Option<NodeId>,
+        input: Option<OutputRef>,
     ) -> crate::Result<Raster> {
         self.input_full_reduced(required_input(node_id, port, input)?)
     }
 
     /// [`Self::input_full`] for a reader that shows a reduced raster at its density. A reduced
     /// raster covers all of its texture already.
-    pub(crate) fn input_full_reduced(&mut self, node_id: NodeId) -> crate::Result<Raster> {
-        let raster = self.input_reduced(node_id)?;
+    pub(crate) fn input_full_reduced(&mut self, read: OutputRef) -> crate::Result<Raster> {
+        let raster = self.input_reduced(read)?;
         if raster.reduced.is_some() {
             return Ok(raster);
         }
-        self.full_frame_of(node_id, raster)
+        self.full_frame_of(read, raster)
     }
 
-    /// Records `node_id` as is, for readers that read a raster through its domain. Fails on an
-    /// image decoded at fewer texels than its pixels, which only the readers its decoded size was
-    /// chosen for read.
-    pub(crate) fn input(&mut self, node_id: NodeId) -> crate::Result<Raster> {
-        let raster = self.input_reduced(node_id)?;
+    /// Records what `read` reads as is, for readers that read a raster through its domain. Fails
+    /// on an image decoded at fewer texels than its pixels, which only the readers its decoded
+    /// size was chosen for read.
+    pub(crate) fn input(&mut self, read: OutputRef) -> crate::Result<Raster> {
+        let raster = self.input_reduced(read)?;
         if raster.reduced.is_some() {
             return Err(RenderError::Internal {
                 details: format!(
-                    "node {node_id} is an image decoded at fewer texels than its pixels, read by a \
-                     node that reads texels as pixels"
+                    "node {} is an image decoded at fewer texels than its pixels, read by a \
+                     node that reads texels as pixels",
+                    read.node
                 ),
             }
             .into());
@@ -281,20 +281,37 @@ impl FrameCx<'_> {
         Ok(raster)
     }
 
-    /// Records `node_id` as is, which may be an image decoded at fewer texels than the device
-    /// pixels it covers (see [`Raster::reduced`]), for readers that sample it at its density.
-    pub(crate) fn input_reduced(&mut self, node_id: NodeId) -> crate::Result<Raster> {
-        let node = self.scope.node(node_id).ok_or(RenderError::MissingNode {
-            at: crate::error::At::node(node_id),
+    /// Records what `read` reads as is, which may be an image decoded at fewer texels than the
+    /// device pixels it covers (see [`Raster::reduced`]), for readers that sample it at its
+    /// density.
+    pub(crate) fn input_reduced(&mut self, read: OutputRef) -> crate::Result<Raster> {
+        let node = self.scope.node(read.node).ok_or(RenderError::MissingNode {
+            at: crate::error::At::node(read.node),
         })?;
-        self.time_node(node, |cx| cx.input_node(node_id, node))
+        let port = node.canonical_port(read.port);
+        self.time_node(node, |cx| cx.input_node(read.node, port, node))
     }
 
-    /// Records `node`, the node `node_id`, looking for what is kept of it first. Everything the
-    /// node costs on the way, from checking the frame values it reads to keeping its output, is
-    /// its own time.
-    fn input_node(&mut self, node_id: NodeId, node: &NodeKind) -> crate::Result<Raster> {
+    /// Where what `read` reads is kept, under the output reads of it share.
+    fn slot_key(&self, read: OutputRef) -> SlotKey {
+        let port = self
+            .scope
+            .node(read.node)
+            .map_or(read.port, |node| node.canonical_port(read.port));
+        (self.scope.id, OutputRef::new(read.node, port))
+    }
+
+    /// Records output `port` of `node`, the node `node_id`, looking for what is kept of it first.
+    /// Everything the node costs on the way, from checking the frame values it reads to keeping
+    /// the output, is its own time.
+    fn input_node(
+        &mut self,
+        node_id: NodeId,
+        port: OutputPort,
+        node: &NodeKind,
+    ) -> crate::Result<Raster> {
         let graph = self.scope.id;
+        let slot_key = (graph, OutputRef::new(node_id, port));
         let staticness = if self.settings.retain_static {
             self.staticness(node)
         } else {
@@ -313,7 +330,7 @@ impl FrameCx<'_> {
         let tracked = matches!(staticness, Staticness::WhileHeld | Staticness::WhileEqual);
         let frame = self.frame.value();
         if staticness != Staticness::Never
-            && let Some(slot) = self.st.retained.slots.get_mut(&(graph, node_id))
+            && let Some(slot) = self.st.retained.slots.get_mut(&slot_key)
             && slot.frames.0 <= frame
             && frame <= slot.frames.1
             && same_values(&slot.values, &values)
@@ -321,15 +338,14 @@ impl FrameCx<'_> {
             slot.last_used = self.st.tick;
             self.st.retained.skipped_passes += slot.passes;
             let raster = slot.raster;
-            self.retention
-                .hold_slot(&self.st.retained, (graph, node_id));
+            self.retention.hold_slot(&self.st.retained, slot_key);
             return Ok(raster);
         }
         let key = ((graph, self.path, node_id), self.sample);
-        let raster = match self.st.memo.get(&key) {
+        let raster = match self.st.memo.get(&(key, port)) {
             Some(raster) => {
                 let raster = *raster;
-                if let Some(read) = self.st.retained.held_memo.get(&key) {
+                if let Some(read) = self.st.retained.held_memo.get(&(key, port)) {
                     self.retention.absorb(read);
                 }
                 raster
@@ -341,19 +357,19 @@ impl FrameCx<'_> {
                 let passes = self.rec.pass_count();
                 self.retention.enter(is_static, tracked);
                 self.depth += 1;
-                let raster = super::record_node(node, self);
+                let raster = super::record_node(node, port, self);
                 self.depth -= 1;
                 let track = self.retention.leave(is_static, tracked);
                 let raster = raster?;
-                self.st.memo.insert(key, raster);
+                self.st.memo.insert((key, port), raster);
                 let passes = (self.rec.pass_count() - passes) as u64;
                 if is_static && self.retention.at_root() {
                     let frames = (f64::NEG_INFINITY, f64::INFINITY);
                     let models = std::mem::take(&mut self.st.retained.static_models);
-                    self.retain(graph, node_id, raster, passes, frames, models, Vec::new());
+                    self.retain(slot_key, raster, passes, frames, models, Vec::new());
                 }
                 if let Some(track) = track {
-                    self.finish_hold(key, raster, passes, track, values);
+                    self.finish_hold(key, slot_key, raster, passes, track, values);
                 }
                 raster
             }
@@ -361,13 +377,11 @@ impl FrameCx<'_> {
         Ok(raster)
     }
 
-    /// Keeps `raster`, the output of `node`, for the `frames` it stays correct on while the params
-    /// reading the frame take `values`, along with the `models` it drew.
-    #[expect(clippy::too_many_arguments, reason = "the parts of a slot")]
+    /// Keeps `raster`, the output `key` names, for the `frames` it stays correct on while the
+    /// params reading the frame take `values`, along with the `models` it drew.
     fn retain(
         &mut self,
-        graph: SceneId,
-        node: NodeId,
+        key: SlotKey,
         raster: Raster,
         passes: u64,
         frames: (f64, f64),
@@ -375,13 +389,13 @@ impl FrameCx<'_> {
         values: Vec<ExpressionValue>,
     ) {
         // A slot kept for other frames makes way.
-        self.st.retained.release(self.rec, (graph, node));
+        self.st.retained.release(self.rec, key);
         self.rec.retain(raster.tex);
         let bytes = self.rec.texture_bytes(raster.tex);
         self.st.retained.bytes += bytes;
         self.st.retained.generation += 1;
         self.st.retained.slots.insert(
-            (graph, node),
+            key,
             Slot {
                 raster,
                 passes,
@@ -394,23 +408,28 @@ impl FrameCx<'_> {
                 values,
             },
         );
-        self.st.retained.pending.push((graph, node));
+        self.st.retained.pending.push(key);
     }
 
-    /// Keeps `raster`, the output of `node` just recorded with the params reading the frame at
-    /// `values`, if it stays correct on this frame and on one either side of it too, and tells the
-    /// output being recorded around it what it found.
+    /// Keeps `raster`, the output `slot_key` names just recorded with the params reading the frame
+    /// at `values`, if it stays correct on this frame and on one either side of it too, and tells
+    /// the output being recorded around it what it found.
     fn finish_hold(
         &mut self,
         key: MemoKey,
+        slot_key: SlotKey,
         raster: Raster,
         passes: u64,
         track: HoldTrack,
         values: Vec<ExpressionValue>,
     ) {
-        let ((graph, _, node), _) = key;
+        let node = slot_key.1.node;
         self.retention.absorb(&track);
-        self.st.retained.held_memo.insert(key, track.clone());
+        let port = slot_key.1.port;
+        self.st
+            .retained
+            .held_memo
+            .insert((key, port), track.clone());
         let frame = self.frame.value();
         let at_root = self.retention.at_root();
         let kept = track.keeps(frame, at_root, |other| {
@@ -418,16 +437,43 @@ impl FrameCx<'_> {
                 .is_some_and(|elsewhere| same_values(&elsewhere, &values))
         });
         if kept {
-            self.retain(
-                graph,
-                node,
-                raster,
-                passes,
-                track.frames,
-                track.models,
-                values,
-            );
+            self.retain(slot_key, raster, passes, track.frames, track.models, values);
         }
+    }
+
+    /// The scene `walk` collects for `node_id`, walked once per path and sample of a frame for all
+    /// the outputs of the node recorded from it. A recording after the first notes what the walk
+    /// read, as the one that walked did.
+    #[cfg(feature = "3d")]
+    pub(crate) fn shared_scene_walk(
+        &mut self,
+        node_id: NodeId,
+        walk: impl FnOnce(&mut Self) -> crate::Result<crate::node::scene::collect::Collected>,
+    ) -> crate::Result<std::sync::Arc<crate::node::scene::collect::Collected>> {
+        let key = ((self.scope.id, self.path, node_id), self.sample);
+        if let Some((collected, track)) = self.st.scene.walks.get(&key) {
+            let collected = collected.clone();
+            self.retention.absorb(track);
+            if !self.retention.at_root() {
+                let models = track.models.iter().cloned();
+                self.st.retained.static_models.extend(models);
+            }
+            return Ok(collected);
+        }
+        // What is read while nothing kept records needs no note.
+        let keeping = self.retention.keeping();
+        if keeping {
+            self.retention.holds.push(HoldTrack::new());
+        }
+        let collected = walk(self);
+        let track = match keeping {
+            true => self.retention.holds.pop().unwrap_or_else(HoldTrack::new),
+            false => HoldTrack::new(),
+        };
+        self.retention.absorb(&track);
+        let collected = std::sync::Arc::new(collected?);
+        self.st.scene.walks.insert(key, (collected.clone(), track));
+        Ok(collected)
     }
 
     /// The values that the params reading the frame take at `frame`: those of `node` and of each
@@ -448,7 +494,8 @@ impl FrameCx<'_> {
                 self.st.statics.get(&(graph, *input)) == Some(&Staticness::WhileEqual)
             };
             let inputs = self.scope.node(id)?.input_ports();
-            pending.extend(inputs.into_iter().flatten().filter(held));
+            let inputs = inputs.into_iter().flatten().map(|input| input.node);
+            pending.extend(inputs.filter(held));
         }
         Some(values)
     }
@@ -486,18 +533,19 @@ impl FrameCx<'_> {
         (!failed).then_some(())
     }
 
-    /// Records `node_id` stored at its full display size, for readers that read texel for texel.
-    pub(crate) fn input_full(&mut self, node_id: NodeId) -> crate::Result<Raster> {
-        let raster = self.input(node_id)?;
-        self.full_frame_of(node_id, raster)
+    /// Records what `read` reads stored at its full display size, for readers that read texel for
+    /// texel.
+    pub(crate) fn input_full(&mut self, read: OutputRef) -> crate::Result<Raster> {
+        let raster = self.input(read)?;
+        self.full_frame_of(read, raster)
     }
 
-    /// `raster`, the output of `node_id`, stored at its full display size.
-    fn full_frame_of(&mut self, node_id: NodeId, raster: Raster) -> crate::Result<Raster> {
+    /// `raster`, what `read` reads, stored at its full display size.
+    fn full_frame_of(&mut self, read: OutputRef, raster: Raster) -> crate::Result<Raster> {
         if raster.domain.is_full_frame() {
             return Ok(raster);
         }
-        let slot_key = (self.scope.id, node_id);
+        let slot_key = self.slot_key(read);
         let kept = |slot: &Slot| slot.raster.tex == raster.tex;
         if let Some(slot) = self.st.retained.slots.get(&slot_key)
             && kept(slot)
@@ -548,7 +596,11 @@ impl FrameCx<'_> {
                 pending.pop();
                 continue;
             };
-            let inputs = node.input_ports().into_iter().flatten();
+            let inputs = node
+                .input_ports()
+                .into_iter()
+                .flatten()
+                .map(|input| input.node);
             if entered.insert(id) {
                 let undecided = inputs
                     .clone()

@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::{
     media::{AssetKind, MediaLocation},
-    node::{JsonNode, NodeId, NodeKind, PortKind},
+    node::{DEFAULT_OUTPUT, JsonNode, NodeId, NodeKind, OutputPortDef, PortKind},
 };
 
 /// Where in a composition something is: a scene, the root or a template, and in it, maybe a node
@@ -274,8 +274,19 @@ pub enum DocumentError {
         index: usize,
     },
     #[code("connection.invalid_from_port")]
-    #[error("{}connection {index}: `from_port` must be `output`, got {port:?}", .at.prefix())]
-    InvalidFromPort { at: At, index: usize, port: String },
+    #[error(
+        "{}connection {index}: node {from_node} has no output {port:?}; {}",
+        .at.prefix(),
+        outputs_are(outputs)
+    )]
+    InvalidFromPort {
+        at: At,
+        index: usize,
+        from_node: NodeId,
+        port: Box<str>,
+        /// The outputs the node names beside `output`.
+        outputs: &'static [OutputPortDef],
+    },
     /// A connection that could not be made, at its index in `connections`.
     #[code(transparent = error)]
     #[error("{}connecting {from_node} -> {to_node}:{to_port}: {error}", .at.prefix())]
@@ -334,11 +345,17 @@ pub enum GraphValidationError {
     InputAlreadyConnected { at: At, port: String },
     /// A connection whose source outputs another kind than the input takes.
     #[code("connection.wrong_kind")]
-    #[error("{at}: input `{port}` takes {expected}, but node {source_node} outputs {actual}: {}", wrong_kind_hint(*.expected, *.actual))]
+    #[error(
+        "{at}: input `{port}` takes {expected}, but {} {actual}: {}",
+        wrong_kind_source(*.source_node, *.source_output),
+        wrong_kind_hint(*.expected, *.actual)
+    )]
     WrongInputKind {
         at: At,
-        port: String,
+        port: &'static str,
         source_node: NodeId,
+        /// The output of `source_node` read, unless it is the default `output`.
+        source_output: Option<&'static OutputPortDef>,
         expected: PortKind,
         actual: PortKind,
     },
@@ -412,6 +429,28 @@ impl GraphValidationError {
 
 pub(crate) const NO_3D_SUPPORT: &str =
     "this build of the engine has no 3D support, as it was built without the `3d` feature";
+
+/// The outputs a node has, `output` and those it names, as a clause.
+fn outputs_are(named: &[OutputPortDef]) -> String {
+    let quoted: Vec<_> = std::iter::once(DEFAULT_OUTPUT)
+        .chain(named.iter().map(|def| def.name))
+        .map(|name| format!("`{name}`"))
+        .collect();
+    match quoted.split_last() {
+        Some((last, rest)) if !rest.is_empty() => {
+            format!("its outputs are {} and {last}", rest.join(", "))
+        }
+        _ => "its only output is `output`".to_string(),
+    }
+}
+
+/// What a wrong-kind connection reads, followed by the kind it is.
+fn wrong_kind_source(node: NodeId, output: Option<&OutputPortDef>) -> String {
+    match output {
+        None => format!("node {node} outputs"),
+        Some(output) => format!("output `{}` of node {node} is", output.name),
+    }
+}
 
 /// What to do about wiring a node that outputs `actual` into an input that takes `expected`.
 fn wrong_kind_hint(expected: PortKind, actual: PortKind) -> &'static str {

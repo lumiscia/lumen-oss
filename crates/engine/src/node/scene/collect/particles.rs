@@ -522,7 +522,7 @@ impl Collected {
         inner.reached = self.reached;
         inner.nesting = self.nesting + 1;
         inner.instance_room = self.instance_room.saturating_sub(self.drawn);
-        inner.add(cx, object)?;
+        inner.add(cx, object.node)?;
         self.reached = inner.reached;
         for object in &inner.scene.objects {
             let refused = if object.instanced.is_some() {
@@ -560,7 +560,7 @@ impl Collected {
         }
 
         let surface = match node.surface {
-            Some(surface) => match self.surface(cx, node.id, surface)? {
+            Some(surface) => match self.surface(cx, node.id, surface.node)? {
                 Some(surface) => Some(surface),
                 // A surface with no area emits nothing.
                 None => return Ok(()),

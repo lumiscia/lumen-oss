@@ -181,8 +181,14 @@ const renderNodeInputPortMapMember = (node: NodeVariant): string =>
 const renderNodeVariadicPortMapMember = (node: NodeVariant): string =>
   `  readonly ${quote(node.kind)}: ${union(uniqueSorted(node.inputs.filter((port) => port.variadic).map((port) => port.name)))};`;
 
+/** The kind of a node's default `output`, the first it lists. */
 const renderNodeOutputKindMapMember = (node: NodeVariant): string =>
-  `  readonly ${quote(node.kind)}: ${union(uniqueSorted(node.outputs.map((port) => port.kind)))};`;
+  `  readonly ${quote(node.kind)}: ${union(node.outputs.slice(0, 1).map((port) => port.kind))};`;
+
+const renderNodeOutputPortKindMapMember = (node: NodeVariant): string => {
+  const ports = node.outputs.map((port) => `readonly ${quote(port.name)}: ${quote(port.kind)}`);
+  return `  readonly ${quote(node.kind)}: ${ports.length === 0 ? "{}" : `{ ${ports.join("; ")} }`};`;
+};
 
 const renderNodeInputPortKindMapMember = (node: NodeVariant): string => {
   const ports = node.inputs.map((port) => `readonly ${quote(port.name)}: ${quote(port.kind)}`);
@@ -317,14 +323,36 @@ export interface NodeInputPortKindByKind {
 ${nodes.map(renderNodeInputPortKindMapMember).join("\n")}
 }
 
+export interface NodeOutputPortKindByKind {
+${nodes.map(renderNodeOutputPortKindMapMember).join("\n")}
+}
+
 export type CompositionNode<TKind extends NodeKind = NodeKind> = CompositionNodeByKind[TKind];
 export type CompositionNodeInput<TKind extends NodeKind = NodeKind> = CompositionNodeInputByKind[TKind];
 /** The input port names of a node kind, which a connection's \`to_port\` names. */
 export type NodeInputPortName<TKind extends NodeKind = NodeKind> = NodeInputPortNameByKind[TKind];
 /** The input ports of a node kind that take any number of connections. */
 export type NodeVariadicInputPortName<TKind extends NodeKind = NodeKind> = NodeVariadicInputPortNameByKind[TKind];
-/** What a node kind outputs, which the inputs it is connected to must take. */
+/**
+ * What a node kind's default \`output\` outputs, which the inputs it is connected to without a
+ * \`from_port\` must take.
+ */
 export type NodeOutputKind<TKind extends NodeKind = NodeKind> = NodeOutputKindByKind[TKind];
+/**
+ * The outputs of a node kind, which a connection's \`from_port\` names: \`output\`, and those the
+ * kind names beside it.
+ */
+export type NodeOutputName<TKind extends NodeKind = NodeKind> = keyof NodeOutputPortKindByKind[TKind] &
+  string;
+/** What output \`TOutput\` of a node kind outputs; for a union of kinds, what any of them does. */
+export type NodeOutputPortKind<
+  TKind extends NodeKind = NodeKind,
+  TOutput extends NodeOutputName<TKind> = NodeOutputName<TKind>,
+> = TKind extends NodeKind
+  ? TOutput extends keyof NodeOutputPortKindByKind[TKind]
+    ? NodeOutputPortKindByKind[TKind][TOutput]
+    : never
+  : never;
 /** What input \`TPort\` of a node kind takes; for a union of kinds, what any of them takes there. */
 export type NodeInputPortKind<
   TKind extends NodeKind = NodeKind,

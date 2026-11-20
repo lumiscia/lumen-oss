@@ -6,7 +6,8 @@ use super::Pose3d;
 use crate::error::LumenError;
 use crate::expr::ExpressionValue;
 use crate::node::{
-    Deferred, Delegated, NodeId, NodeParamType, NodeParams, ParamValue, PropertyKind, truncated_int,
+    Deferred, Delegated, NodeId, NodeParamType, NodeParams, OutputRef, ParamValue, PropertyKind,
+    truncated_int,
 };
 
 /// Most particles a `particles_3d` draws.
@@ -187,9 +188,9 @@ pub struct Particles3d {
     pub params: Particles3dParamsDelegate,
 
     #[input(scene, optional)]
-    pub surface: Option<NodeId>,
+    pub surface: Option<OutputRef>,
     #[input(scene)]
-    pub object: Option<NodeId>,
+    pub object: Option<OutputRef>,
 }
 
 impl Particles3d {

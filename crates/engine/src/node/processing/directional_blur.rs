@@ -10,7 +10,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::gpu::frame_graph::{self, ComputeProgram, dispatch_for};
 use crate::node::motion::MAX_BOUNDED_MAGNITUDE;
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 use super::displacement_map::EdgeMode;
 
@@ -61,7 +61,7 @@ pub struct DirectionalBlur {
     #[params]
     pub params: DirectionalBlurParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -96,7 +96,7 @@ pub struct RadialBlur {
     #[params]
     pub params: RadialBlurParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -133,7 +133,7 @@ pub struct ZoomBlur {
     #[params]
     pub params: ZoomBlurParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 /// `[min_x, min_y, max_x, max_y]` in canvas pixels.

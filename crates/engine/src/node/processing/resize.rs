@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::node::{
-    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams,
+    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef,
     processing::{
         RasterSampling,
         minify::{self, Minification},
@@ -76,7 +76,7 @@ pub struct Resize {
     pub params: ResizeParamsDelegate,
 
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[

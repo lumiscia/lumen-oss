@@ -587,7 +587,7 @@ impl<'a> Planner<'a> {
                 Some(node) => {
                     let inputs = route(&walk.scope, node, walk.frame.into(), self.media, true)?;
                     found.stack.extend(inputs.into_iter().map(|input| Walk {
-                        node: input.node,
+                        node: input.input.node,
                         depth: walk.depth + 1,
                         ..walk.clone()
                     }));
@@ -692,7 +692,7 @@ impl<'a> Planner<'a> {
             let (Some(template), Some(props)) = (template, props) else {
                 if let Some(source) = clip.source {
                     found.stack.push(Walk {
-                        node: source,
+                        node: source.node,
                         ..next
                     });
                 }
@@ -792,7 +792,7 @@ impl<'a> Planner<'a> {
             let folded = looping.map_or(0.0, |looping| repeat as f64 * looping.length);
             found.stack.push(Walk {
                 scope: walk.scope.clone(),
-                node: source,
+                node: source.node,
                 frame: content_start(repeat) - folded,
                 samples: (end - begin).max(1.0) as u64,
                 rate: walk.rate * rate,
@@ -1117,7 +1117,7 @@ impl<'a> Instance<'a> {
 /// The node a scope's `media_output` shows.
 fn output_source(scope: &Scope<'_>) -> Option<NodeId> {
     match scope.node(scope.output) {
-        Some(NodeKind::MediaOutput(output)) => output.source,
+        Some(NodeKind::MediaOutput(output)) => output.source.map(|source| source.node),
         _ => None,
     }
 }

@@ -19,7 +19,9 @@ use crate::error::{LumenError, RenderError};
 use crate::gpu::frame_graph::{
     ComputeProgram, FrameCx, Programs, Raster, RecordNode, RenderProgram,
 };
+use crate::node::OutputPort;
 use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, required_input};
+use std::borrow::Cow;
 
 pub(crate) const SHADER: &str = include_str!("scene.wgsl");
 const RESOLVE_SHADER: &str = include_str!("resolve.wgsl");
@@ -693,7 +695,16 @@ pub(crate) fn catcher_programs(
 }
 
 impl Render3d {
-    /// Draws the depth or normals of `collected`'s objects at `size` with `program`, from
+    /// What the default `output` is: the output the `output` param selects.
+    fn default_output(&self) -> Render3dOutput {
+        match self.params.output {
+            Render3dOutputDelegate::Depth => Render3dOutput::Depth,
+            Render3dOutputDelegate::Normal => Render3dOutput::Normal,
+            _ => Render3dOutput::Color,
+        }
+    }
+
+    /// Draws `data`, depth or normals, of `collected`'s objects at `size` with `program`, from
     /// [`data_program`].
     fn record_data(
         &self,
@@ -701,11 +712,12 @@ impl Render3d {
         params: &super::Render3dParams,
         collected: &Collected,
         size: Size,
+        data: Render3dOutput,
         (data_program, background): DataProgram,
     ) -> crate::Result<Raster> {
         let scene = &collected.scene;
         let camera = scene.camera.unwrap_or_default();
-        if params.output == Render3dOutput::Depth {
+        if data == Render3dOutput::Depth {
             let (near, far) =
                 depth_range(&camera, params).map_err(|details| render_error(self.id, details))?;
             if far <= near {
@@ -719,16 +731,16 @@ impl Render3d {
             .map_err(|error| render_error(self.id, error.to_string()))?;
         let output = cx.storage_target(size);
         let unread = cx.transparent(size).tex;
-        let data = DataParams {
+        let data_params = DataParams {
             background,
             drawn: u32::from(!draws.runs.is_empty()),
             _pad: [0; 3],
         };
         if draws.runs.is_empty() {
-            if params.output == Render3dOutput::Normal {
+            if data == Render3dOutput::Normal {
                 return Ok(cx.transparent(size));
             }
-            cx.spatial_pass(&SCENE_3D_DATA, unread, &data, output, size)?;
+            cx.spatial_pass(&SCENE_3D_DATA, unread, &data_params, output, size)?;
             return Ok(Raster {
                 tex: output,
                 domain: TextureDomain::full_frame(size),
@@ -804,7 +816,7 @@ impl Render3d {
                 run.instances,
             );
         }
-        cx.spatial_pass(&SCENE_3D_DATA, target, &data, output, size)?;
+        cx.spatial_pass(&SCENE_3D_DATA, target, &data_params, output, size)?;
         Ok(Raster {
             tex: output,
             domain: TextureDomain::full_frame(size),
@@ -856,28 +868,40 @@ impl RecordNode for Render3d {
     /// for those drawing shadow maps and catchers, which the lights and surfaces asking for them
     /// build. Masked surfaces build their programs when first drawn.
     fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
-        let output = match self.params.output {
-            Render3dOutputDelegate::Depth => Render3dOutput::Depth,
-            Render3dOutputDelegate::Normal => Render3dOutput::Normal,
-            _ => Render3dOutput::Color,
-        };
-        if let Some((data_program, _)) = data_program(output) {
-            for cull in [Some(wgpu::Face::Back), Some(wgpu::Face::Front), None] {
-                programs.render(data_program, data_spec(cull), 0)?;
+        for output in Render3dOutput::of_ports(programs.reads()) {
+            if let Some((data_program, _)) = data_program(output) {
+                for cull in [Some(wgpu::Face::Back), Some(wgpu::Face::Front), None] {
+                    programs.render(data_program, data_spec(cull), 0)?;
+                }
+                programs.compute(&SCENE_3D_DATA)?;
+                continue;
             }
-            return programs.compute(&SCENE_3D_DATA);
+            for (depth, cull) in VARIANTS {
+                programs.render(&SCENE_3D, spec(depth, cull), 0)?;
+            }
+            crate::gpu::mips::programs(programs)?;
+            if self.may_show_background() {
+                programs.render(&SCENE_3D_BACKGROUND, background_spec(), 0)?;
+            }
+            programs.compute(&SCENE_3D_RESOLVE)?;
         }
-        for (depth, cull) in VARIANTS {
-            programs.render(&SCENE_3D, spec(depth, cull), 0)?;
+        Ok(())
+    }
+
+    /// Reads of `output` read what the `output` param selects.
+    fn canonical_port(&self, port: OutputPort) -> OutputPort {
+        match port.index() {
+            None => self.default_output().port(),
+            Some(_) => port,
         }
-        crate::gpu::mips::programs(programs)?;
-        if self.may_show_background() {
-            programs.render(&SCENE_3D_BACKGROUND, background_spec(), 0)?;
-        }
-        programs.compute(&SCENE_3D_RESOLVE)
     }
 
     fn record(&self, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
+        self.record_output(cx, OutputPort::DEFAULT)
+    }
+
+    /// Draws `port`, from a walk of the scene the other outputs the graph reads share.
+    fn record_output(&self, cx: &mut FrameCx<'_>, port: OutputPort) -> crate::Result<Raster> {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
@@ -902,11 +926,43 @@ impl RecordNode for Render3d {
                 ),
             ));
         }
-        let mut collected = Collected::new(self.id);
-        collected.add(cx, required_input(self.id, "scene", self.scene)?)?;
-        if let Some(program) = data_program(params.output) {
-            return self.record_data(cx, &params, &collected, size, program);
+        let scene = required_input(self.id, "scene", self.scene)?.node;
+        let walk = |cx: &mut FrameCx<'_>| {
+            let mut collected = Collected::new(self.id);
+            collected.add(cx, scene)?;
+            #[cfg(feature = "test-hooks")]
+            cx.count_scene_walk();
+            Ok(collected)
+        };
+        // Outputs the graph reads more than one of share a walk of the scene.
+        let shared;
+        let collected = if Render3dOutput::of_ports(cx.outputs_read(self))
+            .nth(1)
+            .is_some()
+        {
+            shared = cx.shared_scene_walk(self.id, walk)?;
+            Cow::Borrowed(&*shared)
+        } else {
+            Cow::Owned(walk(cx)?)
+        };
+        let output = Render3dOutput::of_port(port).unwrap_or(self.default_output());
+        match data_program(output) {
+            Some(program) => self.record_data(cx, &params, &collected, size, output, program),
+            None => self.record_color(cx, &params, collected.into_owned(), size),
         }
+    }
+}
+
+impl Render3d {
+    /// Draws the lit scene `collected` holds at `size`.
+    fn record_color(
+        &self,
+        cx: &mut FrameCx<'_>,
+        params: &super::Render3dParams,
+        mut collected: Collected,
+        size: Size,
+    ) -> crate::Result<Raster> {
+        let max = cx.rec.device().limits().max_texture_dimension_2d;
         if collected
             .scene
             .lights
@@ -985,7 +1041,7 @@ impl RecordNode for Render3d {
             aspect,
             light_count,
             &lighting,
-            &params,
+            params,
             fog,
             supersample,
         ));
@@ -1019,7 +1075,7 @@ impl RecordNode for Render3d {
         let environment_bindings = bind_environment(
             cx,
             environment.as_ref(),
-            &gpu_environment(environment.as_ref(), &camera, aspect, &params),
+            &gpu_environment(environment.as_ref(), &camera, aspect, params),
             unread,
             lights,
         );

@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, compositing::BlendMode,
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef, compositing::BlendMode,
 };
 
 use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
@@ -49,7 +49,7 @@ pub struct RasterMultiMerge {
     pub params: RasterMultiMergeParamsDelegate,
 
     #[input(optional, variadic)]
-    pub layers: Vec<NodeId>,
+    pub layers: Vec<OutputRef>,
 }
 
 /// Most overlays one pass composites over its base.

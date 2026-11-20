@@ -3,7 +3,7 @@
 use super::Placement3d;
 #[cfg(feature = "3d")]
 use super::text_3d::check_length;
-use crate::node::{NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams, OutputRef};
 
 /// Most bevel steps.
 #[cfg(feature = "3d")]
@@ -96,9 +96,9 @@ pub struct Extrude3d {
     pub params: Extrude3dParamsDelegate,
 
     #[input(geometry)]
-    pub geometry: Option<NodeId>,
+    pub geometry: Option<OutputRef>,
     #[input(material, optional)]
-    pub material: Option<NodeId>,
+    pub material: Option<OutputRef>,
     #[input(material, optional)]
-    pub side_material: Option<NodeId>,
+    pub side_material: Option<OutputRef>,
 }

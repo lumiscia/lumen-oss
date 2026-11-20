@@ -3,7 +3,7 @@ use bytemuck::{Pod, Zeroable};
 use super::halftone::solid_linear;
 use crate::gpu::frame_graph::ComputeProgram;
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef, vector::paint::Paint,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -99,7 +99,7 @@ pub struct OrderedDither {
     #[params]
     pub params: OrderedDitherParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 #[repr(C)]

@@ -1,4 +1,4 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 use super::gaussian;
 
@@ -23,7 +23,7 @@ pub struct Blur {
     #[params]
     pub params: BlurParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 impl crate::gpu::frame_graph::RecordNode for Blur {

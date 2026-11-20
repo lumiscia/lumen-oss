@@ -1,5 +1,7 @@
 import { Composition } from "../src/composition.js";
-import type { NodeReference } from "../src/types.js";
+import { nodes } from "../src/nodes.js";
+import { outputOf } from "../src/output.js";
+import type { NodeReference, NodeSource } from "../src/types.js";
 
 const composition = new Composition();
 const background = composition.addNode({ type: "background" });
@@ -73,6 +75,26 @@ const model = composition.addNode({
 composition.addNode({ type: "merge_3d", inputs: { objects: [model, plane] } });
 // @ts-expect-error a model shows a raster on its material, not a scene
 composition.addNode({ type: "model_3d", inputs: { texture: group } });
+
+composition.addNode({
+  type: "merge",
+  inputs: { base: outputOf(render, "color"), mask: outputOf(render, "depth") },
+});
+composition.addNode({ type: "opacity", inputs: { source: outputOf(nodes.render_3d(), "normal") } });
+composition.connect(outputOf(render, "depth"), output, { toPort: "source" });
+composition.connect(outputOf(group, "output"), render, { toPort: "scene" });
+// @ts-expect-error render_3d has no `matte` output
+outputOf(render, "matte");
+// @ts-expect-error background names no outputs beside `output`
+outputOf(background, "depth");
+// @ts-expect-error a bare id has no kind to check the name against
+outputOf(render.id, "depth");
+// @ts-expect-error render_3d's `depth` is a raster, not a scene
+composition.addNode({ type: "merge_3d", inputs: { objects: [outputOf(render, "depth")] } });
+// @ts-expect-error merge_3d's `output` is a scene, not a raster
+composition.connect(outputOf(group, "output"), output, { toPort: "source" });
+const depthSource: NodeSource<"raster"> = outputOf(render, "depth");
+void depthSource;
 
 // @ts-expect-error background outputs a raster, not a scene
 const scene: NodeReference<"scene"> = background;
