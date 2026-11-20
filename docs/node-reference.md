@@ -430,6 +430,25 @@ Params:
 - **`exposure`** (number; default `0`) Exposure in stops, multiplying linear light by 2 to the power of this.
 - **`offset`** (number; default `0`) Offset added to the sRGB-encoded colour, after the exposure and before the contrast.
 
+## `film_grain`
+
+Adds film grain to a raster: noise that follows the picture's brightness, in a pattern fixed to the canvas, so it stays put as the source moves and looks the same at any render scale. Alpha is untouched. Set `seed` to `"=frame"` for grain that changes every frame, as in `{ "amount": 0.1, "size": 2, "seed": "=frame" }`.
+
+Category: processing. Output: raster.
+
+Inputs:
+
+- `source`: raster, required
+
+Params:
+
+- **`amount`** (number, at least 0; default `0.15`) Grain strength: the standard deviation of the grain in sRGB-encoded units, at the brightness where `response` makes it strongest.
+- **`monochrome`** (boolean; default `true`) Uses one grain for all channels, which adds no colour noise, rather than one per channel.
+- **`response`** (number, 0 to 1; default `0.5`) How much the strength follows the brightness. 0 grains every brightness alike, and 1 grains midtones only, leaving black and white clean.
+- **`roughness`** (number, 0 to 1; default `0`) Mixes in a coarser grain four times the size, for a paper-like tooth, without changing the strength. 0 is fine grain only and 1 coarse grain only.
+- **`seed`** (integer; default `0`) Picks an unrelated pattern. Use an expression such as `=frame` to animate the grain.
+- **`size`** (number, at least 0.5; default `1.5`) Size of one grain in composition pixels.
+
 ## `glow`
 
 Adds a blurred copy of a raster's brightest pixels to it, as light: the glow's alpha is its brightest channel, so dark pixels add nothing.

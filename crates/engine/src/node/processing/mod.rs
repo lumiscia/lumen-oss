@@ -8,6 +8,7 @@ pub(crate) mod cube_lut;
 pub mod directional_blur;
 pub mod displacement_map;
 pub mod exposure;
+pub mod film_grain;
 pub(crate) mod gaussian;
 pub mod glow;
 pub mod halftone;
