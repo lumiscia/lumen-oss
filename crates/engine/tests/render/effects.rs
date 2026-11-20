@@ -514,14 +514,14 @@ fn text_bounds_match_reference() {
 #[test]
 fn transform_bounds_match_reference() {
     let mut cases = Vec::new();
-    // (rotate in degrees, scale, pivot, bounded, drawn). The bound is dropped past 1000 radians
-    // of rotation, where the shader's sine and cosine are not exact, and past 1e6 in any value it
-    // computes, where single precision cannot place the shape. Shapes that single precision
-    // throws off the canvas, or scales to infinity, draw nothing in either render.
+    // (rotate in degrees, scale, pivot, bounded, drawn). Rotations are wrapped to a turn before
+    // the shader sees them, so any is bounded. The bound is dropped past 1e6 in any value the
+    // shader computes, where single precision cannot place the shape. Shapes that single
+    // precision throws off the canvas, or scales to infinity, draw nothing in either render.
     for (rotate, scale, pivot, bounded, drawn) in [
         (5.7e4, 1.0, None, true, true),
-        (5.8e4, 1.0, None, false, true),
-        (1e9, 1.0, None, false, true),
+        (5.8e4, 1.0, None, true, true),
+        (1e9, 1.0, None, true, true),
         (0.0, 1e40, None, false, false),
         (0.0, 1e300, None, false, false),
         (0.0, 1.0, Some(9e5), true, true),

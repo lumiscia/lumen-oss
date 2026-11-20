@@ -341,15 +341,19 @@ fn colour_uniforms_decode_past_black_and_white_as_the_prelude_does() {
 
 #[test]
 fn shader_output_is_kept_in_the_working_space() {
-    // Alpha past 1 is clamped and colour keeps its light; a NaN texel, here 0 / 0 at time 0,
-    // is transparent black.
+    // Alpha past 1 is clamped and colour keeps its light; a NaN texel is transparent black. The
+    // NaN is built from its bits, since a compiler that assumes finite math may fold 0 / 0.
     let cases = [
         (
             "alpha past one",
             "vec4<f32>(1.5, 0.5, 0.0, 2.0)",
             [255, 188, 0, 255],
         ),
-        ("not a number", "vec4<f32>(lumen.time / lumen.time)", [0; 4]),
+        (
+            "not a number",
+            "vec4<f32>(bitcast<f32>(0x7fc00000u + lumen.frame))",
+            [0; 4],
+        ),
     ]
     .map(|(name, value, expected)| {
         Case::new(

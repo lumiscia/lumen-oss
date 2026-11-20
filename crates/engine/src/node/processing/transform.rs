@@ -104,9 +104,12 @@ impl Transform {
     }
 }
 
-/// The largest rotation, in radians, that bounds are taken for. Past it a GPU's sine and cosine
-/// of the single-precision angle are not reliable enough to pad for.
-const MAX_BOUNDED_RADIANS: f64 = 1000.0;
+/// `degrees` as radians within a turn, so that a GPU's sine and cosine, which some backends only
+/// compute accurately near zero, see the same angle whatever the number of whole turns. A rotation
+/// under a turn is unchanged.
+fn wrapped_radians(degrees: f64) -> f32 {
+    ((degrees % 360.0) as f32).to_radians()
+}
 
 /// The error assumed in the shader's sine and cosine, as a fraction of the distance from the
 /// pivot, which rotating moves a point by.
@@ -164,7 +167,7 @@ impl TransformMotion {
         for key in keys {
             let tap = key.sampled().to_gpu();
             let radians = f64::from(tap.rotate_radians);
-            if radians.is_nan() || radians.abs() > MAX_BOUNDED_RADIANS {
+            if radians.is_nan() {
                 return None;
             }
             let (sin, cos) = radians.sin_cos();
@@ -323,7 +326,7 @@ impl TransformKey {
             scale: [self.scale.0 as f32, self.scale.1 as f32],
             translate: [self.translate.0 as f32, self.translate.1 as f32],
             pivot: [self.pivot.0 as f32, self.pivot.1 as f32],
-            rotate_radians: (self.rotate as f32).to_radians(),
+            rotate_radians: wrapped_radians(self.rotate),
             lod: 0.0,
             footprint: [0.0; 2],
             _pad: [0; 2],
@@ -434,7 +437,7 @@ impl crate::gpu::frame_graph::RecordNode for Transform {
             scale: [evaluated.scale_x as f32, evaluated.scale_y as f32],
             translate: [evaluated.translate_x as f32, evaluated.translate_y as f32],
             pivot,
-            rotate_radians: (evaluated.rotate as f32).to_radians(),
+            rotate_radians: wrapped_radians(evaluated.rotate),
             sampling: evaluated.sampling as u32,
             output_origin: [domain.data_rect.x, domain.data_rect.y],
             source_origin: source.origin(),
