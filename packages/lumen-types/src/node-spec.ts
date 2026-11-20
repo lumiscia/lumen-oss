@@ -1,5 +1,6 @@
 import type {
   ClipProps,
+  ColorCurves,
   DashPattern,
   FontFeatures,
   GradientPaint,
@@ -78,6 +79,7 @@ export type NodeLiteralValue =
   | TextHighlight
   | FontFeatures
   | TextStroke
+  | ColorCurves
   | DashPattern
   | Repeat
   | readonly [number, number]

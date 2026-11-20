@@ -5,8 +5,8 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
-export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1407,6 +1407,17 @@ export type ClipEnd = "hide" | "hold" | "loop";
 export type ClipPropValue = number | string | Vec2 | Vec3 | Color;
 /** Prop values a `clip` passes to its template, by prop name. */
 export type ClipProps = Readonly<Record<string, ClipPropValue>>;
+/** A smooth monotone curve through its points, whose `x` must increase. An empty curve is the identity. */
+export type ColorCurve = readonly ColorCurvePoint[];
+/** A point of a colour curve, `[x, y]`, each in 0..1. Each number takes a literal or an expression. */
+export type ColorCurvePoint = readonly [ExpressionValue<number>, ExpressionValue<number>];
+/** Tone curves on sRGB-encoded colour: `master` for all channels, then one per channel. A curve left out is the identity. The curves can't be expressions, but their numbers can. */
+export type ColorCurves = {
+  readonly blue?: ColorCurve;
+  readonly green?: ColorCurve;
+  readonly master?: ColorCurve;
+  readonly red?: ColorCurve;
+};
 export type ColorGradeInterpolation = RasterSampling;
 /** A template prop's type and the value clips that don't set it get. Without a default it is empty, 0, transparent, [0, 0] or [0, 0, 0]. */
 export type CompositionPropDeclaration = {
@@ -1778,6 +1789,57 @@ export interface ClipNode extends CompositionNodeBase<"clip"> {
     readonly speed?: ExpressionValue<number>;
     /** Frame the clip starts at, in this composition's frames. */
     readonly start?: ExpressionValue<number>;
+  };
+}
+
+/**
+ * Corrects the colour of a raster. Each step works on the straight colour in linear light, in
+ * this order, and the alpha is untouched, so the defaults leave the raster unchanged.
+ * 
+ * 1. White balance multiplies red, green and blue by `2^(temperature / 2)`, `2^(-tint / 2)` and
+ * `2^(-temperature / 2)`, divided by the Rec. 709 luminance of those three, so a neutral grey
+ * keeps its brightness.
+ * 
+ * 2. Lift, gain and offset: `gain * (x + lift * (1 - x)) + offset` on each channel.
+ * 
+ * 3. Gamma: `max(x, 0) ^ (1 / gamma)` on each channel.
+ * 
+ * 4. Contrast: `pivot * (max(x, 0) / pivot) ^ contrast` on each channel.
+ * 
+ * 5. Curves act on the sRGB-encoded colour, clamped to 0..1: `master` on every channel, then
+ * `red`, `green` and `blue` on theirs. Each is a smooth monotone curve through its points, flat
+ * before the first and after the last. With no curves set, values above 1 pass through.
+ * 
+ * Each channel param is `[red, green, blue]`; an expression for one is a `vec3`. A curve is up
+ * to 16 `[x, y]` points of numbers or expressions, with `x` increasing, all in 0..1:
+ * `"curves": { "master": [[0, 0], [0.5, 0.65], [1, 1]] }` brightens the midtones.
+ */
+export interface ColorCorrectNode extends CompositionNodeBase<"color_correct"> {
+  readonly params?: {
+    /** Contrast around the pivot, in linear light: above 1 pushes values away from it. */
+    readonly contrast?: ExpressionValue<number>;
+    /** Tone curves on the sRGB-encoded colour, applied last. */
+    readonly curves?: ColorCurves;
+    /** Multiplier of each channel's linear light. */
+    readonly gain?: ExpressionValue<Vec3>;
+    /** Midtone gamma of each channel: above 1 brightens the midtones. Each is at least 0.01. */
+    readonly gamma?: ExpressionValue<Vec3>;
+    /** Raises the darks of each channel by this much, leaving white where it is. */
+    readonly lift?: ExpressionValue<Vec3>;
+    /** Linear light added to each channel after the gain. */
+    readonly offset?: ExpressionValue<Vec3>;
+    /** Linear light the contrast leaves unchanged, 0.18 for mid grey. */
+    readonly pivot?: ExpressionValue<number>;
+    /**
+     * Colour temperature. Positive warms, scaling red up and blue down by half a stop at 1;
+     * negative cools.
+     */
+    readonly temperature?: ExpressionValue<number>;
+    /**
+     * Green–magenta tint. Positive shifts toward magenta, scaling green down by half a stop at
+     * 1; negative shifts toward green.
+     */
+    readonly tint?: ExpressionValue<number>;
   };
 }
 
@@ -3356,6 +3418,7 @@ export interface CompositionNodeByKind {
   readonly "boolean": BooleanNode;
   readonly "camera_3d": Camera3dNode;
   readonly "clip": ClipNode;
+  readonly "color_correct": ColorCorrectNode;
   readonly "color_grade": ColorGradeNode;
   readonly "crop": CropNode;
   readonly "directional_blur": DirectionalBlurNode;
@@ -3418,6 +3481,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "clip": Omit<ClipNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "color_correct": Omit<ColorCorrectNode, "id"> & {
     readonly id?: number;
   };
   readonly "color_grade": Omit<ColorGradeNode, "id"> & {
@@ -3566,6 +3632,7 @@ export interface NodeInputPortNameByKind {
   readonly "boolean": "a" | "b";
   readonly "camera_3d": never;
   readonly "clip": "source";
+  readonly "color_correct": "source";
   readonly "color_grade": "source";
   readonly "crop": "source";
   readonly "directional_blur": "source";
@@ -3620,6 +3687,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "boolean": never;
   readonly "camera_3d": never;
   readonly "clip": never;
+  readonly "color_correct": never;
   readonly "color_grade": never;
   readonly "crop": never;
   readonly "directional_blur": never;
@@ -3674,6 +3742,7 @@ export interface NodeOutputKindByKind {
   readonly "boolean": "raster";
   readonly "camera_3d": "scene";
   readonly "clip": "raster";
+  readonly "color_correct": "raster";
   readonly "color_grade": "raster";
   readonly "crop": "raster";
   readonly "directional_blur": "raster";
@@ -3728,6 +3797,7 @@ export interface NodeInputPortKindByKind {
   readonly "boolean": { readonly "a": "raster"; readonly "b": "raster" };
   readonly "camera_3d": {};
   readonly "clip": { readonly "source": "raster" };
+  readonly "color_correct": { readonly "source": "raster" };
   readonly "color_grade": { readonly "source": "raster" };
   readonly "crop": { readonly "source": "raster" };
   readonly "directional_blur": { readonly "source": "raster" };
@@ -3832,6 +3902,29 @@ export const nodeInputPorts = {
   "camera_3d": {},
   /** Plays a composition template, or its source, over a window of time. */
   "clip": { "source": { kind: "raster", variadic: false } },
+  /**
+   * Corrects the colour of a raster. Each step works on the straight colour in linear light, in
+   * this order, and the alpha is untouched, so the defaults leave the raster unchanged.
+   * 
+   * 1. White balance multiplies red, green and blue by `2^(temperature / 2)`, `2^(-tint / 2)` and
+   * `2^(-temperature / 2)`, divided by the Rec. 709 luminance of those three, so a neutral grey
+   * keeps its brightness.
+   * 
+   * 2. Lift, gain and offset: `gain * (x + lift * (1 - x)) + offset` on each channel.
+   * 
+   * 3. Gamma: `max(x, 0) ^ (1 / gamma)` on each channel.
+   * 
+   * 4. Contrast: `pivot * (max(x, 0) / pivot) ^ contrast` on each channel.
+   * 
+   * 5. Curves act on the sRGB-encoded colour, clamped to 0..1: `master` on every channel, then
+   * `red`, `green` and `blue` on theirs. Each is a smooth monotone curve through its points, flat
+   * before the first and after the last. With no curves set, values above 1 pass through.
+   * 
+   * Each channel param is `[red, green, blue]`; an expression for one is a `vec3`. A curve is up
+   * to 16 `[x, y]` points of numbers or expressions, with `x` increasing, all in 0..1:
+   * `"curves": { "master": [[0, 0], [0.5, 0.65], [1, 1]] }` brightens the midtones.
+   */
+  "color_correct": { "source": { kind: "raster", variadic: false } },
   /** Applies a LUT-driven color transform to a raster, looking up its sRGB-encoded colour. */
   "color_grade": { "source": { kind: "raster", variadic: false } },
   /** Keeps a raster region in place and clears everything outside it. */
@@ -4169,6 +4262,7 @@ export const nodeMediaSources = {
   "boolean": {},
   "camera_3d": {},
   "clip": {},
+  "color_correct": {},
   "color_grade": { "lut_source": { kinds: ["lut"] } },
   "crop": {},
   "directional_blur": {},

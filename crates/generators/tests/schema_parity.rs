@@ -449,6 +449,48 @@ fn dash_pattern_schema_matches_engine_parsing() {
 }
 
 #[test]
+fn color_curves_schema_matches_engine_parsing() {
+    let validator = schema_validator();
+    let points = |count: usize| -> Vec<Value> {
+        (0..count).map(|i| json!([i as f64 / 16.0, 0.5])).collect()
+    };
+    // JSON Schema can't say that `x` increases, so the schema accepts what the engine refuses.
+    let unordered = json!({ "master": [[0.6, 0], [0.4, 1]] });
+    for (curves, valid, schema_valid) in [
+        (json!({}), true, true),
+        (json!({ "master": [] }), true, true),
+        (
+            json!({ "master": [[0, 0], [0.5, 0.75], [1, 1]], "blue": [[0, 0.2]] }),
+            true,
+            true,
+        ),
+        (json!({ "red": [[0, "=frame"], ["=0.5", 1]] }), true, true),
+        (json!({ "green": points(16) }), true, true),
+        (json!({ "green": points(17) }), false, false),
+        (unordered, false, true),
+        (json!({ "master": [[0, 0], [1.2, 1]] }), false, false),
+        (json!({ "master": [[0, -0.1]] }), false, false),
+        (json!({ "master": [[0]] }), false, false),
+        (json!({ "alpha": [[0, 0]] }), false, false),
+        (json!({ "master": "=frame" }), false, false),
+        (json!("=frame"), false, false),
+    ] {
+        let composition =
+            composition_with_node(&node_schema("color_correct"), json!({ "curves": curves }));
+        assert_eq!(
+            validator.is_valid(&composition),
+            schema_valid,
+            "{curves} schema"
+        );
+        assert_eq!(
+            lumen_engine::json::parse_value(&composition).is_ok(),
+            valid,
+            "{curves} engine"
+        );
+    }
+}
+
+#[test]
 fn repeat_schema_matches_engine_parsing() {
     let validator = schema_validator();
     for (repeat, valid) in [

@@ -6,6 +6,7 @@ mod budgets;
 mod cache;
 mod clips;
 mod color;
+mod color_correct;
 mod depth;
 mod displacement;
 mod drawing;

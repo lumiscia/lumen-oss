@@ -191,6 +191,7 @@ node_kinds! {
     Clip(compositing::clip::Clip),
     Opacity(processing::opacity::Opacity),
     Blur(processing::blur::Blur),
+    ColorCorrect(processing::color_correct::ColorCorrect),
     ColorGrade(processing::color_grade::ColorGrade),
     Exposure(processing::exposure::Exposure),
     HueSaturation(processing::hue_saturation::HueSaturation),

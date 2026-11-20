@@ -254,6 +254,69 @@
         }
       ]
     },
+    "colorCurve": {
+      "description": "A smooth monotone curve through its points, whose `x` must increase. An empty curve is the identity.",
+      "items": {
+        "$ref": "#/$defs/colorCurvePoint"
+      },
+      "maxItems": 16,
+      "type": "array",
+      "x-lumen-type": "ColorCurve"
+    },
+    "colorCurvePoint": {
+      "description": "A point of a colour curve, `[x, y]`, each in 0..1. Each number takes a literal or an expression.",
+      "items": false,
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ]
+        }
+      ],
+      "type": "array",
+      "x-lumen-type": "ColorCurvePoint"
+    },
+    "colorCurves": {
+      "additionalProperties": false,
+      "description": "Tone curves on sRGB-encoded colour: `master` for all channels, then one per channel. A curve left out is the identity. The curves can't be expressions, but their numbers can.",
+      "properties": {
+        "blue": {
+          "$ref": "#/$defs/colorCurve"
+        },
+        "green": {
+          "$ref": "#/$defs/colorCurve"
+        },
+        "master": {
+          "$ref": "#/$defs/colorCurve"
+        },
+        "red": {
+          "$ref": "#/$defs/colorCurve"
+        }
+      },
+      "type": "object",
+      "x-lumen-type": "ColorCurves"
+    },
     "compositionProp": {
       "description": "A template prop's type and the value clips that don't set it get. Without a default it is empty, 0, transparent, [0, 0] or [0, 0, 0].",
       "oneOf": [
@@ -2142,6 +2205,192 @@
                 "kind": "raster",
                 "name": "source",
                 "optional": true,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "Corrects the colour of a raster. Each step works on the straight colour in linear light, in\nthis order, and the alpha is untouched, so the defaults leave the raster unchanged.\n\n1. White balance multiplies red, green and blue by `2^(temperature / 2)`, `2^(-tint / 2)` and\n`2^(-temperature / 2)`, divided by the Rec. 709 luminance of those three, so a neutral grey\nkeeps its brightness.\n\n2. Lift, gain and offset: `gain * (x + lift * (1 - x)) + offset` on each channel.\n\n3. Gamma: `max(x, 0) ^ (1 / gamma)` on each channel.\n\n4. Contrast: `pivot * (max(x, 0) / pivot) ^ contrast` on each channel.\n\n5. Curves act on the sRGB-encoded colour, clamped to 0..1: `master` on every channel, then\n`red`, `green` and `blue` on theirs. Each is a smooth monotone curve through its points, flat\nbefore the first and after the last. With no curves set, values above 1 pass through.\n\nEach channel param is `[red, green, blue]`; an expression for one is a `vec3`. A curve is up\nto 16 `[x, y]` points of numbers or expressions, with `x` increasing, all in 0..1:\n`\"curves\": { \"master\": [[0, 0], [0.5, 0.65], [1, 1]] }` brightens the midtones.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "contrast": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Contrast around the pivot, in linear light: above 1 pushes values away from it.",
+                    "title": "Contrast",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "curves": {
+                    "$ref": "#/$defs/colorCurves",
+                    "default": {},
+                    "description": "Tone curves on the sRGB-encoded colour, applied last.",
+                    "title": "Curves",
+                    "x-lumen-kind": "color_curves"
+                  },
+                  "gain": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0, 1.0],
+                    "description": "Multiplier of each channel's linear light.",
+                    "title": "Gain",
+                    "x-lumen-constraints": {
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "gamma": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0, 1.0],
+                    "description": "Midtone gamma of each channel: above 1 brightens the midtones. Each is at least 0.01.",
+                    "title": "Gamma",
+                    "x-lumen-constraints": {
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "lift": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0, 0.0],
+                    "description": "Raises the darks of each channel by this much, leaving white where it is.",
+                    "title": "Lift",
+                    "x-lumen-constraints": {
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "offset": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0, 0.0],
+                    "description": "Linear light added to each channel after the gain.",
+                    "title": "Offset",
+                    "x-lumen-constraints": {
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "pivot": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.18,
+                    "description": "Linear light the contrast leaves unchanged, 0.18 for mid grey.",
+                    "title": "Pivot",
+                    "x-lumen-constraints": {
+                      "min": 0.001,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "temperature": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Colour temperature. Positive warms, scaling red up and blue down by half a stop at 1;\nnegative cools.",
+                    "title": "Temperature",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": -1.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "tint": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Green–magenta tint. Positive shifts toward magenta, scaling green down by half a stop at\n1; negative shifts toward green.",
+                    "title": "Tint",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": -1.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "color_correct"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Color Correct",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "source",
+                "optional": false,
                 "variadic": false
               }
             ],

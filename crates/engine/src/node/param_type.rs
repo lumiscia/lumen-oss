@@ -153,6 +153,12 @@ impl NodeParamType for super::vector::dash::DashPattern {
     }
 }
 
+impl NodeParamType for super::processing::color_curves::ColorCurves {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Custom(&super::processing::color_curves::COLOR_CURVES)
+    }
+}
+
 impl NodeParamType for super::vector::drawing::Shadows {
     fn property_kind() -> PropertyKind {
         PropertyKind::Custom(&super::vector::drawing::SHADOWS)
