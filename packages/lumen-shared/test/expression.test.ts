@@ -80,6 +80,7 @@ import {
   progress,
   prop,
   random,
+  sampledKeys,
   remap,
   rgb,
   rgba,
@@ -443,6 +444,19 @@ describe("expression helpers", () => {
     expect(String(tween(0, 1, 0, 12, bezier))).toBe(
       "=tween(0, 1, 0, 12, cubic_bezier(vec2(0.4, 0), vec2(0.2, 1)))",
     );
+  });
+
+  test("sampledKeys emits smooth keys every step and at the end", () => {
+    expect(String(sampledKeys((at) => at / 3, { start: 0, end: 10, step: 4 }))).toBe(
+      "=keyframes(frame, 'smooth', key(0, 0), key(4, 1.33333), key(8, 2.66667), key(10, 3.33333))",
+    );
+    expect(String(sampledKeys((at) => [at, -at], { start: 5, end: 5, step: 1 }))).toBe(
+      "=keyframes(frame, 'smooth', key(5, vec2(5, -5)))",
+    );
+    expect(String(sampledKeys((at) => [at, 1, 2], { start: 0, end: 4, step: 2 }))).toBe(
+      "=keyframes(frame, 'smooth', key(0, vec3(0, 1, 2)), key(2, vec3(2, 1, 2)), key(4, vec3(4, 1, 2)))",
+    );
+    expect(() => sampledKeys((at) => at, { start: 0, end: 10, step: 0 })).toThrow("positive step");
   });
 
   test("drop trailing undefined arguments", () => {
