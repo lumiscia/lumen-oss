@@ -761,6 +761,16 @@
       "type": "string",
       "x-lumen-type": "PaintKind"
     },
+    "palette": {
+      "description": "A list of solid sRGB colors. Each is a literal.",
+      "items": {
+        "$ref": "#/$defs/color"
+      },
+      "maxItems": 16,
+      "minItems": 2,
+      "type": "array",
+      "x-lumen-type": "Palette"
+    },
     "region": {
       "description": "A rectangle of pixels, `[x, y, width, height]`. Each number takes an integer or an expression.",
       "items": false,
@@ -8413,6 +8423,287 @@
             "x-lumen-outputs": [
               {
                 "kind": "geometry",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "Sorts runs of pixels along rows or columns by brightness, hue or saturation, which smears a\npicture into streaks.\n\nOnly pixels whose `key` lies from `low` to `high` are sorted. A run is a span of those pixels\nalong the `direction`; pixels outside the band, and fully transparent ones, stay where they\nare and end the run. A run longer than `max_length` is cut into pieces at multiples of\n`max_length` pixels from the canvas origin. Each run is sorted from the lowest `key` to the\nhighest, or the reverse, and pixels with equal keys keep their order. A pixel moves whole, its\nalpha with its colour, so the output holds exactly the pixels of the source.\n\nFor example, `{ \"key\": \"luma\", \"low\": 0.2, \"high\": 0.9, \"max_length\": 120 }` drags the lit\nparts of a photo into horizontal streaks up to 120 pixels long.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "direction": {
+                    "anyOf": [
+                      {
+                        "enum": ["horizontal", "vertical"],
+                        "type": "string",
+                        "x-lumen-type": "SortDirection"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "horizontal",
+                    "description": "The direction runs of pixels are taken along.",
+                    "title": "Direction",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Horizontal",
+                        "name": "horizontal",
+                        "value": 0
+                      },
+                      {
+                        "label": "Vertical",
+                        "name": "vertical",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "high": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.8,
+                    "description": "The highest `key`, 0 to 1, a pixel may have and still be sorted.",
+                    "title": "High",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "key": {
+                    "anyOf": [
+                      {
+                        "enum": ["luma", "hue", "saturation"],
+                        "type": "string",
+                        "x-lumen-type": "SortKey"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "luma",
+                    "description": "The value that selects pixels and orders them.",
+                    "title": "Key",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Luma",
+                        "name": "luma",
+                        "value": 0
+                      },
+                      {
+                        "label": "Hue",
+                        "name": "hue",
+                        "value": 1
+                      },
+                      {
+                        "label": "Saturation",
+                        "name": "saturation",
+                        "value": 2
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "low": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.25,
+                    "description": "The lowest `key`, 0 to 1, a pixel may have and still be sorted.",
+                    "title": "Low",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "max_length": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 256.0,
+                    "description": "The most pixels one run holds, 2 and up. Longer runs are cut at multiples of it from the\ncanvas origin, and each piece is sorted alone. At most 1024 device pixels: a larger value,\nor one that a render scale takes past that, counts as 1024.",
+                    "title": "Max Length",
+                    "x-lumen-constraints": {
+                      "min": 2.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "reverse": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Sorts from the highest `key` to the lowest instead.",
+                    "title": "Reverse",
+                    "x-lumen-kind": "bool"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "pixel_sort"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Pixel Sort",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "Reduces a raster to a few colours, either by quantizing each channel to `levels` steps or by\nmapping the brightness of each pixel onto the colours of a palette. Both work on the\nsRGB-encoded colour, where steps are evenly spaced to the eye, and keep the source's alpha.\n\nIn `palette` mode the colours are sorted by their brightness, the Rec. 709 luma of the encoded\ncolour, and a pixel takes the colour whose band it falls in, the bands splitting at the\nmidpoints between neighbouring colours. `dither` places the pixels near a boundary in an 8 × 8\nBayer pattern anchored to the canvas origin, so it holds still when the source moves and when\nthe render scale changes.\n\nFor example, `{ \"mode\": \"palette\", \"colors\": [[8, 8, 8, 255], [191, 20, 20, 255], [201, 209, 214, 255]] }`\nprints a photo in three inks.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "colors": {
+                    "$ref": "#/$defs/palette",
+                    "default": [
+                      [0, 0, 0, 255],
+                      [255, 255, 255, 255]
+                    ],
+                    "description": "The colours a pixel may take, 2 to 16, as solid sRGB colours. Only `palette` uses it. Their\nalpha is ignored.",
+                    "title": "Colors",
+                    "x-lumen-kind": "palette"
+                  },
+                  "dither": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "How much of an 8 × 8 Bayer pattern is added before quantizing, 0 to 1. 0 gives hard bands,\nand 1 mixes neighbouring steps or colours in proportion to how far between them a pixel\nlies.",
+                    "title": "Dither",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "levels": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 4,
+                    "description": "Steps each channel quantizes to, 2 to 256. 2 gives only the extremes. Only `levels` uses\nit.",
+                    "title": "Levels",
+                    "x-lumen-constraints": {
+                      "max": 256.0,
+                      "min": 2.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "mode": {
+                    "anyOf": [
+                      {
+                        "enum": ["levels", "palette"],
+                        "type": "string",
+                        "x-lumen-type": "PosterizeMode"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "levels",
+                    "description": "What the node reduces the colour to.",
+                    "title": "Mode",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Levels",
+                        "name": "levels",
+                        "value": 0
+                      },
+                      {
+                        "label": "Palette",
+                        "name": "palette",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "posterize"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Posterize",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster",
                 "name": "output"
               }
             ]

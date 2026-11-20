@@ -159,6 +159,12 @@ impl NodeParamType for super::processing::color_curves::ColorCurves {
     }
 }
 
+impl NodeParamType for super::processing::palette::Palette {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Custom(&super::processing::palette::PALETTE)
+    }
+}
+
 impl NodeParamType for super::vector::drawing::Shadows {
     fn property_kind() -> PropertyKind {
         PropertyKind::Custom(&super::vector::drawing::SHADOWS)

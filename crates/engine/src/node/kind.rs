@@ -231,6 +231,8 @@ node_kinds! {
     HueSaturation(processing::hue_saturation::HueSaturation),
     Levels(processing::levels::Levels),
     OrderedDither(processing::ordered_dither::OrderedDither),
+    Posterize(processing::posterize::Posterize),
+    PixelSort(processing::pixel_sort::PixelSort),
     TimeRemap(processing::time_remap::TimeRemap),
     Transform(processing::transform::Transform),
     MotionBlur(processing::motion_blur::MotionBlur),

@@ -8,6 +8,7 @@ import type {
   NodeKind,
   NodeParamKind,
   NodePortKind,
+  Palette,
   Repeat,
   ShaderUniforms,
   TextContent,
@@ -81,6 +82,7 @@ export type NodeLiteralValue =
   | TextStroke
   | ColorCurves
   | DashPattern
+  | Palette
   | Repeat
   | readonly [number, number]
   | readonly [number, number, number]

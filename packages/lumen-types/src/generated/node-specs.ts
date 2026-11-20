@@ -916,6 +916,46 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { anchor: [0, 0], data: "M 0 0 L 100 0 L 100 100 L 0 100 Z", position: [0, 0], rotation: 0, scale: [1, 1] },
   },
   {
+    kind: "pixel_sort",
+    name: "Pixel Sort",
+    description: "Sorts runs of pixels along rows or columns by brightness, hue or saturation, which smears a\npicture into streaks.\n\nOnly pixels whose `key` lies from `low` to `high` are sorted. A run is a span of those pixels\nalong the `direction`; pixels outside the band, and fully transparent ones, stay where they\nare and end the run. A run longer than `max_length` is cut into pieces at multiples of\n`max_length` pixels from the canvas origin. Each run is sorted from the lowest `key` to the\nhighest, or the reverse, and pixels with equal keys keep their order. A pixel moves whole, its\nalpha with its colour, so the output holds exactly the pixels of the source.\n\nFor example, `{ \"key\": \"luma\", \"low\": 0.2, \"high\": 0.9, \"max_length\": 120 }` drags the lit\nparts of a photo into horizontal streaks up to 120 pixels long.",
+    category: "processing",
+    inputs: [
+      { name: "source", kind: "raster", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [
+      { id: "direction", name: "Direction", kind: "enum", description: "The direction runs of pixels are taken along.", defaultValue: "horizontal", enumOptions: [{ name: "horizontal", label: "Horizontal", value: 0 }, { name: "vertical", label: "Vertical", value: 1 }] },
+      { id: "high", name: "High", kind: "float", description: "The highest `key`, 0 to 1, a pixel may have and still be sorted.", defaultValue: 0.8, constraints: { min: 0, max: 1, step: 0.01 } },
+      { id: "key", name: "Key", kind: "enum", description: "The value that selects pixels and orders them.", defaultValue: "luma", enumOptions: [{ name: "luma", label: "Luma", value: 0 }, { name: "hue", label: "Hue", value: 1 }, { name: "saturation", label: "Saturation", value: 2 }] },
+      { id: "low", name: "Low", kind: "float", description: "The lowest `key`, 0 to 1, a pixel may have and still be sorted.", defaultValue: 0.25, constraints: { min: 0, max: 1, step: 0.01 } },
+      { id: "max_length", name: "Max Length", kind: "float", description: "The most pixels one run holds, 2 and up. Longer runs are cut at multiples of it from the\ncanvas origin, and each piece is sorted alone. At most 1024 device pixels: a larger value,\nor one that a render scale takes past that, counts as 1024.", defaultValue: 256, constraints: { min: 2, step: 1 } },
+      { id: "reverse", name: "Reverse", kind: "bool", description: "Sorts from the highest `key` to the lowest instead.", defaultValue: false },
+    ],
+    defaultParams: { direction: "horizontal", high: 0.8, key: "luma", low: 0.25, max_length: 256, reverse: false },
+  },
+  {
+    kind: "posterize",
+    name: "Posterize",
+    description: "Reduces a raster to a few colours, either by quantizing each channel to `levels` steps or by\nmapping the brightness of each pixel onto the colours of a palette. Both work on the\nsRGB-encoded colour, where steps are evenly spaced to the eye, and keep the source's alpha.\n\nIn `palette` mode the colours are sorted by their brightness, the Rec. 709 luma of the encoded\ncolour, and a pixel takes the colour whose band it falls in, the bands splitting at the\nmidpoints between neighbouring colours. `dither` places the pixels near a boundary in an 8 × 8\nBayer pattern anchored to the canvas origin, so it holds still when the source moves and when\nthe render scale changes.\n\nFor example, `{ \"mode\": \"palette\", \"colors\": [[8, 8, 8, 255], [191, 20, 20, 255], [201, 209, 214, 255]] }`\nprints a photo in three inks.",
+    category: "processing",
+    inputs: [
+      { name: "source", kind: "raster", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [
+      { id: "colors", name: "Colors", kind: "palette", description: "The colours a pixel may take, 2 to 16, as solid sRGB colours. Only `palette` uses it. Their\nalpha is ignored.", defaultValue: [[0, 0, 0, 255], [255, 255, 255, 255]] },
+      { id: "dither", name: "Dither", kind: "float", description: "How much of an 8 × 8 Bayer pattern is added before quantizing, 0 to 1. 0 gives hard bands,\nand 1 mixes neighbouring steps or colours in proportion to how far between them a pixel\nlies.", defaultValue: 0, constraints: { min: 0, max: 1, step: 0.05 } },
+      { id: "levels", name: "Levels", kind: "int", description: "Steps each channel quantizes to, 2 to 256. 2 gives only the extremes. Only `levels` uses\nit.", defaultValue: 4, constraints: { min: 2, max: 256, step: 1 } },
+      { id: "mode", name: "Mode", kind: "enum", description: "What the node reduces the colour to.", defaultValue: "levels", enumOptions: [{ name: "levels", label: "Levels", value: 0 }, { name: "palette", label: "Palette", value: 1 }] },
+    ],
+    defaultParams: { colors: [[0, 0, 0, 255], [255, 255, 255, 255]], dither: 0, levels: 4, mode: "levels" },
+  },
+  {
     kind: "radial_blur",
     name: "Radial Blur",
     description: "Blurs a raster along circles about a centre, as a spin.",

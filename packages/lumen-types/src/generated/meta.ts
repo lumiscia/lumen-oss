@@ -5,8 +5,8 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
-export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "matte_names" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "corner_pin" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_blur" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "matte_names" | "paint" | "palette" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "corner_pin" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_blur" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "pixel_sort" | "posterize" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1555,6 +1555,11 @@ export type OrderedDitherMode = DitherMode;
 /** A solid color or a gradient. */
 export type Paint = Color | GradientPaint;
 export type PaintKind = "linear_gradient" | "radial_gradient" | "conic_gradient" | "linear" | "radial" | "conic";
+/** A list of solid sRGB colors. Each is a literal. */
+export type Palette = readonly Color[];
+export type PixelSortDirection = SortDirection;
+export type PixelSortKey = SortKey;
+export type PosterizeMode = "levels" | "palette";
 export type Projection3d = "perspective" | "orthographic";
 export type RadialBlurEdge = EdgeMode;
 export type RasterMultimergeBlendMode = BlendMode;
@@ -1600,6 +1605,8 @@ export type Shape2dGeometryKind = ShapeGeometryKind;
 export type Shape3dKind = "box" | "sphere" | "plane" | "cylinder" | "torus" | "cone";
 export type Shape3dShape = Shape3dKind;
 export type ShapeGeometryKind = "rectangle" | "ellipse";
+export type SortDirection = "horizontal" | "vertical";
+export type SortKey = "luma" | "hue" | "saturation";
 export type Text2dAlignmentHorizontal = TextAlignmentHorizontal;
 export type Text2dAlignmentVertical = TextAlignmentVertical;
 export type Text2dFontStyle = TextFontStyle;
@@ -3259,6 +3266,78 @@ export interface Path2dNode extends CompositionNodeBase<"path_2d"> {
   };
 }
 
+/**
+ * Sorts runs of pixels along rows or columns by brightness, hue or saturation, which smears a
+ * picture into streaks.
+ * 
+ * Only pixels whose `key` lies from `low` to `high` are sorted. A run is a span of those pixels
+ * along the `direction`; pixels outside the band, and fully transparent ones, stay where they
+ * are and end the run. A run longer than `max_length` is cut into pieces at multiples of
+ * `max_length` pixels from the canvas origin. Each run is sorted from the lowest `key` to the
+ * highest, or the reverse, and pixels with equal keys keep their order. A pixel moves whole, its
+ * alpha with its colour, so the output holds exactly the pixels of the source.
+ * 
+ * For example, `{ "key": "luma", "low": 0.2, "high": 0.9, "max_length": 120 }` drags the lit
+ * parts of a photo into horizontal streaks up to 120 pixels long.
+ */
+export interface PixelSortNode extends CompositionNodeBase<"pixel_sort"> {
+  readonly params?: {
+    /** The direction runs of pixels are taken along. */
+    readonly direction?: ExpressionValue<SortDirection>;
+    /** The highest `key`, 0 to 1, a pixel may have and still be sorted. */
+    readonly high?: ExpressionValue<number>;
+    /** The value that selects pixels and orders them. */
+    readonly key?: ExpressionValue<SortKey>;
+    /** The lowest `key`, 0 to 1, a pixel may have and still be sorted. */
+    readonly low?: ExpressionValue<number>;
+    /**
+     * The most pixels one run holds, 2 and up. Longer runs are cut at multiples of it from the
+     * canvas origin, and each piece is sorted alone. At most 1024 device pixels: a larger value,
+     * or one that a render scale takes past that, counts as 1024.
+     */
+    readonly max_length?: ExpressionValue<number>;
+    /** Sorts from the highest `key` to the lowest instead. */
+    readonly reverse?: ExpressionValue<boolean>;
+  };
+}
+
+/**
+ * Reduces a raster to a few colours, either by quantizing each channel to `levels` steps or by
+ * mapping the brightness of each pixel onto the colours of a palette. Both work on the
+ * sRGB-encoded colour, where steps are evenly spaced to the eye, and keep the source's alpha.
+ * 
+ * In `palette` mode the colours are sorted by their brightness, the Rec. 709 luma of the encoded
+ * colour, and a pixel takes the colour whose band it falls in, the bands splitting at the
+ * midpoints between neighbouring colours. `dither` places the pixels near a boundary in an 8 × 8
+ * Bayer pattern anchored to the canvas origin, so it holds still when the source moves and when
+ * the render scale changes.
+ * 
+ * For example, `{ "mode": "palette", "colors": [[8, 8, 8, 255], [191, 20, 20, 255], [201, 209, 214, 255]] }`
+ * prints a photo in three inks.
+ */
+export interface PosterizeNode extends CompositionNodeBase<"posterize"> {
+  readonly params?: {
+    /**
+     * The colours a pixel may take, 2 to 16, as solid sRGB colours. Only `palette` uses it. Their
+     * alpha is ignored.
+     */
+    readonly colors?: Palette;
+    /**
+     * How much of an 8 × 8 Bayer pattern is added before quantizing, 0 to 1. 0 gives hard bands,
+     * and 1 mixes neighbouring steps or colours in proportion to how far between them a pixel
+     * lies.
+     */
+    readonly dither?: ExpressionValue<number>;
+    /**
+     * Steps each channel quantizes to, 2 to 256. 2 gives only the extremes. Only `levels` uses
+     * it.
+     */
+    readonly levels?: ExpressionValue<number>;
+    /** What the node reduces the colour to. */
+    readonly mode?: ExpressionValue<PosterizeMode>;
+  };
+}
+
 /** Blurs a raster along circles about a centre, as a spin. */
 export interface RadialBlurNode extends CompositionNodeBase<"radial_blur"> {
   readonly params?: {
@@ -4073,6 +4152,8 @@ export interface CompositionNodeByKind {
   readonly "particles_3d": Particles3dNode;
   readonly "path": PathNode;
   readonly "path_2d": Path2dNode;
+  readonly "pixel_sort": PixelSortNode;
+  readonly "posterize": PosterizeNode;
   readonly "radial_blur": RadialBlurNode;
   readonly "raster_multimerge": RasterMultimergeNode;
   readonly "render_2d": Render2dNode;
@@ -4225,6 +4306,12 @@ export interface CompositionNodeInputByKind {
   readonly "path_2d": Omit<Path2dNode, "id"> & {
     readonly id?: number;
   };
+  readonly "pixel_sort": Omit<PixelSortNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "posterize": Omit<PosterizeNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "radial_blur": Omit<RadialBlurNode, "id"> & {
     readonly id?: number;
   };
@@ -4331,6 +4418,8 @@ export interface NodeInputPortNameByKind {
   readonly "particles_3d": "object" | "surface";
   readonly "path": never;
   readonly "path_2d": never;
+  readonly "pixel_sort": "source";
+  readonly "posterize": "source";
   readonly "radial_blur": "source";
   readonly "raster_multimerge": "layers";
   readonly "render_2d": "drawing";
@@ -4397,6 +4486,8 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "particles_3d": never;
   readonly "path": never;
   readonly "path_2d": never;
+  readonly "pixel_sort": never;
+  readonly "posterize": never;
   readonly "radial_blur": never;
   readonly "raster_multimerge": "layers";
   readonly "render_2d": never;
@@ -4463,6 +4554,8 @@ export interface NodeOutputKindByKind {
   readonly "particles_3d": "scene";
   readonly "path": "raster";
   readonly "path_2d": "geometry";
+  readonly "pixel_sort": "raster";
+  readonly "posterize": "raster";
   readonly "radial_blur": "raster";
   readonly "raster_multimerge": "raster";
   readonly "render_2d": "raster";
@@ -4529,6 +4622,8 @@ export interface NodeInputPortKindByKind {
   readonly "particles_3d": { readonly "surface": "scene"; readonly "object": "scene" };
   readonly "path": {};
   readonly "path_2d": {};
+  readonly "pixel_sort": { readonly "source": "raster" };
+  readonly "posterize": { readonly "source": "raster" };
   readonly "radial_blur": { readonly "source": "raster" };
   readonly "raster_multimerge": { readonly "layers": "raster" };
   readonly "render_2d": { readonly "drawing": "drawing" };
@@ -4595,6 +4690,8 @@ export interface NodeOutputPortKindByKind {
   readonly "particles_3d": { readonly "output": "scene" };
   readonly "path": { readonly "output": "raster" };
   readonly "path_2d": { readonly "output": "geometry" };
+  readonly "pixel_sort": { readonly "output": "raster" };
+  readonly "posterize": { readonly "output": "raster" };
   readonly "radial_blur": { readonly "output": "raster" };
   readonly "raster_multimerge": { readonly "output": "raster" };
   readonly "render_2d": { readonly "output": "raster" };
@@ -5132,6 +5229,36 @@ export const nodeInputPorts = {
    * Curves are flattened for the largest scale `render_2d` draws them at.
    */
   "path_2d": {},
+  /**
+   * Sorts runs of pixels along rows or columns by brightness, hue or saturation, which smears a
+   * picture into streaks.
+   * 
+   * Only pixels whose `key` lies from `low` to `high` are sorted. A run is a span of those pixels
+   * along the `direction`; pixels outside the band, and fully transparent ones, stay where they
+   * are and end the run. A run longer than `max_length` is cut into pieces at multiples of
+   * `max_length` pixels from the canvas origin. Each run is sorted from the lowest `key` to the
+   * highest, or the reverse, and pixels with equal keys keep their order. A pixel moves whole, its
+   * alpha with its colour, so the output holds exactly the pixels of the source.
+   * 
+   * For example, `{ "key": "luma", "low": 0.2, "high": 0.9, "max_length": 120 }` drags the lit
+   * parts of a photo into horizontal streaks up to 120 pixels long.
+   */
+  "pixel_sort": { "source": { kind: "raster", variadic: false } },
+  /**
+   * Reduces a raster to a few colours, either by quantizing each channel to `levels` steps or by
+   * mapping the brightness of each pixel onto the colours of a palette. Both work on the
+   * sRGB-encoded colour, where steps are evenly spaced to the eye, and keep the source's alpha.
+   * 
+   * In `palette` mode the colours are sorted by their brightness, the Rec. 709 luma of the encoded
+   * colour, and a pixel takes the colour whose band it falls in, the bands splitting at the
+   * midpoints between neighbouring colours. `dither` places the pixels near a boundary in an 8 × 8
+   * Bayer pattern anchored to the canvas origin, so it holds still when the source moves and when
+   * the render scale changes.
+   * 
+   * For example, `{ "mode": "palette", "colors": [[8, 8, 8, 255], [191, 20, 20, 255], [201, 209, 214, 255]] }`
+   * prints a photo in three inks.
+   */
+  "posterize": { "source": { kind: "raster", variadic: false } },
   /** Blurs a raster along circles about a centre, as a spin. */
   "radial_blur": { "source": { kind: "raster", variadic: false } },
   /** Composites a variadic stack of raster layers in order. */
@@ -5340,6 +5467,8 @@ export const nodeMediaSources = {
   "particles_3d": {},
   "path": {},
   "path_2d": {},
+  "pixel_sort": {},
+  "posterize": {},
   "radial_blur": {},
   "raster_multimerge": {},
   "render_2d": {},

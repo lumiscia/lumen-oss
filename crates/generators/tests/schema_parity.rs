@@ -449,6 +449,34 @@ fn dash_pattern_schema_matches_engine_parsing() {
 }
 
 #[test]
+fn palette_schema_matches_engine_parsing() {
+    let validator = schema_validator();
+    for (colors, valid) in [
+        (json!([[0, 0, 0], [255, 255, 255, 128]]), true),
+        (json!(["#102030", [1, 2, 3]]), true),
+        (json!(vec![[1, 2, 3]; 16]), true),
+        (json!(vec![[1, 2, 3]; 17]), false),
+        (json!([[1, 2, 3]]), false),
+        (json!([]), false),
+        (json!([[1, 2, 3], [1, 2, 300]]), false),
+        (json!([[1, 2, 3], "red"]), false),
+        (json!([[1, 2, 3], "=frame"]), false),
+        (json!("=frame"), false),
+    ] {
+        let composition = composition_with_node(
+            &node_schema("posterize"),
+            json!({ "mode": "palette", "colors": colors }),
+        );
+        assert_eq!(validator.is_valid(&composition), valid, "{colors} schema");
+        assert_eq!(
+            lumen_engine::json::parse_value(&composition).is_ok(),
+            valid,
+            "{colors} engine"
+        );
+    }
+}
+
+#[test]
 fn color_curves_schema_matches_engine_parsing() {
     let validator = schema_validator();
     let points = |count: usize| -> Vec<Value> {

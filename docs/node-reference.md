@@ -777,6 +777,50 @@ Params:
 - **`paper`** ([paint](#type-paint); default `[255,255,255,255]`) Color of the lightest level. Must be a solid color; a gradient is an error. Only `ink_paper` uses it.
 - **`pitch`** (number, at least 1; default `1`) Width and height of a matrix cell in pixels. A cell is a whole number of output pixels, at least one, so the pitch rounds at render scales where it isn't.
 
+## `pixel_sort`
+
+Sorts runs of pixels along rows or columns by brightness, hue or saturation, which smears a picture into streaks.
+
+Only pixels whose `key` lies from `low` to `high` are sorted. A run is a span of those pixels along the `direction`; pixels outside the band, and fully transparent ones, stay where they are and end the run. A run longer than `max_length` is cut into pieces at multiples of `max_length` pixels from the canvas origin. Each run is sorted from the lowest `key` to the highest, or the reverse, and pixels with equal keys keep their order. A pixel moves whole, its alpha with its colour, so the output holds exactly the pixels of the source.
+
+For example, `{ "key": "luma", "low": 0.2, "high": 0.9, "max_length": 120 }` drags the lit parts of a photo into horizontal streaks up to 120 pixels long.
+
+Category: processing. Output: raster.
+
+Inputs:
+
+- `source`: raster, required
+
+Params:
+
+- **`direction`** (`"horizontal"` | `"vertical"`; default `"horizontal"`) The direction runs of pixels are taken along.
+- **`high`** (number, 0 to 1; default `0.8`) The highest `key`, 0 to 1, a pixel may have and still be sorted.
+- **`key`** (`"luma"` | `"hue"` | `"saturation"`; default `"luma"`) The value that selects pixels and orders them.
+- **`low`** (number, 0 to 1; default `0.25`) The lowest `key`, 0 to 1, a pixel may have and still be sorted.
+- **`max_length`** (number, at least 2; default `256`) The most pixels one run holds, 2 and up. Longer runs are cut at multiples of it from the canvas origin, and each piece is sorted alone. At most 1024 device pixels: a larger value, or one that a render scale takes past that, counts as 1024.
+- **`reverse`** (boolean; default `false`) Sorts from the highest `key` to the lowest instead.
+
+## `posterize`
+
+Reduces a raster to a few colours, either by quantizing each channel to `levels` steps or by mapping the brightness of each pixel onto the colours of a palette. Both work on the sRGB-encoded colour, where steps are evenly spaced to the eye, and keep the source's alpha.
+
+In `palette` mode the colours are sorted by their brightness, the Rec. 709 luma of the encoded colour, and a pixel takes the colour whose band it falls in, the bands splitting at the midpoints between neighbouring colours. `dither` places the pixels near a boundary in an 8 × 8 Bayer pattern anchored to the canvas origin, so it holds still when the source moves and when the render scale changes.
+
+For example, `{ "mode": "palette", "colors": [[8, 8, 8, 255], [191, 20, 20, 255], [201, 209, 214, 255]] }` prints a photo in three inks.
+
+Category: processing. Output: raster.
+
+Inputs:
+
+- `source`: raster, required
+
+Params:
+
+- **`colors`** ([palette](#type-palette); default `[[0,0,0,255],[255,255,255,255]]`; literal as a whole) The colours a pixel may take, 2 to 16, as solid sRGB colours. Only `palette` uses it. Their alpha is ignored.
+- **`dither`** (number, 0 to 1; default `0`) How much of an 8 × 8 Bayer pattern is added before quantizing, 0 to 1. 0 gives hard bands, and 1 mixes neighbouring steps or colours in proportion to how far between them a pixel lies.
+- **`levels`** (integer, 2 to 256; default `4`) Steps each channel quantizes to, 2 to 256. 2 gives only the extremes. Only `levels` uses it.
+- **`mode`** (`"levels"` | `"palette"`; default `"levels"`) What the node reduces the colour to.
+
 ## `radial_blur`
 
 Blurs a raster along circles about a centre, as a spin.
@@ -1477,6 +1521,12 @@ Value: array of string, at most 4 items.
 A solid color or a gradient.
 
 Value: [color](#type-color) | [gradientPaint](#type-gradientpaint).
+
+### Type `palette`
+
+A list of solid sRGB colors. Each is a literal.
+
+Value: array of [color](#type-color), at least 2, at most 16 items.
 
 ### Type `region`
 
