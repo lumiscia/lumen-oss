@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1526,6 +1526,11 @@ export type InstanceCopy = {
   readonly scale?: Vec3;
   readonly tint?: Color;
 };
+export type LensDirection = "distort" | "undistort";
+export type LensDistortionDirection = LensDirection;
+export type LensDistortionEdge = EdgeMode;
+export type LensDistortionFit = LensFit;
+export type LensFit = "none" | "fill";
 export type Light3dKind = "directional" | "point" | "spot" | "ambient";
 export type Light3dLight = Light3dKind;
 export type LoopMode = "clamp" | "repeat" | "ping_pong";
@@ -2397,6 +2402,45 @@ export interface Lathe3dNode extends CompositionNodeBase<"lathe_3d"> {
      * before it. 0 draws nothing. At most 1000000.
      */
     readonly units_per_pixel?: ExpressionValue<number>;
+  };
+}
+
+/**
+ * Bends a raster the way a lens does. With `direction: "distort"`, a pixel at `p` from the optical
+ * centre reads the source at `p * (1 + k1 r² + k2 r⁴)`, where `r` is its distance in
+ * half-diagonals, so positive `k1` gives barrel distortion and negative `k1` pincushion. With
+ * `direction: "undistort"` it reads where that lens would have put it, undoing a distortion with
+ * the same coefficients. The result covers the source's frame, and looks the same at any render
+ * scale.
+ * 
+ * To match graphics to footage, set the footage's coefficients and `direction: "undistort"` on
+ * the footage, or leave `direction` as `"distort"` on the graphics. For a finishing look, try
+ * `k1: 0.15` with `chromatic_aberration: 0.004`.
+ */
+export interface LensDistortionNode extends CompositionNodeBase<"lens_distortion"> {
+  readonly params?: {
+    /** The optical centre as a fraction of the frame: `[0.5, 0.5]` is the middle. */
+    readonly center?: ExpressionValue<Vec2>;
+    /**
+     * How far red and blue scale apart from green, as a fraction of each pixel's distance from
+     * the optical centre. Positive values magnify red and shrink blue, so red fringes lie
+     * outside blue ones and grow toward the corners.
+     */
+    readonly chromatic_aberration?: ExpressionValue<number>;
+    /** Whether to apply the lens or remove it. */
+    readonly direction?: ExpressionValue<LensDirection>;
+    /** What the source reads as beyond its frame. */
+    readonly edge?: ExpressionValue<EdgeMode>;
+    /** Whether to scale the result so that no edge is exposed. */
+    readonly fit?: ExpressionValue<LensFit>;
+    /**
+     * Radial distortion, the `r²` coefficient. Positive values bow straight lines outward
+     * (barrel), negative values bow them inward (pincushion). Distances are measured from the
+     * optical centre in units of the frame's half-diagonal, so the corners are at 1.
+     */
+    readonly k1?: ExpressionValue<number>;
+    /** Radial distortion, the `r⁴` coefficient. It bends mostly toward the corners. */
+    readonly k2?: ExpressionValue<number>;
   };
 }
 
@@ -3632,6 +3676,7 @@ export interface CompositionNodeByKind {
   readonly "image_plane_3d": ImagePlane3dNode;
   readonly "instance_3d": Instance3dNode;
   readonly "lathe_3d": Lathe3dNode;
+  readonly "lens_distortion": LensDistortionNode;
   readonly "levels": LevelsNode;
   readonly "light_3d": Light3dNode;
   readonly "material_3d": Material3dNode;
@@ -3737,6 +3782,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "lathe_3d": Omit<Lathe3dNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "lens_distortion": Omit<LensDistortionNode, "id"> & {
     readonly id?: number;
   };
   readonly "levels": Omit<LevelsNode, "id"> & {
@@ -3870,6 +3918,7 @@ export interface NodeInputPortNameByKind {
   readonly "image_plane_3d": "material" | "source";
   readonly "instance_3d": "scene";
   readonly "lathe_3d": "geometry" | "material";
+  readonly "lens_distortion": "source";
   readonly "levels": "source";
   readonly "light_3d": never;
   readonly "material_3d": "texture";
@@ -3931,6 +3980,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "image_plane_3d": never;
   readonly "instance_3d": never;
   readonly "lathe_3d": never;
+  readonly "lens_distortion": never;
   readonly "levels": never;
   readonly "light_3d": never;
   readonly "material_3d": never;
@@ -3992,6 +4042,7 @@ export interface NodeOutputKindByKind {
   readonly "image_plane_3d": "scene";
   readonly "instance_3d": "scene";
   readonly "lathe_3d": "scene";
+  readonly "lens_distortion": "raster";
   readonly "levels": "raster";
   readonly "light_3d": "scene";
   readonly "material_3d": "material";
@@ -4053,6 +4104,7 @@ export interface NodeInputPortKindByKind {
   readonly "image_plane_3d": { readonly "source": "raster"; readonly "material": "material" };
   readonly "instance_3d": { readonly "scene": "scene" };
   readonly "lathe_3d": { readonly "geometry": "geometry"; readonly "material": "material" };
+  readonly "lens_distortion": { readonly "source": "raster" };
   readonly "levels": { readonly "source": "raster" };
   readonly "light_3d": {};
   readonly "material_3d": { readonly "texture": "raster" };
@@ -4331,6 +4383,19 @@ export const nodeInputPorts = {
    * placement or the material costs no more than for a `shape_3d`.
    */
   "lathe_3d": { "geometry": { kind: "geometry", variadic: false }, "material": { kind: "material", variadic: false } },
+  /**
+   * Bends a raster the way a lens does. With `direction: "distort"`, a pixel at `p` from the optical
+   * centre reads the source at `p * (1 + k1 r² + k2 r⁴)`, where `r` is its distance in
+   * half-diagonals, so positive `k1` gives barrel distortion and negative `k1` pincushion. With
+   * `direction: "undistort"` it reads where that lens would have put it, undoing a distortion with
+   * the same coefficients. The result covers the source's frame, and looks the same at any render
+   * scale.
+   * 
+   * To match graphics to footage, set the footage's coefficients and `direction: "undistort"` on
+   * the footage, or leave `direction` as `"distort"` on the graphics. For a finishing look, try
+   * `k1: 0.15` with `chromatic_aberration: 0.004`.
+   */
+  "lens_distortion": { "source": { kind: "raster", variadic: false } },
   /** Remaps raster black, white, gamma, and output range of the sRGB-encoded colour. */
   "levels": { "source": { kind: "raster", variadic: false } },
   /** A light. A scene without any is lit by a default key light and ambient fill. */
@@ -4594,6 +4659,7 @@ export const nodeMediaSources = {
   "image_plane_3d": {},
   "instance_3d": {},
   "lathe_3d": {},
+  "lens_distortion": {},
   "levels": {},
   "light_3d": {},
   "material_3d": {},

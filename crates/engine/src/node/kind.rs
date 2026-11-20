@@ -219,6 +219,7 @@ node_kinds! {
     RadialBlur(processing::directional_blur::RadialBlur),
     ZoomBlur(processing::directional_blur::ZoomBlur),
     DisplacementMap(processing::displacement_map::DisplacementMap),
+    LensDistortion(processing::lens_distortion::LensDistortion),
     WgslShader(processing::wgsl_shader::WgslShader),
     MediaOutput(media_output::MediaOutput),
     Material3d(scene::Material3d),

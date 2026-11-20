@@ -527,6 +527,28 @@ Params:
 - **`lightness`** (number; default `0`) Lightness offset.
 - **`saturation`** (number; default `1`) Saturation multiplier.
 
+## `lens_distortion`
+
+Bends a raster the way a lens does. With `direction: "distort"`, a pixel at `p` from the optical centre reads the source at `p * (1 + k1 r² + k2 r⁴)`, where `r` is its distance in half-diagonals, so positive `k1` gives barrel distortion and negative `k1` pincushion. With `direction: "undistort"` it reads where that lens would have put it, undoing a distortion with the same coefficients. The result covers the source's frame, and looks the same at any render scale.
+
+To match graphics to footage, set the footage's coefficients and `direction: "undistort"` on the footage, or leave `direction` as `"distort"` on the graphics. For a finishing look, try `k1: 0.15` with `chromatic_aberration: 0.004`.
+
+Category: processing. Output: raster.
+
+Inputs:
+
+- `source`: raster, required
+
+Params:
+
+- **`center`** ([number, number]; default `[0.5,0.5]`) The optical centre as a fraction of the frame: `[0.5, 0.5]` is the middle.
+- **`chromatic_aberration`** (number; default `0`) How far red and blue scale apart from green, as a fraction of each pixel's distance from the optical centre. Positive values magnify red and shrink blue, so red fringes lie outside blue ones and grow toward the corners.
+- **`direction`** (`"distort"` | `"undistort"`; default `"distort"`) Whether to apply the lens or remove it.
+- **`edge`** (`"clamp"` | `"transparent"`; default `"clamp"`) What the source reads as beyond its frame.
+- **`fit`** (`"none"` | `"fill"`; default `"none"`) Whether to scale the result so that no edge is exposed.
+- **`k1`** (number; default `0`) Radial distortion, the `r²` coefficient. Positive values bow straight lines outward (barrel), negative values bow them inward (pincushion). Distances are measured from the optical centre in units of the frame's half-diagonal, so the corners are at 1.
+- **`k2`** (number; default `0`) Radial distortion, the `r⁴` coefficient. It bends mostly toward the corners.
+
 ## `levels`
 
 Remaps raster black, white, gamma, and output range of the sRGB-encoded colour.

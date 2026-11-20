@@ -15,6 +15,7 @@ pub mod glow;
 pub mod halftone;
 pub mod hue_saturation;
 mod inline_lut;
+pub mod lens_distortion;
 pub mod levels;
 pub(crate) mod minify;
 pub mod motion_blur;
