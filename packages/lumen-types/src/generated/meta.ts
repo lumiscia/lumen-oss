@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1402,6 +1402,11 @@ export type CastShadow = {
    */
   readonly spread?: ExpressionValue<number>;
 };
+export type ChannelSource = "source_red" | "source_green" | "source_blue" | "source_alpha" | "source_luma" | "other_red" | "other_green" | "other_blue" | "other_alpha" | "other_luma" | "zero" | "one";
+export type ChannelsAlpha = ChannelSource;
+export type ChannelsBlue = ChannelSource;
+export type ChannelsGreen = ChannelSource;
+export type ChannelsRed = ChannelSource;
 export type ClipEnd = "hide" | "hold" | "loop";
 /** A value for a template prop: a literal of the prop's type, or an expression in the clip's time. */
 export type ClipPropValue = number | string | Vec2 | Vec3 | Color;
@@ -1461,6 +1466,8 @@ export type DisplacementMapChannelX = DisplacementChannel;
 export type DisplacementMapChannelY = DisplacementChannel;
 export type DisplacementMapEdge = EdgeMode;
 export type DisplacementMapSampling = RasterSampling;
+export type DitherMatrix = "bayer2" | "bayer4" | "bayer8";
+export type DitherMode = "ink_paper" | "source";
 export type EdgeMode = "clamp" | "transparent";
 /** OpenType features by four-character tag. 0 turns a feature off, 1 turns it on and larger values select an alternate. */
 export type FontFeatures = Readonly<Record<string, ExpressionValue<number>>>;
@@ -1508,6 +1515,7 @@ export type GradientStop = {
   readonly offset: number;
 } | readonly [number, Color];
 export type GradientUnits = "object_bounding_box" | "user_space" | "userSpaceOnUse";
+export type HalftoneShape = "round" | "line";
 export type ImagePlane3dSampling = RasterSampling;
 /** Copies an `instance_3d` places, each given literally. The list can't be an expression. */
 export type InstanceCopies = readonly InstanceCopy[];
@@ -1532,6 +1540,8 @@ export type MediaInSourceKind = "image" | "video";
 export type MergeBlendMode = BlendMode;
 export type MergeMaskMode = MaskMode;
 export type NoiseMode = "smooth" | "turbulent";
+export type OrderedDitherMatrix = DitherMatrix;
+export type OrderedDitherMode = DitherMode;
 /** A solid color or a gradient. */
 export type Paint = Color | GradientPaint;
 export type PaintKind = "linear_gradient" | "radial_gradient" | "conic_gradient" | "linear" | "radial" | "conic";
@@ -1766,6 +1776,30 @@ export interface Camera3dNode extends CompositionNodeBase<"camera_3d"> {
     readonly rotation?: ExpressionValue<Vec3>;
     /** Point along X, Y and Z the camera aims at while `look_at` is on, in its parent's space. */
     readonly target?: ExpressionValue<Vec3>;
+  };
+}
+
+/**
+ * Builds each channel of a raster from a channel of `source`, a channel of `other`, the luma of
+ * either, 0 or 1. The output covers the area of `source`, and `other` is read at the same canvas
+ * pixels, as transparent outside its own area. Choosing an `other_*` value with nothing connected
+ * to `other` is an error. Colour is taken unpremultiplied and the result is premultiplied by the
+ * output alpha.
+ * 
+ * To set a raster's alpha from another raster's luma, connect it to `other` and set `alpha` to
+ * `other_luma`. To use the green channel of a matte as alpha, connect the matte to `other` and set
+ * `alpha` to `other_green`.
+ */
+export interface ChannelsNode extends CompositionNodeBase<"channels"> {
+  readonly params?: {
+    /** Where the output's alpha comes from. */
+    readonly alpha?: ChannelSource;
+    /** Where the output's blue comes from. */
+    readonly blue?: ChannelSource;
+    /** Where the output's green comes from. */
+    readonly green?: ChannelSource;
+    /** Where the output's red comes from. */
+    readonly red?: ChannelSource;
   };
 }
 
@@ -2104,6 +2138,31 @@ export interface GlowNode extends CompositionNodeBase<"glow"> {
     readonly tint?: ExpressionValue<Paint>;
     /** Colours the glow with `tint` instead of the colours that cast it. */
     readonly tint_enabled?: ExpressionValue<boolean>;
+  };
+}
+
+/**
+ * Redraws a raster as a grid of dots or lines in `ink` on `paper`, as in a print screen. Each
+ * cell takes the darkness, 1 minus the luma of the sRGB-encoded colour, at its centre, and
+ * covers that fraction of its area, so a flat colour gives uniform dots and black fills the
+ * whole cell. The grid is anchored to the canvas origin, so the pattern stays put when the
+ * source moves, and the source's alpha is kept.
+ * 
+ * For example, `{ "pitch": 55, "angle": -19, "ink": [110, 28, 38, 255], "paper": [120, 134, 150, 255] }`
+ * over a flat colour gives oxblood dots on a grey-blue ground, on a grid rotated -19 degrees.
+ */
+export interface HalftoneNode extends CompositionNodeBase<"halftone"> {
+  readonly params?: {
+    /** Rotation of the grid in degrees. */
+    readonly angle?: ExpressionValue<number>;
+    /** Color where the source is dark. Must be a solid color; a gradient is an error. */
+    readonly ink?: ExpressionValue<Paint>;
+    /** Color where the source is light. Must be a solid color; a gradient is an error. */
+    readonly paper?: ExpressionValue<Paint>;
+    /** Width and height of a cell in pixels. */
+    readonly pitch?: ExpressionValue<number>;
+    /** What each cell draws. */
+    readonly shape?: ExpressionValue<HalftoneShape>;
   };
 }
 
@@ -2637,6 +2696,41 @@ export interface OpacityNode extends CompositionNodeBase<"opacity"> {
   readonly params?: {
     /** Opacity multiplier applied to the raster. */
     readonly opacity?: ExpressionValue<number>;
+  };
+}
+
+/**
+ * Reduces a raster to a few levels with a Bayer threshold matrix, which trades the banding of
+ * plain quantizing for a fixed, regular pattern. Values quantize in sRGB-encoded space. The
+ * matrix is anchored to the canvas origin and each cell is a whole number of device pixels, so
+ * cell edges are never antialiased. The source's alpha is kept.
+ * 
+ * For example, `{ "matrix": "bayer8", "pitch": 2, "ink": [20, 24, 40, 255], "paper": [240, 232, 210, 255] }`
+ * redraws a photo in two colours with cells of 2 pixels.
+ */
+export interface OrderedDitherNode extends CompositionNodeBase<"ordered_dither"> {
+  readonly params?: {
+    /**
+     * Color of the darkest level. Must be a solid color; a gradient is an error. Only
+     * `ink_paper` uses it.
+     */
+    readonly ink?: ExpressionValue<Paint>;
+    /** Levels each value quantizes to, at least 2. 2 gives only the extremes. */
+    readonly levels?: ExpressionValue<number>;
+    /** The threshold matrix. */
+    readonly matrix?: ExpressionValue<DitherMatrix>;
+    /** What the node draws. */
+    readonly mode?: ExpressionValue<DitherMode>;
+    /**
+     * Color of the lightest level. Must be a solid color; a gradient is an error. Only
+     * `ink_paper` uses it.
+     */
+    readonly paper?: ExpressionValue<Paint>;
+    /**
+     * Width and height of a matrix cell in pixels. A cell is a whole number of output pixels, at
+     * least one, so the pitch rounds at render scales where it isn't.
+     */
+    readonly pitch?: ExpressionValue<number>;
   };
 }
 
@@ -3450,6 +3544,7 @@ export interface CompositionNodeByKind {
   readonly "blur": BlurNode;
   readonly "boolean": BooleanNode;
   readonly "camera_3d": Camera3dNode;
+  readonly "channels": ChannelsNode;
   readonly "clip": ClipNode;
   readonly "color_correct": ColorCorrectNode;
   readonly "color_grade": ColorGradeNode;
@@ -3462,6 +3557,7 @@ export interface CompositionNodeByKind {
   readonly "film_grain": FilmGrainNode;
   readonly "fractal_noise": FractalNoiseNode;
   readonly "glow": GlowNode;
+  readonly "halftone": HalftoneNode;
   readonly "hue_saturation": HueSaturationNode;
   readonly "image_plane_3d": ImagePlane3dNode;
   readonly "instance_3d": Instance3dNode;
@@ -3478,6 +3574,7 @@ export interface CompositionNodeByKind {
   readonly "motion_blur": MotionBlurNode;
   readonly "offset_2d": Offset2dNode;
   readonly "opacity": OpacityNode;
+  readonly "ordered_dither": OrderedDitherNode;
   readonly "particles_3d": Particles3dNode;
   readonly "path": PathNode;
   readonly "path_2d": Path2dNode;
@@ -3514,6 +3611,9 @@ export interface CompositionNodeInputByKind {
   readonly "camera_3d": Omit<Camera3dNode, "id"> & {
     readonly id?: number;
   };
+  readonly "channels": Omit<ChannelsNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "clip": Omit<ClipNode, "id"> & {
     readonly id?: number;
   };
@@ -3548,6 +3648,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "glow": Omit<GlowNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "halftone": Omit<HalftoneNode, "id"> & {
     readonly id?: number;
   };
   readonly "hue_saturation": Omit<HueSaturationNode, "id"> & {
@@ -3596,6 +3699,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "opacity": Omit<OpacityNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "ordered_dither": Omit<OrderedDitherNode, "id"> & {
     readonly id?: number;
   };
   readonly "particles_3d": Omit<Particles3dNode, "id"> & {
@@ -3668,6 +3774,7 @@ export interface NodeInputPortNameByKind {
   readonly "blur": "source";
   readonly "boolean": "a" | "b";
   readonly "camera_3d": never;
+  readonly "channels": "other" | "source";
   readonly "clip": "source";
   readonly "color_correct": "source";
   readonly "color_grade": "source";
@@ -3680,6 +3787,7 @@ export interface NodeInputPortNameByKind {
   readonly "film_grain": "source";
   readonly "fractal_noise": never;
   readonly "glow": "source";
+  readonly "halftone": "source";
   readonly "hue_saturation": "source";
   readonly "image_plane_3d": "material" | "source";
   readonly "instance_3d": "scene";
@@ -3696,6 +3804,7 @@ export interface NodeInputPortNameByKind {
   readonly "motion_blur": "source";
   readonly "offset_2d": "geometry";
   readonly "opacity": "source";
+  readonly "ordered_dither": "source";
   readonly "particles_3d": "object" | "surface";
   readonly "path": never;
   readonly "path_2d": never;
@@ -3724,6 +3833,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "blur": never;
   readonly "boolean": never;
   readonly "camera_3d": never;
+  readonly "channels": never;
   readonly "clip": never;
   readonly "color_correct": never;
   readonly "color_grade": never;
@@ -3736,6 +3846,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "film_grain": never;
   readonly "fractal_noise": never;
   readonly "glow": never;
+  readonly "halftone": never;
   readonly "hue_saturation": never;
   readonly "image_plane_3d": never;
   readonly "instance_3d": never;
@@ -3752,6 +3863,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "motion_blur": never;
   readonly "offset_2d": never;
   readonly "opacity": never;
+  readonly "ordered_dither": never;
   readonly "particles_3d": never;
   readonly "path": never;
   readonly "path_2d": never;
@@ -3780,6 +3892,7 @@ export interface NodeOutputKindByKind {
   readonly "blur": "raster";
   readonly "boolean": "raster";
   readonly "camera_3d": "scene";
+  readonly "channels": "raster";
   readonly "clip": "raster";
   readonly "color_correct": "raster";
   readonly "color_grade": "raster";
@@ -3792,6 +3905,7 @@ export interface NodeOutputKindByKind {
   readonly "film_grain": "raster";
   readonly "fractal_noise": "raster";
   readonly "glow": "raster";
+  readonly "halftone": "raster";
   readonly "hue_saturation": "raster";
   readonly "image_plane_3d": "scene";
   readonly "instance_3d": "scene";
@@ -3808,6 +3922,7 @@ export interface NodeOutputKindByKind {
   readonly "motion_blur": "raster";
   readonly "offset_2d": "geometry";
   readonly "opacity": "raster";
+  readonly "ordered_dither": "raster";
   readonly "particles_3d": "scene";
   readonly "path": "raster";
   readonly "path_2d": "geometry";
@@ -3836,6 +3951,7 @@ export interface NodeInputPortKindByKind {
   readonly "blur": { readonly "source": "raster" };
   readonly "boolean": { readonly "a": "raster"; readonly "b": "raster" };
   readonly "camera_3d": {};
+  readonly "channels": { readonly "source": "raster"; readonly "other": "raster" };
   readonly "clip": { readonly "source": "raster" };
   readonly "color_correct": { readonly "source": "raster" };
   readonly "color_grade": { readonly "source": "raster" };
@@ -3848,6 +3964,7 @@ export interface NodeInputPortKindByKind {
   readonly "film_grain": { readonly "source": "raster" };
   readonly "fractal_noise": {};
   readonly "glow": { readonly "source": "raster" };
+  readonly "halftone": { readonly "source": "raster" };
   readonly "hue_saturation": { readonly "source": "raster" };
   readonly "image_plane_3d": { readonly "source": "raster"; readonly "material": "material" };
   readonly "instance_3d": { readonly "scene": "scene" };
@@ -3864,6 +3981,7 @@ export interface NodeInputPortKindByKind {
   readonly "motion_blur": { readonly "source": "raster" };
   readonly "offset_2d": { readonly "geometry": "geometry" };
   readonly "opacity": { readonly "source": "raster" };
+  readonly "ordered_dither": { readonly "source": "raster" };
   readonly "particles_3d": { readonly "surface": "scene"; readonly "object": "scene" };
   readonly "path": {};
   readonly "path_2d": {};
@@ -3941,6 +4059,18 @@ export const nodeInputPorts = {
    * without one, `render_3d` views from 5 units along +Z with a 40° field of view.
    */
   "camera_3d": {},
+  /**
+   * Builds each channel of a raster from a channel of `source`, a channel of `other`, the luma of
+   * either, 0 or 1. The output covers the area of `source`, and `other` is read at the same canvas
+   * pixels, as transparent outside its own area. Choosing an `other_*` value with nothing connected
+   * to `other` is an error. Colour is taken unpremultiplied and the result is premultiplied by the
+   * output alpha.
+   * 
+   * To set a raster's alpha from another raster's luma, connect it to `other` and set `alpha` to
+   * `other_luma`. To use the green channel of a matte as alpha, connect the matte to `other` and set
+   * `alpha` to `other_green`.
+   */
+  "channels": { "source": { kind: "raster", variadic: false }, "other": { kind: "raster", variadic: false } },
   /** Plays a composition template, or its source, over a window of time. */
   "clip": { "source": { kind: "raster", variadic: false } },
   /**
@@ -4020,6 +4150,17 @@ export const nodeInputPorts = {
    * brightest channel, so dark pixels add nothing.
    */
   "glow": { "source": { kind: "raster", variadic: false } },
+  /**
+   * Redraws a raster as a grid of dots or lines in `ink` on `paper`, as in a print screen. Each
+   * cell takes the darkness, 1 minus the luma of the sRGB-encoded colour, at its centre, and
+   * covers that fraction of its area, so a flat colour gives uniform dots and black fills the
+   * whole cell. The grid is anchored to the canvas origin, so the pattern stays put when the
+   * source moves, and the source's alpha is kept.
+   * 
+   * For example, `{ "pitch": 55, "angle": -19, "ink": [110, 28, 38, 255], "paper": [120, 134, 150, 255] }`
+   * over a flat colour gives oxblood dots on a grey-blue ground, on a grid rotated -19 degrees.
+   */
+  "halftone": { "source": { kind: "raster", variadic: false } },
   /** Adjusts raster hue, saturation, and lightness of the sRGB-encoded colour. */
   "hue_saturation": { "source": { kind: "raster", variadic: false } },
   /**
@@ -4155,6 +4296,16 @@ export const nodeInputPorts = {
   "offset_2d": { "geometry": { kind: "geometry", variadic: false } },
   /** Uniformly adjusts raster opacity. */
   "opacity": { "source": { kind: "raster", variadic: false } },
+  /**
+   * Reduces a raster to a few levels with a Bayer threshold matrix, which trades the banding of
+   * plain quantizing for a fixed, regular pattern. Values quantize in sRGB-encoded space. The
+   * matrix is anchored to the canvas origin and each cell is a whole number of device pixels, so
+   * cell edges are never antialiased. The source's alpha is kept.
+   * 
+   * For example, `{ "matrix": "bayer8", "pitch": 2, "ink": [20, 24, 40, 255], "paper": [240, 232, 210, 255] }`
+   * redraws a photo in two colours with cells of 2 pixels.
+   */
+  "ordered_dither": { "source": { kind: "raster", variadic: false } },
   /**
    * Draws `count` copies of its `object` scene as particles, scattered over its `surface` scene:
    * each is emitted from a point picked at random over the surface's triangles, as likely
@@ -4309,6 +4460,7 @@ export const nodeMediaSources = {
   "blur": {},
   "boolean": {},
   "camera_3d": {},
+  "channels": {},
   "clip": {},
   "color_correct": {},
   "color_grade": { "lut_source": { kinds: ["lut"] } },
@@ -4321,6 +4473,7 @@ export const nodeMediaSources = {
   "film_grain": {},
   "fractal_noise": {},
   "glow": {},
+  "halftone": {},
   "hue_saturation": {},
   "image_plane_3d": {},
   "instance_3d": {},
@@ -4337,6 +4490,7 @@ export const nodeMediaSources = {
   "motion_blur": {},
   "offset_2d": {},
   "opacity": {},
+  "ordered_dither": {},
   "particles_3d": {},
   "path": {},
   "path_2d": {},
