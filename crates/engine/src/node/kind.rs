@@ -160,6 +160,12 @@ macro_rules! node_kinds {
                 }
             }
 
+            fn unwired_input_param_errors(&self) -> Vec<(&'static str, String)> {
+                match self {
+                    $(Self::$variant(node) => node.unwired_input_param_errors(),)+
+                }
+            }
+
             fn literal_font_families(&self) -> Vec<(String, &str)> {
                 match self {
                     $(Self::$variant(node) => node.literal_font_families(),)+
@@ -191,6 +197,7 @@ node_kinds! {
     Clip(compositing::clip::Clip),
     Opacity(processing::opacity::Opacity),
     Blur(processing::blur::Blur),
+    Channels(processing::channels::Channels),
     ColorCorrect(processing::color_correct::ColorCorrect),
     ColorGrade(processing::color_grade::ColorGrade),
     Exposure(processing::exposure::Exposure),

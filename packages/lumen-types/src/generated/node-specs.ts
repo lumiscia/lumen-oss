@@ -80,6 +80,26 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { far: 1000, fov: 40, look_at: false, near: 0.05, ortho_height: 4, position: [0, 0, 5], projection: "perspective", rotation: [0, 0, 0], target: [0, 0, 0] },
   },
   {
+    kind: "channels",
+    name: "Channels",
+    description: "Builds each channel of a raster from a channel of `source`, a channel of `other`, the luma of\neither, 0 or 1. The output covers the area of `source`, and `other` is read at the same canvas\npixels, as transparent outside its own area. Choosing an `other_*` value with nothing connected\nto `other` is an error. Colour is taken unpremultiplied and the result is premultiplied by the\noutput alpha.\n\nTo set a raster's alpha from another raster's luma, connect it to `other` and set `alpha` to\n`other_luma`. To use the green channel of a matte as alpha, connect the matte to `other` and set\n`alpha` to `other_green`.",
+    category: "processing",
+    inputs: [
+      { name: "source", kind: "raster", optional: false, variadic: false },
+      { name: "other", kind: "raster", optional: true, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [
+      { id: "alpha", name: "Alpha", kind: "enum", description: "Where the output's alpha comes from.", defaultValue: "source_alpha", enumOptions: [{ name: "source_red", label: "Source Red", value: 0 }, { name: "source_green", label: "Source Green", value: 1 }, { name: "source_blue", label: "Source Blue", value: 2 }, { name: "source_alpha", label: "Source Alpha", value: 3 }, { name: "source_luma", label: "Source Luma", value: 4 }, { name: "other_red", label: "Other Red", value: 5 }, { name: "other_green", label: "Other Green", value: 6 }, { name: "other_blue", label: "Other Blue", value: 7 }, { name: "other_alpha", label: "Other Alpha", value: 8 }, { name: "other_luma", label: "Other Luma", value: 9 }, { name: "zero", label: "Zero", value: 10 }, { name: "one", label: "One", value: 11 }] },
+      { id: "blue", name: "Blue", kind: "enum", description: "Where the output's blue comes from.", defaultValue: "source_blue", enumOptions: [{ name: "source_red", label: "Source Red", value: 0 }, { name: "source_green", label: "Source Green", value: 1 }, { name: "source_blue", label: "Source Blue", value: 2 }, { name: "source_alpha", label: "Source Alpha", value: 3 }, { name: "source_luma", label: "Source Luma", value: 4 }, { name: "other_red", label: "Other Red", value: 5 }, { name: "other_green", label: "Other Green", value: 6 }, { name: "other_blue", label: "Other Blue", value: 7 }, { name: "other_alpha", label: "Other Alpha", value: 8 }, { name: "other_luma", label: "Other Luma", value: 9 }, { name: "zero", label: "Zero", value: 10 }, { name: "one", label: "One", value: 11 }] },
+      { id: "green", name: "Green", kind: "enum", description: "Where the output's green comes from.", defaultValue: "source_green", enumOptions: [{ name: "source_red", label: "Source Red", value: 0 }, { name: "source_green", label: "Source Green", value: 1 }, { name: "source_blue", label: "Source Blue", value: 2 }, { name: "source_alpha", label: "Source Alpha", value: 3 }, { name: "source_luma", label: "Source Luma", value: 4 }, { name: "other_red", label: "Other Red", value: 5 }, { name: "other_green", label: "Other Green", value: 6 }, { name: "other_blue", label: "Other Blue", value: 7 }, { name: "other_alpha", label: "Other Alpha", value: 8 }, { name: "other_luma", label: "Other Luma", value: 9 }, { name: "zero", label: "Zero", value: 10 }, { name: "one", label: "One", value: 11 }] },
+      { id: "red", name: "Red", kind: "enum", description: "Where the output's red comes from.", defaultValue: "source_red", enumOptions: [{ name: "source_red", label: "Source Red", value: 0 }, { name: "source_green", label: "Source Green", value: 1 }, { name: "source_blue", label: "Source Blue", value: 2 }, { name: "source_alpha", label: "Source Alpha", value: 3 }, { name: "source_luma", label: "Source Luma", value: 4 }, { name: "other_red", label: "Other Red", value: 5 }, { name: "other_green", label: "Other Green", value: 6 }, { name: "other_blue", label: "Other Blue", value: 7 }, { name: "other_alpha", label: "Other Alpha", value: 8 }, { name: "other_luma", label: "Other Luma", value: 9 }, { name: "zero", label: "Zero", value: 10 }, { name: "one", label: "One", value: 11 }] },
+    ],
+    defaultParams: { alpha: "source_alpha", blue: "source_blue", green: "source_green", red: "source_red" },
+  },
+  {
     kind: "clip",
     name: "Clip",
     description: "Plays a composition template, or its source, over a window of time.",

@@ -1308,6 +1308,43 @@ fn settings_a_template_inherits_are_reported_at_the_root() {
 }
 
 #[test]
+fn a_channel_read_from_an_unconnected_input_is_reported_at_its_param() {
+    let mut document = serde_json::json!({
+        "timeline": { "fps": 30, "duration_frames": 10 },
+        "render_settings": { "width": 16, "height": 16 },
+        "nodes": [
+            { "id": 1, "type": "background" },
+            { "id": 2, "type": "channels",
+              "params": { "alpha": "other_red", "red": "source_blue", "blue": "other_luma" } },
+            { "id": 3, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "to_node": 2, "to_port": "source" },
+            { "from_node": 2, "to_node": 3, "to_port": "source" }
+        ]
+    });
+    let diagnostics = check_value(&document, None, None);
+    assert_eq!(
+        codes_and_paths(&diagnostics),
+        [
+            ("node.invalid_param", "/nodes/1/params/blue", Some(2)),
+            ("node.invalid_param", "/nodes/1/params/alpha", Some(2)),
+        ]
+    );
+    assert!(
+        diagnostics[1].message.contains("`alpha`") && diagnostics[1].message.contains("`other`"),
+        "{}",
+        diagnostics[1].message
+    );
+
+    document["connections"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({ "from_node": 1, "to_node": 2, "to_port": "other" }));
+    assert!(check_value(&document, None, None).is_empty());
+}
+
+#[test]
 fn graph_and_build_errors_point_at_what_they_name() {
     let document = serde_json::json!({
         "timeline": { "fps": 0, "duration_frames": 10 },

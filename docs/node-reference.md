@@ -290,6 +290,26 @@ Params:
 
 - **`radius`** (number, at least 0; default `4`) Blur radius in pixels. Fractional radii blend smoothly. Radii above about 588 look the same.
 
+## `channels`
+
+Builds each channel of a raster from a channel of `source`, a channel of `other`, the luma of either, 0 or 1. The output covers the area of `source`, and `other` is read at the same canvas pixels, as transparent outside its own area. Choosing an `other_*` value with nothing connected to `other` is an error. Colour is taken unpremultiplied and the result is premultiplied by the output alpha.
+
+To set a raster's alpha from another raster's luma, connect it to `other` and set `alpha` to `other_luma`. To use the green channel of a matte as alpha, connect the matte to `other` and set `alpha` to `other_green`.
+
+Category: processing. Output: raster.
+
+Inputs:
+
+- `source`: raster, required
+- `other`: raster, optional
+
+Params:
+
+- **`alpha`** (`"source_red"` | `"source_green"` | `"source_blue"` | `"source_alpha"` | `"source_luma"` | `"other_red"` | `"other_green"` | `"other_blue"` | `"other_alpha"` | `"other_luma"` | `"zero"` | `"one"`; default `"source_alpha"`; literal only) Where the output's alpha comes from.
+- **`blue`** (`"source_red"` | `"source_green"` | `"source_blue"` | `"source_alpha"` | `"source_luma"` | `"other_red"` | `"other_green"` | `"other_blue"` | `"other_alpha"` | `"other_luma"` | `"zero"` | `"one"`; default `"source_blue"`; literal only) Where the output's blue comes from.
+- **`green`** (`"source_red"` | `"source_green"` | `"source_blue"` | `"source_alpha"` | `"source_luma"` | `"other_red"` | `"other_green"` | `"other_blue"` | `"other_alpha"` | `"other_luma"` | `"zero"` | `"one"`; default `"source_green"`; literal only) Where the output's green comes from.
+- **`red`** (`"source_red"` | `"source_green"` | `"source_blue"` | `"source_alpha"` | `"source_luma"` | `"other_red"` | `"other_green"` | `"other_blue"` | `"other_alpha"` | `"other_luma"` | `"zero"` | `"one"`; default `"source_red"`; literal only) Where the output's red comes from.
+
 ## `color_correct`
 
 Corrects the colour of a raster. Each step works on the straight colour in linear light, in this order, and the alpha is untouched, so the defaults leave the raster unchanged.

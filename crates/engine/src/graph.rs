@@ -3,7 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    error::{At, GraphValidationError, LumenError},
+    error::{At, DocumentError, GraphValidationError, LumenError},
+    gpu::frame_graph::RecordNode,
     node::{InputPortDef, Node, NodeId, NodeKind, PortKind},
 };
 
@@ -104,6 +105,17 @@ impl Graph {
                 node,
                 |source| self.nodes.get(&source).map(Node::output_kind),
                 &mut errors,
+            );
+            errors.extend(
+                node.unwired_input_param_errors()
+                    .into_iter()
+                    .map(|(param, details)| {
+                        DocumentError::InvalidParam {
+                            at: At::param(node.id(), param),
+                            details,
+                        }
+                        .into()
+                    }),
             );
 
             let node_sources = sources.entry(*key).or_default();
