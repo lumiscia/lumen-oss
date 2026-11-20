@@ -1209,3 +1209,16 @@ fn baseline_alignment_puts_fonts_of_different_metrics_on_one_baseline() {
     );
     assert!(inter.abs_diff(300) <= 1, "the baseline is at 300: {inter}");
 }
+
+#[test]
+fn baseline_alignment_anchors_an_empty_first_line() {
+    let gpu = gpu();
+    let params = json!({
+        "content": "\nH", "font_family": "Inter", "font_size": 60, "color": [255, 255, 255, 255],
+        "position": [20, 100], "alignment_vertical": "baseline",
+    });
+    let frame = frame_of(&gpu, text_scene((320, 400), json!({}), params), &media());
+    let bottom = ink_box(&frame, whole(&frame))[3];
+    // The `H` sits on the second line, a line height below the anchored first baseline.
+    assert!(bottom >= 160, "the H's bottom is at {bottom}");
+}
