@@ -122,7 +122,10 @@ fn value_defs_json() -> Map<String, Value> {
 /// type name `x-lumen-type`.
 fn kind_defs_json() -> Result<Map<String, Value>> {
     use lumen_engine::node::{
-        processing::color_curves::MAX_CURVE_POINTS,
+        processing::{
+            color_curves::MAX_CURVE_POINTS,
+            palette::{MAX_PALETTE_COLORS, MIN_PALETTE_COLORS},
+        },
         scene::{MAX_INSTANCES, MAX_MATTES},
         source::text_content::{
             TextHighlightDelegate, TextLineDelegate, TextSpanDelegate, TextStrokeDelegate,
@@ -299,6 +302,17 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
             "type": "array",
             "maxItems": MAX_MATTES,
             "items": { "type": "string" }
+        }),
+    );
+    insert_def(
+        &mut defs,
+        "Palette",
+        json!({
+            "description": "A list of solid sRGB colors. Each is a literal.",
+            "type": "array",
+            "minItems": MIN_PALETTE_COLORS,
+            "maxItems": MAX_PALETTE_COLORS,
+            "items": { "$ref": "#/$defs/color" }
         }),
     );
     insert_def(

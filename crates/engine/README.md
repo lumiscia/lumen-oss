@@ -41,7 +41,7 @@ So an 8-bit image passed straight through comes out unchanged, and 50% white ove
   and `halftone` and `ordered_dither` measure darkness the same way, then mix their colours in
   linear light.
 - Every other blend mode, `levels`, `hue_saturation`, the `color_grade` LUT, `exposure`'s
-  contrast and offset, `color_correct`'s curves, `displacement_map` (byte 128 is neutral) and
+  contrast and offset, `color_correct`'s curves, `posterize`, `displacement_map` (byte 128 is neutral) and
   `fractal_noise` work on sRGB-encoded values, as design tools do.
 - Gradients blend their stops encoded (`srgb`, the default) or in linear light (`linear_srgb`).
 - Video follows its colour tags. SDR transfers (BT.709, BT.601, BT.2020 SDR, sRGB) decode with
