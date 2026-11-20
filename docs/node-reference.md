@@ -422,6 +422,33 @@ Params:
 - **`lut_source`** (string; media: lut; default `""`) A 3D `.cube` LUT file (Adobe/Resolve) to grade with: a path or `media` alias, or `asset:<id>` for an asset of the host's. Tables up to 129 points per axis and 64 MiB are read, sampled with trilinear interpolation (`interpolation` `nearest` takes the nearest point), and `DOMAIN_MIN`/`DOMAIN_MAX` set the input range they cover. 1D `.cube` tables are not supported. Empty uses `lut`; setting both is an error.
 - **`strength`** (number, 0 to 1; default `1`) Blend amount for the LUT transform.
 
+## `corner_pin`
+
+Pins a raster's four corners to four points of the canvas, with the perspective that takes.
+
+`top_left`, `top_right`, `bottom_right` and `bottom_left` are where the source's own corners land, in canvas pixels, which run clockwise on screen from the top left when the source is pinned upright. The source is stretched across the quad they make, with perspective, and the canvas outside the quad is transparent. The corners can't default to the source's own, so they default to a 100 pixel square at the canvas's top left; set all four.
+
+The corners must make a convex quad with some area. Corners that cross each other, bend a corner inwards or lie in a line fail the render, naming the corner at fault when it can. Run the other way round, the corners mirror the source. They are checked at every frame, so animated corners must stay convex throughout.
+
+The quad's edges are antialiased, and the source is filtered for how much the pin shrinks it at each pixel, so the far end of a steep pin does not alias. With `motion_blur`, animated corners smear along their motion.
+
+For example, pinning a 1920 by 1080 video onto a tilted screen in a plate: `{ "top_left": [412, 210], "top_right": [905, 262], "bottom_right": [893, 540], "bottom_left": [405, 498] }`.
+
+Category: processing. Output: raster.
+
+Inputs:
+
+- `source`: raster, required
+
+Params:
+
+- **`bottom_left`** ([number, number]; default `[0,100]`) Where the source's bottom-left corner lands, in canvas pixels.
+- **`bottom_right`** ([number, number]; default `[100,100]`) Where the source's bottom-right corner lands, in canvas pixels.
+- **`motion_blur`** (number, 0 to 360; default `0`) Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the usual film look and 360 smears over the whole frame.
+- **`sampling`** (`"nearest"` | `"linear"`; default `"linear"`) Sampling filter used when pinning.
+- **`top_left`** ([number, number]; default `[0,0]`) Where the source's top-left corner lands, in canvas pixels.
+- **`top_right`** ([number, number]; default `[100,0]`) Where the source's top-right corner lands, in canvas pixels.
+
 ## `crop`
 
 Keeps a raster region in place and clears everything outside it.

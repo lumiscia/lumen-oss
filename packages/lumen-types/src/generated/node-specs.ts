@@ -185,6 +185,27 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { interpolation: "linear", lut: "identity", lut_source: "", strength: 1 },
   },
   {
+    kind: "corner_pin",
+    name: "Corner Pin",
+    description: "Pins a raster's four corners to four points of the canvas, with the perspective that takes.\n\n`top_left`, `top_right`, `bottom_right` and `bottom_left` are where the source's own corners\nland, in canvas pixels, which run clockwise on screen from the top left when the source is\npinned upright. The source is stretched across the quad they make, with perspective, and the\ncanvas outside the quad is transparent. The corners can't default to the source's own, so\nthey default to a 100 pixel square at the canvas's top left; set all four.\n\nThe corners must make a convex quad with some area. Corners that cross each other, bend a\ncorner inwards or lie in a line fail the render, naming the corner at fault when it can. Run\nthe other way round, the corners mirror the source. They are checked at every frame, so\nanimated corners must stay convex throughout.\n\nThe quad's edges are antialiased, and the source is filtered for how much the pin shrinks it\nat each pixel, so the far end of a steep pin does not alias. With `motion_blur`, animated\ncorners smear along their motion.\n\nFor example, pinning a 1920 by 1080 video onto a tilted screen in a plate:\n`{ \"top_left\": [412, 210], \"top_right\": [905, 262], \"bottom_right\": [893, 540], \"bottom_left\": [405, 498] }`.",
+    category: "processing",
+    inputs: [
+      { name: "source", kind: "raster", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [
+      { id: "bottom_left", name: "Bottom left", kind: "vec2", description: "Where the source's bottom-left corner lands, in canvas pixels.", defaultValue: [0, 100], constraints: { step: 1 } },
+      { id: "bottom_right", name: "Bottom right", kind: "vec2", description: "Where the source's bottom-right corner lands, in canvas pixels.", defaultValue: [100, 100], constraints: { step: 1 } },
+      { id: "motion_blur", name: "Motion blur", kind: "float", description: "Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the\nusual film look and 360 smears over the whole frame.", defaultValue: 0, constraints: { min: 0, max: 360, step: 1 } },
+      { id: "sampling", name: "Sampling", kind: "enum", description: "Sampling filter used when pinning.", defaultValue: "linear", enumOptions: [{ name: "nearest", label: "Nearest", value: 0 }, { name: "linear", label: "Linear", value: 1 }] },
+      { id: "top_left", name: "Top left", kind: "vec2", description: "Where the source's top-left corner lands, in canvas pixels.", defaultValue: [0, 0], constraints: { step: 1 } },
+      { id: "top_right", name: "Top right", kind: "vec2", description: "Where the source's top-right corner lands, in canvas pixels.", defaultValue: [100, 0], constraints: { step: 1 } },
+    ],
+    defaultParams: { bottom_left: [0, 100], bottom_right: [100, 100], motion_blur: 0, sampling: "linear", top_left: [0, 0], top_right: [100, 0] },
+  },
+  {
     kind: "crop",
     name: "Crop",
     description: "Keeps a raster region in place and clears everything outside it.",

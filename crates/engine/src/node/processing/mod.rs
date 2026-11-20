@@ -4,6 +4,7 @@ pub mod chroma_key;
 pub mod color_correct;
 pub mod color_curves;
 pub mod color_grade;
+pub mod corner_pin;
 pub mod crop;
 pub(crate) mod cube_lut;
 pub mod directional_blur;

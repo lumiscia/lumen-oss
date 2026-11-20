@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "corner_pin" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1458,6 +1458,7 @@ export type Connection = {
   readonly to_node: number;
   readonly to_port: string;
 };
+export type CornerPinSampling = RasterSampling;
 /** Lengths that a stroke alternately draws and skips, starting with a dash. Each takes a literal or an expression. */
 export type DashPattern = readonly ExpressionValue<number>[];
 export type DirectionalBlurEdge = EdgeMode;
@@ -1947,6 +1948,47 @@ export interface ColorGradeNode extends CompositionNodeBase<"color_grade"> {
     readonly lut_source?: ExpressionValue<string>;
     /** Blend amount for the LUT transform. */
     readonly strength?: ExpressionValue<number>;
+  };
+}
+
+/**
+ * Pins a raster's four corners to four points of the canvas, with the perspective that takes.
+ * 
+ * `top_left`, `top_right`, `bottom_right` and `bottom_left` are where the source's own corners
+ * land, in canvas pixels, which run clockwise on screen from the top left when the source is
+ * pinned upright. The source is stretched across the quad they make, with perspective, and the
+ * canvas outside the quad is transparent. The corners can't default to the source's own, so
+ * they default to a 100 pixel square at the canvas's top left; set all four.
+ * 
+ * The corners must make a convex quad with some area. Corners that cross each other, bend a
+ * corner inwards or lie in a line fail the render, naming the corner at fault when it can. Run
+ * the other way round, the corners mirror the source. They are checked at every frame, so
+ * animated corners must stay convex throughout.
+ * 
+ * The quad's edges are antialiased, and the source is filtered for how much the pin shrinks it
+ * at each pixel, so the far end of a steep pin does not alias. With `motion_blur`, animated
+ * corners smear along their motion.
+ * 
+ * For example, pinning a 1920 by 1080 video onto a tilted screen in a plate:
+ * `{ "top_left": [412, 210], "top_right": [905, 262], "bottom_right": [893, 540], "bottom_left": [405, 498] }`.
+ */
+export interface CornerPinNode extends CompositionNodeBase<"corner_pin"> {
+  readonly params?: {
+    /** Where the source's bottom-left corner lands, in canvas pixels. */
+    readonly bottom_left?: ExpressionValue<Vec2>;
+    /** Where the source's bottom-right corner lands, in canvas pixels. */
+    readonly bottom_right?: ExpressionValue<Vec2>;
+    /**
+     * Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the
+     * usual film look and 360 smears over the whole frame.
+     */
+    readonly motion_blur?: ExpressionValue<number>;
+    /** Sampling filter used when pinning. */
+    readonly sampling?: ExpressionValue<RasterSampling>;
+    /** Where the source's top-left corner lands, in canvas pixels. */
+    readonly top_left?: ExpressionValue<Vec2>;
+    /** Where the source's top-right corner lands, in canvas pixels. */
+    readonly top_right?: ExpressionValue<Vec2>;
   };
 }
 
@@ -3792,6 +3834,7 @@ export interface CompositionNodeByKind {
   readonly "clip": ClipNode;
   readonly "color_correct": ColorCorrectNode;
   readonly "color_grade": ColorGradeNode;
+  readonly "corner_pin": CornerPinNode;
   readonly "crop": CropNode;
   readonly "directional_blur": DirectionalBlurNode;
   readonly "displacement_map": DisplacementMapNode;
@@ -3872,6 +3915,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "color_grade": Omit<ColorGradeNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "corner_pin": Omit<CornerPinNode, "id"> & {
     readonly id?: number;
   };
   readonly "crop": Omit<CropNode, "id"> & {
@@ -4042,6 +4088,7 @@ export interface NodeInputPortNameByKind {
   readonly "clip": "source";
   readonly "color_correct": "source";
   readonly "color_grade": "source";
+  readonly "corner_pin": "source";
   readonly "crop": "source";
   readonly "directional_blur": "source";
   readonly "displacement_map": "map" | "source";
@@ -4106,6 +4153,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "clip": never;
   readonly "color_correct": never;
   readonly "color_grade": never;
+  readonly "corner_pin": never;
   readonly "crop": never;
   readonly "directional_blur": never;
   readonly "displacement_map": never;
@@ -4170,6 +4218,7 @@ export interface NodeOutputKindByKind {
   readonly "clip": "raster";
   readonly "color_correct": "raster";
   readonly "color_grade": "raster";
+  readonly "corner_pin": "raster";
   readonly "crop": "raster";
   readonly "directional_blur": "raster";
   readonly "displacement_map": "raster";
@@ -4234,6 +4283,7 @@ export interface NodeInputPortKindByKind {
   readonly "clip": { readonly "source": "raster" };
   readonly "color_correct": { readonly "source": "raster" };
   readonly "color_grade": { readonly "source": "raster" };
+  readonly "corner_pin": { readonly "source": "raster" };
   readonly "crop": { readonly "source": "raster" };
   readonly "directional_blur": { readonly "source": "raster" };
   readonly "displacement_map": { readonly "source": "raster"; readonly "map": "raster" };
@@ -4397,6 +4447,28 @@ export const nodeInputPorts = {
   "color_correct": { "source": { kind: "raster", variadic: false } },
   /** Applies a LUT-driven color transform to a raster, looking up its sRGB-encoded colour. */
   "color_grade": { "source": { kind: "raster", variadic: false } },
+  /**
+   * Pins a raster's four corners to four points of the canvas, with the perspective that takes.
+   * 
+   * `top_left`, `top_right`, `bottom_right` and `bottom_left` are where the source's own corners
+   * land, in canvas pixels, which run clockwise on screen from the top left when the source is
+   * pinned upright. The source is stretched across the quad they make, with perspective, and the
+   * canvas outside the quad is transparent. The corners can't default to the source's own, so
+   * they default to a 100 pixel square at the canvas's top left; set all four.
+   * 
+   * The corners must make a convex quad with some area. Corners that cross each other, bend a
+   * corner inwards or lie in a line fail the render, naming the corner at fault when it can. Run
+   * the other way round, the corners mirror the source. They are checked at every frame, so
+   * animated corners must stay convex throughout.
+   * 
+   * The quad's edges are antialiased, and the source is filtered for how much the pin shrinks it
+   * at each pixel, so the far end of a steep pin does not alias. With `motion_blur`, animated
+   * corners smear along their motion.
+   * 
+   * For example, pinning a 1920 by 1080 video onto a tilted screen in a plate:
+   * `{ "top_left": [412, 210], "top_right": [905, 262], "bottom_right": [893, 540], "bottom_left": [405, 498] }`.
+   */
+  "corner_pin": { "source": { kind: "raster", variadic: false } },
   /** Keeps a raster region in place and clears everything outside it. */
   "crop": { "source": { kind: "raster", variadic: false } },
   /** Blurs a raster along a line, as a straight motion blur. */
@@ -4841,6 +4913,7 @@ export const nodeMediaSources = {
   "clip": {},
   "color_correct": {},
   "color_grade": { "lut_source": { kinds: ["lut"] } },
+  "corner_pin": {},
   "crop": {},
   "directional_blur": {},
   "displacement_map": {},
