@@ -102,6 +102,30 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { composition: "", duration: -1, end: "hide", offset: 0, props: {}, speed: 1, start: 0 },
   },
   {
+    kind: "color_correct",
+    name: "Color Correct",
+    description: "Corrects the colour of a raster. Each step works on the straight colour in linear light, in\nthis order, and the alpha is untouched, so the defaults leave the raster unchanged.\n\n1. White balance multiplies red, green and blue by `2^(temperature / 2)`, `2^(-tint / 2)` and\n`2^(-temperature / 2)`, divided by the Rec. 709 luminance of those three, so a neutral grey\nkeeps its brightness.\n\n2. Lift, gain and offset: `gain * (x + lift * (1 - x)) + offset` on each channel.\n\n3. Gamma: `max(x, 0) ^ (1 / gamma)` on each channel.\n\n4. Contrast: `pivot * (max(x, 0) / pivot) ^ contrast` on each channel.\n\n5. Curves act on the sRGB-encoded colour, clamped to 0..1: `master` on every channel, then\n`red`, `green` and `blue` on theirs. Each is a smooth monotone curve through its points, flat\nbefore the first and after the last. With no curves set, values above 1 pass through.\n\nEach channel param is `[red, green, blue]`; an expression for one is a `vec3`. A curve is up\nto 16 `[x, y]` points of numbers or expressions, with `x` increasing, all in 0..1:\n`\"curves\": { \"master\": [[0, 0], [0.5, 0.65], [1, 1]] }` brightens the midtones.",
+    category: "processing",
+    inputs: [
+      { name: "source", kind: "raster", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [
+      { id: "contrast", name: "Contrast", kind: "float", description: "Contrast around the pivot, in linear light: above 1 pushes values away from it.", defaultValue: 1, constraints: { min: 0, step: 0.01 } },
+      { id: "curves", name: "Curves", kind: "color_curves", description: "Tone curves on the sRGB-encoded colour, applied last.", defaultValue: {} },
+      { id: "gain", name: "Gain", kind: "vec3", description: "Multiplier of each channel's linear light.", defaultValue: [1, 1, 1], constraints: { step: 0.01 } },
+      { id: "gamma", name: "Gamma", kind: "vec3", description: "Midtone gamma of each channel: above 1 brightens the midtones. Each is at least 0.01.", defaultValue: [1, 1, 1], constraints: { step: 0.01 } },
+      { id: "lift", name: "Lift", kind: "vec3", description: "Raises the darks of each channel by this much, leaving white where it is.", defaultValue: [0, 0, 0], constraints: { step: 0.01 } },
+      { id: "offset", name: "Offset", kind: "vec3", description: "Linear light added to each channel after the gain.", defaultValue: [0, 0, 0], constraints: { step: 0.01 } },
+      { id: "pivot", name: "Pivot", kind: "float", description: "Linear light the contrast leaves unchanged, 0.18 for mid grey.", defaultValue: 0.18, constraints: { min: 0.001, step: 0.01 } },
+      { id: "temperature", name: "Temperature", kind: "float", description: "Colour temperature. Positive warms, scaling red up and blue down by half a stop at 1;\nnegative cools.", defaultValue: 0, constraints: { min: -1, max: 1, step: 0.01 } },
+      { id: "tint", name: "Tint", kind: "float", description: "Green–magenta tint. Positive shifts toward magenta, scaling green down by half a stop at\n1; negative shifts toward green.", defaultValue: 0, constraints: { min: -1, max: 1, step: 0.01 } },
+    ],
+    defaultParams: { contrast: 1, curves: {}, gain: [1, 1, 1], gamma: [1, 1, 1], lift: [0, 0, 0], offset: [0, 0, 0], pivot: 0.18, temperature: 0, tint: 0 },
+  },
+  {
     kind: "color_grade",
     name: "Color Grade",
     description: "Applies a LUT-driven color transform to a raster, looking up its sRGB-encoded colour.",

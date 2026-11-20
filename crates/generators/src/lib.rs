@@ -122,6 +122,7 @@ fn value_defs_json() -> Map<String, Value> {
 /// type name `x-lumen-type`.
 fn kind_defs_json() -> Result<Map<String, Value>> {
     use lumen_engine::node::{
+        processing::color_curves::MAX_CURVE_POINTS,
         scene::MAX_INSTANCES,
         source::text_content::{
             TextHighlightDelegate, TextLineDelegate, TextSpanDelegate, TextStrokeDelegate,
@@ -288,6 +289,46 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
             "type": "array",
             "maxItems": MAX_INSTANCES,
             "items": { "$ref": "#/$defs/instanceCopy" }
+        }),
+    );
+    insert_def(
+        &mut defs,
+        "ColorCurvePoint",
+        json!({
+            "description": "A point of a colour curve, `[x, y]`, each in 0..1. Each number takes a literal or an expression.",
+            "type": "array",
+            "prefixItems": [
+                { "anyOf": [{ "type": "number", "minimum": 0, "maximum": 1 }, { "$ref": "#/$defs/expression" }] },
+                { "anyOf": [{ "type": "number", "minimum": 0, "maximum": 1 }, { "$ref": "#/$defs/expression" }] }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+        }),
+    );
+    insert_def(
+        &mut defs,
+        "ColorCurve",
+        json!({
+            "description": "A smooth monotone curve through its points, whose `x` must increase. An empty curve is the identity.",
+            "type": "array",
+            "maxItems": MAX_CURVE_POINTS,
+            "items": { "$ref": "#/$defs/colorCurvePoint" }
+        }),
+    );
+    insert_def(
+        &mut defs,
+        "ColorCurves",
+        json!({
+            "description": "Tone curves on sRGB-encoded colour: `master` for all channels, then one per channel. A curve left out is the identity. The curves can't be expressions, but their numbers can.",
+            "type": "object",
+            "properties": {
+                "master": { "$ref": "#/$defs/colorCurve" },
+                "red": { "$ref": "#/$defs/colorCurve" },
+                "green": { "$ref": "#/$defs/colorCurve" },
+                "blue": { "$ref": "#/$defs/colorCurve" }
+            },
+            "additionalProperties": false
         }),
     );
     insert_def(

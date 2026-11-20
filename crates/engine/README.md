@@ -39,8 +39,8 @@ So an 8-bit image passed straight through comes out unchanged, and 50% white ove
   text and shape antialiasing work in linear light. A luma matte is the linear BT.709 luminance;
   the glow threshold compares sRGB-encoded luminance, so 0.5 is half way up the visible range.
 - Every other blend mode, `levels`, `hue_saturation`, the `color_grade` LUT, `exposure`'s
-  contrast and offset, `displacement_map` (byte 128 is neutral) and `fractal_noise` work on
-  sRGB-encoded values, as design tools do.
+  contrast and offset, `color_correct`'s curves, `displacement_map` (byte 128 is neutral) and
+  `fractal_noise` work on sRGB-encoded values, as design tools do.
 - Gradients blend their stops encoded (`srgb`, the default) or in linear light (`linear_srgb`).
 - Video follows its colour tags. SDR transfers (BT.709, BT.601, BT.2020 SDR, sRGB) decode with
   the sRGB curve. BT.2020 and Display P3 (SMPTE 432) primaries, and DCI-P3 (SMPTE 431) adapted

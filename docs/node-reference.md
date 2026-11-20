@@ -290,6 +290,40 @@ Params:
 
 - **`radius`** (number, at least 0; default `4`) Blur radius in pixels. Fractional radii blend smoothly. Radii above about 588 look the same.
 
+## `color_correct`
+
+Corrects the colour of a raster. Each step works on the straight colour in linear light, in this order, and the alpha is untouched, so the defaults leave the raster unchanged.
+
+1. White balance multiplies red, green and blue by `2^(temperature / 2)`, `2^(-tint / 2)` and `2^(-temperature / 2)`, divided by the Rec. 709 luminance of those three, so a neutral grey keeps its brightness.
+
+2. Lift, gain and offset: `gain * (x + lift * (1 - x)) + offset` on each channel.
+
+3. Gamma: `max(x, 0) ^ (1 / gamma)` on each channel.
+
+4. Contrast: `pivot * (max(x, 0) / pivot) ^ contrast` on each channel.
+
+5. Curves act on the sRGB-encoded colour, clamped to 0..1: `master` on every channel, then `red`, `green` and `blue` on theirs. Each is a smooth monotone curve through its points, flat before the first and after the last. With no curves set, values above 1 pass through.
+
+Each channel param is `[red, green, blue]`; an expression for one is a `vec3`. A curve is up to 16 `[x, y]` points of numbers or expressions, with `x` increasing, all in 0..1: `"curves": { "master": [[0, 0], [0.5, 0.65], [1, 1]] }` brightens the midtones.
+
+Category: processing. Output: raster.
+
+Inputs:
+
+- `source`: raster, required
+
+Params:
+
+- **`contrast`** (number, at least 0; default `1`) Contrast around the pivot, in linear light: above 1 pushes values away from it.
+- **`curves`** ([colorCurves](#type-colorcurves); default `{}`; literal as a whole) Tone curves on the sRGB-encoded colour, applied last.
+- **`gain`** ([number, number, number]; default `[1,1,1]`) Multiplier of each channel's linear light.
+- **`gamma`** ([number, number, number]; default `[1,1,1]`) Midtone gamma of each channel: above 1 brightens the midtones. Each is at least 0.01.
+- **`lift`** ([number, number, number]; default `[0,0,0]`) Raises the darks of each channel by this much, leaving white where it is.
+- **`offset`** ([number, number, number]; default `[0,0,0]`) Linear light added to each channel after the gain.
+- **`pivot`** (number, at least 0.001; default `0.18`) Linear light the contrast leaves unchanged, 0.18 for mid grey.
+- **`temperature`** (number, -1 to 1; default `0`) Colour temperature. Positive warms, scaling red up and blue down by half a stop at 1; negative cools.
+- **`tint`** (number, -1 to 1; default `0`) Green–magenta tint. Positive shifts toward magenta, scaling green down by half a stop at 1; negative shifts toward green.
+
 ## `color_grade`
 
 Applies a LUT-driven color transform to a raster, looking up its sRGB-encoded colour.
@@ -1024,6 +1058,31 @@ Value: number | string | [number, number] | [number, number, number] | [color](#
 ### Type `color`
 
 Value: array of integer, 0 to 255, at least 3, at most 4 items | string hex colour, `#rrggbb` or `#rrggbbaa`.
+
+### Type `colorCurve`
+
+A smooth monotone curve through its points, whose `x` must increase. An empty curve is the identity.
+
+Value: array of [colorCurvePoint](#type-colorcurvepoint), at most 16 items.
+
+### Type `colorCurvePoint`
+
+A point of a colour curve, `[x, y]`, each in 0..1. Each number takes a literal or an expression.
+
+Value: [number, 0 to 1 | expression, number, 0 to 1 | expression].
+
+### Type `colorCurves`
+
+Tone curves on sRGB-encoded colour: `master` for all channels, then one per channel. A curve left out is the identity. The curves can't be expressions, but their numbers can.
+
+Fields:
+
+- **`blue`** ([colorCurve](#type-colorcurve); literal as a whole)
+- **`green`** ([colorCurve](#type-colorcurve); literal as a whole)
+- **`master`** ([colorCurve](#type-colorcurve); literal as a whole)
+- **`red`** ([colorCurve](#type-colorcurve); literal as a whole)
+
+No other fields.
 
 ### Type `dashPattern`
 
