@@ -118,6 +118,11 @@ const SCENE_3D: RenderProgram = RenderProgram {
     fragment: "fs_main",
     layout: LAYOUT,
 };
+const SCENE_3D_MASKED: RenderProgram = RenderProgram {
+    label: "scene-3d-masked",
+    fragment: "fs_masked",
+    ..SCENE_3D
+};
 const SCENE_3D_SHADOW: RenderProgram = RenderProgram {
     label: "scene-3d-shadow",
     shader: SHADER,
@@ -865,6 +870,9 @@ impl RecordNode for Render3d {
         for (depth, cull) in VARIANTS {
             programs.render(&SCENE_3D, spec(depth, cull), 0)?;
         }
+        for cull in [Some(wgpu::Face::Back), Some(wgpu::Face::Front), None] {
+            programs.render(&SCENE_3D_MASKED, spec(DepthTest::Write, cull), 0)?;
+        }
         crate::gpu::mips::programs(programs)?;
         if self.may_show_background() {
             programs.render(&SCENE_3D_BACKGROUND, background_spec(), 0)?;
@@ -1044,7 +1052,12 @@ impl RecordNode for Render3d {
             } else {
                 (spec(depth_test, cull), 0)
             };
-            let program = cx.render_program(&SCENE_3D, target, variant)?;
+            let shader = if run.key.masked && !run.key.shadow_catcher {
+                &SCENE_3D_MASKED
+            } else {
+                &SCENE_3D
+            };
+            let program = cx.render_program(shader, target, variant)?;
             let maps = &run.key.maps;
             let maps = [
                 maps.base_color,

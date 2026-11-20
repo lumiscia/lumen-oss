@@ -14,6 +14,7 @@ use crate::{Blending, MAX_SCENE_NODES, Maps, Object, normal_matrix};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DrawKey<M, T> {
     pub blend: bool,
+    pub masked: bool,
     pub shadow_catcher: bool,
     pub cast_shadows: bool,
     pub double_sided: bool,
@@ -29,6 +30,7 @@ impl<M: Copy, T: Copy> DrawKey<M, T> {
     fn of(object: &Object<M, T>) -> Self {
         Self {
             blend: object.surface.blending == Blending::Blend,
+            masked: matches!(object.surface.blending, Blending::Mask { .. }),
             shadow_catcher: object.surface.shadow_catcher,
             cast_shadows: object.surface.cast_shadows && !object.surface.shadow_catcher,
             double_sided: object.surface.double_sided,

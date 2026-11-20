@@ -915,6 +915,21 @@ fn shadow_light(world: vec3<f32>, n: vec3<f32>, face: vec3<f32>, pixel: vec2<f32
 
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    return shade(in, front);
+}
+
+// Writing depth from the shader keeps Metal from writing it for the fragments a mask discards.
+struct Shaded {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+}
+
+@fragment
+fn fs_masked(in: VsOut, @builtin(front_facing) front: bool) -> Shaded {
+    return Shaded(shade(in, front), in.clip.z);
+}
+
+fn shade(in: VsOut, front: bool) -> vec4<f32> {
     // Derivatives need uniform control flow, so they come before anything branches.
     let uv_dx = dpdx(in.uv);
     let uv_dy = dpdy(in.uv);
@@ -1081,19 +1096,19 @@ fn shading_normal(
 // Depth output where the surface is solid: the distance along the camera's view, from 0 at
 // `depth_near` to 1 at `depth_far`, as opaque grey.
 @fragment
-fn fs_depth(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_depth(in: VsOut) -> Shaded {
     if (!solid(objects[in.object], in.uv, in.uv1, in.color.a)) {
         discard;
     }
     let distance = dot(globals.camera_position - in.world, globals.camera_back);
     let depth = clamp((distance - globals.depth_near) / (globals.depth_far - globals.depth_near), 0.0, 1.0);
-    return vec4<f32>(vec3<f32>(depth), 1.0);
+    return Shaded(vec4<f32>(vec3<f32>(depth), 1.0), in.clip.z);
 }
 
 // Normal output where the surface is solid: the normal it is lit by, in the camera's space, mapped
 // from -1..1 to 0..1, and opaque.
 @fragment
-fn fs_normal(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+fn fs_normal(in: VsOut, @builtin(front_facing) front: bool) -> Shaded {
     // Derivatives need uniform control flow, so they come before anything branches.
     let uvs = Uvs(in.uv, dpdx(in.uv), dpdy(in.uv), in.uv1, dpdx(in.uv1), dpdy(in.uv1));
     let world_dx = dpdx(in.world);
@@ -1104,7 +1119,7 @@ fn fs_normal(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4
     }
     let n = shading_normal(o, in.normal, view_direction(in.world), front, uvs, world_dx, world_dy);
     let camera = vec3<f32>(dot(n, globals.camera_right), dot(n, globals.camera_up), dot(n, globals.camera_back));
-    return vec4<f32>(camera * 0.5 + 0.5, 1.0);
+    return Shaded(vec4<f32>(camera * 0.5 + 0.5, 1.0), in.clip.z);
 }
 
 fn luminance(c: vec3<f32>) -> f32 {
