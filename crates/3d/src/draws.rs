@@ -110,12 +110,19 @@ impl<M: Copy + Eq + Hash, T: Copy + Eq + Hash> Draws<M, T> {
             return Err(DrawError::TooManyObjects);
         }
         let keys: Vec<DrawKey<M, T>> = objects.iter().map(DrawKey::of).collect();
+        // Masked objects stay in the group their other bindings put them in, so masking only splits
+        // the runs and never moves an object in the order.
         let mut seen: HashMap<DrawKey<M, T>, usize> = HashMap::default();
         let groups: Vec<usize> = keys
             .iter()
             .map(|&key| {
                 let next = seen.len();
-                *seen.entry(key).or_insert(next)
+                *seen
+                    .entry(DrawKey {
+                        masked: false,
+                        ..key
+                    })
+                    .or_insert(next)
             })
             .collect();
         let depth = |index: usize| view.transform_point3(objects[index].center).z;
@@ -248,6 +255,25 @@ mod tests {
                 (1, true, 5, 1, 30, 6),
             ]
         );
+    }
+
+    #[test]
+    #[test]
+    fn masked_objects_split_runs_without_leaving_their_place_in_the_order() {
+        let objects = [
+            object(1, Blending::Opaque, 0.0),
+            object(1, Blending::Mask { cutoff: 0.5 }, 0.0),
+            object(1, Blending::Opaque, 0.0),
+        ];
+        let draws = Draws::new(&objects, &Mat4::IDENTITY).unwrap();
+        let order: Vec<usize> = draws.rows.iter().map(|row| row.object).collect();
+        assert_eq!(order, [0, 1, 2]);
+        let runs: Vec<(bool, u32)> = draws
+            .runs
+            .iter()
+            .map(|run| (run.key.masked, run.count))
+            .collect();
+        assert_eq!(runs, [(false, 1), (true, 1), (false, 1)]);
     }
 
     #[test]
