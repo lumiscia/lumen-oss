@@ -83,8 +83,8 @@ composition.addNode({
 composition.addNode({ type: "opacity", inputs: { source: outputOf(nodes.render_3d(), "normal") } });
 composition.connect(outputOf(render, "depth"), output, { toPort: "source" });
 composition.connect(outputOf(group, "output"), render, { toPort: "scene" });
-// @ts-expect-error render_3d has no `matte` output
-outputOf(render, "matte");
+// @ts-expect-error render_3d has no `albedo` output
+outputOf(render, "albedo");
 // @ts-expect-error background names no outputs beside `output`
 outputOf(background, "depth");
 // @ts-expect-error a bare id has no kind to check the name against
