@@ -353,6 +353,12 @@ impl GpuCompositionRenderer {
         self.graph.recorder.pass_count()
     }
 
+    /// The runtime shader lookups so far that hashed a shader's source.
+    #[cfg(feature = "test-hooks")]
+    pub fn shader_source_lookups(&self) -> u64 {
+        self.graph.shader_source_lookups()
+    }
+
     /// What recording has cost so far.
     pub fn frame_graph_stats(&self) -> FrameGraphStats {
         let recorder = &self.graph.recorder;

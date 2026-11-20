@@ -93,6 +93,8 @@ struct DocumentJson {
     #[serde(default)]
     functions: BTreeMap<String, String>,
     #[serde(default)]
+    shaders: BTreeMap<String, String>,
+    #[serde(default)]
     compositions: BTreeMap<String, Object<TemplateJson>>,
     #[serde(default, deserialize_with = "present")]
     audio: Option<Object<AudioJson>>,
@@ -135,6 +137,12 @@ impl DocumentJson {
                     "propertyNames": {
                         "pattern": "^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*\\s*(,\\s*[A-Za-z_][A-Za-z0-9_]*\\s*)*)?\\)\\s*$"
                     },
+                    "additionalProperties": { "type": "string" }
+                },
+                "shaders": {
+                    "description": "WGSL shader sources by name, which `wgsl_shader` nodes here and in every template use as `shader:<name>`.",
+                    "type": "object",
+                    "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
                     "additionalProperties": { "type": "string" }
                 },
                 "compositions": {
@@ -847,6 +855,7 @@ fn load(root: &Value) -> Result<Composition, Vec<LumenError>> {
         },
         audio,
         compositions: templates,
+        shaders: document.shaders,
     }
     .build()
 }

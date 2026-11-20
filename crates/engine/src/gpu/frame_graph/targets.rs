@@ -7,8 +7,8 @@ use lumen_gpu::{
 };
 
 use super::{
-    CachedShader, ComputeProgram, FrameCx, Raster, RenderProgram, ShaderParts, dispatch_for,
-    gpu_error,
+    CachedShader, ComputeProgram, FrameCx, Raster, RenderProgram, ShaderKey, ShaderParts,
+    dispatch_for, gpu_error,
 };
 use crate::{gpu::color::WORKING_COLOR_FORMAT as WORKING, node::NodeId};
 
@@ -275,16 +275,16 @@ impl FrameCx<'_> {
         self.rec.sampler(key, desc)
     }
 
-    /// The parsed and assembled form of a runtime shader source, built once per source.
+    /// The parsed and assembled form of a runtime shader, built once per source.
     pub(crate) fn cached_shader(
         &mut self,
-        source: &str,
+        key: ShaderKey<'_>,
         inputs: usize,
         build: impl FnOnce() -> crate::Result<ShaderParts>,
     ) -> crate::Result<CachedShader> {
         self.st
             .shaders
-            .cached_shader(self.st.tick, source, inputs, build)
+            .cached_shader(self.st.tick, key, inputs, build)
     }
 
     pub(crate) fn dynamic_program(

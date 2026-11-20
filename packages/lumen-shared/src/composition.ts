@@ -36,21 +36,38 @@ const defaultTimeline = {
   fps: 30,
 } satisfies LumenComposition["timeline"];
 
-/** A template with the nested templates and functions its `build` needed, as of its definition. */
+/** A named shader's source, which the composition's `shaders` holds. */
+export interface ShaderDefinition {
+  readonly name: string;
+  readonly source: string;
+}
+
+/**
+ * A template with the nested templates, functions and shaders its `build` needed, as of its
+ * definition.
+ */
 export interface ClipTemplate {
   readonly name: string;
   readonly template: CompositionTemplate;
   readonly compositions: readonly ClipTemplate[];
   readonly functions: readonly FunctionDefinition[];
+  readonly shaders: readonly ShaderDefinition[];
 }
 
 /** The template a clip node input plays, which `addNode` registers. Spreading the input keeps it. */
 export const clipTemplate = Symbol("clipTemplate");
 
+/** The shader a `wgsl_shader` node input names, which `addNode` registers. Spreading keeps it. */
+export const shaderDefinition = Symbol("shaderDefinition");
+
+const shaderReference = "shader:";
+
 /** The composition each node handle belongs to. */
 const owners = new WeakMap<object, Composition>();
 
-let dependenciesOf: (composition: Composition) => Pick<ClipTemplate, "compositions" | "functions">;
+let dependenciesOf: (
+  composition: Composition,
+) => Pick<ClipTemplate, "compositions" | "functions" | "shaders">;
 
 /** Every node or node value `node` reads, in port order. */
 function sourcesOf(node: NodeInput): NodeSource[] {
@@ -75,6 +92,8 @@ export class Composition {
   readonly #functions = new Map<string, FunctionDefinition>();
   readonly #nodeIds = new Set<number>();
   readonly #nodes: CompositionNode[] = [];
+  /** Shader sources by name. */
+  readonly #shaders = new Map<string, string>();
   /** The node each node value became. */
   readonly #values = new WeakMap<object, CompositionNode>();
   #nextNodeId = 0;
@@ -87,6 +106,7 @@ export class Composition {
     dependenciesOf = (composition) => ({
       compositions: [...composition.#compositions.values()],
       functions: [...composition.#functions.values()],
+      shaders: [...composition.#shaders].map(([name, source]) => ({ name, source })),
     });
   }
 
@@ -115,6 +135,7 @@ export class Composition {
     const nextNodeId = this.#nextNodeId;
     const compositions = this.#compositions.size;
     const functions = this.#functions.size;
+    const shaders = this.#shaders.size;
     try {
       return this.#add(node as NodeInput) as CompositionNode<TKind>;
     } catch (error) {
@@ -130,6 +151,9 @@ export class Composition {
       }
       for (const name of [...this.#functions.keys()].slice(functions)) {
         this.#functions.delete(name);
+      }
+      for (const name of [...this.#shaders.keys()].slice(shaders)) {
+        this.#shaders.delete(name);
       }
       throw error;
     }
@@ -181,10 +205,12 @@ export class Composition {
   #addResolved(node: NodeInput): CompositionNode {
     const {
       [clipTemplate]: template,
+      [shaderDefinition]: shader,
       inputs,
       ...input
     } = node as NodeInput & {
       readonly [clipTemplate]?: ClipTemplate;
+      readonly [shaderDefinition]?: ShaderDefinition;
     };
     const sources = Object.entries(
       (inputs ?? {}) as Readonly<Record<string, NodeSource | readonly NodeSource[]>>,
@@ -198,6 +224,7 @@ export class Composition {
       throw new Error(`Node \`${id}\` already exists.`);
     }
     const addTemplate = template === undefined ? undefined : this.#planTemplate(template);
+    const addShaders = this.#planShaders(shader === undefined ? [] : [shader]);
     const nextNode = {
       ...input,
       id,
@@ -206,6 +233,7 @@ export class Composition {
 
     // Everything that can throw is above, so a failed addition adds nothing for this node.
     addTemplate?.();
+    addShaders();
     this.#nodeIds.add(id);
     if (input.id === undefined) {
       this.#nextNodeId = id + 1;
@@ -256,6 +284,7 @@ export class Composition {
       added.set(next.name, next);
     }
     const functions = template.functions.filter((definition) => this.#isNewFunction(definition));
+    const addShaders = this.#planShaders(template.shaders);
 
     return () => {
       for (const [name, next] of added) {
@@ -263,6 +292,27 @@ export class Composition {
       }
       for (const definition of functions) {
         this.#functions.set(functionName(definition), definition);
+      }
+      addShaders();
+    };
+  }
+
+  /**
+   * Checks that `definitions` fit and returns the function that registers them. A different
+   * source by a name already registered throws.
+   */
+  #planShaders(definitions: readonly ShaderDefinition[]): () => void {
+    const added = new Map<string, string>();
+    for (const { name, source } of definitions) {
+      const existing = this.#shaders.get(name) ?? added.get(name);
+      if (existing !== undefined && existing !== source) {
+        throw new Error(`Shader \`${name}\` already exists with another source.`);
+      }
+      added.set(name, source);
+    }
+    return () => {
+      for (const [name, source] of added) {
+        this.#shaders.set(name, source);
       }
     };
   }
@@ -388,7 +438,21 @@ export class Composition {
     return this;
   }
 
+  /** Throws when a `wgsl_shader` names a shader that no node added defines. */
   toJSON(): LumenComposition {
+    const graphs = [this.#nodes, ...[...this.#compositions.values()].map((t) => t.template.nodes)];
+    for (const node of graphs.flat()) {
+      const shader = node.type === "wgsl_shader" ? node.params?.shader : undefined;
+      const name =
+        typeof shader === "string" && shader.startsWith(shaderReference)
+          ? shader.slice(shaderReference.length)
+          : undefined;
+      if (name !== undefined && !this.#shaders.has(name)) {
+        throw new Error(
+          `Node \`${node.id}\` uses shader \`${name}\`, which no \`wgslShader({ name })\` node added defines.`,
+        );
+      }
+    }
     return {
       ...(this.#compositions.size > 0
         ? {
@@ -408,6 +472,7 @@ export class Composition {
         : {}),
       nodes: [...this.#nodes],
       render_settings: this.#renderSettings,
+      ...(this.#shaders.size > 0 ? { shaders: Object.fromEntries(this.#shaders) } : {}),
       timeline: this.#timeline,
       ...(this.#audio !== undefined ? { audio: this.#audio } : {}),
       ...(this.#metadata !== undefined ? { metadata: this.#metadata } : {}),

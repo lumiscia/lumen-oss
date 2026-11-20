@@ -1,15 +1,24 @@
 import type { ShaderUniforms } from "@lumiscia/lumen-types";
 
+import { shaderDefinition, type ShaderDefinition } from "./composition.js";
 import { Expr } from "./expression.js";
 import type { WgslShader, WgslShaderOptions, WgslUniforms } from "./types.js";
 
 export function wgslShader<TUniforms extends WgslUniforms = Record<never, never>>(
   options: WgslShaderOptions<TUniforms>,
 ): WgslShader<TUniforms> {
+  const { name } = options;
+  if (name !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    throw new Error(
+      `Shader name \`${name}\` must be letters, digits and \`_\`, not starting with a digit.`,
+    );
+  }
   const uniforms: WgslUniforms = options.uniforms ?? {};
   // Appended, since WGSL directives must lead the module and declarations may come in any order.
   const declarations = uniformDeclarations(uniforms);
   const source = declarations === "" ? options.shader : `${options.shader}\n\n${declarations}`;
+  const definition: ShaderDefinition | undefined =
+    name === undefined ? undefined : { name, source };
   return {
     source,
     node: (values = {}) => {
@@ -18,10 +27,10 @@ export function wgslShader<TUniforms extends WgslUniforms = Record<never, never>
           throw new Error(`Uniform \`${name}\` is a vec3, so its colour cannot have alpha.`);
         }
       }
-      return {
-        type: "wgsl_shader",
+      const node = {
+        type: "wgsl_shader" as const,
         params: {
-          shader: source,
+          shader: definition === undefined ? source : `shader:${definition.name}`,
           uniforms: Object.fromEntries(
             Object.entries(values).map(([name, value]) => [
               name,
@@ -30,6 +39,9 @@ export function wgslShader<TUniforms extends WgslUniforms = Record<never, never>
           ) as ShaderUniforms,
         },
       };
+      return definition === undefined
+        ? node
+        : Object.assign(node, { [shaderDefinition]: definition });
     },
   };
 }
