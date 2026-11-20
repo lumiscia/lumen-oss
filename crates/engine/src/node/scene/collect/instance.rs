@@ -463,13 +463,13 @@ impl Collected {
             self.scene.lights.push(light.placed(&parent));
             self.light_nodes.push(node);
         }
-        for (node, camera) in inner.cameras {
+        for (node, within, camera) in inner.cameras {
             let camera = Camera {
                 world: parent * camera.world,
                 ..camera
             };
             self.scene.camera.get_or_insert(camera);
-            self.cameras.push((node, camera));
+            self.cameras.push((node, within, camera));
         }
         Ok(())
     }
@@ -528,7 +528,7 @@ impl Collected {
                     Extent::Skin(skin) => Extent::Skin(carried + skin),
                     local @ Extent::Local(_) => local,
                 },
-                ..*origin
+                ..origin.clone()
             };
             let (list, parent) = match object.instanced {
                 // One copy places the input's copies as a group would.
@@ -583,7 +583,7 @@ impl Collected {
                     orientation,
                 });
                 self.scene.objects.push(object.clone());
-                self.origins.push(origin);
+                self.origins.push(origin.clone());
             }
         }
         let copied: Vec<usize> = (0..objects.len())
@@ -660,7 +660,7 @@ impl Collected {
             if let Some((_, weight)) = &mut object.morph {
                 *weight += weight_base as u32;
             }
-            let origin = inner.origins[index];
+            let origin = inner.origins[index].clone();
             let extent = match origin.extent {
                 Extent::Skin(skin) => Extent::Skin(first_skin + skin),
                 local @ Extent::Local(_) => local,

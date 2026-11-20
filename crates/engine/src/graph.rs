@@ -1,6 +1,6 @@
 //! Directed graph model, validation, and topological evaluation ordering.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
     error::{At, DocumentError, GraphValidationError, LumenError},
@@ -10,6 +10,17 @@ use crate::{
         PortKind,
     },
 };
+
+/// The kind each template outputs, by name, which a `clip` playing it outputs too.
+pub(crate) type TemplateOutputs = BTreeMap<String, PortKind>;
+
+/// What an output wired into an input is: its kind, its name unless it is the default output,
+/// and the template it plays when it is a clip's.
+struct Source<'g> {
+    kind: PortKind,
+    output: Option<&'static OutputPortDef>,
+    template: Option<&'g str>,
+}
 
 /// An edge as authors write it. `connect` stores it in the target node's input field.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,7 +108,14 @@ impl Graph {
             .expect("validation requires one media_output node")
     }
 
-    pub fn validate(&self) -> Result<(), Vec<LumenError>> {
+    /// Checks the graph's nodes and edges. `templates` gives the kind of each template, which
+    /// the clips playing it output, and `in_template` says whether this is a template's graph,
+    /// whose `media_output` may take a scene.
+    pub(crate) fn validate(
+        &self,
+        templates: &TemplateOutputs,
+        in_template: bool,
+    ) -> Result<(), Vec<LumenError>> {
         let mut errors = Vec::new();
 
         let media_output_count = self
@@ -133,15 +151,27 @@ impl Graph {
             }
 
             check_supported(node, cfg!(feature = "3d"), &mut errors);
+            let template_output = in_template && matches!(node, NodeKind::MediaOutput(_));
             check_inputs(
                 node,
                 |source| {
                     let node = self.nodes.get(&source.node)?;
-                    Some((
-                        node.port_kind(source.port)?,
-                        node.output_port_def(source.port),
-                    ))
+                    // A clip outputs what the template it plays does.
+                    let (kind, template) = match node {
+                        NodeKind::Clip(clip) if source.port == OutputPort::DEFAULT => {
+                            let template = clip.template_name();
+                            let kind = template.and_then(|name| templates.get(name)).copied();
+                            (kind.unwrap_or(PortKind::Raster), template)
+                        }
+                        _ => (node.port_kind(source.port)?, None),
+                    };
+                    Some(Source {
+                        kind,
+                        output: node.output_port_def(source.port),
+                        template,
+                    })
                 },
+                |input, kind| kind == input.kind || (template_output && kind == PortKind::Scene),
                 &mut errors,
             );
             errors.extend(
@@ -225,12 +255,13 @@ fn check_supported(node: &NodeKind, supports_3d: bool, errors: &mut Vec<LumenErr
     }
 }
 
-/// Reports each required input of `node` left unwired, and each output wired into an input of
-/// another kind. `output_kind` gives the kind an output outputs, with its name unless it is the
-/// default output, or `None` for a missing source, which is reported on its own.
-fn check_inputs(
+/// Reports each required input of `node` left unwired, and each output wired into an input that
+/// doesn't take its kind, which `takes` says. `source_of` describes an output, or gives `None`
+/// for a missing source, which is reported on its own.
+fn check_inputs<'g>(
     node: &dyn Node,
-    output_kind: impl Fn(OutputRef) -> Option<(PortKind, Option<&'static OutputPortDef>)>,
+    source_of: impl Fn(OutputRef) -> Option<Source<'g>>,
+    takes: impl Fn(&InputPortDef, PortKind) -> bool,
     errors: &mut Vec<LumenError>,
 ) {
     for (input, sources) in wired_inputs(node) {
@@ -243,18 +274,19 @@ fn check_inputs(
                 .into(),
             );
         }
-        for source in sources {
-            if let Some((actual, output)) = output_kind(source)
-                && actual != input.kind
+        for read in sources {
+            if let Some(source) = source_of(read)
+                && !takes(input, source.kind)
             {
                 errors.push(
                     GraphValidationError::WrongInputKind {
                         at: At::node(node.id()),
                         port: input.name,
-                        source_node: source.node,
-                        source_output: output,
+                        source_node: read.node,
+                        source_output: source.output,
+                        source_template: source.template.map(Box::from),
                         expected: input.kind,
-                        actual,
+                        actual: source.kind,
                     }
                     .into(),
                 );
@@ -371,14 +403,26 @@ mod tests {
     const MISSING: NodeId = NodeId::new(9);
 
     fn errors(node: &dyn Node) -> Vec<String> {
-        let output_kind = |source: OutputRef| match source.node {
-            RASTER => Some((PortKind::Raster, None)),
-            SCENE => Some((PortKind::Scene, None)),
-            DRAWING => Some((PortKind::Drawing, None)),
-            _ => None,
+        let source_of = |source: OutputRef| {
+            let kind = match source.node {
+                RASTER => PortKind::Raster,
+                SCENE => PortKind::Scene,
+                DRAWING => PortKind::Drawing,
+                _ => return None,
+            };
+            Some(Source {
+                kind,
+                output: None,
+                template: None,
+            })
         };
         let mut errors = Vec::new();
-        check_inputs(node, output_kind, &mut errors);
+        check_inputs(
+            node,
+            source_of,
+            |input, kind| kind == input.kind,
+            &mut errors,
+        );
         errors
             .iter()
             .map(|error| format!("{}: {error}", error.code()))

@@ -1866,7 +1866,11 @@ export interface ChromaKeyNode extends CompositionNodeBase<"chroma_key"> {
 /** Plays a composition template, or its source, over a window of time. */
 export interface ClipNode extends CompositionNodeBase<"clip"> {
   readonly params?: {
-    /** Template from `compositions` to play; empty plays the `source` input instead. */
+    /**
+     * Template from `compositions` to play; empty plays the `source` input instead. A template
+     * whose `media_output` reads a scene makes the clip output that scene, for a `merge_3d` or
+     * `render_3d` to take.
+     */
     readonly composition?: string;
     /**
      * Frames the clip plays for; -1 plays the template to its end, or a source to the end of
@@ -2841,7 +2845,8 @@ export interface MediaInNode extends CompositionNodeBase<"media_in"> {
 
 /**
  * Converts its source into the final composition output: sRGB-encoded and quantised once to the
- * output's format.
+ * output's format. In a template it may read a scene instead, which the clips playing the
+ * template output.
  */
 export interface MediaOutputNode extends CompositionNodeBase<"media_output"> {
   readonly params?: Readonly<Record<string, never>>;
@@ -5141,7 +5146,8 @@ export const nodeInputPorts = {
   "media_in": {},
   /**
    * Converts its source into the final composition output: sRGB-encoded and quantised once to the
-   * output's format.
+   * output's format. In a template it may read a scene instead, which the clips playing the
+   * template output.
    */
   "media_output": { "source": { kind: "raster", variadic: false } },
   /** Composites an overlay raster over a base raster. */

@@ -1498,6 +1498,16 @@ impl<'a> FrameCx<'a> {
     }
 
     fn record_routed(&mut self, routed: Routed<'a>) -> crate::Result<Raster> {
+        self.in_routed(routed, |cx, input| cx.input(input))
+    }
+
+    /// Runs `run` on the input `routed` reads, in its frame, scope and path, then returns to
+    /// this frame, scope and path.
+    fn in_routed<T>(
+        &mut self,
+        routed: Routed<'a>,
+        run: impl FnOnce(&mut Self, OutputRef) -> T,
+    ) -> T {
         let frame = std::mem::replace(&mut self.frame, routed.frame);
         let scope = std::mem::replace(&mut self.scope, routed.scope);
         let path = self.path;
@@ -1505,11 +1515,39 @@ impl<'a> FrameCx<'a> {
             let next = PathId(self.st.paths.len() as u32 + 1);
             self.path = *self.st.paths.entry((path, instance)).or_insert(next);
         }
-        let result = self.input(routed.input);
+        let result = run(self, routed.input);
         self.path = path;
         self.scope = scope;
         self.frame = frame;
         result
+    }
+
+    /// Runs `walk` on the node the scene template `clip` outputs at this frame, in the
+    /// template's frame, scope and path, or returns `None` while the clip is hidden. A failure
+    /// names the template.
+    #[cfg(feature = "3d")]
+    pub(crate) fn walk_clip<T>(
+        &mut self,
+        clip: &Clip,
+        walk: impl FnOnce(&mut Self, NodeId) -> crate::Result<T>,
+    ) -> crate::Result<Option<T>> {
+        let Some(routed) = clip.route(&self.scope, self.frame, self.media)? else {
+            return Ok(None);
+        };
+        if self.depth == crate::scope::MAX_GRAPH_DEPTH {
+            return Err(self.scope.too_deep(clip.id));
+        }
+        let template = routed.scope.template_name();
+        self.depth += 1;
+        let result = self.in_routed(routed, |cx, input| walk(cx, input.node));
+        self.depth -= 1;
+        result.map(Some).map_err(|error| in_scene(error, template))
+    }
+
+    /// The scene whose graph is being walked.
+    #[cfg(feature = "3d")]
+    pub(crate) fn scene_id(&self) -> SceneId {
+        self.scope.id
     }
 
     pub(crate) fn record_time_remap(

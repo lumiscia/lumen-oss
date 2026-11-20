@@ -131,7 +131,7 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { name: "output", kind: "raster" },
     ],
     params: [
-      { id: "composition", name: "Composition", kind: "string", description: "Template from `compositions` to play; empty plays the `source` input instead.", defaultValue: "" },
+      { id: "composition", name: "Composition", kind: "string", description: "Template from `compositions` to play; empty plays the `source` input instead. A template\nwhose `media_output` reads a scene makes the clip output that scene, for a `merge_3d` or\n`render_3d` to take.", defaultValue: "" },
       { id: "duration", name: "Duration", kind: "float", description: "Frames the clip plays for; -1 plays the template to its end, or a source to the end of\nthis composition.", defaultValue: -1, constraints: { min: -1, step: 1 } },
       { id: "end", name: "End", kind: "enum", description: "What the clip shows after its window: nothing, its last frame, or the window again.", defaultValue: "hide", enumOptions: [{ name: "hide", label: "Hide", value: 0 }, { name: "hold", label: "Hold", value: 1 }, { name: "loop", label: "Loop", value: 2 }] },
       { id: "offset", name: "Offset", kind: "float", description: "Frames of the content skipped at the start, in the content's frames.", defaultValue: 0, constraints: { step: 1 } },
@@ -662,7 +662,7 @@ export const nodeSpecs: readonly NodeSpec[] = [
   {
     kind: "media_output",
     name: "Media Output",
-    description: "Converts its source into the final composition output: sRGB-encoded and quantised once to the\noutput's format.",
+    description: "Converts its source into the final composition output: sRGB-encoded and quantised once to the\noutput's format. In a template it may read a scene instead, which the clips playing the\ntemplate output.",
     category: "output",
     inputs: [
       { name: "source", kind: "raster", optional: false, variadic: false },

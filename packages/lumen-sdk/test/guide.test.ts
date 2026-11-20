@@ -7,9 +7,10 @@ import { expect, test } from "vitest";
 import * as sdk from "../src/index.js";
 
 // docs/3d.md pairs each `json` block with the `ts` block after it: the TypeScript builds the
-// composition and the JSON is its nodes and connections. Every `ts` block must type-check and
-// define `composition`. `UPDATE_GUIDE=1` rewrites the JSON blocks from the TypeScript ones, on one
-// line each for the formatter to lay out (`just update-3d-guide` does both);
+// composition and the JSON is its nodes and connections, and its templates if it has any. Every
+// `ts` block must type-check and define `composition`. `UPDATE_GUIDE=1` rewrites the JSON blocks
+// from the TypeScript ones, on one line each for the formatter to lay out (`just update-3d-guide`
+// does both);
 // `crates/cli/tests/docs.rs` checks that the engine accepts them.
 const guidePath = fileURLToPath(new URL("../../../docs/3d.md", import.meta.url));
 const sdkPath = fileURLToPath(new URL("../src/index.ts", import.meta.url));
@@ -62,7 +63,7 @@ function typeErrors(): string[] {
   });
 }
 
-function compose(code: string): { nodes: object[]; connections: object[] } {
+function compose(code: string): { compositions?: object; nodes: object[]; connections: object[] } {
   const { outputText } = ts.transpileModule(code, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   });
@@ -71,12 +72,26 @@ function compose(code: string): { nodes: object[]; connections: object[] } {
     () => sdk,
     exports,
   );
-  const { nodes, connections } = JSON.parse(JSON.stringify(exports.composition)) as {
-    nodes: { id: number; type: string; params?: object }[];
+  type Nodes = { id: number; type: string; params?: object }[];
+  const { compositions, nodes, connections } = JSON.parse(JSON.stringify(exports.composition)) as {
+    compositions?: Record<string, { nodes: Nodes }>;
+    nodes: Nodes;
     connections: object[];
   };
+  const ordered = (nodes: Nodes) =>
+    nodes.map(({ id, type, params }) => ({ id, type, ...(params ? { params } : {}) }));
   return {
-    nodes: nodes.map(({ id, type, params }) => ({ id, type, ...(params ? { params } : {}) })),
+    ...(compositions
+      ? {
+          compositions: Object.fromEntries(
+            Object.entries(compositions).map(([name, template]) => [
+              name,
+              { ...template, nodes: ordered(template.nodes) },
+            ]),
+          ),
+        }
+      : {}),
+    nodes: ordered(nodes),
     connections,
   };
 }

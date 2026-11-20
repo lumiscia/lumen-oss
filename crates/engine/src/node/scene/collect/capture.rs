@@ -7,7 +7,8 @@ use foldhash::HashMap;
 use lumen_3d::glam::Mat4;
 use lumen_3d::{Bounds, Camera, Projection};
 
-use super::{Collected, CopySource};
+use super::{Collected, CopySource, Within};
+use crate::composition::Composition;
 use crate::gpu::{CameraProjection, CapturedCamera, CapturedObject, SceneBounds, SceneCamera};
 
 /// The camera `camera` gives, held to the limits `camera_3d` keeps its params to.
@@ -41,9 +42,25 @@ pub(crate) fn override_camera(camera: &SceneCamera) -> Camera {
     }
 }
 
-fn captured_camera(node: crate::node::NodeId, camera: &Camera) -> CapturedCamera {
+/// The template a node `within` is in, and the clips that play the templates it is in.
+fn place(composition: &Composition, within: &Within) -> (Option<String>, Vec<crate::node::NodeId>) {
+    (
+        composition.template_name(within.scene).map(str::to_string),
+        within.clips.clone(),
+    )
+}
+
+fn captured_camera(
+    composition: &Composition,
+    node: crate::node::NodeId,
+    within: &Within,
+    camera: &Camera,
+) -> CapturedCamera {
+    let (template, clips) = place(composition, within);
     CapturedCamera {
         node,
+        template,
+        clips,
         world: camera.world.to_cols_array(),
         projection: match camera.projection {
             Projection::Perspective { fov_y } => CameraProjection::Perspective {
@@ -61,13 +78,17 @@ fn captured_camera(node: crate::node::NodeId, camera: &Camera) -> CapturedCamera
 }
 
 impl Collected {
-    /// The objects the scene draws and the cameras it holds, as [`SceneCapture`] reports them.
+    /// The objects the scene draws and the cameras it holds, as [`SceneCapture`] reports them,
+    /// with the templates of `composition` they are in.
     ///
     /// [`SceneCapture`]: crate::gpu::SceneCapture
-    pub(crate) fn captured(&mut self) -> (Vec<CapturedObject>, Vec<CapturedCamera>) {
+    pub(crate) fn captured(
+        &mut self,
+        composition: &Composition,
+    ) -> (Vec<CapturedObject>, Vec<CapturedCamera>) {
         self.place_bounds();
         let singles = self.single_bounds();
-        let mut found: Vec<(crate::node::NodeId, Mat4, Bounds)> = Vec::new();
+        let mut found: Vec<(crate::node::NodeId, &Within, Mat4, Bounds)> = Vec::new();
         // Where in `found` each particle system's entry is, by the list that places its particles.
         let mut systems: HashMap<u32, usize> = HashMap::default();
         for (index, (object, origin)) in self.scene.objects.iter().zip(&self.origins).enumerate() {
@@ -76,7 +97,7 @@ impl Collected {
                 continue;
             }
             let Some(copies) = object.instanced else {
-                found.push((origin.node, object.world, object.bounds));
+                found.push((origin.node, &origin.within, object.world, object.bounds));
                 continue;
             };
             let list = &self.lists[copies.list as usize];
@@ -88,6 +109,7 @@ impl Collected {
                         let placement = copies.parent * *placement;
                         found.push((
                             origin.node,
+                            &origin.within,
                             placement * object.world,
                             singles[index].transformed(&placement),
                         ));
@@ -95,32 +117,37 @@ impl Collected {
                 }
                 CopySource::Particles(_) => match systems.entry(copies.list) {
                     Entry::Occupied(system) => {
-                        let (_, _, bounds) = &mut found[*system.get()];
+                        let (.., bounds) = &mut found[*system.get()];
                         *bounds = bounds.union(object.bounds);
                     }
                     Entry::Vacant(system) => {
                         system.insert(found.len());
-                        found.push((list.key.0, copies.parent, object.bounds));
+                        found.push((list.key.0, &origin.within, copies.parent, object.bounds));
                     }
                 },
             }
         }
         let objects = found
             .into_iter()
-            .filter(|(_, world, bounds)| !bounds.is_empty() && world.is_finite())
-            .map(|(node, world, bounds)| CapturedObject {
-                node,
-                world: world.to_cols_array(),
-                bounds: SceneBounds {
-                    min: bounds.min.to_array(),
-                    max: bounds.max.to_array(),
-                },
+            .filter(|(.., world, bounds)| !bounds.is_empty() && world.is_finite())
+            .map(|(node, within, world, bounds)| {
+                let (template, clips) = place(composition, within);
+                CapturedObject {
+                    node,
+                    template,
+                    clips,
+                    world: world.to_cols_array(),
+                    bounds: SceneBounds {
+                        min: bounds.min.to_array(),
+                        max: bounds.max.to_array(),
+                    },
+                }
             })
             .collect();
         let cameras = self
             .cameras
             .iter()
-            .map(|(node, camera)| captured_camera(*node, camera))
+            .map(|(node, within, camera)| captured_camera(composition, *node, within, camera))
             .collect();
         (objects, cameras)
     }

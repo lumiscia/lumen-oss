@@ -4,9 +4,9 @@ use crate::{
     audio::AudioTimeline,
     error::{At, GraphValidationError, LumenError},
     expr::{BuiltinFn, ExprNode, ExpressionValue},
-    graph::Graph,
+    graph::{Graph, TemplateOutputs},
     node::{
-        ClipPropValue, Node, NodeId, NodeKind,
+        ClipPropValue, Node, NodeId, NodeKind, OutputPort, PortKind,
         compositing::clip::Clip,
         processing::wgsl_shader::{ShaderSources, ShaderTable, SharedShader, resolve_shaders},
     },
@@ -338,7 +338,8 @@ impl CompositionBuilder {
             }
             .into()
         }));
-        match self.scene.graph.validate() {
+        let outputs = self.template_outputs();
+        match self.scene.graph.validate(&outputs, false) {
             Ok(_) => {}
             Err(graph_errors) => errors.extend(graph_errors),
         }
@@ -371,7 +372,7 @@ impl CompositionBuilder {
                         .into()
                     }),
             );
-            if let Err(graph_errors) = template.scene.graph.validate() {
+            if let Err(graph_errors) = template.scene.graph.validate(&outputs, true) {
                 errors.extend(
                     graph_errors
                         .into_iter()
@@ -560,6 +561,60 @@ impl CompositionBuilder {
             }
         }
         None
+    }
+
+    /// The kind each template outputs: that of the node its `media_output` reads, followed
+    /// through the clips that play other templates. A template without an output to follow, or
+    /// that plays itself, outputs a raster; validation reports either.
+    fn template_outputs(&self) -> TemplateOutputs {
+        let mut outputs = TemplateOutputs::new();
+        for start in self.compositions.keys() {
+            // The templates whose output is the next one's, until one outputs a node of its own.
+            let mut chain = Vec::new();
+            let mut name = start.as_str();
+            let kind = loop {
+                if let Some(&kind) = outputs.get(name) {
+                    break kind;
+                }
+                if chain.contains(&name) {
+                    break PortKind::Raster;
+                }
+                chain.push(name);
+                let Some(template) = self.compositions.get(name) else {
+                    break PortKind::Raster;
+                };
+                let graph = &template.scene.graph;
+                let source = graph
+                    .nodes
+                    .values()
+                    .filter_map(|node| match node {
+                        NodeKind::MediaOutput(output) => Some(output),
+                        _ => None,
+                    })
+                    .min_by_key(|output| output.id)
+                    .and_then(|output| output.source);
+                let Some(source) =
+                    source.and_then(|source| Some((source, graph.nodes.get(&source.node)?)))
+                else {
+                    break PortKind::Raster;
+                };
+                match source {
+                    (source, NodeKind::Clip(clip)) if source.port == OutputPort::DEFAULT => {
+                        match clip.template_name() {
+                            Some(next) => name = next,
+                            None => break PortKind::Raster,
+                        }
+                    }
+                    (source, node) => {
+                        break node.port_kind(source.port).unwrap_or(PortKind::Raster);
+                    }
+                }
+            };
+            for name in chain {
+                outputs.insert(name.to_string(), kind);
+            }
+        }
+        outputs
     }
 
     /// The templates the clips of template `name` play, in order.

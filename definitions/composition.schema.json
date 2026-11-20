@@ -2599,7 +2599,7 @@
                 "properties": {
                   "composition": {
                     "default": "",
-                    "description": "Template from `compositions` to play; empty plays the `source` input instead.",
+                    "description": "Template from `compositions` to play; empty plays the `source` input instead. A template\nwhose `media_output` reads a scene makes the clip output that scene, for a `merge_3d` or\n`render_3d` to take.",
                     "not": {
                       "pattern": "^=([^=]|$)"
                     },
@@ -6581,7 +6581,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Converts its source into the final composition output: sRGB-encoded and quantised once to the\noutput's format.",
+            "description": "Converts its source into the final composition output: sRGB-encoded and quantised once to the\noutput's format. In a template it may read a scene instead, which the clips playing the\ntemplate output.",
             "properties": {
               "id": {
                 "minimum": 0,

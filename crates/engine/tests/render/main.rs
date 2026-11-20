@@ -68,6 +68,8 @@ mod scene_projection;
 mod scene_regions;
 #[cfg(feature = "3d")]
 mod scene_shadows;
+#[cfg(feature = "3d")]
+mod scene_templates;
 mod shaders;
 mod sharpen;
 #[cfg(feature = "3d")]

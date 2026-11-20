@@ -102,8 +102,15 @@ n.material_3d({ color: gradient });
 const rasterScene: NodeValue<"raster"> = n.shape_3d();
 
 defineComposition({ name: "card", build: () => n.text({ content: "Card" }) });
-// @ts-expect-error a template outputs a raster, not a scene
-defineComposition({ name: "card", build: () => scene });
+const sceneCard = defineComposition({ name: "card", build: () => scene });
+n.merge_3d({ objects: [sceneCard.clip(), n.light_3d()] });
+n.render_3d({ scene: sceneCard.clip({ start: 10 }) });
+// @ts-expect-error a scene template's clip outputs a scene, not a raster
+n.opacity({ source: sceneCard.clip() });
+// @ts-expect-error an image template's clip outputs a raster, not a scene
+n.merge_3d({ objects: [defineComposition({ name: "plain", build: () => n.background() }).clip()] });
+// @ts-expect-error a template outputs a raster or a scene, not a geometry
+defineComposition({ name: "outline", build: () => n.shape_2d() });
 
 // No kind gives a param and an input port the same name.
 // @ts-expect-error `NodeParamPortNameClash` is `never`

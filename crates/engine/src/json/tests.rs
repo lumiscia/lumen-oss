@@ -1507,6 +1507,57 @@ fn scenes_and_rasters_only_wire_into_inputs_of_their_kind() {
 }
 
 #[test]
+fn a_clip_outputs_what_its_template_outputs() {
+    let template = |nodes: Value| {
+        serde_json::json!({
+            "nodes": nodes,
+            "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+        })
+    };
+    let mut document = scene_document(
+        serde_json::json!([
+            { "id": 4, "type": "clip", "params": { "composition": "card" } },
+            { "id": 5, "type": "clip", "params": { "composition": "flat" } },
+            { "id": 6, "type": "opacity" },
+            { "id": 7, "type": "merge_3d" },
+            { "id": 8, "type": "clip", "params": { "composition": "outline" } }
+        ]),
+        serde_json::json!([
+            { "from_node": 4, "to_node": 7, "to_port": "objects" },
+            { "from_node": 4, "to_node": 6, "to_port": "source" },
+            { "from_node": 5, "to_node": 7, "to_port": "objects" }
+        ]),
+    );
+    document["compositions"] = serde_json::json!({
+        "card": template(serde_json::json!([
+            { "id": 1, "type": "shape_3d" },
+            { "id": 2, "type": "media_output" }
+        ])),
+        "flat": template(serde_json::json!([
+            { "id": 1, "type": "background" },
+            { "id": 2, "type": "media_output" }
+        ])),
+        "outline": template(serde_json::json!([
+            { "id": 1, "type": "shape_2d" },
+            { "id": 2, "type": "media_output" }
+        ])),
+    });
+    let wrong: Vec<String> = check_value(&document, None, None)
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "connection.wrong_kind")
+        .map(|diagnostic| format!("{}: {}", diagnostic.path, diagnostic.message))
+        .collect();
+    assert_eq!(
+        wrong,
+        [
+            "/connections/3: node 6: input `source` takes a raster, but node 4, a clip of composition `card`, outputs a scene: draw the scene into a raster through a render_3d, and wire that in",
+            "/connections/4: node 7: input `objects` takes a scene, but node 5, a clip of composition `flat`, outputs a raster: show the raster in the scene through an image_plane_3d",
+            "/compositions/outline/connections/0: composition `outline`: node 2: input `source` takes a raster, but node 1 outputs a geometry: style the geometry with a fill_2d or stroke_2d, and draw that into a raster through a render_2d",
+        ]
+    );
+}
+
+#[test]
 fn a_raster_wired_into_a_solid_s_geometry_points_at_the_2d_geometry_nodes() {
     let document = scene_document(
         serde_json::json!([

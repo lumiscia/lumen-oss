@@ -57,10 +57,27 @@ type NodePorts<TKind extends NodeKind> = {
     : NodeSource<NodeInputPortKind<TKind, TPort>>;
 };
 
-/** A node value whose `type` outputs `TOutput`, as `nodes` builds it. */
-export type NodeValue<TOutput extends NodePortKind = NodePortKind> = NodeInput<
-  NodeKindOutputting<TOutput>
->;
+/**
+ * A node value whose `type` outputs `TOutput`, as `nodes` builds it. A `clip` outputs what its
+ * template does.
+ */
+export type NodeValue<TOutput extends NodePortKind = NodePortKind> =
+  | NodeInput<Exclude<NodeKindOutputting<TOutput>, "clip">>
+  | ClipNode<Extract<TOutput, TemplateOutput>>;
+
+/** What a template outputs, which the clips playing it output too. */
+export type TemplateOutput = "raster" | "scene";
+
+declare const templateOutput: unique symbol;
+
+/**
+ * A `clip` node value playing a template that outputs `TOutput`. A scene template's clip is a
+ * scene node, for `merge_3d` and `render_3d`; any other clip outputs a raster.
+ */
+export type ClipNode<TOutput extends TemplateOutput = TemplateOutput> = NodeInput<"clip"> &
+  (TOutput extends "scene"
+    ? { readonly [templateOutput]: "scene" }
+    : { readonly [templateOutput]?: "raster" });
 
 /**
  * What a port reads: a node of the composition, or a node value, which becomes a node of the
@@ -354,7 +371,17 @@ export type ClipPropInputs<TProps extends PropDeclarations> = [keyof TProps] ext
         | ParamExpr<PropValueByType[TProps[TName]["type"]]>;
     };
 
-export interface CompositionDefinitionOptions<TProps extends PropDeclarations> {
+/** What a template whose `build` returns `TSource` outputs. */
+export type SourceOutput<TSource extends NodeSource<TemplateOutput>> = [TSource] extends [
+  NodeSource<"raster">,
+]
+  ? "raster"
+  : "scene";
+
+export interface CompositionDefinitionOptions<
+  TProps extends PropDeclarations,
+  TSource extends NodeSource<TemplateOutput> = NodeSource<"raster">,
+> {
   /** The template's key in `compositions`. */
   readonly name: string;
   /** Defaults to the size of the composition the template is used in. */
@@ -366,8 +393,10 @@ export interface CompositionDefinitionOptions<TProps extends PropDeclarations> {
   readonly props?: TProps;
   /**
    * Returns the node the template outputs: a node value, or a node it added to `composition`.
+   * A raster makes an image template; a scene, such as a `merge_3d`, makes a scene template,
+   * whose clips go in a `merge_3d`'s `objects` or a `render_3d`'s `scene`.
    */
-  readonly build: (composition: Composition, props: PropReads<TProps>) => NodeSource<"raster">;
+  readonly build: (composition: Composition, props: PropReads<TProps>) => TSource;
 }
 
 /** Where a clip plays its template. `start` and `duration` count the parent's frames. */
@@ -379,9 +408,15 @@ export type ClipOptions<TProps extends PropDeclarations> = Omit<
   readonly props?: ClipPropInputs<TProps>;
 };
 
-export interface CompositionDefinition<TProps extends PropDeclarations = PropDeclarations> {
+export interface CompositionDefinition<
+  TProps extends PropDeclarations = PropDeclarations,
+  TOutput extends TemplateOutput = "raster",
+> {
   readonly name: string;
   readonly template: CompositionTemplate;
-  /** A `clip` node playing the template; adding it registers the template. */
-  readonly clip: (options?: ClipOptions<TProps>) => NodeInput<"clip">;
+  /**
+   * A `clip` node playing the template, which outputs what the template does; adding it
+   * registers the template.
+   */
+  readonly clip: (options?: ClipOptions<TProps>) => ClipNode<TOutput>;
 }

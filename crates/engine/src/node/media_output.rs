@@ -9,7 +9,8 @@ const SHADER: &str = concat!(
 );
 
 /// Converts its source into the final composition output: sRGB-encoded and quantised once to the
-/// output's format.
+/// output's format. In a template it may read a scene instead, which the clips playing the
+/// template output.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "media_output", name = "Media Output", category = "output")]
 pub struct MediaOutput {
