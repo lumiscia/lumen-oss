@@ -4346,6 +4346,7 @@ export interface NodeOutputPortKindByKind {
   readonly "boolean": { readonly "output": "raster" };
   readonly "camera_3d": { readonly "output": "scene" };
   readonly "channels": { readonly "output": "raster" };
+  readonly "chroma_key": { readonly "output": "raster" };
   readonly "clip": { readonly "output": "raster" };
   readonly "color_correct": { readonly "output": "raster" };
   readonly "color_grade": { readonly "output": "raster" };
@@ -4355,6 +4356,7 @@ export interface NodeOutputPortKindByKind {
   readonly "exposure": { readonly "output": "raster" };
   readonly "extrude_3d": { readonly "output": "scene" };
   readonly "fill_2d": { readonly "output": "drawing" };
+  readonly "film_grain": { readonly "output": "raster" };
   readonly "fractal_noise": { readonly "output": "raster" };
   readonly "glow": { readonly "output": "raster" };
   readonly "halftone": { readonly "output": "raster" };
@@ -4388,6 +4390,7 @@ export interface NodeOutputPortKindByKind {
   readonly "shape": { readonly "output": "raster" };
   readonly "shape_2d": { readonly "output": "geometry" };
   readonly "shape_3d": { readonly "output": "scene" };
+  readonly "sharpen": { readonly "output": "raster" };
   readonly "stroke_2d": { readonly "output": "drawing" };
   readonly "switch": { readonly "output": "raster" };
   readonly "text": { readonly "output": "raster" };

@@ -3,7 +3,7 @@ use bytemuck::{Pod, Zeroable};
 use crate::error::PropertyError;
 use crate::gpu::frame_graph::ComputeProgram;
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef, vector::paint::Paint,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -67,7 +67,7 @@ pub struct ChromaKey {
     #[params]
     pub params: ChromaKeyParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 #[repr(C)]

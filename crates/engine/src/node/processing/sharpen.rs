@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 use super::gaussian;
 
@@ -53,7 +53,7 @@ pub struct Sharpen {
     #[params]
     pub params: SharpenParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 #[repr(C)]
