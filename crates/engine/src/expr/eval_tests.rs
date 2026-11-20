@@ -440,6 +440,24 @@ fn smooth_keys_do_not_overshoot_a_held_value() {
 }
 
 #[test]
+fn smooth_colour_keys_stay_valid_premultiplied_colours() {
+    let track =
+        "keyframes(frame, 'smooth', key(0, #000000ff), key(10, #ff000080), key(20, #ff0000ff))";
+    for frame in 0..=20 {
+        let ExpressionValue::Color([r, g, b, a]) = evaluate(track, frame).unwrap() else {
+            panic!("expected a colour");
+        };
+        assert!((0.0..=1.0).contains(&a), "frame {frame}: alpha {a}");
+        for channel in [r, g, b] {
+            assert!(
+                (0.0..=1.0 + 1e-9).contains(&channel),
+                "frame {frame}: {channel}"
+            );
+        }
+    }
+}
+
+#[test]
 fn smooth_keys_follow_a_function_sampled_every_fifth_frame() {
     let keys = (0..=120)
         .step_by(5)

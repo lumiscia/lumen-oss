@@ -511,7 +511,9 @@ fn smooth(t: f64, keys: &[&Key], index: usize, default: Easing) -> Result<Expres
         ExpressionValue::Vec2(_) => ExpressionValue::Vec2((value[0], value[1])),
         ExpressionValue::Vec3(_) => ExpressionValue::Vec3([value[0], value[1], value[2]]),
         ExpressionValue::Color(_) => {
-            let [r, g, b, a] = value;
+            // Alpha and premultiplied colour are limited separately, so clamp to a valid colour.
+            let a = value[3].clamp(0.0, 1.0);
+            let [r, g, b] = [value[0], value[1], value[2]].map(|channel| channel.clamp(0.0, a));
             ExpressionValue::Color(if a.abs() > f64::EPSILON {
                 [r / a, g / a, b / a, a]
             } else {
