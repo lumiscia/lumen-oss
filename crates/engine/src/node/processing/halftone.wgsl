@@ -62,9 +62,9 @@ fn dot_radius(darkness: f32) -> f32 {
 }
 
 // How far, in device pixels, a full-darkness mark is grown so that its antialiased edge
-// doesn't thin out where marks meet. Zero until darkness is nearly full.
+// doesn't thin out where marks meet. Zero until the darkest 1% of tones.
 fn solid_margin(darkness: f32) -> f32 {
-    return smoothstep(0.9, 1.0, darkness);
+    return smoothstep(0.99, 1.0, darkness);
 }
 
 // The coverage of a mark of `darkness` at `offset` from its cell's centre, in the grid's axes and
@@ -93,7 +93,7 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         textureStore(output_tex, vec2<i32>(id.xy), vec4<f32>(0.0));
         return;
     }
-    let own_straight = unpremultiply(own).rgb;
+    let own_darkness = darkness_of(unpremultiply(own).rgb);
 
     let pitch = params.grid.x;
     let axis_x = vec2<f32>(params.grid.y, params.grid.z);
@@ -112,11 +112,9 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
             let centre = (cell + vec2<f32>(f32(dx), f32(dy)) + vec2<f32>(0.5)) * pitch;
             let canvas = centre.x * axis_x + centre.y * axis_y;
             let sampled = sample_linear(canvas - origin);
-            var straight = own_straight;
-            if (sampled.a > ALPHA_EPSILON) {
-                straight = unpremultiply(sampled).rgb;
-            }
-            let darkness = darkness_of(straight);
+            // Where the cell's centre is transparent, its mark takes the pixel's own darkness.
+            let weight = clamp(sampled.a, 0.0, 1.0);
+            let darkness = mix(own_darkness, darkness_of(unpremultiply(sampled).rgb), weight);
             coverage = max(coverage, mark_coverage(grid_position - centre, darkness, pitch, shape));
         }
     }

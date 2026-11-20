@@ -73,6 +73,52 @@ fn a_flat_colour_gives_dots_of_one_size_on_a_rotated_grid() {
     }
 }
 
+/// The mean ink coverage of whole cells of a flat grey `value` halftone.
+fn grey_coverage(value: u8) -> f64 {
+    let composition: Composition = through(
+        "halftone",
+        128,
+        [value, value, value, 255],
+        json!({ "pitch": 16, "angle": 0 }),
+    )
+    .into();
+    let gpu = gpu();
+    let frame = render(
+        &mut gpu.renderer(),
+        &composition,
+        0.0,
+        &TestMedia::default(),
+    );
+    let mut total = 0.0;
+    for y in 16..112 {
+        for x in 16..112 {
+            total += 1.0 - decode(f64::from(frame.pixel(x, y)[0]) / 255.0);
+        }
+    }
+    total / (96.0 * 96.0)
+}
+
+#[test]
+fn dark_tones_keep_their_area_and_only_the_last_percent_closes_to_solid() {
+    // Encoded greys of darkness about 0.9, 0.95, 0.99 and 1.
+    let tones = [(26u8, 0.9), (13, 0.95), (3, 0.99), (0, 1.0)];
+    let coverages: Vec<f64> = tones
+        .iter()
+        .map(|(value, _)| grey_coverage(*value))
+        .collect();
+    for ((value, darkness), coverage) in tones.iter().zip(&coverages) {
+        let expected = 1.0 - f64::from(*value) / 255.0;
+        assert!(
+            (coverage - expected).abs() < 0.02,
+            "grey {value} (darkness {darkness}) covers {coverage}, expected {expected}"
+        );
+    }
+    assert!(
+        coverages.windows(2).all(|pair| pair[0] < pair[1]),
+        "coverage is not increasing: {coverages:?}"
+    );
+}
+
 #[test]
 fn black_fills_the_cell_and_white_leaves_the_paper() {
     let halftone = |paint, angle| {
