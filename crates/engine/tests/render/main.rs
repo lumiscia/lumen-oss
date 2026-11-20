@@ -14,6 +14,7 @@ mod displacement;
 mod drawing;
 mod edits;
 mod effects;
+mod erode_dilate;
 #[cfg(feature = "3d")]
 mod face_materials;
 mod film_grain;

@@ -244,6 +244,24 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { amount_x: 10, amount_y: 10, channel_x: "red", channel_y: "green", edge: "clamp", sampling: "linear" },
   },
   {
+    kind: "erode_dilate",
+    name: "Erode / Dilate",
+    description: "Grows or shrinks the opaque part of a raster by `radius` pixels, for pulling a key's edge in,\nwidening a matte so a blur covers the whole object, or outlining a letter that is already\npixels.\n\nA pixel counts as part of the shape when its alpha is at least 0.5. A positive `radius` makes\nevery pixel within that distance of the shape opaque, in the colour of the nearest pixel of the\nshape, so the result composites without a dark fringe. A negative `radius` makes every pixel\nwithin that distance of transparency, or of an edge of the raster's area that is not an edge of\nthe canvas, transparent, and keeps the colour of the pixels that remain. Alpha is never\nlowered by growing nor raised by shrinking, and `softness` fades the new edge over that many\npixels. Growing widens the output past the source's area by the radius; shrinking keeps the\nsource's area. With `radius` and `softness` 0, the raster is unchanged.\n\nFor example, `radius` 3 grows a key's matte by 3 pixels, and merging the original over a\n`radius` 4 result outlines a rasterized letter.",
+    category: "processing",
+    inputs: [
+      { name: "source", kind: "raster", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [
+      { id: "radius", name: "Radius", kind: "float", description: "How far the alpha edge moves, in pixels: positive grows it, negative shrinks it. 0 leaves\nthe edge where it is.", defaultValue: 2, constraints: { step: 0.5 } },
+      { id: "shape", name: "Shape", kind: "enum", description: "Whether corners round off or stay square.", defaultValue: "round", enumOptions: [{ name: "round", label: "Round", value: 0 }, { name: "square", label: "Square", value: 1 }] },
+      { id: "softness", name: "Softness", kind: "float", description: "Width in pixels of the fade that feathers the moved edge. 0 gives a hard edge, one pixel\nwide.", defaultValue: 0, constraints: { min: 0, step: 0.5 } },
+    ],
+    defaultParams: { radius: 2, shape: "round", softness: 0 },
+  },
+  {
     kind: "exposure",
     name: "Exposure",
     description: "Adjusts raster exposure, contrast, and offset.",

@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1469,6 +1469,7 @@ export type DisplacementMapSampling = RasterSampling;
 export type DitherMatrix = "bayer2" | "bayer4" | "bayer8";
 export type DitherMode = "ink_paper" | "source";
 export type EdgeMode = "clamp" | "transparent";
+export type ErodeDilateShape = "round" | "square";
 /** OpenType features by four-character tag. 0 turns a feature off, 1 turns it on and larger values select an alternate. */
 export type FontFeatures = Readonly<Record<string, ExpressionValue<number>>>;
 export type FractalNoiseMode = NoiseMode;
@@ -2000,6 +2001,40 @@ export interface DisplacementMapNode extends CompositionNodeBase<"displacement_m
     readonly edge?: ExpressionValue<EdgeMode>;
     /** Sampling filter used to read the displaced source. */
     readonly sampling?: ExpressionValue<RasterSampling>;
+  };
+}
+
+/**
+ * Grows or shrinks the opaque part of a raster by `radius` pixels, for pulling a key's edge in,
+ * widening a matte so a blur covers the whole object, or outlining a letter that is already
+ * pixels.
+ * 
+ * A pixel counts as part of the shape when its alpha is at least 0.5. A positive `radius` makes
+ * every pixel within that distance of the shape opaque, in the colour of the nearest pixel of the
+ * shape, so the result composites without a dark fringe. A negative `radius` makes every pixel
+ * within that distance of transparency, or of an edge of the raster's area that is not an edge of
+ * the canvas, transparent, and keeps the colour of the pixels that remain. Alpha is never
+ * lowered by growing nor raised by shrinking, and `softness` fades the new edge over that many
+ * pixels. Growing widens the output past the source's area by the radius; shrinking keeps the
+ * source's area. With `radius` and `softness` 0, the raster is unchanged.
+ * 
+ * For example, `radius` 3 grows a key's matte by 3 pixels, and merging the original over a
+ * `radius` 4 result outlines a rasterized letter.
+ */
+export interface ErodeDilateNode extends CompositionNodeBase<"erode_dilate"> {
+  readonly params?: {
+    /**
+     * How far the alpha edge moves, in pixels: positive grows it, negative shrinks it. 0 leaves
+     * the edge where it is.
+     */
+    readonly radius?: ExpressionValue<number>;
+    /** Whether corners round off or stay square. */
+    readonly shape?: ExpressionValue<ErodeDilateShape>;
+    /**
+     * Width in pixels of the fade that feathers the moved edge. 0 gives a hard edge, one pixel
+     * wide.
+     */
+    readonly softness?: ExpressionValue<number>;
   };
 }
 
@@ -3760,6 +3795,7 @@ export interface CompositionNodeByKind {
   readonly "crop": CropNode;
   readonly "directional_blur": DirectionalBlurNode;
   readonly "displacement_map": DisplacementMapNode;
+  readonly "erode_dilate": ErodeDilateNode;
   readonly "exposure": ExposureNode;
   readonly "extrude_3d": Extrude3dNode;
   readonly "fill_2d": Fill2dNode;
@@ -3845,6 +3881,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "displacement_map": Omit<DisplacementMapNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "erode_dilate": Omit<ErodeDilateNode, "id"> & {
     readonly id?: number;
   };
   readonly "exposure": Omit<ExposureNode, "id"> & {
@@ -4006,6 +4045,7 @@ export interface NodeInputPortNameByKind {
   readonly "crop": "source";
   readonly "directional_blur": "source";
   readonly "displacement_map": "map" | "source";
+  readonly "erode_dilate": "source";
   readonly "exposure": "source";
   readonly "extrude_3d": "geometry" | "material" | "side_material";
   readonly "fill_2d": "geometry";
@@ -4069,6 +4109,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "crop": never;
   readonly "directional_blur": never;
   readonly "displacement_map": never;
+  readonly "erode_dilate": never;
   readonly "exposure": never;
   readonly "extrude_3d": never;
   readonly "fill_2d": never;
@@ -4132,6 +4173,7 @@ export interface NodeOutputKindByKind {
   readonly "crop": "raster";
   readonly "directional_blur": "raster";
   readonly "displacement_map": "raster";
+  readonly "erode_dilate": "raster";
   readonly "exposure": "raster";
   readonly "extrude_3d": "scene";
   readonly "fill_2d": "drawing";
@@ -4195,6 +4237,7 @@ export interface NodeInputPortKindByKind {
   readonly "crop": { readonly "source": "raster" };
   readonly "directional_blur": { readonly "source": "raster" };
   readonly "displacement_map": { readonly "source": "raster"; readonly "map": "raster" };
+  readonly "erode_dilate": { readonly "source": "raster" };
   readonly "exposure": { readonly "source": "raster" };
   readonly "extrude_3d": { readonly "geometry": "geometry"; readonly "material": "material"; readonly "side_material": "material" };
   readonly "fill_2d": { readonly "geometry": "geometry" };
@@ -4364,6 +4407,24 @@ export const nodeInputPorts = {
    * areas of the map, and everything outside it, leave the source in place.
    */
   "displacement_map": { "source": { kind: "raster", variadic: false }, "map": { kind: "raster", variadic: false } },
+  /**
+   * Grows or shrinks the opaque part of a raster by `radius` pixels, for pulling a key's edge in,
+   * widening a matte so a blur covers the whole object, or outlining a letter that is already
+   * pixels.
+   * 
+   * A pixel counts as part of the shape when its alpha is at least 0.5. A positive `radius` makes
+   * every pixel within that distance of the shape opaque, in the colour of the nearest pixel of the
+   * shape, so the result composites without a dark fringe. A negative `radius` makes every pixel
+   * within that distance of transparency, or of an edge of the raster's area that is not an edge of
+   * the canvas, transparent, and keeps the colour of the pixels that remain. Alpha is never
+   * lowered by growing nor raised by shrinking, and `softness` fades the new edge over that many
+   * pixels. Growing widens the output past the source's area by the radius; shrinking keeps the
+   * source's area. With `radius` and `softness` 0, the raster is unchanged.
+   * 
+   * For example, `radius` 3 grows a key's matte by 3 pixels, and merging the original over a
+   * `radius` 4 result outlines a rasterized letter.
+   */
+  "erode_dilate": { "source": { kind: "raster", variadic: false } },
   /** Adjusts raster exposure, contrast, and offset. */
   "exposure": { "source": { kind: "raster", variadic: false } },
   /**
@@ -4783,6 +4844,7 @@ export const nodeMediaSources = {
   "crop": {},
   "directional_blur": {},
   "displacement_map": {},
+  "erode_dilate": {},
   "exposure": {},
   "extrude_3d": {},
   "fill_2d": {},
