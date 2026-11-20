@@ -127,11 +127,13 @@ impl crate::gpu::frame_graph::RecordNode for Posterize {
             colors[index] = [r, g, b, 1.0];
             lumas[index] = luma(*color);
         }
+        // One dither cell per composition pixel, a whole number of device pixels.
+        let cell = cx.pixel_scale().round().clamp(1.0, f64::from(i32::MAX)) as i32;
         let [x, y] = source.origin();
         let uniforms = PosterizeUniforms {
             colors,
             lumas: std::array::from_fn(|row| std::array::from_fn(|lane| lumas[row * 4 + lane])),
-            origin: [x, y, 0, 0],
+            origin: [x, y, cell, 0],
             dither: [params.dither.clamp(0.0, 1.0) as f32, 0.0, 0.0, 0.0],
             levels_mode_count: [
                 params.levels.clamp(2, 256) as u32,

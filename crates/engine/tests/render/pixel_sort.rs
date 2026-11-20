@@ -131,3 +131,26 @@ fn each_row_keeps_exactly_its_pixels() {
         }
     }
 }
+
+#[test]
+fn a_source_off_the_canvas_origin_keeps_its_pixels() {
+    let greys = [180u8, 120, 90];
+    let media = TestMedia::default().image(
+        "picture",
+        3,
+        1,
+        greys.iter().flat_map(|&g| grey(g)).collect(),
+    );
+    let composition = scene(
+        (5, 1),
+        json!([
+            { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "picture" } },
+            { "id": 2, "type": "transform", "in": { "source": 1 },
+              "params": { "translate_x": 1, "sampling": "nearest" } },
+            { "id": 3, "type": "pixel_sort", "in": { "source": 2 }, "params": { "max_length": 4 } },
+        ]),
+    )
+    .into();
+    let frame = render(&mut gpu().renderer(), &composition, 0.0, &media);
+    assert_eq!(&row(&frame, 0)[1..4], [90, 120, 180]);
+}

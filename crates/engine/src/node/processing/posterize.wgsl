@@ -3,7 +3,8 @@ struct PosterizeParams {
     colors: array<vec4<f32>, 16>,
     // The brightness of each palette colour, sorted, four to a row.
     lumas: array<vec4<f32>, 4>,
-    // The canvas pixel of the source's first texel in `xy`.
+    // The canvas pixel of the source's first texel in `xy` and the dither cell in device pixels
+    // in `z`.
     origin: vec4<i32>,
     // The dither amount in `x`.
     dither: vec4<f32>,
@@ -55,8 +56,9 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let canvas_pixel = bitcast<vec2<u32>>(vec2<i32>(id.xy) + params.origin.xy);
-    let shift = lumen_dither(canvas_pixel) * params.dither.x;
+    let pixel = vec2<i32>(id.xy) + params.origin.xy;
+    let cell = vec2<i32>(floor(vec2<f32>(pixel) / f32(params.origin.z)));
+    let shift = lumen_dither(bitcast<vec2<u32>>(cell)) * params.dither.x;
     let encoded = clamp(lumen_linear_to_srgb(unpremultiply(color).rgb), vec3<f32>(0.0), vec3<f32>(1.0));
 
     var rgb: vec3<f32>;

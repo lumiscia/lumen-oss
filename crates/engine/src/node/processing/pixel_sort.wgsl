@@ -82,9 +82,13 @@ fn cs_main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_in
         let place = i32(slot) % padded;
         let along = (first + segment) * window + place - origin;
         var entry = vec2<u32>(DEAD, u32(place));
+        if (segment < per_group && place < window) {
+            // A slot of the window past either end of the line is out of the band, so it keeps
+            // its place and the texels after it keep theirs.
+            entry = vec2<u32>(0u, u32(place));
+        }
         if (segment < per_group && place < window && along >= 0 && along < line_length) {
             let color = textureLoad(input_tex, texel(line, along), 0);
-            entry = vec2<u32>(0u, u32(place));
             if (color.a > 0.0) {
                 let rgb = clamp(lumen_linear_to_srgb(unpremultiply(color).rgb), vec3<f32>(0.0), vec3<f32>(1.0));
                 let key = key_of(rgb);
