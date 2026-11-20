@@ -2,6 +2,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::error::RenderError;
 use crate::gpu::frame_graph::{ComputeProgram, RECORD_STORAGE_TEXTURE, Raster, dispatch_for};
+use crate::node::compositing::merge::MaskMode;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 const SHADER: &str = concat!(
@@ -54,6 +55,9 @@ pub struct LensBlurParams {
     /// Turn of the polygon in degrees, clockwise. At 0 one corner points up.
     #[meta(step = 1)]
     pub rotation: f64,
+    /// Channel of the `mask` input that keeps pixels sharp.
+    #[meta()]
+    pub mask_mode: MaskMode,
 }
 
 impl Default for LensBlurParams {
@@ -65,6 +69,7 @@ impl Default for LensBlurParams {
             aperture: 4.0,
             blades: 0,
             rotation: 0.0,
+            mask_mode: MaskMode::Alpha,
         }
     }
 }
@@ -80,6 +85,12 @@ impl Default for LensBlurParams {
 /// range, not in world units. A blurred pixel nearer than its neighbours spreads over them even
 /// where they are sharp, and one further away doesn't spread over nearer, sharper pixels, so a
 /// sharp subject keeps its edges in front of a blurred background.
+///
+/// An optional `mask` keeps pieces sharp: where it is 1 a pixel stays as it is and doesn't spread
+/// over its neighbours, where it is 0 the blur is as above, and in between the blur shrinks by
+/// that share. `mask_mode` picks the channel read, as `merge`'s does, and `mask` reads 0 where it
+/// stores nothing. Pairing a `render_3d`'s `depth` with one of its `matte` channels defocuses a
+/// scene while a piece of it, such as its lyrics, stays crisp.
 ///
 /// The cost stays bounded at any radius: circles of more than 6 pixels are gathered from copies
 /// of the source at half, a quarter or less of its resolution, so each pixel reads about 130
@@ -116,6 +127,23 @@ impl Default for LensBlurParams {
 /// { "id": 2, "type": "background", "params": { "paint": { "type": "linear_gradient", "interpolation": "linear_srgb", "start": [0, 0], "end": [0, 1], "stops": [{ "offset": 0, "color": [255, 255, 255, 255] }, { "offset": 0.5, "color": [0, 0, 0, 255] }, { "offset": 1, "color": [255, 255, 255, 255] }] } } },
 /// { "id": 3, "type": "lens_blur", "params": { "radius": 10, "focus": 0, "focus_range": 0.1, "aperture": 1.5 }, "in": { "source": 1, "depth": 2 } }
 /// ```
+///
+/// The same depth of field, keeping sharp the objects of a `render_3d`'s `mattes: ["lyrics"]`,
+/// which its `matte` output holds in its red channel:
+///
+/// ```json
+/// { "id": 10, "type": "lens_blur", "params": { "radius": 16, "focus": 0.2, "mask_mode": "red" } },
+/// { "from_node": 9, "from_port": "color", "to_node": 10, "to_port": "source" },
+/// { "from_node": 9, "from_port": "depth", "to_node": 10, "to_port": "depth" },
+/// { "from_node": 9, "from_port": "matte", "to_node": 10, "to_port": "mask" }
+/// ```
+///
+/// ```ts
+/// const color = outputOf(render, "color");
+/// const depth = outputOf(render, "depth");
+/// const mask = outputOf(render, "matte");
+/// n.lens_blur({ source: color, depth, mask, radius: 16, focus: 0.2, mask_mode: "red" });
+/// ```
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "lens_blur", name = "Lens Blur", category = "processing")]
 pub struct LensBlur {
@@ -126,6 +154,8 @@ pub struct LensBlur {
     pub source: Option<OutputRef>,
     #[input(optional)]
     pub depth: Option<OutputRef>,
+    #[input(optional)]
+    pub mask: Option<OutputRef>,
 }
 
 #[repr(C)]
@@ -140,6 +170,9 @@ struct GpuLensBlurParams {
     origins: [i32; 4],
     /// Canvas pixel of the depth's first texel in `xy`.
     depth: [i32; 4],
+    /// Canvas pixel of the mask's first texel in `xy`, 1 in `z` with a mask input, and the mask
+    /// mode in `w`.
+    mask: [i32; 4],
     /// Levels built, and the level a reduction writes in `z`.
     levels: [i32; 4],
     /// Per level: where it starts in its texture in `xy`, and its first block on the canvas in
@@ -161,6 +194,7 @@ const PREPARE: ComputeProgram = ComputeProgram {
         lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
         lumen_gpu::LayoutEntry::compute(5, lumen_gpu::LayoutKind::StorageTexture(LEVEL_FORMAT)),
         lumen_gpu::LayoutEntry::compute(6, lumen_gpu::LayoutKind::StorageTexture(LEVEL_FORMAT)),
+        lumen_gpu::LayoutEntry::compute(22, lumen_gpu::LayoutKind::Texture),
     ],
 };
 const REDUCE: ComputeProgram = ComputeProgram {
@@ -276,6 +310,10 @@ impl crate::gpu::frame_graph::RecordNode for LensBlur {
             Some(depth) => Some(cx.input(depth)?),
             None => None,
         };
+        let mask = match self.mask {
+            Some(mask) => Some(cx.input(mask)?),
+            None => None,
+        };
 
         // The coarsest level a gather reads: the one a crossfade at the radius reads.
         let top = gather_level(radius) + 1;
@@ -350,6 +388,10 @@ impl crate::gpu::frame_graph::RecordNode for LensBlur {
             depth: depth_domain.map_or([0; 4], |domain| {
                 [domain.data_rect.x, domain.data_rect.y, 0, 0]
             }),
+            mask: mask.map_or([0; 4], |mask| {
+                let [x, y] = mask.origin();
+                [x, y, 1, params.mask_mode as i32]
+            }),
             levels: [levels as i32, 0, written as i32, 0],
             level_origin,
             level_size,
@@ -370,6 +412,10 @@ impl crate::gpu::frame_graph::RecordNode for LensBlur {
                 (2, uniform),
                 (5, lumen_gpu::Res::Tex(level_color)),
                 (6, lumen_gpu::Res::Tex(level_coc)),
+                (
+                    22,
+                    lumen_gpu::Res::Tex(mask.map_or(source.tex, |mask| mask.tex)),
+                ),
             ],
             dispatch_for(pyramid[0].size),
         );

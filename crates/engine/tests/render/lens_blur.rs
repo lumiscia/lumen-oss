@@ -22,19 +22,24 @@ fn point_at(
     at: [u32; 2],
     lens_blur: Option<Value>,
 ) -> Frame {
-    let mut nodes = vec![
-        json!({ "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255] } }),
-        json!({ "id": 2, "type": "shape", "params": {
-            "position": at, "width": 1, "height": 1, "fill_paint": [255, 255, 255, 255] } }),
-        json!({ "id": 3, "type": "raster_multimerge", "in": { "layers": [1, 2] } }),
-        json!({ "id": 4, "type": "exposure", "params": { "exposure": 8 }, "in": { "source": 3 } }),
-    ];
+    let mut nodes = point_nodes(at);
     if let Some(params) = lens_blur {
         nodes
             .push(json!({ "id": 5, "type": "lens_blur", "params": params, "in": { "source": 4 } }));
     }
     let composition = scene(size, Value::Array(nodes)).into();
     render(renderer, &composition, 0.0, &TestMedia::default())
+}
+
+/// Nodes 1 to 4: a white pixel at `at` over black, 256 times brighter than white.
+fn point_nodes(at: [u32; 2]) -> Vec<Value> {
+    vec![
+        json!({ "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255] } }),
+        json!({ "id": 2, "type": "shape", "params": {
+            "position": at, "width": 1, "height": 1, "fill_paint": [255, 255, 255, 255] } }),
+        json!({ "id": 3, "type": "raster_multimerge", "in": { "layers": [1, 2] } }),
+        json!({ "id": 4, "type": "exposure", "params": { "exposure": 8 }, "in": { "source": 3 } }),
+    ]
 }
 
 /// The bokeh of a point in a frame: the light of its pixels, where it is centred, and how bright
@@ -457,4 +462,180 @@ fn a_source_sized_to_its_bounds_blurs_as_a_full_frame_one_does() {
     assert_eq!(differs, 0, "{differs} channels differ");
     // The bokeh reaches 20 pixels past the shape, beyond the shape's own bounds.
     assert!(full.pixel(26 - 15, 30)[3] > 0);
+}
+
+/// A point at (32, 32) through `lens_blur` with `params`, masked by a solid `paint` over the
+/// whole canvas.
+fn masked_point(paint: [u8; 4], params: Value) -> Frame {
+    let mut nodes = point_nodes([32, 32]);
+    nodes.extend([
+        json!({ "id": 6, "type": "background", "params": { "paint": paint } }),
+        json!({ "id": 5, "type": "lens_blur", "params": params, "in": { "source": 4, "mask": 6 } }),
+    ]);
+    let composition = scene((CANVAS, CANVAS), Value::Array(nodes)).into();
+    render(
+        &mut gpu().renderer(),
+        &composition,
+        0.0,
+        &TestMedia::default(),
+    )
+}
+
+#[test]
+fn a_masked_point_stays_a_point_while_an_unmasked_one_becomes_a_disc() {
+    // Two points; a square mask around the left one.
+    let nodes = json!([
+        { "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255] } },
+        { "id": 2, "type": "shape", "params": {
+            "position": [16, 32], "width": 1, "height": 1, "fill_paint": [255, 255, 255, 255] } },
+        { "id": 3, "type": "shape", "params": {
+            "position": [48, 32], "width": 1, "height": 1, "fill_paint": [255, 255, 255, 255] } },
+        { "id": 4, "type": "raster_multimerge", "in": { "layers": [1, 2, 3] } },
+        { "id": 5, "type": "exposure", "params": { "exposure": 8 }, "in": { "source": 4 } },
+        { "id": 6, "type": "shape", "params": {
+            "position": [8, 24], "width": 16, "height": 16, "fill_paint": [255, 255, 255, 255] } },
+        { "id": 7, "type": "lens_blur", "params": { "radius": 8 }, "in": { "source": 5, "mask": 6 } },
+    ]);
+    let composition = scene((CANVAS, CANVAS), nodes).into();
+    let frame = render(
+        &mut gpu().renderer(),
+        &composition,
+        0.0,
+        &TestMedia::default(),
+    );
+    assert_eq!(frame.pixel(16, 32), [255; 4], "the masked point stays");
+    for (x, y) in [(15, 32), (17, 32), (16, 31), (16, 33), (19, 32), (13, 32)] {
+        assert_eq!(frame.pixel(x, y), [0, 0, 0, 255], "({x}, {y}) beside it");
+    }
+    for (x, y) in [(48, 32), (53, 32), (43, 32), (48, 37), (48, 27)] {
+        assert!(frame.pixel(x, y)[0] > 200, "({x}, {y}) is in the disc");
+    }
+    assert_eq!(frame.pixel(48 + 12, 32)[0], 0, "past the disc");
+}
+
+#[test]
+fn a_mask_reads_the_channel_its_mode_names() {
+    // Red on the left, green on the right, all opaque.
+    let stripes = |x: u32| if x < SPLIT { RED } else { GREEN };
+    let colour = |x: u32| {
+        if (x / 2).is_multiple_of(2) {
+            BLUE
+        } else {
+            BLACK
+        }
+    };
+    let render_with = |mode: &str| {
+        let pixels = |color: &dyn Fn(u32) -> [u8; 4]| -> Vec<u8> {
+            (0..64 * 16).flat_map(|index| color(index % 64)).collect()
+        };
+        let media = TestMedia::default()
+            .image("colour", 64, 16, pixels(&colour))
+            .image("mask", 64, 16, pixels(&stripes));
+        let nodes = json!([
+            { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "colour" } },
+            { "id": 2, "type": "media_in", "params": { "kind": "image", "source": "mask" } },
+            { "id": 3, "type": "lens_blur", "params": { "radius": 8, "mask_mode": mode },
+              "in": { "source": 1, "mask": 2 } },
+        ]);
+        render(
+            &mut gpu().renderer(),
+            &scene((64, 16), nodes).into(),
+            0.0,
+            &media,
+        )
+    };
+    let source = columns((64, 16), &colour, 64, &|_| BLACK, None);
+    // `source`'s stripes are blue and black, sharp where the mask is read as 1.
+    let sharp = |frame: &Frame, from: u32, to: u32| {
+        (0..16).all(|y| (from..to).all(|x| frame.pixel(x, y) == source.pixel(x, y)))
+    };
+    let red = render_with("red");
+    assert!(sharp(&red, 0, SPLIT - 12), "red keeps the left sharp");
+    assert!(!sharp(&red, SPLIT + 12, 52), "and blurs the right");
+    let green = render_with("green");
+    assert!(sharp(&green, SPLIT + 12, 52), "green keeps the right sharp");
+    assert!(!sharp(&green, 0, SPLIT - 12), "and blurs the left");
+    let alpha = render_with("alpha");
+    assert!(sharp(&alpha, 12, 52), "alpha is 1 everywhere");
+}
+
+#[test]
+fn a_masked_object_neither_spreads_nor_is_covered_by_the_blur_around_it() {
+    // Red stripes on the left under a mask, green and blue ones on the right without.
+    let color = |x: u32| match (x < SPLIT, (x / 2).is_multiple_of(2)) {
+        (true, true) => RED,
+        (true, false) => BLACK,
+        (false, true) => GREEN,
+        (false, false) => BLUE,
+    };
+    let mask = |x: u32| if x < SPLIT { [255; 4] } else { [0; 4] };
+    let pixels = |color: &dyn Fn(u32) -> [u8; 4]| -> Vec<u8> {
+        (0..64 * 16).flat_map(|index| color(index % 64)).collect()
+    };
+    let media = TestMedia::default()
+        .image("stripes", 64, 16, pixels(&color))
+        .image("mask", 64, 16, pixels(&mask));
+    let render_with = |mask: bool| {
+        let mut lens = json!({ "id": 3, "type": "lens_blur", "params": { "radius": 8 },
+            "in": { "source": 1 } });
+        if mask {
+            lens["in"]["mask"] = json!(2);
+        }
+        let nodes = json!([
+            { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "stripes" } },
+            { "id": 2, "type": "media_in", "params": { "kind": "image", "source": "mask" } },
+            lens,
+        ]);
+        render(
+            &mut gpu().renderer(),
+            &scene((64, 16), nodes).into(),
+            0.0,
+            &media,
+        )
+    };
+    let source = halves(None);
+    let frame = render_with(true);
+    for y in 0..16 {
+        for x in 0..SPLIT {
+            assert_eq!(
+                frame.pixel(x, y),
+                source.pixel(x, y),
+                "({x}, {y}) is masked"
+            );
+        }
+        // The block of 2 pixels across the mask's edge holds both, so the pixels beside it show a
+        // little of the masked side.
+        for x in SPLIT + 3..64 {
+            assert_eq!(frame.pixel(x, y)[0], 0, "({x}, {y}) shows the masked red");
+        }
+        for x in SPLIT + 8..56 {
+            let [_, green, blue, _] = frame.pixel(x, y);
+            assert!(
+                (150..=225).contains(&green) && (150..=225).contains(&blue),
+                "({x}, {y}) is {green} green and {blue} blue"
+            );
+        }
+    }
+    // Without the mask the red does spread, so the test would tell.
+    let unmasked = render_with(false);
+    assert!(unmasked.pixel(SPLIT + 3, 8)[0] > 20);
+}
+
+#[test]
+fn half_a_mask_halves_the_blur() {
+    let radius = 16.0;
+    let whole_frame = masked_point([0, 0, 0, 0], json!({ "radius": radius }));
+    let unmasked = Bokeh::of(&whole_frame);
+    // An alpha of 128 of 255 is a mask of about a half.
+    let half_frame = masked_point([255, 255, 255, 128], json!({ "radius": radius }));
+    let half = Bokeh::of(&half_frame);
+    for degrees in [0.0, 90.0, 180.0, 270.0] {
+        let whole = unmasked.edge(degrees);
+        assert!((whole - radius).abs() < 0.75, "unmasked reaches {whole}");
+        let edge = half.edge(degrees);
+        assert!(
+            (edge - radius / 2.0).abs() < 0.75,
+            "half masked reaches {edge} at {degrees}°"
+        );
+    }
 }
