@@ -27,6 +27,9 @@ struct TransformParams {
     // Texels of the source an output pixel covers along its axes when the source is minified,
     // else zero.
     footprint: vec2<f32>,
+    // Texels of the source per source pixel along its axes.
+    density: vec2<f32>,
+    _pad: vec2<u32>,
     taps: array<TransformTap, 32>,
 }
 
@@ -68,7 +71,7 @@ fn read_level_pixel(coord: vec2<i32>, level: u32, size: vec2<i32>) -> vec4<f32> 
     return textureLoad(input_tex, coord, level);
 }
 
-// The source pixel shown at output `pixel`.
+// The source texel coordinate shown at output `pixel`.
 fn source_coord(
     pixel: vec2<f32>,
     scale_param: vec2<f32>,
@@ -84,7 +87,7 @@ fn source_coord(
         centered.x * c - centered.y * s,
         centered.x * s + centered.y * c,
     );
-    return (unrotated / scale) + pivot;
+    return ((unrotated / scale) + pivot) * params.density;
 }
 
 // Samples the source, filtering it over `footprint` texels at mip level `lod` where that is not

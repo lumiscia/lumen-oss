@@ -216,6 +216,7 @@ impl crate::gpu::frame_graph::RecordNode for Glow {
                 tex: glow,
                 domain,
                 bounds: None,
+                reduced: None,
             });
         }
 
@@ -236,6 +237,7 @@ impl crate::gpu::frame_graph::RecordNode for Glow {
             tex,
             domain,
             bounds: None,
+            reduced: None,
         })
     }
 

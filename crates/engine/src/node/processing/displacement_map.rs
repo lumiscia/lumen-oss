@@ -209,6 +209,7 @@ impl crate::gpu::frame_graph::RecordNode for DisplacementMap {
             tex,
             domain,
             bounds: None,
+            reduced: None,
         })
     }
 }

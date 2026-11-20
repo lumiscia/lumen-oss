@@ -123,6 +123,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaOutput {
             tex,
             domain: lumen_gpu::TextureDomain::full_frame(size),
             bounds: None,
+            reduced: None,
         })
     }
 

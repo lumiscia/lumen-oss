@@ -866,6 +866,7 @@ fn record_path_source(
         tex,
         domain,
         bounds: None,
+        reduced: None,
     })
 }
 

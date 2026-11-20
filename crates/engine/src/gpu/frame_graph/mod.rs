@@ -137,11 +137,46 @@ pub(crate) struct Raster {
     pub(crate) domain: TextureDomain,
     /// The raster's logical bounds within its texture, when they are not all of it.
     pub(crate) bounds: Option<CropParams>,
+    /// For an image decoded at fewer texels than the device pixels it covers, the size it covers,
+    /// which its whole texture spans. Only readers that take their input with
+    /// [`FrameCx::input_reduced`] or its siblings are handed such a raster; any other read of one
+    /// fails.
+    pub(crate) reduced: Option<Size>,
 }
 
 impl Raster {
     pub(crate) fn origin(&self) -> [i32; 2] {
         [self.domain.data_rect.x, self.domain.data_rect.y]
+    }
+
+    /// An image decoded at `texels` to cover `shown` device pixels, which are no fewer.
+    pub(crate) fn image(tex: TexRef, texels: Size, shown: Size) -> Self {
+        debug_assert!(texels.width <= shown.width && texels.height <= shown.height);
+        Self {
+            tex,
+            domain: TextureDomain::full_frame(texels),
+            bounds: None,
+            reduced: (texels != shown).then_some(shown),
+        }
+    }
+
+    /// The device pixels the raster covers.
+    pub(crate) fn shown_size(&self) -> Size {
+        self.reduced.unwrap_or(self.domain.display_size())
+    }
+
+    /// Texels per device pixel along each axis: 1 unless the raster is reduced.
+    pub(crate) fn density(&self) -> [f32; 2] {
+        match self.reduced {
+            Some(shown) => {
+                let texels = self.domain.storage_size;
+                [
+                    texels.width as f32 / shown.width.max(1) as f32,
+                    texels.height as f32 / shown.height.max(1) as f32,
+                ]
+            }
+            None => [1.0; 2],
+        }
     }
 }
 
@@ -168,6 +203,12 @@ pub(crate) trait RecordNode {
     /// How much the node magnifies the raster it reads; infinite when it can't say.
     fn magnification(&self) -> f64 {
         f64::INFINITY
+    }
+
+    /// How the node shows a source decoded at fewer texels than its pixels, when it reads every
+    /// input with [`FrameCx::input_reduced`] or its siblings; `None` when it can't read one.
+    fn reads_reduced(&self) -> Option<crate::gpu::image_size::ReducedRead> {
+        None
     }
 
     /// The params whose literal values are wrong, with what is wrong, for checks that run before
@@ -1195,6 +1236,24 @@ impl<'a> FrameCx<'a> {
     /// content that draws more is cropped.
     #[cfg(feature = "3d")]
     pub(crate) fn input_native(&mut self, node_id: NodeId) -> crate::Result<Raster> {
+        match self.clip_native(node_id)? {
+            Some(raster) => Ok(raster),
+            None => self.input_full(node_id),
+        }
+    }
+
+    /// [`Self::input_native`] for a reader that shows a reduced raster at its density.
+    #[cfg(feature = "3d")]
+    pub(crate) fn input_native_reduced(&mut self, node_id: NodeId) -> crate::Result<Raster> {
+        match self.clip_native(node_id)? {
+            Some(raster) => Ok(raster),
+            None => self.input_full_reduced(node_id),
+        }
+    }
+
+    /// What clip `node_id` shows at its full display size, or `None` when it is not a clip.
+    #[cfg(feature = "3d")]
+    fn clip_native(&mut self, node_id: NodeId) -> crate::Result<Option<Raster>> {
         if let Some(NodeKind::Clip(clip)) = self.scope.node(node_id) {
             let canvas = self.device_size(clip.content_canvas(&self.scope)?);
             let max = self.rec.device().limits().max_texture_dimension_2d;
@@ -1210,15 +1269,17 @@ impl<'a> FrameCx<'a> {
                     .into(),
                 );
             }
-            return match clip.route(&self.scope, self.frame, self.media)? {
-                Some(routed) => {
-                    let raster = self.place_routed(routed, canvas)?;
-                    Ok(self.full_frame(raster))
-                }
-                None => Ok(self.transparent(canvas)),
-            };
+            return Ok(Some(
+                match clip.route(&self.scope, self.frame, self.media)? {
+                    Some(routed) => {
+                        let raster = self.place_routed(routed, canvas)?;
+                        self.full_frame(raster)
+                    }
+                    None => self.transparent(canvas),
+                },
+            ));
         }
-        self.input_full(node_id)
+        Ok(None)
     }
 
     /// The shared text atlas, begun for this frame.
@@ -1373,6 +1434,7 @@ impl<'a> FrameCx<'a> {
             tex,
             domain,
             bounds: None,
+            reduced: None,
         })
     }
 }

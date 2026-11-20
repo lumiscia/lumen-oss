@@ -1,13 +1,13 @@
 //! The size an image is decoded at: where every use of it bounds how large it is shown, no
 //! larger than twice that, and no larger than the device or host allows.
 //!
-//! A `media_in` raster is the size its image is decoded at, and nodes read a raster's texels as
-//! its pixels, so a reduced image would change what most of them draw. Only a `resize` with a
-//! literal size and mode maps its whole source into a rectangle of its own, and draws the same
-//! picture from an image reduced to its exact aspect ratio. So an image is reduced only when every
-//! use of it is such a resize in the root composition, and only to a size with its aspect ratio.
-//! Any other use keeps the image at its native size, which past the device's texture limit can't
-//! be shown.
+//! A `media_in` raster covers the device pixels of its image at the render scale. Most nodes read
+//! a raster's texels as its pixels, so an image they read is decoded at that size. `resize`,
+//! `transform` and `image_plane_3d` read their source at its density instead, so an image whose
+//! every reader is one of them may be decoded at fewer texels per axis while covering the same
+//! pixels (see [`Raster::reduced`](super::frame_graph::Raster::reduced)). Such an image is decoded
+//! at twice the size it is shown at, where a literal `resize` or `transform` in the root
+//! composition bounds that size, and at most at the device's or host's limit.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -32,36 +32,88 @@ const REDUCE_BELOW: f64 = 0.5;
 /// supersampling stay sharp.
 const HEADROOM: f64 = 2.0;
 
-/// A `resize` an image is drawn into, and the most anything after it magnifies what it draws.
+/// How a node that reads a source at its density shows it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ReducedRead {
+    /// At a size that isn't known before rendering.
+    Unknown,
+    /// Drawn into a `width` by `height` rectangle of canvas pixels, fitted as `mode` says.
+    Fitted {
+        width: f64,
+        height: f64,
+        mode: ResizeMode,
+    },
+    /// Scaled by at most this much.
+    Scaled(f64),
+}
+
+/// A known use of an image: how its reader shows it, and the most anything after the reader
+/// magnifies what it draws.
 #[derive(Debug, Clone, Copy)]
-struct Fitted {
-    width: f64,
-    height: f64,
-    mode: ResizeMode,
+struct Shown {
+    read: ReducedRead,
     magnified: f64,
 }
 
-impl Fitted {
-    /// The most the resize shows an image of `native` size at, as a fraction of that size.
+impl Shown {
+    /// The most the use shows an image of `native` size at, as a fraction of that size.
     fn scale(self, native: Size) -> f64 {
-        let x = self.width / f64::from(native.width.max(1));
-        let y = self.height / f64::from(native.height.max(1));
-        let fitted = match self.mode {
-            ResizeMode::Fit => x.min(y),
-            ResizeMode::Stretch | ResizeMode::Fill => x.max(y),
+        let own = match self.read {
+            ReducedRead::Unknown => f64::INFINITY,
+            ReducedRead::Scaled(scale) => scale,
+            ReducedRead::Fitted {
+                width,
+                height,
+                mode,
+            } => {
+                let x = width / f64::from(native.width.max(1));
+                let y = height / f64::from(native.height.max(1));
+                match mode {
+                    ResizeMode::Fit => x.min(y),
+                    ResizeMode::Stretch | ResizeMode::Fill => x.max(y),
+                }
+            }
         };
-        fitted * self.magnified
+        own * self.magnified
     }
 }
 
-/// How large a composition can show each image it names.
+/// What the readers of the `media_in` nodes that show an image allow.
+#[derive(Debug, Clone)]
+struct Uses {
+    /// The uses, or `None` once one shows the image at a size that isn't known before rendering.
+    shown: Option<Vec<Shown>>,
+    /// Whether every reader reads the image at its density.
+    reduced: bool,
+}
+
+impl Default for Uses {
+    fn default() -> Self {
+        Self {
+            shown: Some(Vec::new()),
+            reduced: true,
+        }
+    }
+}
+
+impl Uses {
+    fn add(&mut self, shown: Option<Vec<Shown>>, reduced: bool) {
+        self.reduced &= reduced;
+        match (self.shown.as_mut(), shown) {
+            (Some(uses), Some(shown)) => uses.extend(shown),
+            _ => self.shown = None,
+        }
+    }
+}
+
+/// How large a composition can show each image it names, and whether it can read each at fewer
+/// texels than its pixels.
 #[derive(Debug, Default)]
 pub(crate) struct ShownSizes {
-    /// By source, the resizes its uses draw it into, or `None` once one use shows it at a size
-    /// that isn't known before rendering.
-    sources: HashMap<String, Option<Vec<Fitted>>>,
-    /// Whether a `media_in` picks its source with an expression, which can name any image.
-    any_source: bool,
+    sources: HashMap<String, Uses>,
+    /// The uses of `media_in` nodes that pick their source with an expression, which can name any
+    /// image.
+    any_source: Option<Uses>,
 }
 
 impl ShownSizes {
@@ -70,78 +122,69 @@ impl ShownSizes {
         let root = composition.graph();
         let mut magnified = Magnification::new(&root.nodes, root.output());
         for node in root.nodes.values() {
-            shown.add(node, Some(&mut magnified));
+            shown.add(node, &mut magnified, true);
         }
         for template in composition.compositions().values() {
-            for node in template.scene.graph.nodes.values() {
-                shown.add(node, None);
+            let graph = &template.scene.graph;
+            let mut magnified = Magnification::new(&graph.nodes, graph.output());
+            for node in graph.nodes.values() {
+                shown.add(node, &mut magnified, false);
             }
         }
         Arc::new(shown)
     }
 
-    /// Adds where `node`, if it is a `media_in` that can show an image, draws it. Without
-    /// `magnified`, the node is in a template, whose output may be shown at any size.
-    fn add(&mut self, node: &NodeKind, magnified: Option<&mut Magnification<'_>>) {
+    /// Adds how `node`, if it is a `media_in` that can show an image, is read. Outside the root
+    /// composition, its output may be shown at any size.
+    fn add(&mut self, node: &NodeKind, magnified: &mut Magnification<'_>, root: bool) {
         let NodeKind::MediaIn(media) = node else {
             return;
-        };
-        let source = match &media.params.source {
-            Deferred::Value(source) => source,
-            Deferred::Expr(_) => {
-                self.any_source = true;
-                return;
-            }
         };
         if matches!(media.params.kind, MediaInSourceKindDelegate::Video) {
             return;
         }
-        let fitted = matches!(media.params.kind, MediaInSourceKindDelegate::Image)
-            .then_some(magnified)
-            .flatten()
-            .and_then(|magnified| magnified.fitted(media.id));
-        let entry = self
-            .sources
-            .entry(source.clone())
-            .or_insert_with(|| Some(Vec::new()));
-        match (entry.as_mut(), fitted) {
-            (Some(uses), Some(fitted)) => uses.extend(fitted),
-            _ => *entry = None,
-        }
+        let (shown, reduced) = magnified.readers(media.id);
+        let sized = root && matches!(media.params.kind, MediaInSourceKindDelegate::Image);
+        let shown = shown.filter(|_| sized);
+        let uses = match &media.params.source {
+            Deferred::Value(source) => self.sources.entry(source.clone()).or_default(),
+            Deferred::Expr(_) => self.any_source.get_or_insert_with(Uses::default),
+        };
+        uses.add(shown, reduced);
     }
 
-    /// The most `source`, an image of `native` size, is shown at, as a fraction of that size.
-    fn scale(&self, source: &str, native: Size) -> Option<f64> {
-        if self.any_source {
-            return None;
+    /// The uses of `source`, and of every `media_in` that could name it.
+    fn uses(&self, source: &str) -> Uses {
+        let mut uses = self.sources.get(source).cloned().unwrap_or(Uses {
+            shown: None,
+            reduced: self.any_source.is_some(),
+        });
+        if let Some(any) = &self.any_source {
+            uses.add(None, any.reduced);
         }
-        let uses = self.sources.get(source)?.as_ref()?;
-        uses.iter()
-            .map(|fitted| fitted.scale(native))
-            .reduce(f64::max)
+        uses
     }
 }
 
 /// The size an image is decoded at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Decoded {
-    Native,
-    /// Reduced to `size`, and to fit the size limit when `limited`. Where every use is a literal
-    /// `resize`, `size` has the native aspect ratio exactly; elsewhere it is the native size at the
-    /// render scale, each side rounded up.
-    Reduced {
-        size: Size,
+    /// Decoded at `texels` to cover `shown` device pixels, its native size at the render scale
+    /// with each side rounded up. `texels` are fewer only where every reader reads the image at
+    /// its density, and `limited` when the size limit made them fewer than its uses ask for.
+    At {
+        texels: Size,
+        shown: Size,
         limited: bool,
     },
-    /// Past the device's limit, and either used where it can't be reduced or without a smaller
-    /// size of its aspect ratio within the limit.
+    /// Past the device's limit and read where it can't be reduced.
     TooLarge,
 }
 
-/// The size image `source`, of `native` size, is decoded at for a render at `render_scale`. Where
-/// the composition lets it be reduced, that is twice the size it is shown at when that is under
-/// half its own, and within `host_max` and `device_max` on a side. Elsewhere it is its size at the
-/// render scale, if `device_max` allows.
+/// The size image `source`, of `native` size, is decoded at for a render at `render_scale`. It
+/// covers its native size at the render scale. Where every reader reads it at its density, its
+/// texels are twice the size it is shown at when that is under half its own, and fit `host_max`
+/// and `device_max` on a side. Elsewhere it has a texel per pixel, if `device_max` allows.
 pub(crate) fn decoded_size(
     shown: &ShownSizes,
     source: &str,
@@ -150,51 +193,49 @@ pub(crate) fn decoded_size(
     device_max: u32,
     render_scale: f64,
 ) -> Decoded {
-    let scaled = super::render_scale::device_size(native.width, native.height, render_scale);
-    let fallback = if scaled.width.max(scaled.height) > device_max {
-        Decoded::TooLarge
-    } else if scaled == native {
-        Decoded::Native
-    } else {
-        Decoded::Reduced {
-            size: scaled,
-            limited: false,
+    let pixels = super::render_scale::device_size(native.width, native.height, render_scale);
+    let uses = shown.uses(source);
+    if !uses.reduced {
+        if pixels.width.max(pixels.height) > device_max {
+            return Decoded::TooLarge;
         }
+        return Decoded::At {
+            texels: pixels,
+            shown: pixels,
+            limited: false,
+        };
+    }
+    let scale = uses
+        .shown
+        .and_then(|uses| uses.iter().map(|use_| use_.scale(native)).reduce(f64::max))
+        .map(|scale| scale * render_scale)
+        .filter(|scale| *scale < REDUCE_BELOW);
+    // The epsilon keeps an exact size from rounding up past it.
+    let extent = |side: u32, scale: f64| ((f64::from(side) * scale - 1e-9).ceil() as u32).max(1);
+    let wanted = match scale {
+        Some(scale) => Size::new(
+            extent(native.width, HEADROOM * scale).min(pixels.width),
+            extent(native.height, HEADROOM * scale).min(pixels.height),
+        ),
+        None => pixels,
     };
-    let Some(scale) = shown.scale(source, native) else {
-        return fallback;
+    let limit = host_max.min(device_max).max(1);
+    let side = wanted.width.max(wanted.height);
+    if side <= limit {
+        return Decoded::At {
+            texels: wanted,
+            shown: pixels,
+            limited: false,
+        };
+    }
+    let fitted = |extent: u32| {
+        (u64::from(extent) * u64::from(limit) / u64::from(side)).clamp(1, u64::from(limit)) as u32
     };
-    let scale = scale * render_scale;
-    // Sizes with the native aspect ratio are multiples of the ratio in lowest terms.
-    let multiples = gcd(native.width, native.height);
-    let unit = Size::new(native.width / multiples, native.height / multiples);
-    let shown_multiple = if scale < REDUCE_BELOW {
-        // The epsilon keeps an exact multiple from rounding up past it.
-        ((f64::from(multiples) * HEADROOM * scale - 1e-9).ceil() as u32).max(1)
-    } else {
-        multiples
-    };
-    let limit_multiple = host_max.min(device_max) / unit.width.max(unit.height);
-    let multiple = shown_multiple.min(limit_multiple);
-    if multiple == 0 {
-        return fallback;
+    Decoded::At {
+        texels: Size::new(fitted(wanted.width), fitted(wanted.height)),
+        shown: pixels,
+        limited: true,
     }
-    let size = Size::new(unit.width * multiple, unit.height * multiple);
-    let no_smaller = size.width >= scaled.width && size.height >= scaled.height;
-    if multiple >= multiples || (no_smaller && fallback != Decoded::TooLarge) {
-        return fallback;
-    }
-    Decoded::Reduced {
-        size,
-        limited: limit_multiple < shown_multiple,
-    }
-}
-
-fn gcd(mut a: u32, mut b: u32) -> u32 {
-    while b != 0 {
-        (a, b) = (b, a % b);
-    }
-    a.max(1)
 }
 
 /// The most each node's output is magnified on its way to a graph's output, `f64::INFINITY` when
@@ -222,42 +263,33 @@ impl<'a> Magnification<'a> {
         }
     }
 
-    /// The resizes `media`'s output is drawn into, when nothing else reads it and what each draws
-    /// is magnified by a known amount.
-    fn fitted(&mut self, media: NodeId) -> Option<Vec<Fitted>> {
+    /// How `media`'s readers show it, `None` when one shows it at a size that isn't known, and
+    /// whether every one reads it at its density. A graph's output is read by what shows the
+    /// graph, which reads texels as pixels.
+    fn readers(&mut self, media: NodeId) -> (Option<Vec<Shown>>, bool) {
         let readers = self.consumers.get(&media).cloned().unwrap_or_default();
-        if readers.is_empty() {
-            return None;
+        if readers.is_empty() || media == self.output {
+            return (None, false);
         }
-        readers
-            .into_iter()
-            .map(|reader| {
-                let NodeKind::Resize(resize) = self.nodes.get(&reader)? else {
-                    return None;
-                };
-                let (Deferred::Value(width), Deferred::Value(height)) =
-                    (&resize.params.width, &resize.params.height)
-                else {
-                    return None;
-                };
-                let mode = match resize.params.mode {
-                    crate::node::processing::resize::ResizeModeDelegate::Stretch => {
-                        ResizeMode::Stretch
-                    }
-                    crate::node::processing::resize::ResizeModeDelegate::Fit => ResizeMode::Fit,
-                    crate::node::processing::resize::ResizeModeDelegate::Fill => ResizeMode::Fill,
-                };
-                let magnified = self.of(reader);
-                magnified.is_finite().then_some(Fitted {
-                    width: (*width).max(1) as f64,
-                    height: (*height).max(1) as f64,
-                    mode,
-                    magnified,
-                })
-            })
-            .collect()
+        let mut shown = Some(Vec::new());
+        for reader in readers {
+            let Some(read) = self.nodes.get(&reader).and_then(RecordNode::reads_reduced) else {
+                return (None, false);
+            };
+            let magnified = match read {
+                ReducedRead::Unknown => f64::INFINITY,
+                _ => self.of(reader),
+            };
+            if let Some(uses) = shown.as_mut() {
+                if magnified.is_finite() {
+                    uses.push(Shown { read, magnified });
+                } else {
+                    shown = None;
+                }
+            }
+        }
+        (shown, true)
     }
-
     /// The most `node`'s output is magnified on its way to the output.
     fn of(&mut self, node: NodeId) -> f64 {
         let mut stack = vec![node];
@@ -638,19 +670,33 @@ mod tests {
     }
 
     fn fitted(width: f64, height: f64, mode: ResizeMode) -> ShownSizes {
+        let read = ReducedRead::Fitted {
+            width,
+            height,
+            mode,
+        };
         ShownSizes {
             sources: [(
                 "photo".to_string(),
-                Some(vec![Fitted {
-                    width,
-                    height,
-                    mode,
-                    magnified: 1.0,
-                }]),
+                Uses {
+                    shown: Some(vec![Shown {
+                        read,
+                        magnified: 1.0,
+                    }]),
+                    reduced: true,
+                },
             )]
             .into_iter()
             .collect(),
-            any_source: false,
+            any_source: None,
+        }
+    }
+
+    fn at(texels: (u32, u32), shown: (u32, u32), limited: bool) -> Decoded {
+        Decoded::At {
+            texels: Size::new(texels.0, texels.1),
+            shown: Size::new(shown.0, shown.1),
+            limited,
         }
     }
 
@@ -658,10 +704,7 @@ mod tests {
     fn an_image_is_reduced_to_twice_its_shown_size_only_under_half_of_it() {
         let native = Size::new(4000, 3000);
         let decoded = |shown: &ShownSizes| decoded_size(shown, "photo", native, 16384, 16384, 1.0);
-        let reduced = |width, height| Decoded::Reduced {
-            size: Size::new(width, height),
-            limited: false,
-        };
+        let reduced = |width, height| at((width, height), (4000, 3000), false);
         assert_eq!(
             decoded(&fitted(400.0, 300.0, ResizeMode::Stretch)),
             reduced(800, 600)
@@ -671,34 +714,38 @@ mod tests {
             decoded(&fitted(400.0, 100.0, ResizeMode::Fill)),
             reduced(800, 600)
         );
-        // 2 × 4000 / 30 is 266.7, rounded up to a multiple of 4:3.
+        // 2 × 4000 / 30 is 266.7, rounded up on each side.
         assert_eq!(
             decoded(&fitted(400.0, 100.0, ResizeMode::Fit)),
-            reduced(268, 201)
+            reduced(267, 200)
         );
         assert_eq!(
             decoded(&fitted(2100.0, 300.0, ResizeMode::Stretch)),
-            Decoded::Native
+            reduced(4000, 3000)
         );
-        assert_eq!(decoded(&ShownSizes::default()), Decoded::Native);
+        assert_eq!(decoded(&ShownSizes::default()), reduced(4000, 3000));
 
-        // A render scale reduces every image, on each side rounded up, and composes with a
-        // resize's reduction.
+        // A render scale makes every image cover fewer pixels, on each side rounded up, and
+        // composes with a resize's reduction.
         let at_scale = |shown: &ShownSizes, native, scale| {
             decoded_size(shown, "photo", native, 16384, 16384, scale)
         };
         let unused = ShownSizes::default();
-        assert_eq!(at_scale(&unused, native, 0.5), reduced(2000, 1500));
-        assert_eq!(at_scale(&unused, Size::new(101, 51), 0.5), reduced(51, 26));
+        let half = (2000, 1500);
+        assert_eq!(at_scale(&unused, native, 0.5), at(half, half, false));
+        assert_eq!(
+            at_scale(&unused, Size::new(101, 51), 0.5),
+            at((51, 26), (51, 26), false)
+        );
         let resized = fitted(400.0, 300.0, ResizeMode::Stretch);
-        assert_eq!(at_scale(&resized, native, 0.5), reduced(400, 300));
+        assert_eq!(at_scale(&resized, native, 0.5), at((400, 300), half, false));
         let enlarged = fitted(2100.0, 300.0, ResizeMode::Stretch);
-        assert_eq!(at_scale(&enlarged, native, 0.5), reduced(2000, 1500));
+        assert_eq!(at_scale(&enlarged, native, 0.5), at(half, half, false));
     }
 
     #[test]
-    fn a_reduced_image_keeps_its_aspect_ratio_exactly_or_its_size() {
-        // 1000 × 9 has no smaller size of its aspect ratio.
+    fn an_image_is_reduced_on_each_axis_whatever_its_aspect_ratio() {
+        // 1000 × 9 has no smaller size of its aspect ratio, and covers its own pixels at 200 × 2.
         assert_eq!(
             decoded_size(
                 &fitted(100.0, 100.0, ResizeMode::Fit),
@@ -708,12 +755,12 @@ mod tests {
                 16384,
                 1.0
             ),
-            Decoded::Native
+            at((200, 2), (1000, 9), false)
         );
     }
 
     #[test]
-    fn an_image_past_the_limit_is_reduced_only_where_its_uses_allow() {
+    fn an_image_past_the_limit_is_reduced_only_where_its_readers_allow() {
         let wide = Size::new(32768, 2);
         assert_eq!(
             decoded_size(
@@ -724,10 +771,7 @@ mod tests {
                 16384,
                 1.0
             ),
-            Decoded::Reduced {
-                size: Size::new(16384, 1),
-                limited: true,
-            }
+            at((16384, 1), (32768, 2), true)
         );
         assert_eq!(
             decoded_size(&ShownSizes::default(), "photo", wide, 16384, 16384, 1.0),
@@ -743,19 +787,78 @@ mod tests {
                 16384,
                 1.0
             ),
-            Decoded::Native
+            at((3200, 1600), (3200, 1600), false)
         );
-        // Past the device's limit with no smaller size of its aspect ratio within it.
+    }
+
+    /// The decoded size of a 400 × 200 `photo` that `media_in` 1 shows to `readers`, under a
+    /// `limit` on a side. The last reader is the graph's output.
+    fn read_by(readers: serde_json::Value, limit: u32) -> Decoded {
+        let mut nodes = vec![serde_json::json!({
+            "id": 1, "type": "media_in", "params": { "kind": "image", "source": "photo" }
+        })];
+        let mut connections = Vec::new();
+        for mut reader in readers.as_array().unwrap().clone() {
+            let id = reader["id"].clone();
+            let inputs = reader.as_object_mut().unwrap().remove("in").unwrap();
+            for (port, from) in inputs.as_object().unwrap() {
+                connections
+                    .push(serde_json::json!({ "from_node": from, "to_node": id, "to_port": port }));
+            }
+            nodes.push(reader);
+        }
+        let last = nodes.last().unwrap()["id"].clone();
+        nodes.push(serde_json::json!({ "id": 99, "type": "media_output" }));
+        connections
+            .push(serde_json::json!({ "from_node": last, "to_node": 99, "to_port": "source" }));
+        let composition: Composition = crate::json::parse_value(&serde_json::json!({
+            "timeline": { "fps": 30, "duration_frames": 1 },
+            "render_settings": { "width": 400, "height": 200 },
+            "nodes": nodes,
+            "connections": connections,
+        }))
+        .unwrap();
+        let shown = ShownSizes::of(&composition);
+        decoded_size(&shown, "photo", Size::new(400, 200), limit, limit, 1.0)
+    }
+
+    fn transform(id: u32, from: u32, scale: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "id": id, "type": "transform", "in": { "source": from },
+                            "params": { "scale_x": scale, "scale_y": scale, "rotate": 30 } })
+    }
+
+    #[test]
+    fn a_literal_transform_scale_bounds_the_size_its_source_is_shown_at() {
+        let native = (400, 200);
         assert_eq!(
-            decoded_size(
-                &fitted(100.0, 1.0, ResizeMode::Fill),
-                "photo",
-                Size::new(16385, 3),
-                16384,
-                16384,
-                1.0
-            ),
-            Decoded::TooLarge
+            read_by(serde_json::json!([transform(2, 1, 0.25.into())]), 16384),
+            at((200, 100), native, false)
         );
+        // What follows magnifies it.
+        assert_eq!(
+            read_by(
+                serde_json::json!([transform(2, 1, 0.25.into()), transform(3, 2, 1.5.into())]),
+                16384
+            ),
+            at((300, 150), native, false)
+        );
+        // A blur reads the image's texels as its pixels.
+        let mixed = serde_json::json!([
+            transform(2, 1, 0.25.into()),
+            { "id": 3, "type": "blur", "in": { "source": 1 } },
+            { "id": 4, "type": "merge", "in": { "base": 2, "overlay": 3 } },
+        ]);
+        assert_eq!(read_by(mixed.clone(), 16384), at(native, native, false));
+        assert_eq!(read_by(mixed, 100), Decoded::TooLarge);
+    }
+
+    #[test]
+    fn an_animated_transform_reads_its_source_reduced_only_to_fit_the_limit() {
+        let animated = || serde_json::json!([transform(2, 1, "=0.25".into())]);
+        assert_eq!(
+            read_by(animated(), 16384),
+            at((400, 200), (400, 200), false)
+        );
+        assert_eq!(read_by(animated(), 100), at((100, 50), (400, 200), true));
     }
 }

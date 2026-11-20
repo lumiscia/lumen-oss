@@ -65,7 +65,7 @@ export type DiagnosticCode =
   | "scene.model_primitives_skipped"
   /** A video's colour tags name a transfer or primaries the engine doesn't convert, so it renders as SDR or BT.709 in their place, or an image's ICC profile can't be honoured, so it renders as sRGB. */
   | "media.color_unsupported"
-  /** An image every use of which is a literal `resize` is larger on a side than the device's texture limit, or the host's `set_max_image_side`, so it is shown from a copy reduced to fit. */
+  /** An image read only by `resize`, `transform` and `image_plane_3d` nodes is larger on a side than the device's texture limit, or the host's `set_max_image_side`, so it is shown from a copy reduced to fit. */
   | "media.image_reduced"
   /** An expression gave a param a value of the wrong type. */
   | "property.invalid_type"
@@ -146,7 +146,7 @@ export const diagnosticCodes = [
   { code: "scene.shadow_limit", severity: "warning", foundBy: "render", meaning: "A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none." },
   { code: "scene.model_primitives_skipped", severity: "warning", foundBy: "render", meaning: "A `model_3d`'s model has points, lines, or triangle strips or fans, which aren't drawn." },
   { code: "media.color_unsupported", severity: "warning", foundBy: "render", meaning: "A video's colour tags name a transfer or primaries the engine doesn't convert, so it renders as SDR or BT.709 in their place, or an image's ICC profile can't be honoured, so it renders as sRGB." },
-  { code: "media.image_reduced", severity: "warning", foundBy: "render", meaning: "An image every use of which is a literal `resize` is larger on a side than the device's texture limit, or the host's `set_max_image_side`, so it is shown from a copy reduced to fit." },
+  { code: "media.image_reduced", severity: "warning", foundBy: "render", meaning: "An image read only by `resize`, `transform` and `image_plane_3d` nodes is larger on a side than the device's texture limit, or the host's `set_max_image_side`, so it is shown from a copy reduced to fit." },
   { code: "property.invalid_type", severity: "error", foundBy: "render", meaning: "An expression gave a param a value of the wrong type." },
   { code: "expression.parse", severity: "error", foundBy: "render", meaning: "An expression built at render time doesn't parse." },
   { code: "expression.evaluate", severity: "error", foundBy: "render", meaning: "An expression failed to evaluate." },

@@ -137,6 +137,7 @@ impl crate::gpu::frame_graph::RecordNode for Crop {
             domain: lumen_gpu::TextureDomain::full_frame(size),
             // The region is clamped to the source, so it is the output's logical bounds.
             bounds: Some(gpu_params),
+            reduced: None,
         })
     }
 

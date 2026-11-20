@@ -8,6 +8,8 @@ struct ResizeParams {
     footprint: vec2<f32>,
     // The mip level that `minify` reads.
     lod: f32,
+    // The source's size in pixels, which its texels cover at a density of their own.
+    shown: vec2<f32>,
 }
 
 // The part of the source texture that holds the image.
@@ -71,7 +73,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let input_size = vec2<f32>(source_bounds.size);
+    let input_size = params.shown;
+    let density = vec2<f32>(source_bounds.size) / input_size;
     let input_origin = vec2<f32>(source_bounds.origin);
     let dest_size = vec2<f32>(max(params.size, vec2<u32>(1u)));
     let centre = vec2<f32>(pixel) + vec2<f32>(0.5);
@@ -97,7 +100,7 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    source_coord += input_origin;
+    source_coord = source_coord * density + input_origin;
     var color: vec4<f32>;
     if (params.sampling == 0u) {
         color = sample_nearest(source_coord);

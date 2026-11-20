@@ -179,17 +179,16 @@ impl FrameCx<'_> {
         .into())
     }
 
-    /// The size image `source`, of `native` size, is decoded at for `node_id` to show it at the
-    /// render scale (see
-    /// [`crate::gpu::image_size::decoded_size`]), with a warning once per composition when it is
-    /// reduced to fit the size limit. Fails as `media.too_large` when it is past the device's
-    /// limit and can't be reduced.
+    /// The texels image `source`, of `native` size, is decoded at for `node_id`, and the device
+    /// pixels it covers at the render scale (see [`crate::gpu::image_size::decoded_size`]), with a
+    /// warning once per composition when it is reduced to fit the size limit. Fails as
+    /// `media.too_large` when it is past the device's limit and can't be reduced.
     pub(crate) fn image_size(
         &mut self,
         node_id: NodeId,
         source: &str,
         native: Size,
-    ) -> crate::Result<Size> {
+    ) -> crate::Result<(Size, Size)> {
         use crate::gpu::image_size::{Decoded, decoded_size};
         let shown = Arc::clone(
             self.st
@@ -200,13 +199,16 @@ impl FrameCx<'_> {
         let device_max = self.rec.device().limits().max_texture_dimension_2d.max(1);
         let max_image_side = self.settings.max_image_side;
         let scale = self.pixel_scale();
-        let size = match decoded_size(&shown, source, native, max_image_side, device_max, scale) {
-            Decoded::Native => native,
-            Decoded::Reduced { size, limited } => {
+        match decoded_size(&shown, source, native, max_image_side, device_max, scale) {
+            Decoded::At {
+                texels,
+                shown,
+                limited,
+            } => {
                 if limited {
-                    self.warn_image_reduced(node_id, source, native, size);
+                    self.warn_image_reduced(node_id, source, native, texels);
                 }
-                size
+                Ok((texels, shown))
             }
             Decoded::TooLarge => {
                 let shown = self.device_size(native);
@@ -216,22 +218,20 @@ impl FrameCx<'_> {
                 } else {
                     format!(" ({}x{} at the render scale)", shown.width, shown.height)
                 };
-                return Err(crate::error::MediaFailure::too_large(
+                Err(crate::error::MediaFailure::too_large(
                     source,
                     format!(
                         "it is {}x{} pixels{scaled}, over the {device_max}-pixel texture limit of \
-                         this device, and only an image every use of which is a `resize` to a \
-                         literal size, in the root composition, is shown reduced to its aspect \
-                         ratio",
+                         this device, and only an image read by nothing but `resize`, \
+                         `transform` and `image_plane_3d` nodes is shown reduced",
                         native.width, native.height
                     ),
                     u64::from(device_max),
                     Some(u64::from(side)),
                 )
-                .into());
+                .into())
             }
-        };
-        Ok(size)
+        }
     }
 
     fn warn_image_reduced(&mut self, node_id: NodeId, source: &str, native: Size, size: Size) {

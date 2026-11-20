@@ -728,6 +728,7 @@ impl Render3d {
                 tex: output,
                 domain: TextureDomain::full_frame(size),
                 bounds: None,
+                reduced: None,
             });
         }
         let aspect = size.width as f32 / size.height.max(1) as f32;
@@ -803,6 +804,7 @@ impl Render3d {
             tex: output,
             domain: TextureDomain::full_frame(size),
             bounds: None,
+            reduced: None,
         })
     }
 
@@ -1346,6 +1348,7 @@ fn resolve(
         tex: output,
         domain: TextureDomain::full_frame(size),
         bounds: None,
+        reduced: None,
     })
 }
 

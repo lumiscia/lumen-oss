@@ -153,6 +153,7 @@ impl RecordNode for Render2d {
             tex,
             domain,
             bounds: None,
+            reduced: None,
         })
     }
 }

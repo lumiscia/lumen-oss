@@ -260,13 +260,14 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
                         },
                     );
                 }
-                size = cx.image_size(self.id, &image_id, size)?;
+                let (texels, shown) = cx.image_size(self.id, &image_id, size)?;
                 let key = MediaTextureKey {
                     identity,
-                    width: size.width,
-                    height: size.height,
+                    width: texels.width,
+                    height: texels.height,
                 };
-                cx.image_texture(key, &resolver.frame()?, size)?
+                let tex = cx.image_texture(key, &resolver.frame()?, texels)?;
+                return Ok(crate::gpu::frame_graph::Raster::image(tex, texels, shown));
             }
             MediaInKind::Video {
                 stream_id,
@@ -315,11 +316,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
                 )?
             }
         };
-        Ok(crate::gpu::frame_graph::Raster {
-            tex,
-            domain: lumen_gpu::TextureDomain::full_frame(size),
-            bounds: None,
-        })
+        Ok(crate::gpu::frame_graph::Raster::image(tex, size, size))
     }
 
     // An image changes only with the media store, which `images_changed` watches. Video changes

@@ -343,5 +343,6 @@ pub(crate) fn record_text(
         tex: target,
         domain,
         bounds: None,
+        reduced: None,
     })
 }

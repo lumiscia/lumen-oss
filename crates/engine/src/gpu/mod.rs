@@ -7,7 +7,7 @@
 mod caches;
 pub(crate) mod color;
 pub(crate) mod frame_graph;
-mod image_size;
+pub(crate) mod image_size;
 #[cfg(feature = "ffmpeg")]
 mod media;
 pub(crate) mod mips;

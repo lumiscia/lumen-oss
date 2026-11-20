@@ -1179,8 +1179,8 @@ impl Collected {
             NodeKind::ImagePlane3d(plane) => {
                 let params = plane.params.eval(&ctx)?;
                 let source_node = required_input(node_id, "source", plane.source)?;
-                let source = cx.input_native(source_node)?;
-                let display = source.domain.display_size();
+                let source = cx.input_native_reduced(source_node)?;
+                let display = source.shown_size();
                 let part = match params.region.0 {
                     Some(region) => {
                         match plane_part(display, device_rect(region, cx.pixel_scale())) {

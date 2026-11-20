@@ -884,6 +884,7 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
             tex: sanitised,
             domain: first.domain,
             bounds: None,
+            reduced: None,
         })
     }
 

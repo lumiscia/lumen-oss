@@ -67,6 +67,11 @@ impl RecordNode for ImagePlane3d {
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
         Err(not_a_raster::<ImagePlane3d>(self.id))
     }
+
+    // A plane takes its shape from its source's pixels and samples it by its texture coordinates.
+    fn reads_reduced(&self) -> Option<crate::gpu::image_size::ReducedRead> {
+        Some(crate::gpu::image_size::ReducedRead::Unknown)
+    }
 }
 
 impl RecordNode for Text3d {

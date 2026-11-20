@@ -298,7 +298,7 @@ pub const CODE_DOCS: &[CodeDoc] = &[
     CodeDoc {
         code: "media.image_reduced",
         found_by: FoundBy::Render,
-        meaning: "An image every use of which is a literal `resize` is larger on a side than the device's texture limit, or the host's `set_max_image_side`, so it is shown from a copy reduced to fit.",
+        meaning: "An image read only by `resize`, `transform` and `image_plane_3d` nodes is larger on a side than the device's texture limit, or the host's `set_max_image_side`, so it is shown from a copy reduced to fit.",
     },
     CodeDoc {
         code: "property.invalid_type",

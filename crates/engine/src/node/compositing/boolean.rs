@@ -115,6 +115,7 @@ impl crate::gpu::frame_graph::RecordNode for Boolean {
             tex,
             domain: lumen_gpu::TextureDomain::full_frame(size),
             bounds: None,
+            reduced: None,
         })
     }
 }
