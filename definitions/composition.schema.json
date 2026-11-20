@@ -5008,6 +5008,192 @@
           },
           {
             "additionalProperties": false,
+            "description": "Bends a raster the way a lens does. With `direction: \"distort\"`, a pixel at `p` from the optical\ncentre reads the source at `p * (1 + k1 r² + k2 r⁴)`, where `r` is its distance in\nhalf-diagonals, so positive `k1` gives barrel distortion and negative `k1` pincushion. With\n`direction: \"undistort\"` it reads where that lens would have put it, undoing a distortion with\nthe same coefficients. The result covers the source's frame, and looks the same at any render\nscale.\n\nTo match graphics to footage, set the footage's coefficients and `direction: \"undistort\"` on\nthe footage, or leave `direction` as `\"distort\"` on the graphics. For a finishing look, try\n`k1: 0.15` with `chromatic_aberration: 0.004`.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "center": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.5, 0.5],
+                    "description": "The optical centre as a fraction of the frame: `[0.5, 0.5]` is the middle.",
+                    "title": "Center",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "chromatic_aberration": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "How far red and blue scale apart from green, as a fraction of each pixel's distance from\nthe optical centre. Positive values magnify red and shrink blue, so red fringes lie\noutside blue ones and grow toward the corners.",
+                    "title": "Chromatic Aberration",
+                    "x-lumen-constraints": {
+                      "step": 0.001
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "direction": {
+                    "anyOf": [
+                      {
+                        "enum": ["distort", "undistort"],
+                        "type": "string",
+                        "x-lumen-type": "LensDirection"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "distort",
+                    "description": "Whether to apply the lens or remove it.",
+                    "title": "Direction",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Distort",
+                        "name": "distort",
+                        "value": 0
+                      },
+                      {
+                        "label": "Undistort",
+                        "name": "undistort",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "edge": {
+                    "anyOf": [
+                      {
+                        "enum": ["clamp", "transparent"],
+                        "type": "string",
+                        "x-lumen-type": "EdgeMode"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "clamp",
+                    "description": "What the source reads as beyond its frame.",
+                    "title": "Edge",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Clamp",
+                        "name": "clamp",
+                        "value": 0
+                      },
+                      {
+                        "label": "Transparent",
+                        "name": "transparent",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "fit": {
+                    "anyOf": [
+                      {
+                        "enum": ["none", "fill"],
+                        "type": "string",
+                        "x-lumen-type": "LensFit"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "none",
+                    "description": "Whether to scale the result so that no edge is exposed.",
+                    "title": "Fit",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "None",
+                        "name": "none",
+                        "value": 0
+                      },
+                      {
+                        "label": "Fill",
+                        "name": "fill",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "k1": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Radial distortion, the `r²` coefficient. Positive values bow straight lines outward\n(barrel), negative values bow them inward (pincushion). Distances are measured from the\noptical centre in units of the frame's half-diagonal, so the corners are at 1.",
+                    "title": "K1",
+                    "x-lumen-constraints": {
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "k2": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Radial distortion, the `r⁴` coefficient. It bends mostly toward the corners.",
+                    "title": "K2",
+                    "x-lumen-constraints": {
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "lens_distortion"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Lens Distortion",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Remaps raster black, white, gamma, and output range of the sRGB-encoded colour.",
             "properties": {
               "id": {

@@ -476,6 +476,28 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], segments: 48, sweep: 360, units_per_pixel: 0.01 },
   },
   {
+    kind: "lens_distortion",
+    name: "Lens Distortion",
+    description: "Bends a raster the way a lens does. With `direction: \"distort\"`, a pixel at `p` from the optical\ncentre reads the source at `p * (1 + k1 r² + k2 r⁴)`, where `r` is its distance in\nhalf-diagonals, so positive `k1` gives barrel distortion and negative `k1` pincushion. With\n`direction: \"undistort\"` it reads where that lens would have put it, undoing a distortion with\nthe same coefficients. The result covers the source's frame, and looks the same at any render\nscale.\n\nTo match graphics to footage, set the footage's coefficients and `direction: \"undistort\"` on\nthe footage, or leave `direction` as `\"distort\"` on the graphics. For a finishing look, try\n`k1: 0.15` with `chromatic_aberration: 0.004`.",
+    category: "processing",
+    inputs: [
+      { name: "source", kind: "raster", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [
+      { id: "center", name: "Center", kind: "vec2", description: "The optical centre as a fraction of the frame: `[0.5, 0.5]` is the middle.", defaultValue: [0.5, 0.5] },
+      { id: "chromatic_aberration", name: "Chromatic Aberration", kind: "float", description: "How far red and blue scale apart from green, as a fraction of each pixel's distance from\nthe optical centre. Positive values magnify red and shrink blue, so red fringes lie\noutside blue ones and grow toward the corners.", defaultValue: 0, constraints: { step: 0.001 } },
+      { id: "direction", name: "Direction", kind: "enum", description: "Whether to apply the lens or remove it.", defaultValue: "distort", enumOptions: [{ name: "distort", label: "Distort", value: 0 }, { name: "undistort", label: "Undistort", value: 1 }] },
+      { id: "edge", name: "Edge", kind: "enum", description: "What the source reads as beyond its frame.", defaultValue: "clamp", enumOptions: [{ name: "clamp", label: "Clamp", value: 0 }, { name: "transparent", label: "Transparent", value: 1 }] },
+      { id: "fit", name: "Fit", kind: "enum", description: "Whether to scale the result so that no edge is exposed.", defaultValue: "none", enumOptions: [{ name: "none", label: "None", value: 0 }, { name: "fill", label: "Fill", value: 1 }] },
+      { id: "k1", name: "K1", kind: "float", description: "Radial distortion, the `r²` coefficient. Positive values bow straight lines outward\n(barrel), negative values bow them inward (pincushion). Distances are measured from the\noptical centre in units of the frame's half-diagonal, so the corners are at 1.", defaultValue: 0, constraints: { step: 0.01 } },
+      { id: "k2", name: "K2", kind: "float", description: "Radial distortion, the `r⁴` coefficient. It bends mostly toward the corners.", defaultValue: 0, constraints: { step: 0.01 } },
+    ],
+    defaultParams: { center: [0.5, 0.5], chromatic_aberration: 0, direction: "distort", edge: "clamp", fit: "none", k1: 0, k2: 0 },
+  },
+  {
     kind: "levels",
     name: "Levels",
     description: "Remaps raster black, white, gamma, and output range of the sRGB-encoded colour.",
