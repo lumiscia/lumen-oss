@@ -1,4 +1,10 @@
-import { easingNames, type Color, type EasingName, type Vec2 } from "@lumiscia/lumen-types";
+import {
+  easingNames,
+  type Color,
+  type EasingName,
+  type Vec2,
+  type Vec3,
+} from "@lumiscia/lumen-types";
 
 import {
   Expr,
@@ -11,11 +17,19 @@ import {
   type Arg,
   type Condition,
   type EasingArg,
+  type Key,
   type Num,
   type Value,
   type Vec3Value,
 } from "./expression-core.js";
-import { ease as applyEasing, tween } from "./generated/expressions.js";
+import {
+  ease as applyEasing,
+  frame,
+  key,
+  keyframes,
+  tween,
+  vec3,
+} from "./generated/expressions.js";
 import { quote } from "./quote.js";
 import type { NodeReference } from "./types.js";
 
@@ -81,6 +95,53 @@ export function node<T extends Value = never>(id: NodeReference, property: strin
     throw new RangeError(`\`node\` expects an unsigned integer id, got ${value}.`);
   }
   return new Expr<T>(`node(${value}, ${quote(property)})`);
+}
+
+/** The frames `sampledKeys` samples: `start`, then every `step` frames, and always `end`. */
+export interface SampledKeysOptions {
+  readonly start: number;
+  readonly end: number;
+  readonly step: number;
+}
+
+/**
+ * Samples `sample` from frame `start` every `step` frames, and at `end`, into one `smooth`
+ * `keyframes` track on `frame`, so a smooth curve needs a key every few frames rather than one per
+ * frame. `sample` returns a number, a vec2 or a vec3, as in
+ * `sampledKeys((f) => Math.sin(f / 20), { start: 0, end: 120, step: 5 })`. Values are rounded to
+ * 5 decimals.
+ */
+export function sampledKeys<T extends number | Vec2 | Vec3>(
+  sample: (frame: number) => T,
+  { start, end, step }: SampledKeysOptions,
+): Expr<T extends number ? number : T extends Vec2 ? Vec2 : Vec3Value> {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    throw new RangeError(`\`sampledKeys\` needs finite frames with start <= end.`);
+  }
+  if (!Number.isFinite(step) || step <= 0) {
+    throw new RangeError(`\`sampledKeys\` expects a positive step, got ${step}.`);
+  }
+  const frames = [start];
+  for (let at = start + step; at < end; at = start + frames.length * step) {
+    frames.push(at);
+  }
+  if (end > start) {
+    frames.push(end);
+  }
+  const [first, ...rest] = frames.map((at) => sampledKey(at, sample(at)));
+  return keyframes(frame, "smooth", first!, ...rest) as Expr<never>;
+}
+
+function sampledKey(at: number, value: number | Vec2 | Vec3): Expr<Key> {
+  if (typeof value === "number") {
+    return key(at, round5(value));
+  }
+  const [x, y, z] = value.map(round5);
+  return value.length === 2 ? key(at, [x!, y!]) : key(at, vec3(x!, y!, z!));
+}
+
+function round5(value: number): number {
+  return Math.round(value * 1e5) / 1e5;
 }
 
 /** `seconds` as a `1.5s` literal, which the evaluator converts to frames. */

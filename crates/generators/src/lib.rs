@@ -447,7 +447,10 @@ fn expressions_json() -> Value {
         .iter()
         .map(|global| json!({ "name": global.name, "doc": global.doc }))
         .collect::<Vec<_>>();
-    let easings = NamedEasing::ALL.map(NamedEasing::name);
+    let easings = NamedEasing::ALL
+        .into_iter()
+        .map(NamedEasing::name)
+        .collect::<Vec<_>>();
     let forms = FORMS
         .iter()
         .map(|form| json!({ "name": form.name, "signature": form.signature, "doc": form.doc }))

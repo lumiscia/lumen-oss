@@ -393,6 +393,138 @@ fn keys_at_the_same_time_jump() {
 }
 
 #[test]
+fn smooth_keys_pass_through_every_key_with_continuous_speed() {
+    // Time runs 10000 times slower than frames, so a frame is a fine step for slopes.
+    let track =
+        "keyframes(frame / 10000, 'smooth', key(0, 0), key(1, 10), key(2.5, 4), key(4, 30))";
+    for (frame, expected) in [(0, 0.0), (10000, 10.0), (25000, 4.0), (40000, 30.0)] {
+        assert_eq!(number_at(track, frame), expected, "frame {frame}");
+    }
+    for frame in [10000, 25000] {
+        let (before, at, after) = (
+            number_at(track, frame - 1),
+            number_at(track, frame),
+            number_at(track, frame + 1),
+        );
+        assert!(
+            ((at - before) - (after - at)).abs() < 1e-6,
+            "speed jumps at frame {frame}: {} then {}",
+            at - before,
+            after - at
+        );
+    }
+    let linear = "keyframes(frame / 10000, key(0, 0), key(1, 10), key(2.5, 4))";
+    let (before, at, after) = (
+        number_at(linear, 9999),
+        number_at(linear, 10000),
+        number_at(linear, 10001),
+    );
+    assert!(((at - before) - (after - at)).abs() > 1e-5);
+}
+
+#[test]
+fn smooth_keys_do_not_overshoot_a_held_value() {
+    let track = "keyframes(frame, 'smooth', key(0, 0), key(10, 1), key(20, 1))";
+    for frame in 0..=20 {
+        let value = number_at(track, frame);
+        assert!((0.0..=1.0).contains(&value), "frame {frame}: {value}");
+        if frame >= 10 {
+            assert_eq!(value, 1.0, "frame {frame}");
+        }
+    }
+    let colour = "keyframes(frame, 'smooth', key(0, #000000), key(10, #ff0000), key(20, #ff0000))";
+    assert_eq!(
+        evaluate(colour, 15).unwrap(),
+        ExpressionValue::Color([1.0, 0.0, 0.0, 1.0])
+    );
+}
+
+#[test]
+fn smooth_colour_keys_stay_valid_premultiplied_colours() {
+    let track =
+        "keyframes(frame, 'smooth', key(0, #000000ff), key(10, #ff000080), key(20, #ff0000ff))";
+    for frame in 0..=20 {
+        let ExpressionValue::Color([r, g, b, a]) = evaluate(track, frame).unwrap() else {
+            panic!("expected a colour");
+        };
+        assert!((0.0..=1.0).contains(&a), "frame {frame}: alpha {a}");
+        for channel in [r, g, b] {
+            assert!(
+                (0.0..=1.0 + 1e-9).contains(&channel),
+                "frame {frame}: {channel}"
+            );
+        }
+    }
+}
+
+#[test]
+fn smooth_keys_follow_a_function_sampled_every_fifth_frame() {
+    let keys = (0..=120)
+        .step_by(5)
+        .map(|frame| format!("key({frame}, {})", (f64::from(frame) / 20.0).sin()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let smooth = format!("keyframes(frame, 'smooth', {keys})");
+    let linear = format!("keyframes(frame, {keys})");
+    let error = |source: &str| {
+        (0..=120)
+            .map(|frame| (number_at(source, frame) - (f64::from(frame) / 20.0).sin()).abs())
+            .fold(0.0, f64::max)
+    };
+    // Not overshooting costs a little at the keys beside each peak.
+    assert!(error(&smooth) < 4e-3, "{}", error(&smooth));
+    assert!(error(&linear) > 2.0 * error(&smooth));
+}
+
+#[test]
+fn smooth_ends_and_jumps_use_one_sided_slopes() {
+    // With nothing to bend toward, a smooth segment is a straight line.
+    assert_eq!(
+        number_at("keyframes(frame, 'smooth', key(0, 0), key(10, 10))", 5),
+        5.0
+    );
+    let jump = "keyframes(frame, 'smooth', key(0, 0), key(10, 10), key(10, 50), key(20, 60))";
+    assert_eq!(number_at(jump, 5), 5.0);
+    assert_eq!(number_at(jump, 10), 50.0);
+    assert_eq!(number_at(jump, 15), 55.0);
+    // A neighbouring segment with another easing leaves the slope one-sided.
+    let mixed =
+        "keyframes(frame, key(0, 0, 'out_quad'), key(10, 10, 'smooth'), key(20, 30), key(30, 30))";
+    assert!((number_at(mixed, 15) - 20.0).abs() < 1e-12);
+}
+
+#[test]
+fn smooth_needs_neighbouring_keys_and_values_that_blend() {
+    for source in [
+        "ease('smooth', 0.5)",
+        "tween(0, 10, 0, 10, 'smooth')",
+        "ease(concat('smo', 'oth'), 0.5)",
+    ] {
+        let error = match Expression::parse(source) {
+            Ok(expression) => expression
+                .evaluate(&test_context())
+                .unwrap_err()
+                .to_string(),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("only applies between keyframes"),
+            "{source}: {error}"
+        );
+    }
+    let error = evaluate(
+        "keyframes(frame, key(0, 'M 0 0 L 10 0', 'smooth'), key(10, 'M 0 0 L 20 0'))",
+        5,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("the key at 0: smooth applies to numbers, vectors and colours"),
+        "{error}"
+    );
+}
+
+#[test]
 fn boolean_keys_are_numbers_everywhere_on_the_track() {
     let track = "keyframes(frame, key(10, false), key(20, true))";
     for (frame, expected) in [(0, 0.0), (15, 0.5), (20, 1.0)] {

@@ -146,6 +146,7 @@ fn held_values_match_evaluation_and_hold_where_they_say() {
         "keyframes(time, 'hold', key(0.5, 'one'), key(1.5, 'two'), key(2.25, 'three'))",
         "keyframes(frame * 2, 'out_quad', key(20, vec2(0, 0)), key(80, vec2(10, 5)), key(80, vec2(20, 0)), key(150, vec2(0, 0), 'hold'), key(160, vec2(1, 1)))",
         "keyframes(frame, key(50, #ff0000), key(70, #0000ff))",
+        "keyframes(frame, 'smooth', key(10, 0), key(20, 100), key(40, 100), key(60, 0))",
         "keyframes(100 - frame, key(10, 1), key(30, 2, 'hold'), key(50, 3))",
         "keyframes(frame, 'hold', key(40, 'M 0 0 L 1 1'), key(80, 'M 0 0 L 2 2'))",
         "noise(1, floor(frame / 10))",
