@@ -105,20 +105,13 @@ impl Text2dParams {
         }
     }
 
-    /// The point of the text's box at `position`, as fractions of its width and height.
-    fn anchor(&self) -> [f32; 2] {
-        [
-            match self.alignment_horizontal {
-                TextAlignmentHorizontal::Left | TextAlignmentHorizontal::Justify => 0.0,
-                TextAlignmentHorizontal::Center => 0.5,
-                TextAlignmentHorizontal::Right => 1.0,
-            },
-            match self.alignment_vertical {
-                TextAlignmentVertical::Top => 0.0,
-                TextAlignmentVertical::Middle => 0.5,
-                TextAlignmentVertical::Bottom => 1.0,
-            },
-        ]
+    /// The point of the text's box at `position`, as a fraction of its width.
+    fn anchor_x(&self) -> f32 {
+        match self.alignment_horizontal {
+            TextAlignmentHorizontal::Left | TextAlignmentHorizontal::Justify => 0.0,
+            TextAlignmentHorizontal::Center => 0.5,
+            TextAlignmentHorizontal::Right => 1.0,
+        }
     }
 }
 
@@ -155,7 +148,8 @@ pub(super) struct TextPaths {
 struct TextKey {
     request: TextLayoutRequest,
     font_generation: u64,
-    anchor: [f32; 2],
+    anchor_x: f32,
+    alignment_vertical: TextAlignmentVertical,
 }
 
 struct KeptText {
@@ -279,7 +273,8 @@ pub(crate) fn shape_text(
     let key = TextKey {
         request,
         font_generation,
-        anchor: params.anchor(),
+        anchor_x: params.anchor_x(),
+        alignment_vertical: params.alignment_vertical,
     };
     let max_glyphs = cx.max_text_glyphs();
     let (_, tick, cache, _) = cx.drawing_cache();
@@ -309,10 +304,7 @@ fn shape(
     let shaped = system.shape_changed(&key.request);
     let layout = shaped.place([0.0, 0.0]);
     let width = key.request.max_width.unwrap_or(shaped.measurement.width);
-    let origin = [
-        key.anchor[0] * width,
-        key.anchor[1] * shaped.measurement.height,
-    ];
+    let origin = [key.anchor_x * width, key.alignment_vertical.offset(&shaped)];
     // `None` for a glyph with no outline.
     let mut outlines: HashMap<GlyphKey, Option<Arc<Path>>> = HashMap::default();
     let (mut glyphs, mut skipped) = (Vec::new(), 0);

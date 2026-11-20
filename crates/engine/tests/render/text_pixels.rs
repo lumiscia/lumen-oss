@@ -1182,3 +1182,30 @@ fn spans_shape_in_their_own_size_and_weight() {
         );
     }
 }
+
+#[test]
+fn baseline_alignment_puts_fonts_of_different_metrics_on_one_baseline() {
+    let gpu = gpu();
+    let media = media();
+    // The bottom row of an `H`, which has no descender, from `y`.
+    let bottom = |family: &str, alignment: &str, y: u32| {
+        let params = json!({
+            "content": "H", "font_family": family, "font_size": 300, "color": [255, 255, 255, 255],
+            "position": [20, y], "alignment_vertical": alignment,
+        });
+        let frame = frame_of(&gpu, text_scene((320, 400), json!({}), params), &media);
+        ink_box(&frame, whole(&frame))[3]
+    };
+    // Inter and Roboto have different ascents and descents, so `top` lets their baselines part.
+    let (inter, roboto) = (bottom("Inter", "top", 20), bottom("Roboto", "top", 20));
+    assert!(inter.abs_diff(roboto) >= 4, "top: {inter} and {roboto}");
+    let (inter, roboto) = (
+        bottom("Inter", "baseline", 300),
+        bottom("Roboto", "baseline", 300),
+    );
+    assert!(
+        inter.abs_diff(roboto) <= 1,
+        "baseline: {inter} and {roboto}"
+    );
+    assert!(inter.abs_diff(300) <= 1, "the baseline is at 300: {inter}");
+}

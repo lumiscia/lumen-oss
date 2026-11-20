@@ -62,7 +62,7 @@ Category: source. Output: raster.
 Params:
 
 - **`alignment_horizontal`** (`"left"` | `"center"` | `"right"` | `"justify"`; default `"left"`; literal only) Horizontal text alignment.
-- **`alignment_vertical`** (`"top"` | `"middle"` | `"bottom"`; default `"top"`; literal only) Vertical text alignment.
+- **`alignment_vertical`** (`"top"` | `"middle"` | `"bottom"` | `"baseline"`; default `"top"`; literal only) Vertical text alignment: `top`, `middle` and `bottom` put that edge of the text at `position`. `baseline`: the position is on the first line's baseline, so texts in different fonts line up.
 - **`anchor`** ([number, number]; default `[0,0]`) Pivot for scale and rotation, in pixels relative to `position`.
 - **`color`** ([paint](#type-paint); default `[255,255,255,255]`) Text color, and that of spans without their own.
 - **`content`** ([textContent](#type-textcontent); default `""`) Text to render: a string, or spans that each override the style these params give. A node draws at most 16384 glyphs unless the host sets another limit, counting a stroked glyph twice and each decoration rect once; whitespace is not drawn, and more is a render error.
@@ -299,7 +299,7 @@ Category: vector. Output: geometry.
 Params:
 
 - **`alignment_horizontal`** (`"left"` | `"center"` | `"right"` | `"justify"`; default `"left"`; literal only) How lines align with each other, and which point of the text's box sits at `position`: its left edge, centre or right edge. Justified lines anchor at the left edge.
-- **`alignment_vertical`** (`"top"` | `"middle"` | `"bottom"`; default `"top"`; literal only) Which point of the text's box sits at `position` vertically: the top of its first line, its middle, or the bottom of its last line.
+- **`alignment_vertical`** (`"top"` | `"middle"` | `"bottom"` | `"baseline"`; default `"top"`; literal only) Which point of the text sits at `position` vertically: the top of its first line, its middle, or the bottom of its last line. `baseline`: the position is on the first line's baseline, so texts in different fonts line up.
 - **`anchor`** ([number, number]; default `[0,0]`) Pivot for scale and rotation, in pixels relative to `position`.
 - **`content`** (string; default `"Text"`) Text to outline, in one style. Line breaks start new lines. Whitespace has no outline, and glyphs that their font draws from colour or bitmap tables, such as emoji, have none either and are left out with a `font.no_outlines` warning. A node outlines at most as many glyphs as the host's text glyph limit lets a `text` node draw, 16384 unless the host sets another, and one glyph's outline has at most 4096 commands; more is a render error.
 - **`font_family`** (string; default `"Roboto"`) Font family name, or `asset:<id>` for a font asset of the host's. A family no font answers to falls back as a `text` node's does.
@@ -1371,7 +1371,7 @@ Inputs:
 Params:
 
 - **`alignment_horizontal`** (`"left"` | `"center"` | `"right"` | `"justify"`; default `"center"`; literal only) How lines align with each other, and which point of the text's box sits at `position`: its left edge, centre or right edge. Justified lines anchor at the left edge.
-- **`alignment_vertical`** (`"top"` | `"middle"` | `"bottom"`; default `"middle"`; literal only) Which point of the text's box sits at `position` vertically: the top of its first line, its middle, or the bottom of its last line.
+- **`alignment_vertical`** (`"top"` | `"middle"` | `"bottom"` | `"baseline"`; default `"middle"`; literal only) Which point of the text sits at `position` vertically: the top of its first line, its middle, or the bottom of its last line. `baseline`: the position is on the first line's baseline, so texts in different fonts line up.
 - **`bevel_segments`** (integer, 0 to 16; default `4`) Steps of the bevel's quarter-round profile, up to 16: 1 is a flat 45° chamfer, and 0 is no bevel.
 - **`bevel_size`** (number, at least 0; default `0`) How far the bevel rounds off each glyph's edges in world units, in from the outline and in from the front and back, up to half of `depth`; 0 is none. The outline keeps its size where the sides meet the bevel. A glyph whose strokes are too thin for the bevel gets the widest one that fits it, so at regular weights bevels past about 0.04 of the font size stop growing on most glyphs.
 - **`content`** (string; default `"Text"`) Text to extrude, in one style. Line breaks start new lines. Whitespace is not drawn, and glyphs that their font draws from colour or bitmap tables, such as emoji, have no outline and are left out with a `font.no_outlines` warning. A node extrudes at most as many glyphs as the host's text glyph limit lets a `text` node draw, 16384 unless the host sets another, and at most 4000000 vertices and 12000000 indices; more is a render error. One glyph builds from an outline of at most 4096 commands, 64 contours and 8192 flattened points, and takes at most 262144 vertices and 786432 indices, and 3072 points where it is bevelled; a font with a glyph past any of these fails the render rather than the glyph being left out.

@@ -91,6 +91,19 @@ pub enum TextAlignmentVertical {
     Top = 0,
     Middle = 1,
     Bottom = 2,
+    Baseline = 3,
+}
+
+impl TextAlignmentVertical {
+    /// How far above the text's top its `position` sits, in the pixels of `shaped`.
+    pub(crate) fn offset(self, shaped: &lumen_text::ShapedText) -> f32 {
+        match self {
+            Self::Top => 0.0,
+            Self::Middle => shaped.measurement.height * 0.5,
+            Self::Bottom => shaped.measurement.height,
+            Self::Baseline => shaped.first_baseline(),
+        }
+    }
 }
 
 #[derive(
@@ -275,7 +288,9 @@ pub struct TextDrawParams {
     /// node's `color` always spans the whole text.
     #[meta()]
     pub paint_space: TextPaintSpace,
-    /// Vertical text alignment.
+    /// Vertical text alignment: `top`, `middle` and `bottom` put that edge of the text at
+    /// `position`. `baseline`: the position is on the first line's baseline, so texts in
+    /// different fonts line up.
     #[meta()]
     pub alignment_vertical: TextAlignmentVertical,
     /// Enables 4×4 supersampling when evaluating paint at each glyph pixel.
@@ -555,14 +570,9 @@ impl TextInstance {
             unreachable!("text was shaped above");
         };
 
-        let height = shaped.measurement.height;
         let origin = [
             position_x as f32,
-            match draw.alignment_vertical {
-                TextAlignmentVertical::Top => position_y as f32,
-                TextAlignmentVertical::Middle => position_y as f32 - height * 0.5,
-                TextAlignmentVertical::Bottom => position_y as f32 - height,
-            },
+            position_y as f32 - draw.alignment_vertical.offset(shaped),
         ];
         let layout = shaped.place(origin);
         let spans: &[SpanStyle] = &span_styles;

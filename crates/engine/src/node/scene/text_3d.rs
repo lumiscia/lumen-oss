@@ -91,8 +91,9 @@ pub struct Text3dParams {
     /// its left edge, centre or right edge. Justified lines anchor at the left edge.
     #[meta()]
     pub alignment_horizontal: TextAlignmentHorizontal,
-    /// Which point of the text's box sits at `position` vertically: the top of its first line,
-    /// its middle, or the bottom of its last line.
+    /// Which point of the text sits at `position` vertically: the top of its first line, its
+    /// middle, or the bottom of its last line. `baseline`: the position is on the first line's
+    /// baseline, so texts in different fonts line up.
     #[meta()]
     pub alignment_vertical: TextAlignmentVertical,
     /// Case applied to the text.

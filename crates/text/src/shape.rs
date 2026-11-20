@@ -1032,6 +1032,13 @@ pub(crate) struct ShapedGlyph {
 }
 
 impl ShapedText {
+    /// Y of the first line's baseline from the text's top, or 0 for text with no glyphs.
+    pub fn first_baseline(&self) -> f32 {
+        self.segments
+            .first()
+            .map_or(0.0, |segment| segment.baseline + segment.shift)
+    }
+
     /// This text with every length scaled by `scale`, keeping its lines as they were shaped.
     /// Glyphs keep their place on each line and are rasterized at their scaled size, and the
     /// decorations' own sizes scale with `fit_scale`.
