@@ -258,7 +258,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn masked_objects_split_runs_without_leaving_their_place_in_the_order() {
         let objects = [
             object(1, Blending::Opaque, 0.0),

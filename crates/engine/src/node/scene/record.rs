@@ -7,7 +7,7 @@ use super::Render3d;
 #[cfg(feature = "3d")]
 use super::collect::particles_programs;
 #[cfg(feature = "3d")]
-use super::render::{catcher_programs, light_programs, masked_programs};
+use super::render::{catcher_programs, light_programs};
 use super::text_3d::{check_length, check_weight};
 use super::{
     Camera3d, Extrude3d, ImagePlane3d, Instance3d, Lathe3d, Light3d, Material3d, Merge3d, Model3d,
@@ -36,12 +36,6 @@ fn light_programs(_: &Light3d, _: &mut Programs<'_>) -> crate::Result<()> {
 /// Without the `3d` feature nothing draws a scene, so no shadow catcher builds programs.
 #[cfg(not(feature = "3d"))]
 fn catcher_programs(_: &crate::node::Deferred<bool>, _: &mut Programs<'_>) -> crate::Result<()> {
-    Ok(())
-}
-
-/// Without the `3d` feature nothing draws a scene, so no model builds masked programs.
-#[cfg(not(feature = "3d"))]
-fn masked_programs(_: &mut Programs<'_>) -> crate::Result<()> {
     Ok(())
 }
 
@@ -190,8 +184,8 @@ impl RecordNode for Light3d {
 }
 
 impl RecordNode for Model3d {
-    fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
-        masked_programs(programs)
+    fn programs(&self, _: &mut Programs<'_>) -> crate::Result<()> {
+        Ok(())
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {

@@ -692,14 +692,6 @@ pub(crate) fn catcher_programs(
     Ok(())
 }
 
-/// Builds the programs drawing a masked surface, which only a model's materials can ask for.
-pub(crate) fn masked_programs(programs: &mut Programs<'_>) -> crate::Result<()> {
-    for cull in [Some(wgpu::Face::Back), Some(wgpu::Face::Front), None] {
-        programs.render(&SCENE_3D_MASKED, spec(DepthTest::Write, cull), 0)?;
-    }
-    Ok(())
-}
-
 impl Render3d {
     /// Draws the depth or normals of `collected`'s objects at `size` with `program`, from
     /// [`data_program`].
@@ -861,8 +853,8 @@ impl Render3d {
 
 impl RecordNode for Render3d {
     /// Builds the programs scenes draw with, and the background's if the scene may show one, but
-    /// for those drawing shadow maps, catchers and masked surfaces, which the lights, surfaces and
-    /// models asking for them build.
+    /// for those drawing shadow maps and catchers, which the lights and surfaces asking for them
+    /// build. Masked surfaces build their programs when first drawn.
     fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
         let output = match self.params.output {
             Render3dOutputDelegate::Depth => Render3dOutput::Depth,
