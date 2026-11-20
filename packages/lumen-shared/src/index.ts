@@ -8,8 +8,10 @@ export type * from "@lumiscia/lumen-types";
 export type {
   AudioClipOptions,
   AudioTrackOptions,
+  ClipNode,
   ClipOptions,
   ClipPropInputs,
+  ClipReference,
   CompositionDefinition,
   CompositionDefinitionOptions,
   CompositionOptions,
@@ -30,6 +32,7 @@ export type {
   PropType,
   RenderSettingsInput,
   Size,
+  TemplateOutput,
   TimelineInput,
   TypedNode,
   WgslShader,

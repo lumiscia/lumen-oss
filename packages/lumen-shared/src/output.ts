@@ -6,10 +6,11 @@ import type { NodeOutputOf, TypedNode } from "./types.js";
  * Output `output` of `node`, for a port to read in place of its default `output`, as
  * `outputOf(render, "depth")`. The name is checked against `node`'s kind.
  */
-export function outputOf<TKind extends NodeKind, TOutput extends NodeOutputName<TKind>>(
-  node: TypedNode<TKind> & { readonly type: TKind },
-  output: TOutput,
-): NodeOutputOf<TKind, TOutput> {
+export function outputOf<
+  TKind extends NodeKind,
+  TOutput extends NodeOutputName<TKind>,
+  TNode extends TypedNode<TKind>,
+>(node: TNode & { readonly type: TKind }, output: TOutput): NodeOutputOf<TKind, TOutput, TNode> {
   return { node, output };
 }
 

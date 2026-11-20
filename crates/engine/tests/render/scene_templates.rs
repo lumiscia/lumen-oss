@@ -1,10 +1,13 @@
 //! Templates whose output is a scene: clips playing them inside a `merge_3d`, each with its own
-//! props and time, what a scene capture reports of them, and mattes named inside them.
+//! props and time, what a scene capture reports of them, mattes named inside them, and particles
+//! placed inside them.
 
 use lumen_engine::{composition::Composition, node::NodeId};
 use serde_json::{Value, json};
 
-use crate::support::scene::{SIZE, flat, listed, merge, render_3d, render_3d_with};
+use crate::support::scene::{
+    SIZE, flat, listed, merge, model, quads, render_3d, render_3d_with, unlit,
+};
 use crate::support::{Scene, TestMedia, gpu, render, render_working_space};
 
 const RED: [u8; 4] = [255, 0, 0, 255];
@@ -183,4 +186,81 @@ fn a_matte_named_inside_a_scene_template_takes_its_objects() {
     let at = |x: u32| texels[(32 * SIZE.0 + x) as usize];
     assert_eq!(at(16)[..2], [0.0, 1.0], "the box takes the second channel");
     assert_eq!(at(48)[..2], [0.0, 0.0], "nothing is right of it");
+}
+
+/// A template of boxes scattered over the model `source`, which is left out.
+fn scatter_over(source: &str) -> Value {
+    json!({
+        "timeline": { "fps": 30, "duration_frames": 1 },
+        "nodes": [
+            model(1, json!({ "source": source })),
+            { "id": 3, "type": "material_3d", "params": { "unlit": true } },
+            { "id": 4, "type": "shape_3d", "params": { "size": [0.1, 0.1, 0.1] } },
+            { "id": 2, "type": "particles_3d", "params": { "count": 30, "seed": 3 } },
+            { "id": 5, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 3, "to_node": 4, "to_port": "material" },
+            { "from_node": 1, "to_node": 2, "to_port": "surface" },
+            { "from_node": 4, "to_node": 2, "to_port": "object" },
+            { "from_node": 2, "to_node": 5, "to_port": "source" }
+        ]
+    })
+}
+
+#[test]
+fn particles_in_two_templates_place_over_their_own_surfaces() {
+    // The templates differ only in their model, so their particles' params and placements match.
+    let material = json!([unlit("white", [1.0, 1.0, 1.0, 1.0])]);
+    let media = TestMedia::default()
+        .model(
+            "left.glb",
+            quads(material.clone(), &[([-2.0, -1.0, -1.0, 1.0], 0)]),
+        )
+        .model("right.glb", quads(material, &[([1.0, -1.0, 2.0, 1.0], 0)]));
+    let clip = |id: u32, composition: &str, start: u32| {
+        json!({ "id": id, "type": "clip",
+            "params": { "composition": composition, "start": start, "duration": 1 } })
+    };
+    let mut scene = render_3d_with(
+        json!({}),
+        vec![
+            clip(10, "a", 0),
+            clip(11, "b", 1),
+            merge(20, &[10, 11], json!({})),
+        ],
+    )
+    .frames(2);
+    scene.0["compositions"] =
+        json!({ "a": scatter_over("left.glb"), "b": scatter_over("right.glb") });
+    let composition: Composition = scene.into();
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let sides = |frame: &crate::support::Frame| {
+        let drawn: Vec<u32> = (0..SIZE.1)
+            .flat_map(|y| (0..SIZE.0).map(move |x| (x, y)))
+            .filter(|&(x, y)| frame.pixel(x, y)[3] > 0)
+            .map(|(x, _)| x)
+            .collect();
+        (
+            drawn.iter().filter(|&&x| x < SIZE.0 / 2).count(),
+            drawn.iter().filter(|&&x| x >= SIZE.0 / 2).count(),
+        )
+    };
+    let (left, right) = sides(&render(&mut renderer, &composition, 0.0, &media));
+    assert!(
+        left > 0 && right == 0,
+        "frame 0 scatters over the left model: {left}, {right}"
+    );
+    let second = render(&mut renderer, &composition, 1.0, &media);
+    let (left, right) = sides(&second);
+    assert!(
+        left == 0 && right > 0,
+        "frame 1 scatters over the right model: {left}, {right}"
+    );
+    let fresh = render(&mut gpu.renderer(), &composition, 1.0, &media);
+    assert!(
+        second.rgba == fresh.rgba,
+        "frame 1 draws as it does on its own"
+    );
 }

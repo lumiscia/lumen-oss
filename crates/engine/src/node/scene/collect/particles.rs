@@ -267,7 +267,10 @@ fn forget_node(rec: &mut Recorder, node: &NodeBuffers) {
 /// A `particles_3d`'s particles at a frame: what the compute pass places them from, and where
 /// they can be.
 pub(crate) struct ParticleSystem {
+    /// The node and the scene whose graph holds it, which may be a template's rather than the
+    /// render's.
     node: NodeId,
+    scene: SceneId,
     params: GpuParticles,
     parts: Vec<GpuPart>,
     /// The surface's triangles, unless particles are emitted from the origin.
@@ -306,8 +309,8 @@ impl ParticleSystem {
 /// node placed them into before, when it holds them still, or one placed into now.
 pub(crate) fn instance_buffer(cx: &mut FrameCx<'_>, system: &ParticleSystem) -> crate::Result<Res> {
     let program = cx.program(&PARTICLES)?;
-    let (scope, tick, rec, _, cache) = cx.particle_cache();
-    let node = cache.nodes.entry((scope, system.node)).or_default();
+    let (_, tick, rec, _, cache) = cx.particle_cache();
+    let node = cache.nodes.entry((system.scene, system.node)).or_default();
     node.last_used = tick;
     if node.tick != tick {
         node.tick = tick;
@@ -592,7 +595,7 @@ impl Collected {
         }
         self.scene.weights.extend_from_slice(&inner.scene.weights);
 
-        let system = system(node.id, &params, seconds, surface);
+        let system = system(node.id, cx.scene_id(), &params, seconds, surface);
         let list = self.lists.len() as u32;
         self.lists.push(CopyList {
             key: (node.id, 0),
@@ -841,6 +844,7 @@ impl Collected {
 /// along +Y without one.
 fn system(
     node_id: NodeId,
+    scene: SceneId,
     params: &crate::node::scene::Particles3dParams,
     seconds: f64,
     surface: Option<Surface>,
@@ -897,6 +901,7 @@ fn system(
     }
     ParticleSystem {
         node: node_id,
+        scene,
         params: GpuParticles {
             count,
             seed: (seed ^ (seed >> 32)) as u32,
@@ -969,7 +974,7 @@ mod tests {
             scale: (0.5, 2.0),
             ..Default::default()
         };
-        let system = system(NodeId::new(1), &params, 10.0, None);
+        let system = system(NodeId::new(1), SceneId::Root, &params, 10.0, None);
         // 3 units of travel either way, 4.5 down, and a unit cube's corner, √0.75 out, at twice
         // its size.
         let corner = 0.75_f32.sqrt() * 2.0;
@@ -986,6 +991,6 @@ mod tests {
     }
 
     fn system_at(params: &crate::node::scene::Particles3dParams, seconds: f64) -> ParticleSystem {
-        system(NodeId::new(1), params, seconds, None)
+        system(NodeId::new(1), SceneId::Root, params, seconds, None)
     }
 }

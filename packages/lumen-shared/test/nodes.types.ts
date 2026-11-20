@@ -15,6 +15,7 @@ import {
   when,
 } from "../src/expression.js";
 import { nodes as n } from "../src/nodes.js";
+import { outputOf } from "../src/output.js";
 import { defineComposition } from "../src/template.js";
 import type { NodeInput, NodeSource, NodeValue } from "../src/types.js";
 
@@ -111,6 +112,36 @@ n.opacity({ source: sceneCard.clip() });
 n.merge_3d({ objects: [defineComposition({ name: "plain", build: () => n.background() }).clip()] });
 // @ts-expect-error a template outputs a raster or a scene, not a geometry
 defineComposition({ name: "outline", build: () => n.shape_2d() });
+
+// A clip's named output, and the reference `addNode` returns for it, keep its template's kind.
+const sceneOutput = outputOf(sceneCard.clip(), "output");
+n.merge_3d({ objects: [sceneOutput] });
+// @ts-expect-error a scene template's clip output is a scene, not a raster
+n.opacity({ source: sceneOutput });
+const wrapped = defineComposition({ name: "wrapped", build: () => sceneOutput });
+n.merge_3d({ objects: [wrapped.clip()] });
+// @ts-expect-error a template returning a scene clip's output is a scene template
+n.opacity({ source: wrapped.clip() });
+const sceneClip = new Composition().addNode(sceneCard.clip());
+n.merge_3d({ objects: [sceneClip] });
+// @ts-expect-error an added scene clip is a scene, not a raster
+n.opacity({ source: sceneClip });
+const rasterClip = new Composition().addNode(
+  defineComposition({ name: "plain", build: () => n.background() }).clip(),
+);
+n.opacity({ source: rasterClip });
+// @ts-expect-error an added image clip is a raster, not a scene
+n.merge_3d({ objects: [rasterClip] });
+
+// A template that may return either kind makes clips that fit neither kind of input.
+const either = defineComposition({
+  name: "either",
+  build: () => (Math.random() > 0.5 ? n.shape_3d() : n.background()),
+});
+// @ts-expect-error the clip may output a raster
+n.merge_3d({ objects: [either.clip()] });
+// @ts-expect-error the clip may output a scene
+n.opacity({ source: either.clip() });
 
 // No kind gives a param and an input port the same name.
 // @ts-expect-error `NodeParamPortNameClash` is `never`

@@ -75,9 +75,17 @@ declare const templateOutput: unique symbol;
  * scene node, for `merge_3d` and `render_3d`; any other clip outputs a raster.
  */
 export type ClipNode<TOutput extends TemplateOutput = TemplateOutput> = NodeInput<"clip"> &
-  (TOutput extends "scene"
-    ? { readonly [templateOutput]: "scene" }
-    : { readonly [templateOutput]?: "raster" });
+  ClipBrand<TOutput>;
+
+/** A `clip` node of the composition, as `addNode` returned it, that outputs `TOutput`. */
+export type ClipReference<TOutput extends TemplateOutput = TemplateOutput> = {
+  readonly id: number;
+  readonly type: "clip";
+} & ClipBrand<TOutput>;
+
+type ClipBrand<TOutput extends TemplateOutput> = TOutput extends "scene"
+  ? { readonly [templateOutput]: "scene" }
+  : { readonly [templateOutput]?: "raster" };
 
 /**
  * What a port reads: a node of the composition, or a node value, which becomes a node of the
@@ -94,23 +102,33 @@ export type TypedNode<TKind extends NodeKind = NodeKind> =
   | { readonly id: number; readonly type: TKind }
   | NodeInput<TKind>;
 
-/** Output `TOutput` of a `TKind` node, as `outputOf` returns it. */
+/** Output `TOutput` of `TNode`, a `TKind` node, as `outputOf` returns it. */
 export interface NodeOutputOf<
   TKind extends NodeKind = NodeKind,
   TOutput extends NodeOutputName<TKind> = NodeOutputName<TKind>,
+  TNode extends TypedNode<TKind> = TypedNode<TKind>,
 > {
-  readonly node: TypedNode<TKind>;
+  readonly node: TNode;
   readonly output: TOutput;
 }
 
-/** A named output of any node kind, of any name, that outputs `TOutput`. */
-export type NodeOutput<TOutput extends NodePortKind = NodePortKind> = {
-  readonly [TKind in NodeKind]: {
-    readonly [TName in NodeOutputName<TKind>]: NodeOutputPortKind<TKind, TName> extends TOutput
-      ? NodeOutputOf<TKind, TName>
-      : never;
-  }[NodeOutputName<TKind>];
-}[NodeKind];
+/**
+ * A named output of any node kind, of any name, that outputs `TOutput`. A clip's outputs are
+ * what its template outputs.
+ */
+export type NodeOutput<TOutput extends NodePortKind = NodePortKind> =
+  | {
+      readonly [TKind in Exclude<NodeKind, "clip">]: {
+        readonly [TName in NodeOutputName<TKind>]: NodeOutputPortKind<TKind, TName> extends TOutput
+          ? NodeOutputOf<TKind, TName>
+          : never;
+      }[NodeOutputName<TKind>];
+    }[Exclude<NodeKind, "clip">]
+  | ClipOutput<Extract<TOutput, TemplateOutput>>;
+
+type ClipOutput<TOutput extends TemplateOutput> = [TOutput] extends [never]
+  ? never
+  : NodeOutputOf<"clip", NodeOutputName<"clip">, ClipNode<TOutput> | ClipReference<TOutput>>;
 
 /** A node's params and input ports by name in one object, as `nodes` takes them. */
 export type NodeProps<TKind extends NodeKind> = NodeParamProps<TKind> &
@@ -214,7 +232,8 @@ type NodeKindOutputting<TOutput extends NodePortKind> = {
  */
 export type NodeReference<TOutput extends NodePortKind = NodePortKind> =
   | number
-  | { readonly id: number; readonly type?: NodeKindOutputting<TOutput> };
+  | { readonly id: number; readonly type?: Exclude<NodeKindOutputting<TOutput>, "clip"> }
+  | ClipReference<Extract<TOutput, TemplateOutput>>;
 
 /**
  * What `connect` reads: a node of the composition, or one of its named outputs or those of a node
@@ -371,12 +390,17 @@ export type ClipPropInputs<TProps extends PropDeclarations> = [keyof TProps] ext
         | ParamExpr<PropValueByType[TProps[TName]["type"]]>;
     };
 
-/** What a template whose `build` returns `TSource` outputs. */
+/**
+ * What a template whose `build` returns `TSource` outputs: either kind when `TSource` may be
+ * either, so its clips fit neither kind of input.
+ */
 export type SourceOutput<TSource extends NodeSource<TemplateOutput>> = [TSource] extends [
   NodeSource<"raster">,
 ]
   ? "raster"
-  : "scene";
+  : [TSource] extends [NodeSource<"scene">]
+    ? "scene"
+    : TemplateOutput;
 
 export interface CompositionDefinitionOptions<
   TProps extends PropDeclarations,

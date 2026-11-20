@@ -16,6 +16,8 @@ import { isNodeOutput } from "./output.js";
 import type {
   AudioClipOptions,
   AudioTrackOptions,
+  ClipNode,
+  ClipReference,
   CompositionOptions,
   ConnectOptions,
   ConnectSource,
@@ -137,11 +139,14 @@ export class Composition {
    * Adds a node. `inputs` connects nodes to its ports in order, as `connect` would after it; a
    * variadic port such as `layers` takes an array. An input may be a node value, added before
    * this node and after the values it reads in turn. A value read by several inputs is one node.
-   * `node` itself is always added, so adding the same object twice makes two nodes.
+   * `node` itself is always added, so adding the same object twice makes two nodes. A scene
+   * template's clip returns a reference that reads as a scene.
    */
+  addNode(node: ClipNode<"scene">): CompositionNode<"clip"> & ClipReference<"scene">;
   addNode<TKind extends NodeKind>(
     node: NodeInput<TKind> & { readonly type: TKind },
-  ): CompositionNode<TKind> {
+  ): CompositionNode<TKind>;
+  addNode(node: NodeInput & { readonly type: NodeKind }): CompositionNode {
     const nodes = this.#nodes.length;
     const connections = this.#connections.length;
     const nextNodeId = this.#nextNodeId;
@@ -149,7 +154,7 @@ export class Composition {
     const functions = this.#functions.size;
     const shaders = this.#shaders.size;
     try {
-      return this.#add(node as NodeInput) as CompositionNode<TKind>;
+      return this.#add(node);
     } catch (error) {
       // A failed addition leaves the composition as it was, nested values included.
       for (const added of this.#nodes.splice(nodes)) {
@@ -349,7 +354,7 @@ export class Composition {
   }
 
   /** A node handle must come from this composition. Ids are the engine's to check. */
-  #ownedNodeId(node: NodeReference): number {
+  #ownedNodeId(node: number | { readonly id: number }): number {
     if (typeof node !== "number" && owners.get(node) !== this) {
       throw new Error(`Node \`${node.id}\` is not a node of this composition.`);
     }
@@ -386,9 +391,10 @@ export class Composition {
     to: number | { readonly id: number; readonly type?: TKind },
     options: ConnectOptions<NoInfer<TKind>, TPort>,
   ): this {
+    const source = from as ConnectSource;
     this.#connections.push({
-      from_node: this.#sourceId(sourceNode(from)),
-      ...fromPort(from),
+      from_node: this.#sourceId(sourceNode(source)),
+      ...fromPort(source),
       to_node: this.#ownedNodeId(to),
       to_port: options.toPort,
     });
@@ -533,7 +539,7 @@ function isPlainObject(value: unknown): value is object {
   return prototype === Object.prototype || prototype === null;
 }
 
-function nodeId(node: NodeReference): number {
+function nodeId(node: number | { readonly id: number }): number {
   return typeof node === "number" ? node : node.id;
 }
 
