@@ -261,6 +261,27 @@ fn a_textured_material_on_a_solid_fails_naming_the_solid() {
 }
 
 #[test]
+fn extruded_text_is_a_solid_with_its_counters_open() {
+    // An `o` about a unit across, its box centred on the origin.
+    let text = frame(extrude(
+        json!({ "id": 1, "type": "text_2d", "params": {
+            "content": "o", "font_size": 200,
+            "alignment_horizontal": "center", "alignment_vertical": "middle",
+        } }),
+        json!({}),
+    ));
+    let covered: Vec<(u32, u32)> = (0..SIZE.1)
+        .flat_map(|y| (0..SIZE.0).map(move |x| (x, y)))
+        .filter(|&(x, y)| covered(&text, x, y))
+        .collect();
+    assert!(covered.len() > 40, "{} pixels are covered", covered.len());
+    let (xs, ys): (Vec<u32>, Vec<u32>) = covered.into_iter().unzip();
+    let middle = |values: &[u32]| (values.iter().min().unwrap() + values.iter().max().unwrap()) / 2;
+    let (x, y) = (middle(&xs), middle(&ys));
+    assert_eq!(text.pixel(x, y)[3], 0, "the counter at ({x}, {y}) is open");
+}
+
+#[test]
 fn a_solid_past_its_limits_fails_naming_the_node() {
     // 512 steps around a profile of 600 corners holds more than 262144 vertices.
     let data: String = (0..600)

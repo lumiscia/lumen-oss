@@ -184,6 +184,7 @@ node_kinds! {
     Shape(vector::shape::Shape),
     Path2d(vector::drawing::Path2d),
     Shape2d(vector::drawing::Shape2d),
+    Text2d(vector::drawing::Text2d),
     Offset2d(vector::drawing::Offset2d),
     Fill2d(vector::drawing::Fill2d),
     Stroke2d(vector::drawing::Stroke2d),

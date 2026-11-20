@@ -8,6 +8,7 @@ mod collect;
 #[cfg(feature = "3d")]
 mod outline;
 mod record;
+mod text;
 mod tiles;
 
 use serde_json::Value;
@@ -17,6 +18,10 @@ use super::drawable::DrawableTransform;
 use super::paint::Paint;
 use super::shape::ShapeGeometryKind;
 use crate::expr::Expression;
+use crate::node::source::text::{
+    TextAlignmentHorizontal, TextAlignmentVertical, TextFontStyle, TextTransform,
+};
+use crate::node::source::text_content::FontFeatures;
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, Delegated, NodeId, NodeParams, ParamTypeDef,
     PropertyRead,
@@ -27,6 +32,8 @@ pub(crate) use build::DrawingCache;
 pub(crate) use collect::{Outline, Source, resolve_outline};
 #[cfg(feature = "3d")]
 pub(crate) use outline::{Contour, flatten};
+#[cfg(feature = "3d")]
+pub(crate) use text::{TextGlyphs, shape_text};
 
 /// Where an outline or a merged drawing sits. Scale and rotation pivot about
 /// `position + anchor`.
@@ -253,6 +260,126 @@ pub struct Shape2d {
     pub id: NodeId,
     #[params]
     pub params: Shape2dParamsDelegate,
+}
+
+#[derive(Debug, Clone, lumen_macros::Delegate)]
+pub struct Text2dParams {
+    /// Text to outline, in one style. Line breaks start new lines. Whitespace has no outline, and
+    /// glyphs that their font draws from colour or bitmap tables, such as emoji, have none either
+    /// and are left out with a `font.no_outlines` warning. A node outlines at most as many glyphs
+    /// as the host's text glyph limit lets a `text` node draw, 16384 unless the host sets
+    /// another, and one glyph's outline has at most 4096 commands; more is a render error.
+    #[meta(multiline, recommended_rows = 4)]
+    pub content: String,
+    /// Font family name, or `asset:<id>` for a font asset of the host's. A family no font answers
+    /// to falls back as a `text` node's does.
+    #[meta(format = "font_family")]
+    pub font_family: String,
+    /// Font size in pixels: the height of the font's em square. 0 draws nothing, and so does
+    /// anything under 0.000001. At most 1000000, as are `max_width`, `letter_spacing` and
+    /// `line_height`.
+    #[meta(min = 0, enforced_min, step = 1)]
+    pub font_size: f64,
+    /// Font weight. Variable fonts render any value in their weight range.
+    #[meta(min = 1, max = 1000)]
+    pub font_weight: i64,
+    /// Font style.
+    #[meta()]
+    pub font_style: TextFontStyle,
+    /// Maximum line width in pixels, at which lines wrap. Use 0 for automatic width.
+    #[meta(min = 0, enforced_min, step = 1)]
+    pub max_width: f64,
+    /// Extra space after every glyph in pixels. Negative values tighten the text.
+    #[meta(step = 0.1)]
+    pub letter_spacing: f64,
+    /// OpenType features by four-character tag, such as `{ "tnum": 1, "liga": 0 }`. 0 turns a
+    /// feature off, 1 turns it on and larger values select an alternate. Values take literals
+    /// or expressions, but the whole map cannot be an expression.
+    #[meta()]
+    pub font_features: FontFeatures,
+    /// Distance between lines in pixels. Use 0 for 1.2 × the font size.
+    #[meta(min = 0, enforced_min, step = 1)]
+    pub line_height: f64,
+    /// How lines align with each other, and which point of the text's box sits at `position`:
+    /// its left edge, centre or right edge. Justified lines anchor at the left edge.
+    #[meta()]
+    pub alignment_horizontal: TextAlignmentHorizontal,
+    /// Which point of the text's box sits at `position` vertically: the top of its first line,
+    /// its middle, or the bottom of its last line.
+    #[meta()]
+    pub alignment_vertical: TextAlignmentVertical,
+    /// Case applied to the text.
+    #[meta()]
+    pub text_transform: TextTransform,
+    #[meta(
+        flatten,
+        doc(
+            position = "Where the point of the text's box that the alignments pick sits, in pixels."
+        )
+    )]
+    pub transform: Transform2d,
+}
+
+impl Default for Text2dParams {
+    fn default() -> Self {
+        Self {
+            content: "Text".to_string(),
+            font_family: lumen_text::DEFAULT_FONT_FAMILY.to_string(),
+            font_size: 64.0,
+            font_weight: 400,
+            font_style: TextFontStyle::Normal,
+            max_width: 0.0,
+            letter_spacing: 0.0,
+            font_features: FontFeatures::default(),
+            line_height: 0.0,
+            alignment_horizontal: TextAlignmentHorizontal::Left,
+            alignment_vertical: TextAlignmentVertical::Top,
+            text_transform: TextTransform::None,
+            transform: Transform2d::default(),
+        }
+    }
+}
+
+/// The outlines of text's glyphs, without paint, so fills, strokes, offsets and shadows style
+/// type as they do any other geometry, and one `text_2d` can feed several of them:
+///
+/// ```json
+/// { "id": 1, "type": "text_2d", "params": { "content": "Lumen", "font_size": 240, "position": [960, 540], "alignment_horizontal": "center", "alignment_vertical": "middle" } },
+/// { "id": 2, "type": "offset_2d", "params": { "offset": 12 }, "in": { "geometry": 1 } },
+/// { "id": 3, "type": "fill_2d", "params": { "paint": "#ee5b24" }, "in": { "geometry": 2 } },
+/// { "id": 4, "type": "fill_2d", "params": { "paint": "#ffffff" }, "in": { "geometry": 1 } },
+/// { "id": 5, "type": "stroke_2d", "params": { "paint": "#111111", "width": 4 }, "in": { "geometry": 1 } },
+/// { "id": 6, "type": "merge_2d", "in": { "drawings": [3, 4, 5] } },
+/// { "id": 7, "type": "render_2d", "in": { "drawing": 6 } }
+/// ```
+///
+/// The text is shaped as a `text` node with the same font, size and layout shapes it, with its
+/// kerning, ligatures, font fallback and wrapping, so with left and top alignment a white fill
+/// lines up with a white `text` node at the same `position`. The outline covers what the glyphs
+/// cover by the nonzero rule, as fonts expect, so contours that overlap, as in variable fonts,
+/// and glyphs that overlap each other fill as one, and a stroke follows only the outline's
+/// edge, measuring trim and dash along each of its contours. Glyphs are shaped and outlined
+/// again only when the text, font or layout change, not when the transform or the styles
+/// animate. Text of more than 8192 outline points is drawn as several outlines one after
+/// another, glyph by glyph, which shadows and translucent paints treat as separate drawables
+/// where they overlap. Curves are flattened for the largest scale `render_2d` draws them at,
+/// coarser where a text would pass 1048576 points.
+///
+/// It suits titles and short lines. A moving paragraph costs far more than a `text` node, whose
+/// glyphs are drawn from cached images, since its outline is placed again every frame. One
+/// style covers the whole text: rich text spans, decorations and the `glyph_*` params of a
+/// `text` node have no counterpart.
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
+#[node(
+    kind = "text_2d",
+    name = "Text 2D",
+    category = "vector",
+    output = "geometry"
+)]
+pub struct Text2d {
+    pub id: NodeId,
+    #[params]
+    pub params: Text2dParamsDelegate,
 }
 
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]

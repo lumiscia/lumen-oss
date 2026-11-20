@@ -61,6 +61,7 @@ serde_path_to_error = "0.1.20"
 anyhow = "1.0.101"
 foldhash = "0.2.0"
 lyon_path = "1.0.19"
+lyon_tessellation = "1.0.23"
 svgtypes = "0.16.1"
 lumen-ffmpeg = { workspace = true, optional = true }
 lumen-gpu = { workspace = true }

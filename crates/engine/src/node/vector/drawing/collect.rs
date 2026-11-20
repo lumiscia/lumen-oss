@@ -10,7 +10,7 @@ use super::super::paint::{GpuPaint, Paint};
 use super::super::path::{MAX_PATH_COORDINATE, normalized_trim_range};
 use super::super::shape::ShapeGeometryKind;
 use super::build::{identity, then};
-use super::{CastShadow, Fill2d, Offset2d, Render2d, Shadow2d, Stroke2d};
+use super::{CastShadow, Fill2d, Offset2d, Render2d, Shadow2d, Stroke2d, Text2dParams};
 use crate::error::{At, PropertyError, RenderError};
 use crate::expr::ExpressionContext;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeKind};
@@ -18,7 +18,7 @@ use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, Node
 /// Most nodes a drawing may reach, counting a node each time it is reached.
 const MAX_DRAWING_NODES: usize = 4096;
 /// Most drawables a drawing may hold, counting each shadow cast.
-const MAX_DRAWABLES: usize = 16384;
+pub(super) const MAX_DRAWABLES: usize = 16384;
 /// Width of a shadow's fade per sigma of the Gaussian it stands in for, at which the fade's
 /// slope across a straight edge matches the Gaussian's: `1.5 * sqrt(2 * pi)`.
 const SHADOW_FADE_PER_SIGMA: f64 = 3.7599;
@@ -35,6 +35,21 @@ pub(crate) enum Source {
         size: [f32; 2],
         border_radius: f32,
     },
+    /// The glyphs of a `text_2d`, which its consumer shapes from `params`.
+    Text {
+        node: NodeId,
+        params: Box<Text2dParams>,
+    },
+}
+
+impl Source {
+    /// The node whose path or text outline this is; `None` for a shape.
+    pub(super) fn path_node(&self) -> Option<NodeId> {
+        match self {
+            Self::Path { node, .. } | Self::Text { node, .. } => Some(*node),
+            Self::Shape { .. } => None,
+        }
+    }
 }
 
 /// An outline: its source, laid out from `position` and placed by `transform`, grown by
@@ -108,11 +123,22 @@ pub(crate) fn resolve_outline<'e, N: JsonNode, G>(
                     params.transform.drawable(),
                 )
             }
+            NodeKind::Text2d(text) => {
+                let params = text.params.eval(&ctx)?;
+                let transform = params.transform.drawable();
+                (
+                    Source::Text {
+                        node: at,
+                        params: Box::new(params),
+                    },
+                    transform,
+                )
+            }
             // Validation keeps other kinds out of geometry inputs.
             _ => {
                 return Err(RenderError::evaluating::<N>(
                     at,
-                    "a geometry input takes path_2d, shape_2d and offset_2d nodes",
+                    "a geometry input takes path_2d, shape_2d, text_2d and offset_2d nodes",
                 )
                 .into());
             }

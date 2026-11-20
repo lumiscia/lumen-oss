@@ -555,6 +555,26 @@ fn flatten_path(
     Some(points)
 }
 
+/// The points of closed `contours`, measured as [`parse_path_points`] measures a path's.
+pub(super) fn contour_points(contours: &[Vec<[f32; 2]>]) -> Vec<PathPoint> {
+    let mut points = Vec::with_capacity(contours.iter().map(Vec::len).sum());
+    for contour in contours.iter().filter(|contour| !contour.is_empty()) {
+        let contour_start = points.len() as u32;
+        points.extend(contour.iter().map(|&position| PathPoint {
+            position,
+            contour_start,
+            flags: 0,
+            offset: 0.0,
+            dash_phase: 0.0,
+        }));
+        if let Some(last) = points.last_mut() {
+            last.flags |= POINT_END | POINT_CLOSED;
+        }
+    }
+    normalize_contour_offsets(&mut points);
+    points
+}
+
 /// Index of the point that the segment from point `index` runs to.
 fn segment_end(points: &[PathPoint], index: usize) -> usize {
     if points[index].flags & POINT_END != 0 {

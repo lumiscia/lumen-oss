@@ -1636,6 +1636,7 @@ dependencies = [
  "lumen-engine-macros",
  "lumen-engine-text",
  "lyon_path",
+ "lyon_tessellation",
  "moxcms",
  "naga",
  "objc2-metal",

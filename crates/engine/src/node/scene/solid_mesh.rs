@@ -16,7 +16,9 @@ use super::{Extrude3d, Lathe3d};
 use crate::error::{At, RenderError};
 use crate::gpu::frame_graph::FrameCx;
 use crate::node::vector::drawable::DrawableTransform;
-use crate::node::vector::drawing::{Contour, Outline, Source, flatten, resolve_outline};
+use crate::node::vector::drawing::{
+    Contour, Outline, Source, TextGlyphs, flatten, resolve_outline, shape_text,
+};
 use crate::node::vector::shape::ShapeGeometryKind;
 use crate::node::{JsonNode, NodeId};
 
@@ -62,6 +64,8 @@ enum SourceKey {
         size: [u32; 2],
         border_radius: u32,
     },
+    /// The id of the text a `text_2d` was shaped as.
+    Text(u64),
 }
 
 /// How an outline becomes a solid.
@@ -90,7 +94,13 @@ struct SolidKey {
 }
 
 impl SolidKey {
-    fn new(outline: &Outline, units_per_pixel: f64, shape: Shape) -> Self {
+    /// The key of `outline`, whose glyphs are `text` if it is a text's.
+    fn new(
+        outline: &Outline,
+        text: Option<&TextGlyphs>,
+        units_per_pixel: f64,
+        shape: Shape,
+    ) -> Self {
         let DrawableTransform {
             position,
             scale,
@@ -109,6 +119,7 @@ impl SolidKey {
                 size: size.map(f32::to_bits),
                 border_radius: border_radius.to_bits(),
             },
+            Source::Text { .. } => SourceKey::Text(text.map_or(0, |text| text.id)),
         };
         Self {
             source,
@@ -246,13 +257,13 @@ fn error<N: JsonNode>(node_id: NodeId, details: impl Into<String>) -> crate::err
 }
 
 /// The outline of the geometry node `geometry`, as an `N` that needs one without offsets would
-/// find it. `verb` says what `N` does with it.
+/// find it, and the glyphs it is shaped as if it is a text's. `verb` says what `N` does with it.
 fn outline_of<N: JsonNode>(
-    cx: &FrameCx<'_>,
+    cx: &mut FrameCx<'_>,
     node_id: NodeId,
     geometry: NodeId,
     verb: &str,
-) -> crate::Result<Outline> {
+) -> crate::Result<(Outline, Option<std::sync::Arc<TextGlyphs>>)> {
     let expr = cx.expr();
     let outline = resolve_outline::<N, _>(&expr, geometry, |at| {
         let node = cx
@@ -269,7 +280,11 @@ fn outline_of<N: JsonNode>(
             ),
         ));
     }
-    Ok(outline)
+    let text = match &outline.source {
+        Source::Text { node, params } => Some(shape_text(cx, *node, params)?),
+        _ => None,
+    };
+    Ok((outline, text))
 }
 
 /// The mesh in `key`, built by `build` unless a frame drew it before, and drawn in this frame.
@@ -305,15 +320,21 @@ fn world_points(contour: &Contour, units_per_pixel: f64) -> impl Iterator<Item =
         .map(move |[x, y]| Vec2::new((x * units_per_pixel) as f32, (-y * units_per_pixel) as f32))
 }
 
-fn contours(outline: &Outline, units_per_pixel: f64) -> Result<Vec<Contour>, String> {
+fn contours(
+    outline: &Outline,
+    text: Option<&TextGlyphs>,
+    units_per_pixel: f64,
+) -> Result<Vec<Contour>, String> {
     flatten(
         outline,
+        text,
         units_per_pixel,
         CURVE_TOLERANCE,
         MAX_OUTLINE_POINTS,
     )
     .map_err(|details| match outline.source {
         Source::Path { node, .. } => format!("path_2d node {node}: {details}"),
+        Source::Text { node, .. } => format!("text_2d node {node}: {details}"),
         Source::Shape { .. } => details,
     })
 }
@@ -330,7 +351,7 @@ pub(super) fn extrude_mesh(
     params
         .check()
         .map_err(|details| error::<Extrude3d>(node_id, details))?;
-    let outline = outline_of::<Extrude3d>(cx, node_id, geometry, "extrude")?;
+    let (outline, text) = outline_of::<Extrude3d>(cx, node_id, geometry, "extrude")?;
     let units = params.units_per_pixel;
     let mut extrusion = Extrusion {
         depth: params.depth as f32,
@@ -352,9 +373,9 @@ pub(super) fn extrude_mesh(
         bevel: extrusion.bevel.to_bits(),
         bevel_segments: extrusion.bevel_segments,
     };
-    let key = SolidKey::new(&outline, units, shape);
+    let key = SolidKey::new(&outline, text.as_deref(), units, shape);
     mesh_of::<Extrude3d>(cx, node_id, key, || {
-        let outlines: Vec<Vec<Vec2>> = contours(&outline, units)?
+        let outlines: Vec<Vec<Vec2>> = contours(&outline, text.as_deref(), units)?
             .iter()
             .map(|contour| world_points(contour, units).collect())
             .collect();
@@ -375,7 +396,7 @@ pub(super) fn lathe_mesh(
     params
         .check()
         .map_err(|details| error::<Lathe3d>(node_id, details))?;
-    let outline = outline_of::<Lathe3d>(cx, node_id, geometry, "spin")?;
+    let (outline, text) = outline_of::<Lathe3d>(cx, node_id, geometry, "spin")?;
     let units = params.units_per_pixel;
     let spin = Lathe {
         segments: params.segments.clamp(MIN_SEGMENTS, MAX_SEGMENTS),
@@ -385,9 +406,9 @@ pub(super) fn lathe_mesh(
         segments: spin.segments,
         sweep: f64::from(spin.sweep).to_bits(),
     };
-    let key = SolidKey::new(&outline, units, shape);
+    let key = SolidKey::new(&outline, text.as_deref(), units, shape);
     mesh_of::<Lathe3d>(cx, node_id, key, || {
-        let profile: Vec<LatheContour> = contours(&outline, units)?
+        let profile: Vec<LatheContour> = contours(&outline, text.as_deref(), units)?
             .iter()
             .map(|contour| LatheContour {
                 points: world_points(contour, units).collect(),

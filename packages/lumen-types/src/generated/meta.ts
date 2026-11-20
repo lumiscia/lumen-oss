@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1595,6 +1595,10 @@ export type Shape2dGeometryKind = ShapeGeometryKind;
 export type Shape3dKind = "box" | "sphere" | "plane" | "cylinder" | "torus" | "cone";
 export type Shape3dShape = Shape3dKind;
 export type ShapeGeometryKind = "rectangle" | "ellipse";
+export type Text2dAlignmentHorizontal = TextAlignmentHorizontal;
+export type Text2dAlignmentVertical = TextAlignmentVertical;
+export type Text2dFontStyle = TextFontStyle;
+export type Text2dTextTransform = TextTransform;
 export type Text3dAlignmentHorizontal = TextAlignmentHorizontal;
 export type Text3dAlignmentVertical = TextAlignmentVertical;
 export type Text3dFontStyle = TextFontStyle;
@@ -2012,8 +2016,8 @@ export interface ExposureNode extends CompositionNodeBase<"exposure"> {
 }
 
 /**
- * A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front
- * cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
+ * A 2D outline, a `path_2d`, `shape_2d` or `text_2d` wired into `geometry`, extruded into a solid:
+ * a front cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
  * `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
  * side walls and the bevel instead, leaving the caps to `material`. The geometry's pixel coordinates, after its own
  * position, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with
@@ -2026,8 +2030,8 @@ export interface ExposureNode extends CompositionNodeBase<"exposure"> {
  * open subpaths are closed by a straight segment. Curves are flattened to within 0.001 world
  * units, so a larger or smaller `units_per_pixel` keeps them as smooth. An ellipse has as many
  * sides as that takes, at least 16 and at most 256, and each corner of a rounded rectangle a
- * quarter of as many for its own radius, at least 4 and at most 64. A path's flattening
- * coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,
+ * quarter of as many for its own radius, at least 4 and at most 64. The flattening of a path or
+ * a text coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,
  * 262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a
  * render error. An `offset_2d` in the geometry is not supported yet and fails the render. The
  * mesh is built again only when the outline, `units_per_pixel` or the bevel change, or the
@@ -2354,7 +2358,7 @@ export interface Instance3dNode extends CompositionNodeBase<"instance_3d"> {
 }
 
 /**
- * A 2D profile, a `path_2d` or `shape_2d` wired into `geometry`, spun around the world Y axis
+ * A 2D profile, a `path_2d`, `shape_2d` or `text_2d` wired into `geometry`, spun around the world Y axis
  * into a solid of revolution, lit, single-sided and white unless a `material_3d` is wired into
  * `material`. The geometry's pixel coordinates, after its own position, scale, rotation and
  * anchor, become world units at `units_per_pixel` each: a point's X is its distance from the axis
@@ -3480,6 +3484,97 @@ export interface TextNode extends CompositionNodeBase<"text"> {
 }
 
 /**
+ * The outlines of text's glyphs, without paint, so fills, strokes, offsets and shadows style
+ * type as they do any other geometry, and one `text_2d` can feed several of them:
+ * 
+ * ```json
+ * { "id": 1, "type": "text_2d", "params": { "content": "Lumen", "font_size": 240, "position": [960, 540], "alignment_horizontal": "center", "alignment_vertical": "middle" } },
+ * { "id": 2, "type": "offset_2d", "params": { "offset": 12 }, "in": { "geometry": 1 } },
+ * { "id": 3, "type": "fill_2d", "params": { "paint": "#ee5b24" }, "in": { "geometry": 2 } },
+ * { "id": 4, "type": "fill_2d", "params": { "paint": "#ffffff" }, "in": { "geometry": 1 } },
+ * { "id": 5, "type": "stroke_2d", "params": { "paint": "#111111", "width": 4 }, "in": { "geometry": 1 } },
+ * { "id": 6, "type": "merge_2d", "in": { "drawings": [3, 4, 5] } },
+ * { "id": 7, "type": "render_2d", "in": { "drawing": 6 } }
+ * ```
+ * 
+ * The text is shaped as a `text` node with the same font, size and layout shapes it, with its
+ * kerning, ligatures, font fallback and wrapping, so with left and top alignment a white fill
+ * lines up with a white `text` node at the same `position`. The outline covers what the glyphs
+ * cover by the nonzero rule, as fonts expect, so contours that overlap, as in variable fonts,
+ * and glyphs that overlap each other fill as one, and a stroke follows only the outline's
+ * edge, measuring trim and dash along each of its contours. Glyphs are shaped and outlined
+ * again only when the text, font or layout change, not when the transform or the styles
+ * animate. Text of more than 8192 outline points is drawn as several outlines one after
+ * another, glyph by glyph, which shadows and translucent paints treat as separate drawables
+ * where they overlap. Curves are flattened for the largest scale `render_2d` draws them at,
+ * coarser where a text would pass 1048576 points.
+ * 
+ * It suits titles and short lines. A moving paragraph costs far more than a `text` node, whose
+ * glyphs are drawn from cached images, since its outline is placed again every frame. One
+ * style covers the whole text: rich text spans, decorations and the `glyph_*` params of a
+ * `text` node have no counterpart.
+ */
+export interface Text2dNode extends CompositionNodeBase<"text_2d"> {
+  readonly params?: {
+    /**
+     * How lines align with each other, and which point of the text's box sits at `position`:
+     * its left edge, centre or right edge. Justified lines anchor at the left edge.
+     */
+    readonly alignment_horizontal?: TextAlignmentHorizontal;
+    /**
+     * Which point of the text's box sits at `position` vertically: the top of its first line,
+     * its middle, or the bottom of its last line.
+     */
+    readonly alignment_vertical?: TextAlignmentVertical;
+    /** Pivot for scale and rotation, in pixels relative to `position`. */
+    readonly anchor?: ExpressionValue<Vec2>;
+    /**
+     * Text to outline, in one style. Line breaks start new lines. Whitespace has no outline, and
+     * glyphs that their font draws from colour or bitmap tables, such as emoji, have none either
+     * and are left out with a `font.no_outlines` warning. A node outlines at most as many glyphs
+     * as the host's text glyph limit lets a `text` node draw, 16384 unless the host sets
+     * another, and one glyph's outline has at most 4096 commands; more is a render error.
+     */
+    readonly content?: ExpressionValue<string>;
+    /**
+     * Font family name, or `asset:<id>` for a font asset of the host's. A family no font answers
+     * to falls back as a `text` node's does.
+     */
+    readonly font_family?: ExpressionValue<string>;
+    /**
+     * OpenType features by four-character tag, such as `{ "tnum": 1, "liga": 0 }`. 0 turns a
+     * feature off, 1 turns it on and larger values select an alternate. Values take literals
+     * or expressions, but the whole map cannot be an expression.
+     */
+    readonly font_features?: FontFeatures;
+    /**
+     * Font size in pixels: the height of the font's em square. 0 draws nothing, and so does
+     * anything under 0.000001. At most 1000000, as are `max_width`, `letter_spacing` and
+     * `line_height`.
+     */
+    readonly font_size?: ExpressionValue<number>;
+    /** Font style. */
+    readonly font_style?: ExpressionValue<TextFontStyle>;
+    /** Font weight. Variable fonts render any value in their weight range. */
+    readonly font_weight?: ExpressionValue<number>;
+    /** Extra space after every glyph in pixels. Negative values tighten the text. */
+    readonly letter_spacing?: ExpressionValue<number>;
+    /** Distance between lines in pixels. Use 0 for 1.2 × the font size. */
+    readonly line_height?: ExpressionValue<number>;
+    /** Maximum line width in pixels, at which lines wrap. Use 0 for automatic width. */
+    readonly max_width?: ExpressionValue<number>;
+    /** Where the point of the text's box that the alignments pick sits, in pixels. */
+    readonly position?: ExpressionValue<Vec2>;
+    /** Clockwise rotation in degrees, about the anchor. */
+    readonly rotation?: ExpressionValue<number>;
+    /** Scale multiplier per axis, about the anchor. */
+    readonly scale?: ExpressionValue<Vec2>;
+    /** Case applied to the text. */
+    readonly text_transform?: ExpressionValue<TextTransform>;
+  };
+}
+
+/**
  * Text from its font's outlines, extruded into a solid, lit, single-sided and white unless
  * a `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
  * side walls and the bevel instead, leaving the front and back faces to `material`. The text is
@@ -3707,6 +3802,7 @@ export interface CompositionNodeByKind {
   readonly "stroke_2d": Stroke2dNode;
   readonly "switch": SwitchNode;
   readonly "text": TextNode;
+  readonly "text_2d": Text2dNode;
   readonly "text_3d": Text3dNode;
   readonly "time_remap": TimeRemapNode;
   readonly "transform": TransformNode;
@@ -3877,6 +3973,9 @@ export interface CompositionNodeInputByKind {
   readonly "text": Omit<TextNode, "id"> & {
     readonly id?: number;
   };
+  readonly "text_2d": Omit<Text2dNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "text_3d": Omit<Text3dNode, "id"> & {
     readonly id?: number;
   };
@@ -3949,6 +4048,7 @@ export interface NodeInputPortNameByKind {
   readonly "stroke_2d": "geometry";
   readonly "switch": "layers";
   readonly "text": never;
+  readonly "text_2d": never;
   readonly "text_3d": "material" | "side_material";
   readonly "time_remap": "source";
   readonly "transform": "source";
@@ -4011,6 +4111,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "stroke_2d": never;
   readonly "switch": "layers";
   readonly "text": never;
+  readonly "text_2d": never;
   readonly "text_3d": never;
   readonly "time_remap": never;
   readonly "transform": never;
@@ -4073,6 +4174,7 @@ export interface NodeOutputKindByKind {
   readonly "stroke_2d": "drawing";
   readonly "switch": "raster";
   readonly "text": "raster";
+  readonly "text_2d": "geometry";
   readonly "text_3d": "scene";
   readonly "time_remap": "raster";
   readonly "transform": "raster";
@@ -4135,6 +4237,7 @@ export interface NodeInputPortKindByKind {
   readonly "stroke_2d": { readonly "geometry": "geometry" };
   readonly "switch": { readonly "layers": "raster" };
   readonly "text": {};
+  readonly "text_2d": {};
   readonly "text_3d": { readonly "material": "material"; readonly "side_material": "material" };
   readonly "time_remap": { readonly "source": "raster" };
   readonly "transform": { readonly "source": "raster" };
@@ -4264,8 +4367,8 @@ export const nodeInputPorts = {
   /** Adjusts raster exposure, contrast, and offset. */
   "exposure": { "source": { kind: "raster", variadic: false } },
   /**
-   * A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front
-   * cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
+   * A 2D outline, a `path_2d`, `shape_2d` or `text_2d` wired into `geometry`, extruded into a solid:
+   * a front cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
    * `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
    * side walls and the bevel instead, leaving the caps to `material`. The geometry's pixel coordinates, after its own
    * position, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with
@@ -4278,8 +4381,8 @@ export const nodeInputPorts = {
    * open subpaths are closed by a straight segment. Curves are flattened to within 0.001 world
    * units, so a larger or smaller `units_per_pixel` keeps them as smooth. An ellipse has as many
    * sides as that takes, at least 16 and at most 256, and each corner of a rounded rectangle a
-   * quarter of as many for its own radius, at least 4 and at most 64. A path's flattening
-   * coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,
+   * quarter of as many for its own radius, at least 4 and at most 64. The flattening of a path or
+   * a text coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,
    * 262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a
    * render error. An `offset_2d` in the geometry is not supported yet and fails the render. The
    * mesh is built again only when the outline, `units_per_pixel` or the bevel change, or the
@@ -4362,7 +4465,7 @@ export const nodeInputPorts = {
    */
   "instance_3d": { "scene": { kind: "scene", variadic: false } },
   /**
-   * A 2D profile, a `path_2d` or `shape_2d` wired into `geometry`, spun around the world Y axis
+   * A 2D profile, a `path_2d`, `shape_2d` or `text_2d` wired into `geometry`, spun around the world Y axis
    * into a solid of revolution, lit, single-sided and white unless a `material_3d` is wired into
    * `material`. The geometry's pixel coordinates, after its own position, scale, rotation and
    * anchor, become world units at `units_per_pixel` each: a point's X is its distance from the axis
@@ -4594,6 +4697,38 @@ export const nodeInputPorts = {
   /** Produces a text source. */
   "text": {},
   /**
+   * The outlines of text's glyphs, without paint, so fills, strokes, offsets and shadows style
+   * type as they do any other geometry, and one `text_2d` can feed several of them:
+   * 
+   * ```json
+   * { "id": 1, "type": "text_2d", "params": { "content": "Lumen", "font_size": 240, "position": [960, 540], "alignment_horizontal": "center", "alignment_vertical": "middle" } },
+   * { "id": 2, "type": "offset_2d", "params": { "offset": 12 }, "in": { "geometry": 1 } },
+   * { "id": 3, "type": "fill_2d", "params": { "paint": "#ee5b24" }, "in": { "geometry": 2 } },
+   * { "id": 4, "type": "fill_2d", "params": { "paint": "#ffffff" }, "in": { "geometry": 1 } },
+   * { "id": 5, "type": "stroke_2d", "params": { "paint": "#111111", "width": 4 }, "in": { "geometry": 1 } },
+   * { "id": 6, "type": "merge_2d", "in": { "drawings": [3, 4, 5] } },
+   * { "id": 7, "type": "render_2d", "in": { "drawing": 6 } }
+   * ```
+   * 
+   * The text is shaped as a `text` node with the same font, size and layout shapes it, with its
+   * kerning, ligatures, font fallback and wrapping, so with left and top alignment a white fill
+   * lines up with a white `text` node at the same `position`. The outline covers what the glyphs
+   * cover by the nonzero rule, as fonts expect, so contours that overlap, as in variable fonts,
+   * and glyphs that overlap each other fill as one, and a stroke follows only the outline's
+   * edge, measuring trim and dash along each of its contours. Glyphs are shaped and outlined
+   * again only when the text, font or layout change, not when the transform or the styles
+   * animate. Text of more than 8192 outline points is drawn as several outlines one after
+   * another, glyph by glyph, which shadows and translucent paints treat as separate drawables
+   * where they overlap. Curves are flattened for the largest scale `render_2d` draws them at,
+   * coarser where a text would pass 1048576 points.
+   * 
+   * It suits titles and short lines. A moving paragraph costs far more than a `text` node, whose
+   * glyphs are drawn from cached images, since its outline is placed again every frame. One
+   * style covers the whole text: rich text spans, decorations and the `glyph_*` params of a
+   * `text` node have no counterpart.
+   */
+  "text_2d": {},
+  /**
    * Text from its font's outlines, extruded into a solid, lit, single-sided and white unless
    * a `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
    * side walls and the bevel instead, leaving the front and back faces to `material`. The text is
@@ -4690,6 +4825,7 @@ export const nodeMediaSources = {
   "stroke_2d": {},
   "switch": {},
   "text": {},
+  "text_2d": {},
   "text_3d": {},
   "time_remap": {},
   "transform": {},

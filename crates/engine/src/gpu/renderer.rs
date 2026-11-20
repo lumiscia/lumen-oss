@@ -341,6 +341,13 @@ impl GpuCompositionRenderer {
         self.graph.node_domain(composition, node)
     }
 
+    /// How many texts `text_2d` nodes have been shaped as, counting each text, font and layout
+    /// shaped again.
+    #[cfg(feature = "test-hooks")]
+    pub fn text_2d_shapes(&self) -> usize {
+        self.graph.texts_shaped()
+    }
+
     /// The shared text atlas, once a frame has needed one.
     #[cfg(feature = "test-hooks")]
     pub fn text_atlas_texture(&self) -> Option<Arc<lumen_gpu::wgpu::Texture>> {

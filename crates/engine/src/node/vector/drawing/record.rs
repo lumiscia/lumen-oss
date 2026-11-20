@@ -7,11 +7,12 @@ use foldhash::HashMap;
 
 use super::build::{DRAWING_SHADER, Keeping, build};
 use super::collect::{Source, collect};
+use super::text::{check_length, check_weight, shape_text};
 use super::tiles::{TILE_SIZE, tile_lists};
-use super::{Fill2d, Merge2d, Offset2d, Path2d, Render2d, Shadow2d, Shape2d, Stroke2d};
+use super::{Fill2d, Merge2d, Offset2d, Path2d, Render2d, Shadow2d, Shape2d, Stroke2d, Text2d};
 use crate::error::{LumenError, RenderError};
 use crate::gpu::frame_graph::{ComputeProgram, FrameCx, Programs, Raster, RecordNode};
-use crate::node::{JsonNode, Node, required_input};
+use crate::node::{Deferred, JsonNode, Node, required_input};
 
 fn not_a_raster<N: JsonNode>(node_id: crate::node::NodeId, outputs: &str) -> LumenError {
     RenderError::evaluating::<N>(
@@ -45,6 +46,47 @@ vector_nodes! {
     Stroke2d => "a drawing",
     Shadow2d => "a drawing",
     Merge2d => "a drawing",
+}
+
+impl RecordNode for Text2d {
+    fn programs(&self, _: &mut Programs<'_>) -> crate::Result<()> {
+        Ok(())
+    }
+
+    fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
+        Err(not_a_raster::<Text2d>(self.id, "geometry"))
+    }
+
+    fn literal_param_errors(&self) -> Vec<(&'static str, String)> {
+        let params = &self.params;
+        let lengths = [
+            ("font_size", &params.font_size, false),
+            ("max_width", &params.max_width, false),
+            ("letter_spacing", &params.letter_spacing, true),
+            ("line_height", &params.line_height, false),
+        ];
+        let mut errors = Vec::new();
+        for (param, value, signed) in lengths {
+            if let Deferred::Value(value) = value
+                && let Err(details) = check_length(param, *value, signed)
+            {
+                errors.push((param, details));
+            }
+        }
+        if let Deferred::Value(weight) = &params.font_weight
+            && let Err(details) = check_weight(*weight)
+        {
+            errors.push(("font_weight", details));
+        }
+        errors
+    }
+
+    fn literal_font_families(&self) -> Vec<(String, &str)> {
+        match &self.params.font_family {
+            Deferred::Value(family) => vec![("font_family".to_string(), family.as_str())],
+            Deferred::Expr(_) => Vec::new(),
+        }
+    }
 }
 
 const RENDER_2D_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
@@ -89,19 +131,28 @@ impl RecordNode for Render2d {
     fn record(&self, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
         let root = required_input(self.id, "drawing", self.drawing)?;
         let record = collect(cx, self.id, root)?;
+        let mut texts = HashMap::default();
+        for geometry in &record.geometries {
+            if let Source::Text { node, params } = &geometry.source
+                && !texts.contains_key(node)
+            {
+                texts.insert(*node, shape_text(cx, *node, params)?);
+            }
+        }
         let canvas = cx.canvas_size();
         let canvas = [canvas.width as f32, canvas.height as f32];
         let paths: HashMap<_, _> = record
             .geometries
             .iter()
-            .filter_map(|geometry| match geometry.source {
-                Source::Path { node, .. } => Some((node, cx.node(node)?)),
-                Source::Shape { .. } => None,
+            .filter_map(|geometry| {
+                let node = geometry.source.path_node()?;
+                Some((node, cx.node(node)?))
             })
             .collect();
         let (scene, tick, cache, times) = cx.drawing_cache();
         let drawing = build(
             &record,
+            &texts,
             &|node| {
                 paths
                     .get(&node)

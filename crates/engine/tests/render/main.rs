@@ -63,6 +63,7 @@ mod sharpen;
 mod solids_3d;
 mod support;
 mod sweep_blurs;
+mod text_2d;
 #[cfg(feature = "3d")]
 mod text_3d;
 mod text_atlas;
