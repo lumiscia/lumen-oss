@@ -35,7 +35,9 @@ use crate::gpu::render_scale::device_rect;
 use crate::media::{AssetKind, MediaIdentity, ModelResolver, resolve_as};
 use crate::node::processing::RasterSampling;
 use crate::node::vector::paint::Paint;
-use crate::node::{DelegateEvalContext, DelegateEvaluable, Node, NodeId, NodeKind, required_input};
+use crate::node::{
+    DelegateEvalContext, DelegateEvaluable, Node, NodeId, NodeKind, OutputRef, required_input,
+};
 
 /// The most joint matrices one frame's scene may hold.
 const MAX_SCENE_JOINTS: usize = 1 << 16;
@@ -594,10 +596,10 @@ fn wired_material<'a, N: crate::node::JsonNode>(
 fn material_surface<N: crate::node::JsonNode>(
     cx: &FrameCx<'_>,
     object: NodeId,
-    material: Option<NodeId>,
+    material: Option<OutputRef>,
     unwired: Material3dParams,
 ) -> crate::Result<Surface<TexRef>> {
-    let Some(material_id) = material else {
+    let Some(material_id) = material.map(|material| material.node) else {
         return surface::<N>(object, &unwired);
     };
     let (material, params) = wired_material::<N>(cx, object, material_id)?;
@@ -615,9 +617,9 @@ fn material_surface<N: crate::node::JsonNode>(
     surface::<super::Material3d>(material_id, &params)
 }
 
-/// Part of an object's indices, and the node of the `material_3d` that shades it, or `None` for
-/// the object's default material.
-type Face = (Range<u32>, Option<NodeId>);
+/// Part of an object's indices, and the `material_3d` that shades it, or `None` for the object's
+/// default material.
+type Face = (Range<u32>, Option<OutputRef>);
 
 /// The runs of `faces`, in order, with neighbours that take the same material joined and faces
 /// without indices left out.
@@ -660,8 +662,8 @@ fn box_faces(shape: &Shape3d) -> Option<Vec<Face>> {
 /// The runs of a solid whose indices draw its side walls up to `caps_start` and its caps after,
 /// as shaded by `side_material`, or `material` where it has none, and `material`.
 fn side_runs(
-    material: Option<NodeId>,
-    side_material: Option<NodeId>,
+    material: Option<OutputRef>,
+    side_material: Option<OutputRef>,
     caps_start: u32,
     index_count: u32,
 ) -> Vec<Face> {
@@ -866,8 +868,8 @@ pub(super) struct Collected {
     reached: usize,
     /// Indices the objects draw in all.
     indices: u64,
-    /// The rasters objects show, each with the node it is the output of.
-    pub(super) rasters: Vec<(NodeId, Raster)>,
+    /// The rasters objects show, each with the output it is.
+    pub(super) rasters: Vec<(OutputRef, Raster)>,
     /// The mesh of image planes, once the scene has one.
     pub(super) quad: Option<GpuMesh>,
     /// How many `instance_3d` nodes hold the scene being collected.
@@ -1027,7 +1029,7 @@ impl Collected {
                     merge
                         .objects
                         .iter()
-                        .map(|&object| (object, world))
+                        .map(|object| (object.node, world))
                         .collect(),
                 ));
             }
@@ -1149,7 +1151,7 @@ impl Collected {
                     )?,
                 };
                 if let Some((solid, depth)) =
-                    super::solid_mesh::extrude_mesh(cx, node_id, geometry, &params)?
+                    super::solid_mesh::extrude_mesh(cx, node_id, geometry.node, &params)?
                 {
                     let world = world * Mat4::from_scale(Vec3::new(1.0, 1.0, depth));
                     match extrude.side_material {
@@ -1182,7 +1184,8 @@ impl Collected {
                     lathe.material,
                     Material3dParams::default(),
                 )?;
-                if let Some(solid) = super::solid_mesh::lathe_mesh(cx, node_id, geometry, &params)?
+                if let Some(solid) =
+                    super::solid_mesh::lathe_mesh(cx, node_id, geometry.node, &params)?
                 {
                     self.push_solid(world, surface, solid);
                 }
@@ -1304,9 +1307,9 @@ impl Collected {
         &mut self,
         cx: &mut FrameCx<'_>,
         node_id: NodeId,
-        material: Option<NodeId>,
+        material: Option<OutputRef>,
     ) -> crate::Result<Surface<TexRef>> {
-        let Some(material_id) = material else {
+        let Some(material_id) = material.map(|material| material.node) else {
             return surface::<super::Shape3d>(node_id, &Material3dParams::default());
         };
         let (material, params) = wired_material::<super::Shape3d>(cx, node_id, material_id)?;

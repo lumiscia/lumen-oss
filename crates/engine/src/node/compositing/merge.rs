@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, compositing::BlendMode,
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef, compositing::BlendMode,
     processing::gaussian,
 };
 
@@ -74,11 +74,11 @@ pub struct Merge {
     pub params: MergeParamsDelegate,
 
     #[input()]
-    pub base: Option<NodeId>,
+    pub base: Option<OutputRef>,
     #[input()]
-    pub overlay: Option<NodeId>,
+    pub overlay: Option<OutputRef>,
     #[input(optional)]
-    pub mask: Option<NodeId>,
+    pub mask: Option<OutputRef>,
 }
 
 /// `MergeParams::mask_source`: no mask, the feathered mask, or the mask as is. A feather

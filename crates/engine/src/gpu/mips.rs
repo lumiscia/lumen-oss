@@ -254,12 +254,12 @@ impl MipCache {
     }
 }
 
-/// The texture holding `raster`, the output of `node`, or its `region` alone, with its first
+/// The texture holding `raster`, what `node` reads, or its `region` alone, with its first
 /// `levels` mip levels. Fills the levels in passes of this frame unless a chain kept from earlier
 /// frames, or one an earlier reader of `raster` made in this one, holds them already.
 pub(crate) fn mipped(
     cx: &mut FrameCx<'_>,
-    node: NodeId,
+    node: crate::node::OutputRef,
     raster: Raster,
     region: Option<CropParams>,
     levels: u32,

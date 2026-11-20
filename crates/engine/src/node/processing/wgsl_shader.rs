@@ -46,7 +46,7 @@ use crate::{
     error::{At, DocumentError, LumenError, RenderError},
     expr::{ExpressionContext, ExpressionValue},
     node::{
-        Deferred, DelegateEvalContext, NodeId, NodeKind, NodeParams, ShaderUniformValue,
+        Deferred, DelegateEvalContext, NodeId, NodeKind, NodeParams, OutputRef, ShaderUniformValue,
         ShaderUniforms,
     },
 };
@@ -151,12 +151,12 @@ pub struct WgslShader {
     pub params: WgslShaderParamsDelegate,
     /// Bound as `input0..inputN` in connection order.
     #[input(name = "source", variadic)]
-    pub sources: Vec<NodeId>,
+    pub sources: Vec<OutputRef>,
     /// A scene whose camera the shader reads as `lumen.view`, `lumen.projection` and
     /// `lumen.camera_position`, chosen as `render_3d` would choose it. Without one they are the
     /// identity and zero.
     #[input(scene, optional)]
-    pub camera: Option<NodeId>,
+    pub camera: Option<OutputRef>,
     /// The shader a literal `shader` stands for, set when the composition is built. The `shader`
     /// param and the composition's `shaders` identify it.
     #[structural_hash(skip)]
@@ -1024,7 +1024,7 @@ impl WgslShader {
     ) -> crate::Result<CameraGlobals> {
         #[cfg(feature = "3d")]
         if let Some(scene) = self.camera {
-            let camera = crate::node::scene::collect::find_camera::<Self>(cx, self.id, scene)?
+            let camera = crate::node::scene::collect::find_camera::<Self>(cx, self.id, scene.node)?
                 .unwrap_or_default();
             let aspect = size.width as f32 / size.height as f32;
             return Ok(CameraGlobals {

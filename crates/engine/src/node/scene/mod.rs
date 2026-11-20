@@ -41,7 +41,7 @@ pub use region::{Region, RegionDelegate};
 
 use crate::node::processing::RasterSampling;
 use crate::node::vector::paint::Paint;
-use crate::node::{Deferred, NodeId, NodeParams};
+use crate::node::{Deferred, NodeId, NodeParams, OutputRef};
 
 /// Where something sits and which way it faces.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -221,7 +221,7 @@ pub struct Material3d {
     pub params: Material3dParamsDelegate,
 
     #[input(raster, optional)]
-    pub texture: Option<NodeId>,
+    pub texture: Option<OutputRef>,
 }
 
 impl Material3d {
@@ -310,19 +310,19 @@ pub struct Shape3d {
     pub params: Shape3dParamsDelegate,
 
     #[input(material, optional)]
-    pub material: Option<NodeId>,
+    pub material: Option<OutputRef>,
     #[input(material, optional)]
-    pub top_material: Option<NodeId>,
+    pub top_material: Option<OutputRef>,
     #[input(material, optional)]
-    pub bottom_material: Option<NodeId>,
+    pub bottom_material: Option<OutputRef>,
     #[input(material, optional)]
-    pub left_material: Option<NodeId>,
+    pub left_material: Option<OutputRef>,
     #[input(material, optional)]
-    pub right_material: Option<NodeId>,
+    pub right_material: Option<OutputRef>,
     #[input(material, optional)]
-    pub front_material: Option<NodeId>,
+    pub front_material: Option<OutputRef>,
     #[input(material, optional)]
-    pub back_material: Option<NodeId>,
+    pub back_material: Option<OutputRef>,
 }
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -404,9 +404,9 @@ pub struct ImagePlane3d {
     pub params: ImagePlane3dParamsDelegate,
 
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
     #[input(material, optional)]
-    pub material: Option<NodeId>,
+    pub material: Option<OutputRef>,
 }
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -499,7 +499,7 @@ pub struct Model3d {
     pub params: Model3dParamsDelegate,
 
     #[input(optional)]
-    pub texture: Option<NodeId>,
+    pub texture: Option<OutputRef>,
 }
 
 impl Model3d {
@@ -697,7 +697,7 @@ pub struct Merge3d {
     pub params: Merge3dParamsDelegate,
 
     #[input(scene, optional, variadic)]
-    pub objects: Vec<NodeId>,
+    pub objects: Vec<OutputRef>,
 }
 
 #[derive(
@@ -715,11 +715,12 @@ pub enum ToneMapping {
     Agx = 2,
 }
 
-/// What `render_3d` draws into its raster. Depth and normals hold data, with no transfer function
-/// applied, drawn from opaque surfaces and shadow catchers, masked surfaces where they reach their
-/// cutoff, and blended ones, such as image planes, where their alpha reaches half. They skip
-/// lighting, shadows and the environment, and ignore `supersample`: each pixel holds the nearest
-/// surface at its centre, never an average across an edge.
+/// What `render_3d` draws into a raster, each also an output of it of the same name. Depth and
+/// normals hold data, with no transfer function applied, drawn from opaque surfaces and shadow
+/// catchers, masked surfaces where they reach their cutoff, and blended ones, such as image
+/// planes, where their alpha reaches half. They skip lighting, shadows and the environment, and
+/// ignore `supersample`: each pixel holds the nearest surface at its centre, never an average
+/// across an edge.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
 )]
@@ -738,10 +739,30 @@ pub enum Render3dOutput {
     Normal = 2,
 }
 
+#[cfg(feature = "3d")]
+impl Render3dOutput {
+    /// The outputs in the order `render_3d` names them, which their ports count.
+    const PORTS: [Self; 3] = [Self::Color, Self::Depth, Self::Normal];
+
+    /// The port of `render_3d` that reads this output.
+    pub(super) fn port(self) -> crate::node::OutputPort {
+        let index = Self::PORTS.iter().position(|&output| output == self);
+        crate::node::OutputPort::named(index.expect("every output has a port"))
+    }
+
+    /// The outputs `ports`, ports `render_3d` names, read.
+    pub(super) fn of_ports(ports: crate::node::OutputSet) -> impl Iterator<Item = Self> {
+        ports
+            .iter()
+            .filter_map(|port| Self::PORTS.get(port.index()?).copied())
+    }
+}
+
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Render3dParams {
-    /// What the raster holds: the lit scene, its depth or its normals. A composition that needs
-    /// more than one draws the same scene with a `render_3d` for each.
+    /// What the default `output` holds: the lit scene, its depth or its normals. The `color`,
+    /// `depth` and `normal` outputs each hold one whatever this is, and one `render_3d` draws all
+    /// that are read with one walk of the scene.
     #[meta(constant)]
     pub output: Render3dOutput,
     /// Distance from the camera, in world units, that `depth` output maps to 0. 0 uses the
@@ -824,14 +845,20 @@ impl Default for Render3dParams {
 }
 
 /// Draws a 3D scene into a raster, with a transparent background unless it shows its environment
-/// map; or, by `output`, its depth or normals, for 2D effects such as fog.
+/// map; or, by `output`, its depth or normals, for 2D effects such as fog. Its `color`, `depth`
+/// and `normal` outputs read each of them from the one render.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
-#[node(kind = "render_3d", name = "Render 3D", category = "scene")]
+#[node(
+    kind = "render_3d",
+    name = "Render 3D",
+    category = "scene",
+    outputs(color, depth, normal)
+)]
 pub struct Render3d {
     pub id: NodeId,
     #[params]
     pub params: Render3dParamsDelegate,
 
     #[input(scene)]
-    pub scene: Option<NodeId>,
+    pub scene: Option<OutputRef>,
 }

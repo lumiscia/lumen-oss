@@ -5,7 +5,7 @@ use crate::node::source::text::{
     TextAlignmentHorizontal, TextAlignmentVertical, TextFontStyle, TextTransform,
 };
 use crate::node::source::text_content::FontFeatures;
-use crate::node::{NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams, OutputRef};
 
 /// Greatest size, depth, bevel, line width, letter spacing or line height in world units.
 const MAX_LENGTH: f64 = 1e6;
@@ -193,9 +193,9 @@ pub struct Text3d {
     pub params: Text3dParamsDelegate,
 
     #[input(material, optional)]
-    pub material: Option<NodeId>,
+    pub material: Option<OutputRef>,
     #[input(material, optional)]
-    pub side_material: Option<NodeId>,
+    pub side_material: Option<OutputRef>,
 }
 
 #[cfg(all(test, feature = "3d"))]

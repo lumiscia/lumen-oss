@@ -1,4 +1,4 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 /// Selects one raster input according to a controlled layer index.
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
@@ -17,7 +17,7 @@ pub struct Switch {
     pub params: SwitchParamsDelegate,
 
     #[input(optional, variadic)]
-    pub layers: Vec<NodeId>,
+    pub layers: Vec<OutputRef>,
 }
 
 pub fn selected_layer_for_frame(

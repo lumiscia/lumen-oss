@@ -216,13 +216,13 @@ fn malformed_params_and_unknown_keys_name_what_is_wrong() {
 }
 
 #[test]
-fn a_connection_names_the_one_output_or_none() {
-    let composition = |from_port: Value| {
+fn a_connection_names_an_output_its_source_has_or_none() {
+    let composition = |source: &str, from_port: Value| {
         serde_json::json!({
             "timeline": { "fps": 30, "duration_frames": 90 },
             "render_settings": { "width": 16, "height": 16 },
             "nodes": [
-                { "id": 1, "type": "background" },
+                { "id": 1, "type": source },
                 { "id": 2, "type": "media_output" }
             ],
             "connections": [
@@ -230,17 +230,60 @@ fn a_connection_names_the_one_output_or_none() {
             ]
         })
     };
-    assert!(parse_value(&composition(serde_json::json!("output"))).is_ok());
-    let mut omitted = composition(Value::Null);
+    assert!(parse_value(&composition("background", serde_json::json!("output"))).is_ok());
+    let mut omitted = composition("background", Value::Null);
     omitted["connections"][0]
         .as_object_mut()
         .unwrap()
         .remove("from_port");
     assert!(parse_value(&omitted).is_ok());
-    let error = parse_value(&composition(serde_json::json!("mask"))).unwrap_err();
+    for (source, port, outputs) in [
+        ("background", "mask", "its only output is `output`"),
+        (
+            "render_3d",
+            "matte",
+            "its outputs are `output`, `color`, `depth` and `normal`",
+        ),
+    ] {
+        let document = composition(source, serde_json::json!(port));
+        let error = parse_value(&document).unwrap_err();
+        let expected = format!("connection 0: node 1 has no output \"{port}\"; {outputs}");
+        assert!(format!("{error:#}").contains(&expected), "{error:#}");
+        let diagnostics = check_value(&document, None, None);
+        assert_eq!(diagnostics[0].code, "connection.invalid_from_port");
+    }
+}
+
+#[cfg(feature = "3d")]
+#[test]
+fn a_connection_from_a_named_output_is_checked_against_that_outputs_kind() {
+    let document = serde_json::json!({
+        "timeline": { "fps": 30, "duration_frames": 1 },
+        "render_settings": { "width": 16, "height": 16 },
+        "nodes": [
+            { "id": 1, "type": "shape_3d" },
+            { "id": 2, "type": "render_3d" },
+            { "id": 3, "type": "merge_3d" },
+            { "id": 4, "type": "render_3d" },
+            { "id": 5, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "to_node": 2, "to_port": "scene" },
+            { "from_node": 2, "from_port": "depth", "to_node": 3, "to_port": "objects" },
+            { "from_node": 3, "to_node": 4, "to_port": "scene" },
+            { "from_node": 4, "to_node": 5, "to_port": "source" }
+        ]
+    });
+    let error = parse_value(&document).unwrap_err();
     assert!(
-        format!("{error:#}").contains("connection 0: `from_port` must be `output`, got \"mask\""),
+        format!("{error:#}").contains(
+            "node 3: input `objects` takes a scene, but output `depth` of node 2 is a raster"
+        ),
         "{error:#}"
+    );
+    assert_eq!(
+        codes_and_paths(&check_value(&document, None, None)),
+        [("connection.wrong_kind", "/connections/1", Some(3))]
     );
 }
 
@@ -537,7 +580,7 @@ fn parse_opacity_node() {
     let comp = parse(json).expect("should parse");
     let opacity = comp.graph().nodes.get(&NodeId::new(2)).expect("opacity");
     assert!(matches!(opacity, crate::node::NodeKind::Opacity(_)));
-    assert_eq!(opacity.input_ports(), vec![Some(NodeId::new(1))]);
+    assert_eq!(opacity.input_ports(), vec![Some(NodeId::new(1).into())]);
 }
 
 #[test]

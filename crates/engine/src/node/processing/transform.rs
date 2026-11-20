@@ -3,7 +3,7 @@ use bytemuck::{Pod, Zeroable};
 use crate::error::RenderError;
 use crate::node::motion::{self, Lerp, MAX_BOUNDED_MAGNITUDE, ROUNDING_ERROR_FACTOR, Shutter};
 use crate::node::{
-    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams,
+    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef,
     processing::{
         RasterSampling,
         minify::{self, Minification},
@@ -81,7 +81,7 @@ pub struct Transform {
     pub params: TransformParamsDelegate,
 
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 impl Transform {

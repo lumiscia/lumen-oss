@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -88,9 +88,9 @@ pub struct Channels {
     #[params]
     pub params: ChannelsParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
     #[input(optional)]
-    pub other: Option<NodeId>,
+    pub other: Option<OutputRef>,
 }
 
 #[repr(C)]

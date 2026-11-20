@@ -8,7 +8,7 @@ use crate::error::{LumenError, MediaError, MediaFailure};
 use crate::media::{AssetKind, LutResolver, MediaIdentity, resolve_as};
 use crate::node::processing::cube_lut::{CubeError, CubeLut};
 use crate::node::{
-    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams,
+    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef,
     processing::RasterSampling,
 };
 
@@ -68,7 +68,7 @@ pub struct ColorGrade {
     pub params: ColorGradeParamsDelegate,
 
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 const CUBE_LAYOUT: &[lumen_gpu::LayoutEntry] = &[

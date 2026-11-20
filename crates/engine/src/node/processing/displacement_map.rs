@@ -2,7 +2,8 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, processing::RasterSampling,
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef,
+    processing::RasterSampling,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -92,9 +93,9 @@ pub struct DisplacementMap {
     #[params]
     pub params: DisplacementMapParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
     #[input()]
-    pub map: Option<NodeId>,
+    pub map: Option<OutputRef>,
 }
 
 #[repr(C)]

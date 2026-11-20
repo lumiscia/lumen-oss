@@ -1,6 +1,6 @@
 use super::ids::NodeId;
 use super::media_source::MediaParam;
-use super::ports::{InputPortDef, PortKind};
+use super::ports::{InputPortDef, OutputPortDef, OutputRef, PortKind};
 
 /// What a param holds. The scalar kinds are variants; a compound type declares its own
 /// [`ParamTypeDef`] beside its parser.
@@ -117,7 +117,10 @@ pub struct NodeSchemaDef {
     pub description: &'static str,
     pub category: NodeCategory,
     pub inputs: &'static [InputPortDef],
+    /// What the default `output` outputs.
     pub output: PortKind,
+    /// The outputs named beside `output`.
+    pub outputs: &'static [OutputPortDef],
     pub properties: Vec<PropertyDef>,
     pub default_properties: Vec<(&'static str, serde_json::Value)>,
 }
@@ -141,6 +144,6 @@ pub trait JsonNode: Default {
     fn set_input_json(
         &mut self,
         port: &str,
-        source: NodeId,
+        source: OutputRef,
     ) -> Result<(), crate::error::GraphValidationError>;
 }

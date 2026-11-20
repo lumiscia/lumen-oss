@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::error::PropertyError;
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef, vector::paint::Paint,
 };
 
 use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
@@ -56,7 +56,7 @@ pub struct Shadow {
     pub params: ShadowParamsDelegate,
 
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[

@@ -12,7 +12,7 @@ use crate::{
     expr::{ExpressionContext, ExpressionValue},
     media::MediaStore,
     node::{
-        DelegateEvalContext, DelegateEvaluable, Node, NodeId, NodeKind,
+        DelegateEvalContext, DelegateEvaluable, Node, NodeId, NodeKind, OutputRef,
         processing::{
             motion_blur::MotionBlur,
             time_remap::{TimeRemap, remap_frame},
@@ -167,7 +167,7 @@ impl<'a> Scope<'a> {
 /// An input a node reads, with the frame and scope it is read in.
 #[derive(Debug, Clone)]
 pub struct Routed<'a> {
-    pub node: NodeId,
+    pub input: OutputRef,
     pub frame: FrameTime,
     pub scope: Scope<'a>,
     /// The time remap or clip that instances the input, which then records once per path of
@@ -176,9 +176,9 @@ pub struct Routed<'a> {
 }
 
 impl<'a> Routed<'a> {
-    fn same(scope: &Scope<'a>, node: NodeId, frame: FrameTime) -> Self {
+    fn same(scope: &Scope<'a>, input: OutputRef, frame: FrameTime) -> Self {
         Self {
-            node,
+            input,
             frame,
             scope: scope.clone(),
             instance: None,

@@ -139,7 +139,7 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
                 });
         }
         for Routed {
-            node: input,
+            input,
             frame,
             scope,
             instance,
@@ -159,7 +159,7 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
                 depth: self.depth + 1,
             };
             walk.instances.extend(instance);
-            let result = context.collect_node(input, walk);
+            let result = context.collect_node(input.node, walk);
             if instance.is_some() {
                 walk.instances.pop();
             }

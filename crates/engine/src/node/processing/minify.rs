@@ -11,7 +11,6 @@ use lumen_gpu::{Size, TexRef};
 
 use crate::gpu::frame_graph::{CropParams, FrameCx, Raster};
 use crate::gpu::mips::mipped;
-use crate::node::NodeId;
 
 /// The most texels the filter spans along an axis of the level it reads; keep in sync with
 /// `MINIFY_MAX_SPAN` in `minify.wgsl`.
@@ -60,7 +59,7 @@ impl Minification {
 /// is one, and otherwise its mip chain, or that of its `region` alone.
 pub(crate) fn source(
     cx: &mut FrameCx<'_>,
-    node: Option<NodeId>,
+    node: Option<crate::node::OutputRef>,
     raster: Raster,
     region: Option<CropParams>,
     levels: u32,

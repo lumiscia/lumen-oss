@@ -33,6 +33,23 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
         ));
     }
 
+    if node.outputs.len() > 31 {
+        return Err(syn::Error::new(
+            node.outputs[31].0.span(),
+            "Node derive supports at most 31 named outputs",
+        ));
+    }
+    let output_static = format_ident!("__LUMEN_{}_OUTPUTS", ident.to_string().to_uppercase());
+    let output_defs = node.outputs.iter().map(|(name, kind)| {
+        let name = name.to_string();
+        let kind = port_kind_tokens(kind.as_ref().or(node.output.as_ref()));
+        quote! {
+            ::lumen_engine::node::OutputPortDef {
+                name: #name,
+                kind: #kind,
+            }
+        }
+    });
     let input_static = format_ident!("__LUMEN_{}_INPUTS", ident.to_string().to_uppercase());
     let input_defs = inputs.iter().map(|input| {
         let name = &input.name;
@@ -131,6 +148,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     Ok(quote! {
         #structural_hash
         const #input_static: &[::lumen_engine::node::InputPortDef] = &[#(#input_defs),*];
+        const #output_static: &[::lumen_engine::node::OutputPortDef] = &[#(#output_defs),*];
         #(#assert_no_vec_fields)*
 
         #[cfg(feature = "metadata")]
@@ -144,6 +162,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                     category: #category,
                     inputs: #input_static,
                     output: #output,
+                    outputs: #output_static,
                     properties: {
                         let mut properties = ::std::vec::Vec::new();
                         #(properties.extend(#metas_property_defs);)*
@@ -191,7 +210,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             fn set_input_json(
                 &mut self,
                 port: &str,
-                source: ::lumen_engine::node::NodeId,
+                source: ::lumen_engine::node::OutputRef,
             ) -> ::core::result::Result<(), ::lumen_engine::error::GraphValidationError> {
                 match port {
                     #(#json_input_matches,)*
@@ -216,7 +235,11 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                 #output
             }
 
-            fn input_ports(&self) -> ::std::vec::Vec<::core::option::Option<::lumen_engine::node::NodeId>> {
+            fn output_port_defs(&self) -> &'static [::lumen_engine::node::OutputPortDef] {
+                #output_static
+            }
+
+            fn input_ports(&self) -> ::std::vec::Vec<::core::option::Option<::lumen_engine::node::OutputRef>> {
                 let mut ports = ::std::vec::Vec::new();
                 #(#input_port_collectors;)*
                 ports

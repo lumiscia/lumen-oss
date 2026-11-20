@@ -35,7 +35,7 @@ use crate::{
     graph::{Connection, Graph},
     media::{AssetKind, AssetResolver, Found, MediaLocation, asset_id, resolve_asset_of},
     node::{
-        NodeId, NodeKind,
+        Node, NodeId, NodeKind, OutputPort,
         scene::{Instance3d, Material3d},
     },
 };
@@ -350,7 +350,7 @@ struct NodeJson {
 #[serde(deny_unknown_fields)]
 struct ConnectionJson {
     from_node: u64,
-    /// Every node has the one output, so `from_port` only has to name it.
+    /// `output`, the default, when omitted.
     #[serde(default, deserialize_with = "present")]
     from_port: Option<String>,
     to_node: u64,
@@ -367,7 +367,7 @@ impl ConnectionJson {
             "properties": {
                 "from_node": { "type": "integer", "minimum": 0 },
                 "from_port": {
-                    "description": "The output of `from_node` to read. Optional: it defaults to `output`, the only output any node has.",
+                    "description": "The output of `from_node` to read: `output`, every node's default and what an omitted `from_port` reads, or one of the outputs its kind names beside it, which the node kind's `x-lumen-outputs` lists.",
                     "type": "string"
                 },
                 "to_node": { "type": "integer", "minimum": 0 },
@@ -994,24 +994,33 @@ fn connect(
     errors: &mut Vec<LumenError>,
 ) {
     for (index, connection) in connections.iter().enumerate() {
-        if let Some(from_port) = &connection.from_port
-            && from_port != "output"
-        {
-            errors.push(
-                DocumentError::InvalidFromPort {
-                    at: At::default(),
-                    index,
-                    port: from_port.clone(),
-                }
-                .into(),
-            );
-            continue;
-        }
         let from_node = NodeId::new(connection.from_node);
+        // A missing source node is the connection's error, which `connect` reports.
+        let source = graph.nodes.get(&from_node);
+        let from_port = match (&connection.from_port, source) {
+            (Some(name), Some(source)) => match source.output_port(name) {
+                Some(port) => port,
+                None => {
+                    errors.push(
+                        DocumentError::InvalidFromPort {
+                            at: At::default(),
+                            index,
+                            from_node,
+                            port: name.as_str().into(),
+                            outputs: source.output_port_defs(),
+                        }
+                        .into(),
+                    );
+                    continue;
+                }
+            },
+            _ => OutputPort::DEFAULT,
+        };
         let to_node = NodeId::new(connection.to_node);
         let to_port = &connection.to_port;
         let connected = graph.connect(Connection {
             from_node,
+            from_port,
             to_node,
             to_port: to_port.clone(),
         });

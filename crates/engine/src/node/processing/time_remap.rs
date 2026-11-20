@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams, OutputRef};
 
 /// Evaluates a raster input at another frame.
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
@@ -26,7 +26,7 @@ pub struct TimeRemap {
     pub params: TimeRemapParamsDelegate,
 
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 impl TimeRemapParams {

@@ -2,7 +2,7 @@
 //!
 //! `#[derive(Node)]` turns a renderer-neutral node struct into canonical
 //! schema metadata plus property lookup glue. It intentionally does not model
-//! UI concerns or multiple outputs.
+//! UI concerns.
 
 use proc_macro2::Span;
 use quote::{format_ident, quote};
@@ -43,6 +43,8 @@ struct NodeAttr {
     name: LitStr,
     category: Ident,
     output: Option<Ident>,
+    /// The outputs named beside `output`, each with its kind if it isn't `output`'s.
+    outputs: Vec<(Ident, Option<Ident>)>,
     docs: Vec<String>,
 }
 
@@ -67,6 +69,7 @@ fn parse_node_attr(attrs: &[Attribute]) -> Result<NodeAttr> {
     let mut name = None;
     let mut category = None;
     let mut output = None;
+    let mut outputs = Vec::new();
 
     attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("kind") {
@@ -77,6 +80,24 @@ fn parse_node_attr(attrs: &[Attribute]) -> Result<NodeAttr> {
             category = Some(ident_value(&meta)?);
         } else if meta.path.is_ident("output") {
             output = Some(ident_value(&meta)?);
+        } else if meta.path.is_ident("outputs") {
+            meta.parse_nested_meta(|named| {
+                let name = named
+                    .path
+                    .get_ident()
+                    .cloned()
+                    .ok_or_else(|| named.error("expected an output name"))?;
+                if name == "output" {
+                    return Err(named.error("`output` is every node's default output"));
+                }
+                let kind = if named.input.peek(Token![=]) {
+                    Some(ident_value(&named)?)
+                } else {
+                    None
+                };
+                outputs.push((name, kind));
+                Ok(())
+            })?;
         } else {
             return Err(meta.error("unknown node attribute key"));
         }
@@ -88,6 +109,7 @@ fn parse_node_attr(attrs: &[Attribute]) -> Result<NodeAttr> {
         name: required_value(name, attr, "name")?,
         category: required_value(category, attr, "category")?,
         output,
+        outputs,
         docs: doc_lines(attrs),
     })
 }
@@ -215,7 +237,7 @@ fn required_value<T>(value: Option<T>, attr: &Attribute, name: &str) -> Result<T
     })
 }
 
-/// The port kinds `#[input(...)]` and `#[node(output = ...)]` may name, each the snake case of a
+/// The port kinds `#[input(...)]`, `#[node(output = ...)]` and `#[node(outputs(...))]` may name, each the snake case of a
 /// `PortKind` variant.
 const PORT_KINDS: &[&str] = &["raster", "scene", "geometry", "drawing", "material"];
 

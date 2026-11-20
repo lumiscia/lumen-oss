@@ -4,6 +4,7 @@ use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     expr::Expression,
     graph::{Connection, Graph},
+    node::OutputPort,
     node::{
         Deferred, NodeId, NodeKind,
         compositing::raster_multimerge::{RasterMultiMerge, RasterMultiMergeParamsDelegate},
@@ -53,6 +54,7 @@ impl CompositionFixture for ManyElements {
             graph
                 .connect(Connection {
                     from_node: from,
+                    from_port: OutputPort::DEFAULT,
                     to_node: to,
                     to_port: port.to_string(),
                 })

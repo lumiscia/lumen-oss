@@ -739,8 +739,9 @@ mod tests {
         ] });
         let error = LumenError::from(GraphValidationError::WrongInputKind {
             at: At::node(NodeId::new(3)),
-            port: "source".to_string(),
+            port: "source",
             source_node: NodeId::new(2),
+            source_output: None,
             expected: crate::node::PortKind::Scene,
             actual: crate::node::PortKind::Raster,
         });

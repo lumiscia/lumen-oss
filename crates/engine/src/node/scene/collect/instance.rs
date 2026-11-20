@@ -399,7 +399,7 @@ impl Collected {
         inner.reached = self.reached;
         inner.nesting = self.nesting + 1;
         inner.instance_room = self.instance_room.saturating_sub(self.drawn) / count as usize;
-        inner.add(cx, input)?;
+        inner.add(cx, input.node)?;
         self.reached = inner.reached;
 
         let copies = u64::from(count);

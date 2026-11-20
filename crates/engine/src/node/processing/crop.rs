@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 use crate::gpu::frame_graph::ComputeProgram;
 use crate::gpu::render_scale::device_rect;
@@ -45,7 +45,7 @@ pub struct Crop {
     pub params: CropParamsDelegate,
 
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 /// A crop over a source stored from `source_origin`, which is where its first texel sits in the

@@ -9,7 +9,7 @@ use crate::expr::ExpressionContext;
 use crate::gpu::frame_graph::{
     ComputeProgram, CropParams, FrameCx, Raster, Staticness, dispatch_for, held, quantized_domain,
 };
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, motion};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef, motion};
 
 /// Most sub-frames a `motion_blur` node renders.
 pub(crate) const MAX_MOTION_BLUR_SAMPLES: i64 = 64;
@@ -93,7 +93,7 @@ pub struct MotionBlur {
     #[params]
     pub params: MotionBlurParamsDelegate,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 impl MotionBlur {
@@ -178,13 +178,13 @@ impl crate::gpu::frame_graph::RecordNode for MotionBlur {
 fn record_motion_blur(
     cx: &mut FrameCx<'_>,
     node_id: NodeId,
-    source: NodeId,
+    source: OutputRef,
     offsets: &[f64],
 ) -> crate::Result<Raster> {
     cx.record_samples(node_id, |cx| accumulate(cx, source, offsets))
 }
 
-fn accumulate(cx: &mut FrameCx<'_>, source: NodeId, offsets: &[f64]) -> crate::Result<Raster> {
+fn accumulate(cx: &mut FrameCx<'_>, source: OutputRef, offsets: &[f64]) -> crate::Result<Raster> {
     let frame = cx.frame_time();
     let mut sum: Option<Raster> = None;
     // The domain and bounds every sample had, which the average keeps when they all agree.

@@ -12,7 +12,7 @@ use lumen_engine::{
         collect_frame_requirements,
     },
     node::{
-        Deferred, Node, NodeId, NodeKind,
+        Deferred, Node, NodeId, NodeKind, OutputPort,
         compositing::{merge::Merge, raster_multimerge::RasterMultiMerge},
         media_output::MediaOutput,
         processing::{blur::Blur, exposure::Exposure, opacity::Opacity, time_remap::TimeRemap},
@@ -161,7 +161,7 @@ fn a_cycle_error_prints_the_cycle_and_not_the_nodes_it_feeds() {
         NodeKind::Blur(Blur {
             id: NodeId::new(id),
             params: Default::default(),
-            source: Some(NodeId::new(source)),
+            source: Some(NodeId::new(source).into()),
         })
     };
     let mut graph = Graph::new();
@@ -185,7 +185,7 @@ fn a_missing_input_node_is_not_reported_as_a_cycle() {
         output,
         NodeKind::MediaOutput(MediaOutput {
             id: output,
-            source: Some(NodeId::new(999)),
+            source: Some(NodeId::new(999).into()),
         }),
     );
     assert!(matches!(
@@ -203,20 +203,21 @@ fn cycles_are_rejected_at_build() {
     let output = NodeId::new(3);
     let connection = |from, to| Connection {
         from_node: from,
+        from_port: OutputPort::DEFAULT,
         to_node: to,
         to_port: "source".to_string(),
     };
-    let exposure = |id, source| {
+    let exposure = |id, source: NodeId| {
         NodeKind::Exposure(Exposure {
             id,
-            source: Some(source),
+            source: Some(source.into()),
             ..Exposure::default()
         })
     };
     let media_output = || {
         NodeKind::MediaOutput(MediaOutput {
             id: output,
-            source: Some(first),
+            source: Some(first.into()),
         })
     };
 
@@ -259,7 +260,7 @@ fn cycles_are_rejected_at_build() {
         first,
         NodeKind::TimeRemap(TimeRemap {
             id: first,
-            source: Some(first),
+            source: Some(first.into()),
             ..TimeRemap::default()
         }),
     );
@@ -272,7 +273,7 @@ fn cycles_are_rejected_at_build() {
         first,
         NodeKind::TimeRemap(TimeRemap {
             id: second,
-            source: Some(first),
+            source: Some(first.into()),
             ..TimeRemap::default()
         }),
     );
@@ -309,6 +310,7 @@ fn a_second_connection_to_a_single_input_is_rejected_and_a_variadic_input_append
     let connect = |graph: &mut Graph, from_node, to_port: &str| {
         graph.connect(Connection {
             from_node,
+            from_port: OutputPort::DEFAULT,
             to_node: merge,
             to_port: to_port.to_string(),
         })
@@ -349,6 +351,7 @@ fn a_second_connection_to_a_single_input_is_rejected_and_a_variadic_input_append
         graph
             .connect(Connection {
                 from_node,
+                from_port: OutputPort::DEFAULT,
                 to_node: multi,
                 to_port: "layers".to_string(),
             })
@@ -374,7 +377,7 @@ fn media_prediction_follows_direct_ports() {
         opacity,
         NodeKind::Opacity(Opacity {
             id: opacity,
-            source: Some(NodeId::new(1)),
+            source: Some(NodeId::new(1).into()),
             ..Opacity::default()
         }),
     );
@@ -382,7 +385,7 @@ fn media_prediction_follows_direct_ports() {
         output,
         NodeKind::MediaOutput(MediaOutput {
             id: output,
-            source: Some(NodeId::new(2)),
+            source: Some(NodeId::new(2).into()),
         }),
     );
     let composition = build(graph).unwrap_or_else(|errors| panic!("{errors:?}"));

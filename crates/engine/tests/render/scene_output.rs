@@ -476,3 +476,91 @@ fn color_output_ignores_the_depth_range() {
     );
     assert_eq!(color.rgba, explicit.rgba);
 }
+
+/// `nodes` with the `merge` node 10 reading its base and mask from node 7's `color` and `depth`.
+fn reading_outputs(mut nodes: Vec<Value>) -> Scene {
+    for node in &mut nodes {
+        if node["id"] == 10 {
+            node["in"] = json!({ "overlay": 9 });
+        }
+    }
+    let mut composition = scene(SIZE, json!(nodes));
+    let connections = composition.0["connections"]
+        .as_array_mut()
+        .expect("connections");
+    connections
+        .push(json!({ "from_node": 7, "from_port": "color", "to_node": 10, "to_port": "base" }));
+    connections
+        .push(json!({ "from_node": 7, "from_port": "depth", "to_node": 10, "to_port": "mask" }));
+    composition
+}
+
+/// `fog_nodes` drawing colour and depth with node 7 alone, which takes node 8's depth range.
+fn fog_from_one_render() -> Scene {
+    let mut nodes = fog_nodes(true, false);
+    nodes[6]["params"] = json!({ "depth_near": 3, "depth_far": 9 });
+    reading_outputs(nodes)
+}
+
+#[test]
+fn one_render_reading_colour_and_depth_draws_what_two_renders_do_from_one_walk_of_the_scene() {
+    let gpu = gpu();
+    let media = || {
+        let pixels = vec![[90, 160, 40, 255]; (SIZE.0 * SIZE.1) as usize].concat();
+        fox_media().image("plate", SIZE.0, SIZE.1, pixels)
+    };
+    let draw = |composition: Scene| {
+        let mut renderer = gpu.renderer();
+        let frame = render(&mut renderer, &composition.into(), 0.0, &media());
+        (
+            frame,
+            renderer.scene_walk_count(),
+            renderer.submitted_pass_count(),
+        )
+    };
+    let (two, two_walks, two_passes) = draw(scene(SIZE, json!(fog_nodes(true, true))));
+    let (one, one_walks, one_passes) = draw(fog_from_one_render());
+    assert_eq!((two_walks, one_walks), (2, 1));
+    assert_eq!(
+        one_passes, two_passes,
+        "each output is drawn once either way"
+    );
+    assert_eq!(one.rgba, two.rgba);
+}
+
+#[test]
+fn each_output_read_is_kept_across_frames() {
+    // The merge fades in, so it records again on every frame, and reads what is kept of the
+    // static render's colour and depth.
+    let nodes = |shared: bool| {
+        let mut nodes = two_planes(None);
+        nodes.extend([
+            json!({ "id": 7, "type": "render_3d", "params": { "depth_near": 3, "depth_far": 11 }, "in": { "scene": 4 } }),
+            json!({ "id": 8, "type": "render_3d", "params": { "output": "depth", "depth_near": 3, "depth_far": 11 }, "in": { "scene": 4 } }),
+            json!({ "id": 9, "type": "background", "params": { "paint": [200, 210, 220, 255] } }),
+            json!({ "id": 10, "type": "merge", "params": { "mask_mode": "luma", "opacity": "=0.5 + frame * 0.25" }, "in": { "base": 7, "overlay": 9, "mask": 8 } }),
+        ]);
+        if shared {
+            nodes.retain(|node| node["id"] != 8);
+            reading_outputs(nodes)
+        } else {
+            scene(SIZE, json!(nodes))
+        }
+    };
+    let gpu = gpu();
+    let media = TestMedia::default();
+    let second_frame = |shared: bool| {
+        let mut renderer = gpu.renderer();
+        let composition: Composition = nodes(shared).frames(2).into();
+        render(&mut renderer, &composition, 0.0, &media);
+        let walks = renderer.scene_walk_count();
+        let frame = render(&mut renderer, &composition, 1.0, &media);
+        assert_eq!(
+            renderer.scene_walk_count(),
+            walks,
+            "the second frame walks no scene"
+        );
+        frame
+    };
+    assert_eq!(second_frame(true).rgba, second_frame(false).rgba);
+}

@@ -114,7 +114,8 @@ impl<N: JsonNode> Search<N> {
                 }
                 NodeKind::Merge3d(merge) => {
                     let world = parent * placement(&merge.params.eval(&ctx)?.placement).matrix();
-                    pending.extend(merge.objects.iter().rev().map(|&object| (object, world)));
+                    let objects = merge.objects.iter().rev();
+                    pending.extend(objects.map(|object| (object.node, world)));
                 }
                 NodeKind::Instance3d(instance) => {
                     if ctx.eval_field("count", &instance.params.count)?.0 == 0 {
@@ -130,7 +131,7 @@ impl<N: JsonNode> Search<N> {
                     let input = required_input(instance.id, "scene", instance.scene)?;
                     // The instanced scene is searched as a scene of its own, and its camera is
                     // then placed by the parents, as a collect places it.
-                    if let Some(camera) = self.find(cx, input, nesting + 1)? {
+                    if let Some(camera) = self.find(cx, input.node, nesting + 1)? {
                         return Ok(Some(Camera {
                             world: parent * camera.world,
                             ..camera

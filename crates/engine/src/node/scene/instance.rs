@@ -7,7 +7,8 @@ use crate::error::LumenError;
 use crate::expr::ExpressionValue;
 use crate::node::vector::paint::Paint;
 use crate::node::{
-    Deferred, Delegated, NodeId, NodeParamType, NodeParams, ParamValue, PropertyKind, truncated_int,
+    Deferred, Delegated, NodeId, NodeParamType, NodeParams, OutputRef, ParamValue, PropertyKind,
+    truncated_int,
 };
 
 /// Most copies an `instance_3d` may place. It is also the most objects a frame's scene may
@@ -153,7 +154,7 @@ pub struct Instance3d {
     pub params: Instance3dParamsDelegate,
 
     #[input(scene)]
-    pub scene: Option<NodeId>,
+    pub scene: Option<OutputRef>,
 }
 
 impl Instance3d {

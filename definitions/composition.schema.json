@@ -433,7 +433,7 @@
           "type": "integer"
         },
         "from_port": {
-          "description": "The output of `from_node` to read. Optional: it defaults to `output`, the only output any node has.",
+          "description": "The output of `from_node` to read: `output`, every node's default and what an omitted `from_port` reads, or one of the outputs its kind names beside it, which the node kind's `x-lumen-outputs` lists.",
           "type": "string"
         },
         "to_node": {
@@ -8372,7 +8372,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Draws a 3D scene into a raster, with a transparent background unless it shows its environment\nmap; or, by `output`, its depth or normals, for 2D effects such as fog.",
+            "description": "Draws a 3D scene into a raster, with a transparent background unless it shows its environment\nmap; or, by `output`, its depth or normals, for 2D effects such as fog. Its `color`, `depth`\nand `normal` outputs read each of them from the one render.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -8571,7 +8571,7 @@
                   },
                   "output": {
                     "default": "color",
-                    "description": "What the raster holds: the lit scene, its depth or its normals. A composition that needs\nmore than one draws the same scene with a `render_3d` for each.",
+                    "description": "What the default `output` holds: the lit scene, its depth or its normals. The `color`,\n`depth` and `normal` outputs each hold one whatever this is, and one `render_3d` draws all\nthat are read with one walk of the scene.",
                     "enum": ["color", "depth", "normal"],
                     "title": "Output",
                     "type": "string",
@@ -8676,6 +8676,18 @@
               {
                 "kind": "raster",
                 "name": "output"
+              },
+              {
+                "kind": "raster",
+                "name": "color"
+              },
+              {
+                "kind": "raster",
+                "name": "depth"
+              },
+              {
+                "kind": "raster",
+                "name": "normal"
               }
             ]
           },

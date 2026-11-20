@@ -97,7 +97,7 @@ pub(crate) fn resolve_outline<'e, N: JsonNode, G>(
                     -MAX_PATH_COORDINATE,
                 )?);
                 offsets = true;
-                at = crate::node::required_input(at, "geometry", node.geometry)?;
+                at = crate::node::required_input(at, "geometry", node.geometry)?.node;
                 continue;
             }
             NodeKind::Path2d(path) => {
@@ -345,7 +345,7 @@ impl<'e> Collector<'_, 'e> {
                         .drawings
                         .iter()
                         .rev()
-                        .map(|&input| Step::Draw(input, world)),
+                        .map(|input| Step::Draw(input.node, world)),
                 );
             }
             NodeKind::Shadow2d(shadow) => {
@@ -355,7 +355,7 @@ impl<'e> Collector<'_, 'e> {
                     parent,
                     start: self.record.uses.len(),
                 });
-                pending.push(Step::Draw(input, parent));
+                pending.push(Step::Draw(input.node, parent));
             }
             NodeKind::Fill2d(_) | NodeKind::Stroke2d(_) => {
                 let (geometry, style, paint, opacity) = self.style(node_id)?;
@@ -420,7 +420,7 @@ impl<'e> Collector<'_, 'e> {
             _ => unreachable!("only fill and stroke nodes have a style"),
         };
         let input = crate::node::required_input(node_id, "geometry", input)?;
-        let geometry = self.geometry(input)?;
+        let geometry = self.geometry(input.node)?;
         let styled = (
             geometry,
             style,

@@ -1,5 +1,5 @@
 use crate::gpu::frame_graph::RenderProgram;
-use crate::node::NodeId;
+use crate::node::{NodeId, OutputRef};
 
 const SHADER: &str = concat!(
     include_str!("../gpu/shaders/alpha.wgsl"),
@@ -15,7 +15,7 @@ const SHADER: &str = concat!(
 pub struct MediaOutput {
     pub id: NodeId,
     #[input()]
-    pub source: Option<NodeId>,
+    pub source: Option<OutputRef>,
 }
 
 const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
