@@ -86,7 +86,8 @@ impl DelegateEvaluable for ColorCurvesDelegate {
                     .map_err(|error: LumenError| error.in_index(index).in_field(name))
                 })
                 .collect::<crate::Result<Vec<_>>>()?;
-            check_curve(name, slot)
+            let known: Vec<_> = slot.iter().map(|[x, y]| [Some(*x), Some(*y)]).collect();
+            check_curve(name, &known)
                 .map_err(|details| LumenError::evaluate(details).located(ctx.node_id, name))?;
         }
         let [master, red, green, blue] = evaluated;
@@ -179,22 +180,24 @@ fn parse_curve(value: &Value, path: &str) -> Result<Vec<[Deferred<f64>; 2]>, Str
             ])
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let literal = points
+    let known: Vec<_> = points
         .iter()
-        .map(|[x, y]| match (x, y) {
-            (Deferred::Value(x), Deferred::Value(y)) => Some([*x, *y]),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>();
-    if let Some(points) = literal {
-        check_curve(path, &points).map_err(|details| format!("`{path}` {details}"))?;
-    }
+        .map(|[x, y]| [literal(x), literal(y)])
+        .collect();
+    check_curve(path, &known).map_err(|details| format!("`{path}` {details}"))?;
     Ok(points)
 }
 
-/// Why `points` is not a curve, or `Ok`. The error continues a sentence that starts with the
-/// curve's name.
-fn check_curve(name: &str, points: &[[f64; 2]]) -> Result<(), String> {
+fn literal(number: &Deferred<f64>) -> Option<f64> {
+    match number {
+        Deferred::Value(value) => Some(*value),
+        _ => None,
+    }
+}
+
+/// Why `points` is not a curve, or `Ok`; `None` coordinates are not checked. The error continues
+/// a sentence that starts with the curve's name.
+fn check_curve(name: &str, points: &[[Option<f64>; 2]]) -> Result<(), String> {
     if points.len() > MAX_CURVE_POINTS {
         return Err(format!(
             "has {} points, more than {MAX_CURVE_POINTS}",
@@ -203,20 +206,24 @@ fn check_curve(name: &str, points: &[[f64; 2]]) -> Result<(), String> {
     }
     for (index, [x, y]) in points.iter().enumerate() {
         for (axis, value) in [("x", x), ("y", y)] {
-            if !(0.0..=1.0).contains(value) {
+            if let Some(value) = value
+                && !(0.0..=1.0).contains(value)
+            {
                 return Err(format!(
                     "point {index} has {axis} {value} outside 0..1 in `{name}`"
                 ));
             }
         }
     }
-    if let Some(index) = points.windows(2).position(|pair| pair[1][0] <= pair[0][0]) {
-        return Err(format!(
-            "points must have strictly increasing x, but point {} has x {} after {} in `{name}`",
-            index + 1,
-            points[index + 1][0],
-            points[index][0]
-        ));
+    for (index, pair) in points.windows(2).enumerate() {
+        if let [Some(before), Some(after)] = [pair[0][0], pair[1][0]]
+            && after <= before
+        {
+            return Err(format!(
+                "points must have strictly increasing x, but point {} has x {after} after {before} in `{name}`",
+                index + 1
+            ));
+        }
     }
     Ok(())
 }
@@ -314,6 +321,17 @@ mod tests {
             (json!([[0.6, 0], [0.4, 1]]), "strictly increasing x"),
             (json!([[0, 0], [1.5, 1]]), "outside 0..1"),
             (json!([[0, -0.1]]), "outside 0..1"),
+        ] {
+            let error = parse(json!({ "master": curve })).unwrap_err();
+            assert!(error.contains(expected), "{curve}: {error}");
+        }
+    }
+
+    #[test]
+    fn literal_points_are_checked_next_to_expressions() {
+        for (curve, expected) in [
+            (json!([[0, -0.1], [1, "=1"]]), "outside 0..1"),
+            (json!([[0.6, "=0"], [0.4, 1]]), "strictly increasing x"),
         ] {
             let error = parse(json!({ "master": curve })).unwrap_err();
             assert!(error.contains(expected), "{curve}: {error}");
