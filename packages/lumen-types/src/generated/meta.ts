@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1402,6 +1402,11 @@ export type CastShadow = {
    */
   readonly spread?: ExpressionValue<number>;
 };
+export type ChannelSource = "source_red" | "source_green" | "source_blue" | "source_alpha" | "source_luma" | "other_red" | "other_green" | "other_blue" | "other_alpha" | "other_luma" | "zero" | "one";
+export type ChannelsAlpha = ChannelSource;
+export type ChannelsBlue = ChannelSource;
+export type ChannelsGreen = ChannelSource;
+export type ChannelsRed = ChannelSource;
 export type ClipEnd = "hide" | "hold" | "loop";
 /** A value for a template prop: a literal of the prop's type, or an expression in the clip's time. */
 export type ClipPropValue = number | string | Vec2 | Vec3 | Color;
@@ -1771,6 +1776,30 @@ export interface Camera3dNode extends CompositionNodeBase<"camera_3d"> {
     readonly rotation?: ExpressionValue<Vec3>;
     /** Point along X, Y and Z the camera aims at while `look_at` is on, in its parent's space. */
     readonly target?: ExpressionValue<Vec3>;
+  };
+}
+
+/**
+ * Builds each channel of a raster from a channel of `source`, a channel of `other`, the luma of
+ * either, 0 or 1. The output covers the area of `source`, and `other` is read at the same canvas
+ * pixels, as transparent outside its own area. Choosing an `other_*` value with nothing connected
+ * to `other` is an error. Colour is taken unpremultiplied and the result is premultiplied by the
+ * output alpha.
+ * 
+ * To set a raster's alpha from another raster's luma, connect it to `other` and set `alpha` to
+ * `other_luma`. To use the green channel of a matte as alpha, connect the matte to `other` and set
+ * `alpha` to `other_green`.
+ */
+export interface ChannelsNode extends CompositionNodeBase<"channels"> {
+  readonly params?: {
+    /** Where the output's alpha comes from. */
+    readonly alpha?: ChannelSource;
+    /** Where the output's blue comes from. */
+    readonly blue?: ChannelSource;
+    /** Where the output's green comes from. */
+    readonly green?: ChannelSource;
+    /** Where the output's red comes from. */
+    readonly red?: ChannelSource;
   };
 }
 
@@ -3448,9 +3477,10 @@ export interface TransformNode extends CompositionNodeBase<"transform"> {
 export interface WgslShaderNode extends CompositionNodeBase<"wgsl_shader"> {
   readonly params?: {
     /**
-     * WGSL compute shader; the prelude provides inputs, `input_sampler`, `output` and `lumen`,
-     * which holds `resolution`, `render_scale`, `time`, `frame`, and from the `camera` input
-     * `view`, `projection` and `camera_position`.
+     * WGSL compute shader, or `shader:<name>` for the composition's `shaders` entry of that name;
+     * the prelude provides inputs, `input_sampler`, `output` and `lumen`, which holds
+     * `resolution`, `render_scale`, `time`, `frame`, and from the `camera` input `view`,
+     * `projection` and `camera_position`.
      */
     readonly shader?: ExpressionValue<string>;
     /** Uniform struct field values by name; unset fields are zero. */
@@ -3482,6 +3512,7 @@ export interface CompositionNodeByKind {
   readonly "blur": BlurNode;
   readonly "boolean": BooleanNode;
   readonly "camera_3d": Camera3dNode;
+  readonly "channels": ChannelsNode;
   readonly "clip": ClipNode;
   readonly "color_correct": ColorCorrectNode;
   readonly "color_grade": ColorGradeNode;
@@ -3545,6 +3576,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "camera_3d": Omit<Camera3dNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "channels": Omit<ChannelsNode, "id"> & {
     readonly id?: number;
   };
   readonly "clip": Omit<ClipNode, "id"> & {
@@ -3704,6 +3738,7 @@ export interface NodeInputPortNameByKind {
   readonly "blur": "source";
   readonly "boolean": "a" | "b";
   readonly "camera_3d": never;
+  readonly "channels": "other" | "source";
   readonly "clip": "source";
   readonly "color_correct": "source";
   readonly "color_grade": "source";
@@ -3761,6 +3796,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "blur": never;
   readonly "boolean": never;
   readonly "camera_3d": never;
+  readonly "channels": never;
   readonly "clip": never;
   readonly "color_correct": never;
   readonly "color_grade": never;
@@ -3818,6 +3854,7 @@ export interface NodeOutputKindByKind {
   readonly "blur": "raster";
   readonly "boolean": "raster";
   readonly "camera_3d": "scene";
+  readonly "channels": "raster";
   readonly "clip": "raster";
   readonly "color_correct": "raster";
   readonly "color_grade": "raster";
@@ -3875,6 +3912,7 @@ export interface NodeInputPortKindByKind {
   readonly "blur": { readonly "source": "raster" };
   readonly "boolean": { readonly "a": "raster"; readonly "b": "raster" };
   readonly "camera_3d": {};
+  readonly "channels": { readonly "source": "raster"; readonly "other": "raster" };
   readonly "clip": { readonly "source": "raster" };
   readonly "color_correct": { readonly "source": "raster" };
   readonly "color_grade": { readonly "source": "raster" };
@@ -3981,6 +4019,18 @@ export const nodeInputPorts = {
    * without one, `render_3d` views from 5 units along +Z with a 40° field of view.
    */
   "camera_3d": {},
+  /**
+   * Builds each channel of a raster from a channel of `source`, a channel of `other`, the luma of
+   * either, 0 or 1. The output covers the area of `source`, and `other` is read at the same canvas
+   * pixels, as transparent outside its own area. Choosing an `other_*` value with nothing connected
+   * to `other` is an error. Colour is taken unpremultiplied and the result is premultiplied by the
+   * output alpha.
+   * 
+   * To set a raster's alpha from another raster's luma, connect it to `other` and set `alpha` to
+   * `other_luma`. To use the green channel of a matte as alpha, connect the matte to `other` and set
+   * `alpha` to `other_green`.
+   */
+  "channels": { "source": { kind: "raster", variadic: false }, "other": { kind: "raster", variadic: false } },
   /** Plays a composition template, or its source, over a window of time. */
   "clip": { "source": { kind: "raster", variadic: false } },
   /**
@@ -4363,6 +4413,7 @@ export const nodeMediaSources = {
   "blur": {},
   "boolean": {},
   "camera_3d": {},
+  "channels": {},
   "clip": {},
   "color_correct": {},
   "color_grade": { "lut_source": { kinds: ["lut"] } },
