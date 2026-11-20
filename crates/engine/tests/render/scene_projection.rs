@@ -2,6 +2,7 @@
 //! camera, in place of texture coordinates.
 
 use lumen_3d::glam::Vec3;
+use lumen_3d::test_support::write_glb;
 use lumen_3d::{Camera, Projection};
 use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
@@ -10,7 +11,7 @@ use crate::support::scene::{
     CENTER, Quad, frame_of, gradient, image, material, merge, model, model_glb, plate, render_3d,
     unlit,
 };
-use crate::support::{BLUE, Frame, GREEN, RED, TestMedia, gpu};
+use crate::support::{BLUE, Frame, GREEN, RED, Scene, TestMedia, gpu, render};
 
 const WHITE: [u8; 4] = [255; 4];
 /// The `camera_3d` materials project from, which isn't in the scene drawn.
@@ -271,4 +272,96 @@ fn a_projector_without_a_texture_fails_naming_the_material() {
             && error.contains("a `projector` needs a `texture` to project"),
         "{error}"
     );
+}
+
+/// A wall facing the still render camera, projected blue onto from `projector`, a scene whose
+/// camera slides from (0, 0, 5) to (5, 0, 5) over the first second, facing -Z with a 40° view. It
+/// covers the wall's middle at the start and leaves it at the end, over 16 frames at 8 a second.
+fn sliding_projector(projector: Vec<Value>) -> Scene {
+    let mut nodes = vec![
+        plate(10),
+        projected(11, json!({})),
+        wall(1, 6.0, [0.0; 3], 11),
+        camera(21, [0.0, 0.0, 5.0], [0.0; 3], 40.0),
+    ];
+    nodes.extend(projector);
+    nodes.push(merge(3, &[1, 21], json!({})));
+    render_3d(nodes).frames(16).fps(8.0)
+}
+
+/// Checks that frame 15 of `scene`, rendered after the frames before it, is the fresh render of it
+/// that shows the base colour in the middle, the projection having moved off.
+fn assert_the_projection_moves_off(scene: Scene, media: &TestMedia) {
+    let composition: Composition = scene.into();
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let first = render(&mut renderer, &composition, 0.0, media);
+    assert_eq!(
+        first.pixel(CENTER, CENTER),
+        BLUE,
+        "the projection starts on the middle"
+    );
+    for frame in 1..15 {
+        render(&mut renderer, &composition, f64::from(frame), media);
+    }
+    let last = render(&mut renderer, &composition, 15.0, media);
+    let fresh = render(&mut gpu.reference(), &composition, 15.0, media);
+    assert_eq!(
+        fresh.pixel(CENTER, CENTER),
+        WHITE,
+        "the projection moves off"
+    );
+    assert!(
+        last.rgba == fresh.rgba,
+        "frame 15 is drawn as a fresh render draws it"
+    );
+}
+
+#[test]
+fn an_animated_model_camera_moves_its_projection_on_a_still_scene() {
+    let bytes =
+        |values: &[f32]| -> Vec<u8> { values.iter().flat_map(|v| v.to_le_bytes()).collect() };
+    // The clip's times and positions, and a triangle behind the projector, which a model needs.
+    let times = bytes(&[0.0, 1.0]);
+    let positions = bytes(&[0.0, 0.0, 5.0, 5.0, 0.0, 5.0]);
+    let triangle = bytes(&[0.0, 0.0, 1.0, 0.1, 0.0, 1.0, 0.0, 0.1, 1.0]);
+    let view = |offset: usize, bytes: &[u8]| json!({ "buffer": 0, "byteOffset": offset, "byteLength": bytes.len() });
+    let document = json!({
+        "asset": { "version": "2.0" },
+        "scene": 0,
+        "scenes": [{ "nodes": [0, 1] }],
+        "nodes": [{ "camera": 0, "translation": [0, 0, 5] }, { "mesh": 0 }],
+        "meshes": [{ "primitives": [{ "attributes": { "POSITION": 2 } }] }],
+        "cameras": [{ "type": "perspective",
+            "perspective": { "yfov": 40f64.to_radians(), "znear": 0.05 } }],
+        "accessors": [
+            { "bufferView": 0, "componentType": 5126, "type": "SCALAR", "count": 2,
+              "min": [0.0], "max": [1.0] },
+            { "bufferView": 1, "componentType": 5126, "type": "VEC3", "count": 2 },
+            { "bufferView": 2, "componentType": 5126, "type": "VEC3", "count": 3,
+              "min": [0.0, 0.0, 1.0], "max": [0.1, 0.1, 1.0] },
+        ],
+        "bufferViews": [
+            view(0, &times),
+            view(times.len(), &positions),
+            view(times.len() + positions.len(), &triangle),
+        ],
+        "buffers": [{ "byteLength": times.len() + positions.len() + triangle.len() }],
+        "animations": [{
+            "name": "slide",
+            "samplers": [{ "input": 0, "output": 1 }],
+            "channels": [{ "sampler": 0, "target": { "node": 0, "path": "translation" } }],
+        }],
+    });
+    let rig = write_glb(
+        &serde_json::to_vec(&document).unwrap(),
+        &[times, positions, triangle].concat(),
+    );
+    let projector = model(
+        PROJECTOR,
+        json!({ "source": "rig.glb", "camera": "0", "animation": "slide",
+            "animation_loop": false }),
+    );
+    let media = image(|_, _| BLUE).model("rig.glb", rig);
+    assert_the_projection_moves_off(sliding_projector(vec![projector]), &media);
 }
