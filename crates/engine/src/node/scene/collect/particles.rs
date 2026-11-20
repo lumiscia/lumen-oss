@@ -174,11 +174,12 @@ struct KeptTriangles {
     last_used: u64,
 }
 
-/// An instance buffer particles are placed into, and what it holds once they are.
+/// An instance buffer particles are placed into, and what it holds once they are: the params and
+/// parts they were placed from, and the mesh parts of the surface they were placed over.
 struct Output {
     buffer: BufRef,
     capacity: u32,
-    holds: Option<(GpuParticles, Vec<GpuPart>)>,
+    holds: Option<(GpuParticles, Vec<GpuPart>, Vec<MeshPart>)>,
     last_used: u64,
 }
 
@@ -273,8 +274,10 @@ pub(crate) struct ParticleSystem {
     scene: SceneId,
     params: GpuParticles,
     parts: Vec<GpuPart>,
-    /// The surface's triangles, unless particles are emitted from the origin.
+    /// The surface's triangles, unless particles are emitted from the origin, and the mesh parts
+    /// they are of.
     triangles: Option<BufRef>,
+    meshes: Vec<MeshPart>,
     /// Where particles' origins can be, in the node's space.
     reach: Bounds,
     /// The largest scale a particle can have.
@@ -343,7 +346,7 @@ pub(crate) fn instance_buffer(cx: &mut FrameCx<'_>, system: &ParticleSystem) -> 
     }
     let output = &mut node.outputs[index];
     output.last_used = tick;
-    let holds = (system.params, system.parts.clone());
+    let holds = (system.params, system.parts.clone(), system.meshes.clone());
     if output.holds.as_ref() == Some(&holds) {
         return Ok(Res::Buffer(output.buffer));
     }
@@ -380,6 +383,8 @@ pub(crate) fn instance_buffer(cx: &mut FrameCx<'_>, system: &ParticleSystem) -> 
 struct Surface {
     parts: Vec<GpuPart>,
     triangles: BufRef,
+    /// The mesh parts `triangles` holds, one after another.
+    meshes: Vec<MeshPart>,
     bounds: Bounds,
 }
 
@@ -821,13 +826,8 @@ impl Collected {
                     "lumen 3d particle surface",
                     bytemuck::cast_slice(&contents),
                 );
-                if let Some((_, replaced)) = node.surface.replace((used, buffer)) {
+                if let Some((_, replaced)) = node.surface.replace((used.clone(), buffer)) {
                     cache.retired.push((replaced, tick));
-                }
-                // A new surface buffer can take the slot of an old one, so what the outputs
-                // hold no longer says what they were placed from.
-                for output in &mut node.outputs {
-                    output.holds = None;
                 }
                 buffer
             }
@@ -835,6 +835,7 @@ impl Collected {
         Ok(Some(Surface {
             parts,
             triangles,
+            meshes: used,
             bounds,
         }))
     }
@@ -874,11 +875,17 @@ fn system(
         oldest = oldest.min(lifetime);
     }
     let oldest = oldest as f32;
-    let (parts, triangles, emitted) = match surface {
-        Some(surface) => (surface.parts, Some(surface.triangles), surface.bounds),
+    let (parts, triangles, meshes, emitted) = match surface {
+        Some(surface) => (
+            surface.parts,
+            Some(surface.triangles),
+            surface.meshes,
+            surface.bounds,
+        ),
         None => (
             Vec::new(),
             None,
+            Vec::new(),
             Bounds {
                 min: Vec3::ZERO,
                 max: Vec3::ZERO,
@@ -923,6 +930,7 @@ fn system(
         },
         parts,
         triangles,
+        meshes,
         reach,
         largest,
     }

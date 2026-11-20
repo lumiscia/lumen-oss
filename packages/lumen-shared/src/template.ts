@@ -5,7 +5,7 @@ import { Expr, literal } from "./expression.js";
 import { quote } from "./quote.js";
 import type { Value } from "./expression.js";
 import type {
-  ClipNode,
+  ClipValue,
   CompositionDefinition,
   CompositionDefinitionOptions,
   NodeInput,
@@ -94,7 +94,7 @@ export function defineComposition<
           ...(values === undefined ? {} : { props: literalProps(values) }),
         },
       };
-      return Object.assign(node, { [clipTemplate]: captured }) as ClipNode<SourceOutput<TSource>>;
+      return Object.assign(node, { [clipTemplate]: captured }) as ClipValue<SourceOutput<TSource>>;
     },
   };
 }

@@ -16,8 +16,8 @@ import { isNodeOutput } from "./output.js";
 import type {
   AudioClipOptions,
   AudioTrackOptions,
-  ClipNode,
-  ClipReference,
+  ClipValue,
+  ClipReferenceTo,
   CompositionOptions,
   ConnectOptions,
   ConnectSource,
@@ -139,10 +139,10 @@ export class Composition {
    * Adds a node. `inputs` connects nodes to its ports in order, as `connect` would after it; a
    * variadic port such as `layers` takes an array. An input may be a node value, added before
    * this node and after the values it reads in turn. A value read by several inputs is one node.
-   * `node` itself is always added, so adding the same object twice makes two nodes. A scene
-   * template's clip returns a reference that reads as a scene.
+   * `node` itself is always added, so adding the same object twice makes two nodes. A clip
+   * returns a reference that outputs what its template does.
    */
-  addNode(node: ClipNode<"scene">): CompositionNode<"clip"> & ClipReference<"scene">;
+  addNode<TClip extends ClipValue>(node: TClip): CompositionNode<"clip"> & ClipReferenceTo<TClip>;
   addNode<TKind extends NodeKind>(
     node: NodeInput<TKind> & { readonly type: TKind },
   ): CompositionNode<TKind>;

@@ -63,7 +63,7 @@ type NodePorts<TKind extends NodeKind> = {
  */
 export type NodeValue<TOutput extends NodePortKind = NodePortKind> =
   | NodeInput<Exclude<NodeKindOutputting<TOutput>, "clip">>
-  | ClipNode<Extract<TOutput, TemplateOutput>>;
+  | ClipValue<Extract<TOutput, TemplateOutput>>;
 
 /** What a template outputs, which the clips playing it output too. */
 export type TemplateOutput = "raster" | "scene";
@@ -74,14 +74,21 @@ declare const templateOutput: unique symbol;
  * A `clip` node value playing a template that outputs `TOutput`. A scene template's clip is a
  * scene node, for `merge_3d` and `render_3d`; any other clip outputs a raster.
  */
-export type ClipNode<TOutput extends TemplateOutput = TemplateOutput> = NodeInput<"clip"> &
+export type ClipValue<TOutput extends TemplateOutput = TemplateOutput> = NodeInput<"clip"> &
   ClipBrand<TOutput>;
 
-/** A `clip` node of the composition, as `addNode` returned it, that outputs `TOutput`. */
+/**
+ * A `clip` node of the composition, as `addNode` returned it, that outputs `TOutput`. A clip of a
+ * template that may output either kind is a union of both, which fits neither kind of input.
+ */
 export type ClipReference<TOutput extends TemplateOutput = TemplateOutput> = {
   readonly id: number;
   readonly type: "clip";
 } & ClipBrand<TOutput>;
+
+/** The reference `addNode` returns for the clip value `TClip`, of the kind `TClip` outputs. */
+export type ClipReferenceTo<TClip extends ClipValue> =
+  TClip extends ClipValue<"scene"> ? ClipReference<"scene"> : ClipReference<"raster">;
 
 type ClipBrand<TOutput extends TemplateOutput> = TOutput extends "scene"
   ? { readonly [templateOutput]: "scene" }
@@ -128,7 +135,7 @@ export type NodeOutput<TOutput extends NodePortKind = NodePortKind> =
 
 type ClipOutput<TOutput extends TemplateOutput> = [TOutput] extends [never]
   ? never
-  : NodeOutputOf<"clip", NodeOutputName<"clip">, ClipNode<TOutput> | ClipReference<TOutput>>;
+  : NodeOutputOf<"clip", NodeOutputName<"clip">, ClipValue<TOutput> | ClipReference<TOutput>>;
 
 /** A node's params and input ports by name in one object, as `nodes` takes them. */
 export type NodeProps<TKind extends NodeKind> = NodeParamProps<TKind> &
@@ -442,5 +449,5 @@ export interface CompositionDefinition<
    * A `clip` node playing the template, which outputs what the template does; adding it
    * registers the template.
    */
-  readonly clip: (options?: ClipOptions<TProps>) => ClipNode<TOutput>;
+  readonly clip: (options?: ClipOptions<TProps>) => ClipValue<TOutput>;
 }
