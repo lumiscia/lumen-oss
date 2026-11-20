@@ -4,8 +4,8 @@ use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
 use crate::support::scene::{
-    CENTER, Quad, SIZE, fox, fox_media, gradient, image, merge, model, model_glb, ortho, plate,
-    quads, render_3d, render_3d_with, texel_png, unlit,
+    CENTER, Quad, SIZE, fox, fox_media, gradient, image, merge, model, model_glb, ortho, plane,
+    plate, quads, render_3d, render_3d_with, texel_png, unlit,
 };
 use crate::support::{
     BLUE, CLEAR, Case, Expect, Frame, GREEN, RED, Scene, TestMedia, check, gpu, render, scene,
@@ -363,6 +363,57 @@ fn masked_materials_cut_out_and_blended_ones_show_through() {
             with(0.25, json!({})),
             Expect::Uniform(BLUE),
         ),
+    ]);
+}
+
+#[test]
+fn a_masked_cards_cut_out_texels_hide_nothing_drawn_after_them() {
+    let media = || {
+        let mut material = unlit("card", [0.0, 0.0, 1.0, 0.4]);
+        material["alphaMode"] = json!("MASK");
+        image(|_, _| RED).model(
+            "card.glb",
+            quads(json!([material]), &[([-3.0, -3.0, 3.0, 3.0], 0)]),
+        )
+    };
+    let behind = |object: Value, order: &[u32]| {
+        let mut nodes = vec![
+            plate(10),
+            model(2, json!({ "source": "card.glb" })),
+            ortho(3, json!({})),
+        ];
+        nodes.push(object);
+        nodes.push(merge(4, order, json!({})));
+        render_3d(nodes)
+    };
+    let mut wall = crate::support::scene::flat(
+        5,
+        15,
+        json!({ "size": [4, 4, 0.2], "position": [0, 0, -2] }),
+        json!({ "color": RED }),
+    )
+    .to_vec();
+    let wall_after = {
+        let mut scene = behind(wall.pop().expect("wall"), &[2, 5, 3]);
+        scene.0["nodes"].as_array_mut().expect("nodes").extend(wall);
+        scene
+    };
+    let red_plane = plane(5, 10, json!({ "width": 4, "position": [0, 0, -2] }));
+    check(vec![
+        Case::new(
+            "an opaque wall listed after",
+            wall_after,
+            Expect::Uniform(RED),
+        )
+        .media(media())
+        .tolerance(1),
+        Case::new(
+            "a blended plane",
+            behind(red_plane, &[2, 5, 3]),
+            Expect::Uniform(RED),
+        )
+        .media(media())
+        .tolerance(1),
     ]);
 }
 

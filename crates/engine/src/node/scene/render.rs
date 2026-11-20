@@ -118,6 +118,11 @@ const SCENE_3D: RenderProgram = RenderProgram {
     fragment: "fs_main",
     layout: LAYOUT,
 };
+const SCENE_3D_MASKED: RenderProgram = RenderProgram {
+    label: "scene-3d-masked",
+    fragment: "fs_masked",
+    ..SCENE_3D
+};
 const SCENE_3D_SHADOW: RenderProgram = RenderProgram {
     label: "scene-3d-shadow",
     shader: SHADER,
@@ -849,7 +854,7 @@ impl Render3d {
 impl RecordNode for Render3d {
     /// Builds the programs scenes draw with, and the background's if the scene may show one, but
     /// for those drawing shadow maps and catchers, which the lights and surfaces asking for them
-    /// build.
+    /// build. Masked surfaces build their programs when first drawn.
     fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
         let output = match self.params.output {
             Render3dOutputDelegate::Depth => Render3dOutput::Depth,
@@ -1044,7 +1049,12 @@ impl RecordNode for Render3d {
             } else {
                 (spec(depth_test, cull), 0)
             };
-            let program = cx.render_program(&SCENE_3D, target, variant)?;
+            let shader = if run.key.masked && !run.key.shadow_catcher {
+                &SCENE_3D_MASKED
+            } else {
+                &SCENE_3D
+            };
+            let program = cx.render_program(shader, target, variant)?;
             let maps = &run.key.maps;
             let maps = [
                 maps.base_color,
