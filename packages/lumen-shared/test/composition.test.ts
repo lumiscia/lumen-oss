@@ -15,6 +15,8 @@ import {
   vec3,
   when,
 } from "../src/expression.js";
+import { nodes } from "../src/nodes.js";
+import { outputOf } from "../src/output.js";
 import { defineComposition } from "../src/template.js";
 
 describe("Composition schema version", () => {
@@ -128,6 +130,32 @@ describe("Composition inputs", () => {
       { from_node: box.id, to_node: group.id, to_port: "objects" },
       { from_node: sphere.id, to_node: group.id, to_port: "objects" },
       { from_node: group.id, to_node: render.id, to_port: "scene" },
+    ]);
+  });
+
+  test("reads a named output with `from_port`, of a node or of a node value read once", () => {
+    const composition = new Composition();
+    const group = composition.addNode({ type: "merge_3d" });
+    const render = composition.addNode({ type: "render_3d", inputs: { scene: group } });
+    const fogged = composition.addNode({
+      type: "merge",
+      inputs: { base: outputOf(render, "color"), mask: outputOf(render, "depth") },
+    });
+    const shaded = nodes.render_3d({ scene: group });
+    const lit = composition.addNode({
+      type: "merge",
+      inputs: { base: shaded, mask: outputOf(shaded, "normal") },
+    });
+    composition.connect(outputOf(render, "output"), lit, { toPort: "overlay" });
+
+    expect(composition.toJSON().connections).toEqual([
+      { from_node: group.id, to_node: render.id, to_port: "scene" },
+      { from_node: render.id, from_port: "color", to_node: fogged.id, to_port: "base" },
+      { from_node: render.id, from_port: "depth", to_node: fogged.id, to_port: "mask" },
+      { from_node: group.id, to_node: 3, to_port: "scene" },
+      { from_node: 3, to_node: lit.id, to_port: "base" },
+      { from_node: 3, from_port: "normal", to_node: lit.id, to_port: "mask" },
+      { from_node: render.id, to_node: lit.id, to_port: "overlay" },
     ]);
   });
 

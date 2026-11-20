@@ -10,6 +10,8 @@ import type {
   NodeInputPortName,
   NodeKind,
   NodeOutputKind,
+  NodeOutputName,
+  NodeOutputPortKind,
   NodePortKind,
   NodeVariadicInputPortName,
   RenderSettings,
@@ -63,10 +65,35 @@ export type NodeValue<TOutput extends NodePortKind = NodePortKind> = NodeInput<
 /**
  * What a port reads: a node of the composition, or a node value, which becomes a node of the
  * composition when the node reading it is added. One value is one node, however many read it.
+ * `outputOf` reads one of a node's named outputs in place of its default.
  */
 export type NodeSource<TOutput extends NodePortKind = NodePortKind> =
   | NodeReference<TOutput>
-  | NodeValue<TOutput>;
+  | NodeValue<TOutput>
+  | NodeOutput<TOutput>;
+
+/** A node of the composition as `addNode` returned it, or a node value, of kind `TKind`. */
+export type TypedNode<TKind extends NodeKind = NodeKind> =
+  | { readonly id: number; readonly type: TKind }
+  | NodeInput<TKind>;
+
+/** Output `TOutput` of a `TKind` node, as `outputOf` returns it. */
+export interface NodeOutputOf<
+  TKind extends NodeKind = NodeKind,
+  TOutput extends NodeOutputName<TKind> = NodeOutputName<TKind>,
+> {
+  readonly node: TypedNode<TKind>;
+  readonly output: TOutput;
+}
+
+/** A named output of any node kind, of any name, that outputs `TOutput`. */
+export type NodeOutput<TOutput extends NodePortKind = NodePortKind> = {
+  readonly [TKind in NodeKind]: {
+    readonly [TName in NodeOutputName<TKind>]: NodeOutputPortKind<TKind, TName> extends TOutput
+      ? NodeOutputOf<TKind, TName>
+      : never;
+  }[NodeOutputName<TKind>];
+}[NodeKind];
 
 /** A node's params and input ports by name in one object, as `nodes` takes them. */
 export type NodeProps<TKind extends NodeKind> = NodeParamProps<TKind> &
@@ -176,6 +203,11 @@ export type NodeReference<TOutput extends NodePortKind = NodePortKind> =
  * `toPort` is checked against the target's input ports, and the source against what that port
  * takes, when `connect` is given the node itself.
  */
+/** What `connect` reads: a node of the composition, or one of its named outputs. */
+export type ConnectSource<TOutput extends NodePortKind = NodePortKind> =
+  | NodeReference<TOutput>
+  | NodeOutput<TOutput>;
+
 export interface ConnectOptions<
   TKind extends NodeKind = NodeKind,
   TPort extends NodeInputPortName<TKind> = NodeInputPortName<TKind>,

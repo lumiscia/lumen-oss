@@ -932,13 +932,16 @@ export const nodeSpecs: readonly NodeSpec[] = [
   {
     kind: "render_3d",
     name: "Render 3D",
-    description: "Draws a 3D scene into a raster, with a transparent background unless it shows its environment\nmap; or, by `output`, its depth or normals, for 2D effects such as fog.",
+    description: "Draws a 3D scene into a raster, with a transparent background unless it shows its environment\nmap; or, by `output`, its depth or normals, for 2D effects such as fog. Its `color`, `depth`\nand `normal` outputs read each of them from the one render.",
     category: "scene",
     inputs: [
       { name: "scene", kind: "scene", optional: false, variadic: false },
     ],
     outputs: [
       { name: "output", kind: "raster" },
+      { name: "color", kind: "raster" },
+      { name: "depth", kind: "raster" },
+      { name: "normal", kind: "raster" },
     ],
     params: [
       { id: "depth_far", name: "Depth Far", kind: "float", description: "Distance from the camera, in world units, that `depth` output maps to 1, and past which it\nstays 1. 0 uses the camera's `far`, which spreads the 0 to 1 range thin over a scene much\nnearer than it.", defaultValue: 0, constraints: { min: 0, step: 1 } },
@@ -952,7 +955,7 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { id: "fog_color", name: "Fog Color", kind: "color", description: "Colour surfaces fade to with distance. Must be a solid color; a gradient fails `check`.", defaultValue: [255, 255, 255, 255], constraints: { role: "color" } },
       { id: "fog_density", name: "Fog Density", kind: "float", description: "How quickly surfaces fade into the fog: the fraction of their colour left after `d` world\nunits is e^(-density * d). 0 turns fog off.", defaultValue: 0, constraints: { min: 0, step: 0.01 } },
       { id: "height", name: "Height", kind: "int", description: "Output height in pixels. Use 0 to match the composition height.", defaultValue: 0, constraints: { min: 0, step: 1 } },
-      { id: "output", name: "Output", kind: "enum", description: "What the raster holds: the lit scene, its depth or its normals. A composition that needs\nmore than one draws the same scene with a `render_3d` for each.", defaultValue: "color", enumOptions: [{ name: "color", label: "Color", value: 0 }, { name: "depth", label: "Depth", value: 1 }, { name: "normal", label: "Normal", value: 2 }] },
+      { id: "output", name: "Output", kind: "enum", description: "What the default `output` holds: the lit scene, its depth or its normals. The `color`,\n`depth` and `normal` outputs each hold one whatever this is, and one `render_3d` draws all\nthat are read with one walk of the scene.", defaultValue: "color", enumOptions: [{ name: "color", label: "Color", value: 0 }, { name: "depth", label: "Depth", value: 1 }, { name: "normal", label: "Normal", value: 2 }] },
       { id: "supersample", name: "Supersample", kind: "int", description: "Renders this many times wider and taller, then averages down, to antialias edges.", defaultValue: 2, constraints: { min: 1, max: 4, step: 1 } },
       { id: "tone_mapping", name: "Tone Mapping", kind: "enum", description: "How light brighter than white is brought into range.", defaultValue: "none", enumOptions: [{ name: "none", label: "None", value: 0 }, { name: "aces", label: "Aces", value: 1 }, { name: "agx", label: "Agx", value: 2 }] },
       { id: "width", name: "Width", kind: "int", description: "Output width in pixels. Use 0 to match the composition width.", defaultValue: 0, constraints: { min: 0, step: 1 } },

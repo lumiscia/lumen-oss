@@ -12,11 +12,13 @@ import {
 
 import { Expr, type FunctionDefinition } from "./expression.js";
 import { literalOf } from "./literal.js";
+import { isNodeOutput } from "./output.js";
 import type {
   AudioClipOptions,
   AudioTrackOptions,
   CompositionOptions,
   ConnectOptions,
+  ConnectSource,
   NodeInput,
   NodeReference,
   NodeSource,
@@ -74,7 +76,17 @@ function sourcesOf(node: NodeInput): NodeSource[] {
   const inputs = (node.inputs ?? {}) as Readonly<
     Record<string, NodeSource | readonly NodeSource[]>
   >;
-  return Object.values(inputs).flat();
+  return Object.values(inputs).flat().map(sourceNode);
+}
+
+/** The node `source` reads, whichever of its outputs that is. */
+function sourceNode(source: NodeSource): NodeSource {
+  return isNodeOutput(source) ? (source.node as NodeSource) : source;
+}
+
+/** The `from_port` of a connection reading `source`; the default `output` needs none. */
+function fromPort(source: NodeSource): Pick<Connection, "from_port"> {
+  return isNodeOutput(source) && source.output !== "output" ? { from_port: source.output } : {};
 }
 
 /** Captures what `composition`, a template's built nodes, has registered so far. */
@@ -216,7 +228,10 @@ export class Composition {
       (inputs ?? {}) as Readonly<Record<string, NodeSource | readonly NodeSource[]>>,
     ).map(([toPort, from]) => ({
       toPort,
-      fromNodes: [from].flat().map((source) => this.#sourceId(source)),
+      fromNodes: [from].flat().map((source) => ({
+        from_node: this.#sourceId(sourceNode(source)),
+        ...fromPort(source),
+      })),
     }));
 
     const id = input.id ?? this.#nextFreeNodeId();
@@ -245,7 +260,7 @@ export class Composition {
     }
     for (const { toPort, fromNodes } of sources) {
       for (const fromNode of fromNodes) {
-        this.#connections.push({ from_node: fromNode, to_node: id, to_port: toPort });
+        this.#connections.push({ ...fromNode, to_node: id, to_port: toPort });
       }
     }
     return nextNode;
@@ -257,9 +272,11 @@ export class Composition {
     return node !== undefined && owners.get(node) === this ? node : undefined;
   }
 
-  /** Whether `source` is a node value rather than an id or a node of a composition. */
+  /** Whether `source` is a node value rather than an id, a node of a composition or an output. */
   #isValue(source: NodeSource): boolean {
-    return typeof source !== "number" && !owners.has(source) && "type" in source;
+    return (
+      typeof source !== "number" && !owners.has(source) && "type" in source && !isNodeOutput(source)
+    );
   }
 
   /** The id of a node of this composition, or of the node a node value became. */
@@ -351,16 +368,18 @@ export class Composition {
     return existing === undefined;
   }
 
+  /** Connects `from`, a node of this composition or one of its outputs, to a port of `to`. */
   connect<
     TKind extends NodeKind,
     TPort extends NodeInputPortName<TKind> = NodeInputPortName<TKind>,
   >(
-    from: NodeReference<NodeInputPortKind<NoInfer<TKind>, NoInfer<TPort>>>,
+    from: ConnectSource<NodeInputPortKind<NoInfer<TKind>, NoInfer<TPort>>>,
     to: number | { readonly id: number; readonly type?: TKind },
     options: ConnectOptions<NoInfer<TKind>, TPort>,
   ): this {
     this.#connections.push({
-      from_node: this.#ownedNodeId(from),
+      from_node: this.#ownedNodeId(sourceNode(from) as NodeReference),
+      ...fromPort(from),
       to_node: this.#ownedNodeId(to),
       to_port: options.toPort,
     });

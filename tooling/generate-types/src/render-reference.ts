@@ -314,10 +314,20 @@ function nodeSection(node: JsonSchema, ctx: Context): string {
   const type = String(object(object(node.properties).type).const);
   const params = Object.entries(object(object(object(node.properties).params).properties));
   const inputs = array(node["x-lumen-inputs"]).map((port) => portLine(object(port)));
-  const outputs = array(node["x-lumen-outputs"]).map((output) => String(object(output).kind));
+  const outputs = array(node["x-lumen-outputs"]).map((output) => object(output));
   const lines = [`## ${code(type)}`, "", ...paragraphs(node.description).flatMap((p) => [p, ""])];
-  lines.push(`Category: ${node["x-lumen-category"]}. Output: ${outputs.join(", ") || "none"}.`, "");
+  const output = outputs[0] === undefined ? "none" : String(outputs[0].kind);
+  lines.push(`Category: ${node["x-lumen-category"]}. Output: ${output}.`, "");
   if (inputs.length > 0) lines.push("Inputs:", "", ...inputs, "");
+  if (outputs.length > 1) {
+    const named = outputs.slice(1).map((port) => `- ${code(String(port.name))}: ${port.kind}`);
+    lines.push(
+      "Outputs beside `output`, which a connection's `from_port` names:",
+      "",
+      ...named,
+      "",
+    );
+  }
   if (params.length > 0) {
     lines.push(
       "Params:",

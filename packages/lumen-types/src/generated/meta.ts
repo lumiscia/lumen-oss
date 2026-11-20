@@ -1453,7 +1453,7 @@ export type CompositionTemplate = {
 };
 export type Connection = {
   readonly from_node: number;
-  /** The output of `from_node` to read. Optional: it defaults to `output`, the only output any node has. */
+  /** The output of `from_node` to read: `output`, every node's default and what an omitted `from_port` reads, or one of the outputs its kind names beside it, which the node kind's `x-lumen-outputs` lists. */
   readonly from_port?: string;
   readonly to_node: number;
   readonly to_port: string;
@@ -3124,7 +3124,8 @@ export interface Render2dNode extends CompositionNodeBase<"render_2d"> {
 
 /**
  * Draws a 3D scene into a raster, with a transparent background unless it shows its environment
- * map; or, by `output`, its depth or normals, for 2D effects such as fog.
+ * map; or, by `output`, its depth or normals, for 2D effects such as fog. Its `color`, `depth`
+ * and `normal` outputs read each of them from the one render.
  */
 export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
   readonly params?: {
@@ -3175,8 +3176,9 @@ export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
     /** Output height in pixels. Use 0 to match the composition height. */
     readonly height?: number;
     /**
-     * What the raster holds: the lit scene, its depth or its normals. A composition that needs
-     * more than one draws the same scene with a `render_3d` for each.
+     * What the default `output` holds: the lit scene, its depth or its normals. The `color`,
+     * `depth` and `normal` outputs each hold one whatever this is, and one `render_3d` draws all
+     * that are read with one walk of the scene.
      */
     readonly output?: Render3dOutput;
     /** Renders this many times wider and taller, then averages down, to antialias edges. */
@@ -4338,14 +4340,90 @@ export interface NodeInputPortKindByKind {
   readonly "zoom_blur": { readonly "source": "raster" };
 }
 
+export interface NodeOutputPortKindByKind {
+  readonly "background": { readonly "output": "raster" };
+  readonly "blur": { readonly "output": "raster" };
+  readonly "boolean": { readonly "output": "raster" };
+  readonly "camera_3d": { readonly "output": "scene" };
+  readonly "channels": { readonly "output": "raster" };
+  readonly "clip": { readonly "output": "raster" };
+  readonly "color_correct": { readonly "output": "raster" };
+  readonly "color_grade": { readonly "output": "raster" };
+  readonly "crop": { readonly "output": "raster" };
+  readonly "directional_blur": { readonly "output": "raster" };
+  readonly "displacement_map": { readonly "output": "raster" };
+  readonly "exposure": { readonly "output": "raster" };
+  readonly "extrude_3d": { readonly "output": "scene" };
+  readonly "fill_2d": { readonly "output": "drawing" };
+  readonly "fractal_noise": { readonly "output": "raster" };
+  readonly "glow": { readonly "output": "raster" };
+  readonly "halftone": { readonly "output": "raster" };
+  readonly "hue_saturation": { readonly "output": "raster" };
+  readonly "image_plane_3d": { readonly "output": "scene" };
+  readonly "instance_3d": { readonly "output": "scene" };
+  readonly "lathe_3d": { readonly "output": "scene" };
+  readonly "levels": { readonly "output": "raster" };
+  readonly "light_3d": { readonly "output": "scene" };
+  readonly "material_3d": { readonly "output": "material" };
+  readonly "media_in": { readonly "output": "raster" };
+  readonly "media_output": { readonly "output": "raster" };
+  readonly "merge": { readonly "output": "raster" };
+  readonly "merge_2d": { readonly "output": "drawing" };
+  readonly "merge_3d": { readonly "output": "scene" };
+  readonly "model_3d": { readonly "output": "scene" };
+  readonly "motion_blur": { readonly "output": "raster" };
+  readonly "offset_2d": { readonly "output": "geometry" };
+  readonly "opacity": { readonly "output": "raster" };
+  readonly "ordered_dither": { readonly "output": "raster" };
+  readonly "particles_3d": { readonly "output": "scene" };
+  readonly "path": { readonly "output": "raster" };
+  readonly "path_2d": { readonly "output": "geometry" };
+  readonly "radial_blur": { readonly "output": "raster" };
+  readonly "raster_multimerge": { readonly "output": "raster" };
+  readonly "render_2d": { readonly "output": "raster" };
+  readonly "render_3d": { readonly "output": "raster"; readonly "color": "raster"; readonly "depth": "raster"; readonly "normal": "raster" };
+  readonly "resize": { readonly "output": "raster" };
+  readonly "shadow": { readonly "output": "raster" };
+  readonly "shadow_2d": { readonly "output": "drawing" };
+  readonly "shape": { readonly "output": "raster" };
+  readonly "shape_2d": { readonly "output": "geometry" };
+  readonly "shape_3d": { readonly "output": "scene" };
+  readonly "stroke_2d": { readonly "output": "drawing" };
+  readonly "switch": { readonly "output": "raster" };
+  readonly "text": { readonly "output": "raster" };
+  readonly "text_3d": { readonly "output": "scene" };
+  readonly "time_remap": { readonly "output": "raster" };
+  readonly "transform": { readonly "output": "raster" };
+  readonly "wgsl_shader": { readonly "output": "raster" };
+  readonly "zoom_blur": { readonly "output": "raster" };
+}
+
 export type CompositionNode<TKind extends NodeKind = NodeKind> = CompositionNodeByKind[TKind];
 export type CompositionNodeInput<TKind extends NodeKind = NodeKind> = CompositionNodeInputByKind[TKind];
 /** The input port names of a node kind, which a connection's `to_port` names. */
 export type NodeInputPortName<TKind extends NodeKind = NodeKind> = NodeInputPortNameByKind[TKind];
 /** The input ports of a node kind that take any number of connections. */
 export type NodeVariadicInputPortName<TKind extends NodeKind = NodeKind> = NodeVariadicInputPortNameByKind[TKind];
-/** What a node kind outputs, which the inputs it is connected to must take. */
+/**
+ * What a node kind's default `output` outputs, which the inputs it is connected to without a
+ * `from_port` must take.
+ */
 export type NodeOutputKind<TKind extends NodeKind = NodeKind> = NodeOutputKindByKind[TKind];
+/**
+ * The outputs of a node kind, which a connection's `from_port` names: `output`, and those the
+ * kind names beside it.
+ */
+export type NodeOutputName<TKind extends NodeKind = NodeKind> = keyof NodeOutputPortKindByKind[TKind] &
+  string;
+/** What output `TOutput` of a node kind outputs; for a union of kinds, what any of them does. */
+export type NodeOutputPortKind<
+  TKind extends NodeKind = NodeKind,
+  TOutput extends NodeOutputName<TKind> = NodeOutputName<TKind>,
+> = TKind extends NodeKind
+  ? TOutput extends keyof NodeOutputPortKindByKind[TKind]
+    ? NodeOutputPortKindByKind[TKind][TOutput]
+    : never
+  : never;
 /** What input `TPort` of a node kind takes; for a union of kinds, what any of them takes there. */
 export type NodeInputPortKind<
   TKind extends NodeKind = NodeKind,
@@ -4759,7 +4837,8 @@ export const nodeInputPorts = {
   "render_2d": { "drawing": { kind: "drawing", variadic: false } },
   /**
    * Draws a 3D scene into a raster, with a transparent background unless it shows its environment
-   * map; or, by `output`, its depth or normals, for 2D effects such as fog.
+   * map; or, by `output`, its depth or normals, for 2D effects such as fog. Its `color`, `depth`
+   * and `normal` outputs read each of them from the one render.
    */
   "render_3d": { "scene": { kind: "scene", variadic: false } },
   /** Resamples a raster into a rectangle placed on the composition canvas. */
