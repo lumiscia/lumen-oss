@@ -10,8 +10,10 @@ const SHADER: &str = concat!(
 );
 
 /// The largest circle, in texels of the level it is gathered on, before the blur moves to a level
-/// of half the resolution. A gather reads at most about π(6.5)² ≈ 133 texels, and about 170 while
-/// it crossfades into the next level. Mirrored in `lens_blur.wgsl`.
+/// of half the resolution. A gather reads at most about 155 texels of its level, and about 210
+/// across both levels while it crossfades into the next, each texel two texture loads. With depth,
+/// a pixel also scans up to 64 texels for the foreground and gathers it within the same bound.
+/// Mirrored in `lens_blur.wgsl`.
 const GATHER_TEXELS: f64 = 6.0;
 
 /// Levels the shader's tables hold: full resolution and 14 halvings.
