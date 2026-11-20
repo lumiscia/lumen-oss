@@ -124,7 +124,11 @@ fn resolve_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let coverage = select(0.0, 1.0 - ramp(edge), seed.x != NO_SEED);
+    // The shape itself stays fully covered; softness only feathers outward from it.
+    var coverage = select(0.0, 1.0 - ramp(edge), seed.x != NO_SEED);
+    if (own.a >= 0.5) {
+        coverage = 1.0;
+    }
     if (own.a >= coverage) {
         textureStore(output_tex, pixel, own);
         return;
