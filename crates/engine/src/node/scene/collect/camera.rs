@@ -149,6 +149,15 @@ impl<N: JsonNode> Search<N> {
                         return Ok(Some(camera));
                     }
                 }
+                NodeKind::Clip(clip) => {
+                    let found = cx.walk_clip(clip, |cx, output| self.find(cx, output, nesting))?;
+                    if let Some(camera) = found.flatten() {
+                        return Ok(Some(Camera {
+                            world: parent * camera.world,
+                            ..camera
+                        }));
+                    }
+                }
                 _ => {}
             }
         }

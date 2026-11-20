@@ -71,6 +71,12 @@ pub struct SceneBounds {
 pub struct CapturedObject {
     /// The scene node that made the object. A model's primitives are objects of the `model_3d`.
     pub node: crate::node::NodeId,
+    /// The template `node` is in, or `None` at the root.
+    pub template: Option<String>,
+    /// The clips that play the templates `node` is in, from the `render_3d`'s own graph inward;
+    /// empty when `node` is in that graph. Instances of one template tell their nodes apart by
+    /// these.
+    pub clips: Vec<crate::node::NodeId>,
     /// Mesh to world, as 16 floats in column-major order.
     pub world: [f32; 16],
     /// What the object covers in world space, at least.
@@ -82,6 +88,10 @@ pub struct CapturedObject {
 pub struct CapturedCamera {
     /// The `camera_3d`, or the `model_3d` whose camera it is.
     pub node: crate::node::NodeId,
+    /// The template `node` is in, or `None` at the root.
+    pub template: Option<String>,
+    /// The clips that play the templates `node` is in, as [`CapturedObject::clips`] says.
+    pub clips: Vec<crate::node::NodeId>,
     /// Camera to world, as 16 floats in column-major order.
     pub world: [f32; 16],
     pub projection: CameraProjection,
@@ -95,11 +105,12 @@ pub struct SceneCapture {
     /// The `render_3d`.
     pub render: crate::node::NodeId,
     /// The template the `render_3d` is in, or `None` at the root. Node ids are only unique within
-    /// one.
+    /// one, and objects and cameras from scene templates say which template they are in.
     pub template: Option<String>,
     /// The objects the scene draws, in the order it walks them: one for each of the scene's nodes
     /// that makes a drawn object, and one for each copy of it that an `instance_3d` places, with
-    /// the copy's own world matrix and bounds, even where copies are placed alike. A
+    /// the copy's own world matrix and bounds, even where copies are placed alike, and for each
+    /// clip playing a scene template that holds the node. A
     /// `particles_3d` makes one object, whose bounds cover all its particles and whose world
     /// matrix places the particle system, whatever the objects it scatters are. An object drawn
     /// in several parts, such as a box with a material on each face, is reported once, and one

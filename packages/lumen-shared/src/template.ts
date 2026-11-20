@@ -5,13 +5,17 @@ import { Expr, literal } from "./expression.js";
 import { quote } from "./quote.js";
 import type { Value } from "./expression.js";
 import type {
+  ClipValue,
   CompositionDefinition,
   CompositionDefinitionOptions,
   NodeInput,
+  NodeSource,
   PropDeclaration,
   PropDeclarations,
   PropReads,
   PropType,
+  SourceOutput,
+  TemplateOutput,
 } from "./types.js";
 
 /**
@@ -43,11 +47,15 @@ function declaration<TType extends PropType>(
 /**
  * Defines a reusable composition. `build` returns the node it outputs, reading props through its
  * second argument: a node value, or a node it added to the fresh composition it is given. Each
- * `clip` plays it with its own timing and props.
+ * `clip` plays it with its own timing and props, and outputs what `build` returns: a raster, or
+ * a scene for a `merge_3d` or `render_3d`.
  */
-export function defineComposition<TProps extends PropDeclarations = Record<never, never>>(
-  options: CompositionDefinitionOptions<TProps>,
-): CompositionDefinition<TProps> {
+export function defineComposition<
+  TProps extends PropDeclarations = Record<never, never>,
+  TSource extends NodeSource<TemplateOutput> = NodeSource<"raster">,
+>(
+  options: CompositionDefinitionOptions<TProps, TSource>,
+): CompositionDefinition<TProps, SourceOutput<TSource>> {
   const { name, size, fps, duration } = options;
   if (fps !== undefined && duration === undefined) {
     throw new Error(`Composition \`${name}\` sets \`fps\` without a \`duration\`.`);
@@ -58,7 +66,8 @@ export function defineComposition<TProps extends PropDeclarations = Record<never
     Object.keys(props).map((prop) => [prop, readProp(prop)]),
   ) as PropReads<TProps>;
   const composition = new Composition();
-  composition.addOutput(options.build(composition, reads));
+  // A template's `media_output` may read a scene too.
+  composition.addOutput(options.build(composition, reads) as NodeSource<"raster">);
 
   const { audio, connections, nodes } = composition.toJSON();
   const template: CompositionTemplate = {
@@ -85,7 +94,7 @@ export function defineComposition<TProps extends PropDeclarations = Record<never
           ...(values === undefined ? {} : { props: literalProps(values) }),
         },
       };
-      return Object.assign(node, { [clipTemplate]: captured });
+      return Object.assign(node, { [clipTemplate]: captured }) as ClipValue<SourceOutput<TSource>>;
     },
   };
 }

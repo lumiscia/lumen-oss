@@ -1,4 +1,4 @@
-import type { NodeParamPortNameClash } from "@lumiscia/lumen-types";
+import type { ClipNode as SchemaClipNode, NodeParamPortNameClash } from "@lumiscia/lumen-types";
 
 import { Composition } from "../src/composition.js";
 import {
@@ -15,7 +15,9 @@ import {
   when,
 } from "../src/expression.js";
 import { nodes as n } from "../src/nodes.js";
+import { outputOf } from "../src/output.js";
 import { defineComposition } from "../src/template.js";
+import type { ClipNode } from "../src/index.js";
 import type { NodeInput, NodeSource, NodeValue } from "../src/types.js";
 
 const composition = new Composition();
@@ -102,8 +104,63 @@ n.material_3d({ color: gradient });
 const rasterScene: NodeValue<"raster"> = n.shape_3d();
 
 defineComposition({ name: "card", build: () => n.text({ content: "Card" }) });
-// @ts-expect-error a template outputs a raster, not a scene
-defineComposition({ name: "card", build: () => scene });
+const sceneCard = defineComposition({ name: "card", build: () => scene });
+n.merge_3d({ objects: [sceneCard.clip(), n.light_3d()] });
+n.render_3d({ scene: sceneCard.clip({ start: 10 }) });
+// @ts-expect-error a scene template's clip outputs a scene, not a raster
+n.opacity({ source: sceneCard.clip() });
+// @ts-expect-error an image template's clip outputs a raster, not a scene
+n.merge_3d({ objects: [defineComposition({ name: "plain", build: () => n.background() }).clip()] });
+// @ts-expect-error a template outputs a raster or a scene, not a geometry
+defineComposition({ name: "outline", build: () => n.shape_2d() });
+
+// A clip's named output, and the reference `addNode` returns for it, keep its template's kind.
+const sceneOutput = outputOf(sceneCard.clip(), "output");
+n.merge_3d({ objects: [sceneOutput] });
+// @ts-expect-error a scene template's clip output is a scene, not a raster
+n.opacity({ source: sceneOutput });
+const wrapped = defineComposition({ name: "wrapped", build: () => sceneOutput });
+n.merge_3d({ objects: [wrapped.clip()] });
+// @ts-expect-error a template returning a scene clip's output is a scene template
+n.opacity({ source: wrapped.clip() });
+const sceneClip = new Composition().addNode(sceneCard.clip());
+n.merge_3d({ objects: [sceneClip] });
+// @ts-expect-error an added scene clip is a scene, not a raster
+n.opacity({ source: sceneClip });
+const plainCard = defineComposition({ name: "plain", build: () => n.background() });
+const rasterClip = new Composition().addNode(plainCard.clip());
+n.opacity({ source: rasterClip });
+// @ts-expect-error an added image clip is a raster, not a scene
+n.merge_3d({ objects: [rasterClip] });
+
+// A template that may return either kind makes clips that fit neither kind of input.
+const either = defineComposition({
+  name: "either",
+  build: () => (Math.random() > 0.5 ? n.shape_3d() : n.background()),
+});
+// @ts-expect-error the clip may output a raster
+n.merge_3d({ objects: [either.clip()] });
+// @ts-expect-error the clip may output a scene
+n.opacity({ source: either.clip() });
+// @ts-expect-error its named output may be a scene
+n.opacity({ source: outputOf(either.clip(), "output") });
+const mixed = new Composition();
+const eitherClip = mixed.addNode(either.clip());
+const faded = mixed.addNode(n.opacity());
+// @ts-expect-error an added clip that may output a scene isn't a raster
+n.opacity({ source: eitherClip });
+// @ts-expect-error nor is its named output
+n.opacity({ source: outputOf(eitherClip, "output") });
+// @ts-expect-error nor does it connect to a raster input
+mixed.connect(eitherClip, faded, { toPort: "source" });
+// @ts-expect-error and it may output a raster, so it isn't a scene either
+n.merge_3d({ objects: [eitherClip] });
+mixed.connect(mixed.addNode(plainCard.clip()), faded, { toPort: "source" });
+
+// The package's `ClipNode` is the schema's clip node.
+const schemaClip: SchemaClipNode = { id: 1, type: "clip", params: { composition: "card" } };
+const exportedClip: ClipNode = schemaClip;
+n.opacity({ source: exportedClip.id });
 
 // No kind gives a param and an input port the same name.
 // @ts-expect-error `NodeParamPortNameClash` is `never`

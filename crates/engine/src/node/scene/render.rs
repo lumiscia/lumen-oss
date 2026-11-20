@@ -1090,11 +1090,12 @@ impl RecordNode for Render3d {
         let scene = required_input(self.id, "scene", self.scene)?.node;
         let mattes = std::sync::Arc::new(params.mattes.clone());
         let walk = |cx: &mut FrameCx<'_>| {
-            let mut collected = Collected::new(self.id, mattes);
+            let mut collected = Collected::new(self.id, cx.scene_id(), mattes);
             collected.add(cx, scene)?;
             #[cfg(feature = "test-hooks")]
             cx.count_scene_walk();
-            cx.capture_scene(self.id, || collected.captured());
+            let composition = cx.composition();
+            cx.capture_scene(self.id, || collected.captured(composition));
             if let Some(camera) = cx.camera_override() {
                 collected.scene.camera = Some(super::collect::override_camera(&camera));
             }

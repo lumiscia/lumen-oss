@@ -30,6 +30,7 @@ use super::{
     Light3dKind, Material3dParams, MaterialAlphaMode, MatteNames, Model3d, Placement3d, Pose3d,
     Shape3d, Shape3dKind,
 };
+use crate::composition::SceneId;
 use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
 use crate::gpu::evictions;
 use crate::gpu::frame_graph::{FrameCx, Raster};
@@ -849,10 +850,18 @@ enum Extent {
     Skin(usize),
 }
 
+/// Where a scene node is: the scene whose graph holds it, and the clips that play the templates
+/// it is in, from the scene of the `render_3d` walking it inward.
+pub(crate) struct Within {
+    scene: SceneId,
+    clips: Vec<NodeId>,
+}
+
 /// The node that made an object, and what the object covers.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Origin {
     node: NodeId,
+    within: Arc<Within>,
     extent: Extent,
     /// Whether the object is a part after the first of one its node draws in several, such as
     /// the face of a box that has its own material.
@@ -883,9 +892,9 @@ pub(crate) struct Collected {
     drawn: usize,
     /// One per object, from which [`Self::place_bounds`] works out its bounds.
     origins: Vec<Origin>,
-    /// Every camera the scene holds, in the order they are reached, with the node of each. The
-    /// first is the scene's camera.
-    pub(super) cameras: Vec<(NodeId, Camera)>,
+    /// Every camera the scene holds, in the order they are reached, with the node of each and
+    /// where it is. The first is the scene's camera.
+    pub(super) cameras: Vec<(NodeId, Arc<Within>, Camera)>,
     skins: Vec<PosedSkin>,
     render_id: NodeId,
     /// Scene nodes walked, counting a node each time it is reached.
@@ -905,10 +914,13 @@ pub(crate) struct Collected {
     mattes: Arc<MatteNames>,
     /// The channel objects that name no matte of their own take, from the group holding the scene.
     inherited_matte: Option<u8>,
+    /// Where the nodes being walked are.
+    within: Arc<Within>,
 }
 
 impl Collected {
-    pub(super) fn new(render_id: NodeId, mattes: Arc<MatteNames>) -> Self {
+    /// An empty scene for `render_id`, a `render_3d` of the graph of `scene`.
+    pub(super) fn new(render_id: NodeId, scene: SceneId, mattes: Arc<MatteNames>) -> Self {
         Self {
             scene: Scene::default(),
             light_nodes: Vec::new(),
@@ -926,16 +938,21 @@ impl Collected {
             instance_room: MAX_SCENE_NODES,
             mattes,
             inherited_matte: None,
+            within: Arc::new(Within {
+                scene,
+                clips: Vec::new(),
+            }),
         }
     }
 
     /// An empty scene for a node of this one to collect its input scene into, giving the objects
     /// that name no matte `matte`.
     pub(super) fn nested(&self, matte: Option<u8>) -> Self {
-        let mut inner = Self::new(self.render_id, self.mattes.clone());
+        let mut inner = Self::new(self.render_id, self.within.scene, self.mattes.clone());
         inner.reached = self.reached;
         inner.nesting = self.nesting + 1;
         inner.inherited_matte = matte;
+        inner.within = self.within.clone();
         inner
     }
 
@@ -962,6 +979,7 @@ impl Collected {
         self.scene.objects.push(object);
         self.origins.push(Origin {
             node,
+            within: self.within.clone(),
             extent,
             extra_part: false,
         });
@@ -1125,9 +1143,21 @@ impl Collected {
     /// that reaches more than [`MAX_SCENE_NODES`] nodes fails as soon as it does, before a node
     /// wired in many times over can expand much further.
     pub(super) fn add(&mut self, cx: &mut FrameCx<'_>, node_id: NodeId) -> crate::Result<()> {
+        self.add_placed(cx, node_id, Mat4::IDENTITY, self.inherited_matte)
+    }
+
+    /// [`Self::add`] for a scene placed by `parent`, whose objects that name no matte take
+    /// `matte`.
+    fn add_placed(
+        &mut self,
+        cx: &mut FrameCx<'_>,
+        node_id: NodeId,
+        parent: Mat4,
+        matte: Option<u8>,
+    ) -> crate::Result<()> {
         // Each node still to walk, with the transform its parents place it by and the matte channel
         // they give objects that name none.
-        let mut pending = vec![(node_id, Mat4::IDENTITY, self.inherited_matte)];
+        let mut pending = vec![(node_id, parent, matte)];
         while let Some((node_id, parent, inherited)) = pending.pop() {
             self.reached += 1;
             if self.reached > MAX_SCENE_NODES {
@@ -1154,7 +1184,10 @@ impl Collected {
                 );
             }
             // A group's objects have taken their channels as their own nodes were walked.
-            if !matches!(node, NodeKind::Instance3d(_) | NodeKind::Particles3d(_)) {
+            if !matches!(
+                node,
+                NodeKind::Instance3d(_) | NodeKind::Particles3d(_) | NodeKind::Clip(_)
+            ) {
                 for object in &mut self.scene.objects[first..] {
                     object.matte = matte;
                 }
@@ -1209,6 +1242,19 @@ impl Collected {
             }
             NodeKind::Instance3d(instance) => self.add_instances(cx, instance, parent, matte)?,
             NodeKind::Particles3d(particles) => self.add_particles(cx, particles, parent, matte)?,
+            NodeKind::Clip(clip) => {
+                let clips = [self.within.clips.as_slice(), &[clip.id]].concat();
+                cx.walk_clip(clip, |cx, output| {
+                    let within = Within {
+                        scene: cx.scene_id(),
+                        clips,
+                    };
+                    let outer = std::mem::replace(&mut self.within, Arc::new(within));
+                    let added = self.add_placed(cx, output, parent, matte);
+                    self.within = outer;
+                    added
+                })?;
+            }
             NodeKind::Shape3d(shape) => {
                 let params = shape.params.eval(&ctx)?;
                 let size = vec3(params.size).max(Vec3::ZERO);
@@ -1446,7 +1492,7 @@ impl Collected {
                 let params = camera.params.eval(&ctx)?;
                 let camera = camera::camera_3d(&params, parent);
                 self.scene.camera.get_or_insert(camera);
-                self.cameras.push((node_id, camera));
+                self.cameras.push((node_id, self.within.clone(), camera));
             }
             NodeKind::Light3d(light) => {
                 let params = light.params.eval(&ctx)?;
@@ -1614,7 +1660,7 @@ impl Collected {
             && let Some(camera) = camera::model_camera(scene, &pose, camera, root)
         {
             self.scene.camera.get_or_insert(camera);
-            self.cameras.push((node.id, camera));
+            self.cameras.push((node.id, self.within.clone(), camera));
         }
         // Each skin's joint matrices start, in the pose, at the first joint of the primitives it
         // moves, and later skins' start later.

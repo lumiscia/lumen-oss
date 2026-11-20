@@ -12,7 +12,8 @@
 //! `hold` and `loop` keep it showing after the window ends.
 //!
 //! A template is drawn at its own size from the top-left corner of the parent's canvas; place
-//! it with a `transform` node.
+//! it with a `transform` node. A template whose `media_output` reads a scene outputs that scene
+//! instead, which the walk of the `render_3d` reaching the clip collects in the template's time.
 
 use crate::{
     composition::{CompositionTemplate, TemplateRef},
@@ -44,7 +45,9 @@ pub enum ClipEnd {
 /// Plays a composition template, or its source, over a window of time.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ClipParams {
-    /// Template from `compositions` to play; empty plays the `source` input instead.
+    /// Template from `compositions` to play; empty plays the `source` input instead. A template
+    /// whose `media_output` reads a scene makes the clip output that scene, for a `merge_3d` or
+    /// `render_3d` to take.
     #[meta(name = "Composition", constant)]
     pub composition: String,
     /// Frame the clip starts at, in this composition's frames.

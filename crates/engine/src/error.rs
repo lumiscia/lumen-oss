@@ -347,7 +347,7 @@ pub enum GraphValidationError {
     #[code("connection.wrong_kind")]
     #[error(
         "{at}: input `{port}` takes {expected}, but {} {actual}: {}",
-        wrong_kind_source(*.source_node, *.source_output),
+        wrong_kind_source(*.source_node, *.source_output, .source_template.as_deref()),
         wrong_kind_hint(*.expected, *.actual)
     )]
     WrongInputKind {
@@ -356,6 +356,8 @@ pub enum GraphValidationError {
         source_node: NodeId,
         /// The output of `source_node` read, unless it is the default `output`.
         source_output: Option<&'static OutputPortDef>,
+        /// The template `source_node` plays, when it is a clip that plays one.
+        source_template: Option<Box<str>>,
         expected: PortKind,
         actual: PortKind,
     },
@@ -445,10 +447,17 @@ fn outputs_are(named: &[OutputPortDef]) -> String {
 }
 
 /// What a wrong-kind connection reads, followed by the kind it is.
-fn wrong_kind_source(node: NodeId, output: Option<&OutputPortDef>) -> String {
-    match output {
-        None => format!("node {node} outputs"),
-        Some(output) => format!("output `{}` of node {node} is", output.name),
+fn wrong_kind_source(
+    node: NodeId,
+    output: Option<&OutputPortDef>,
+    template: Option<&str>,
+) -> String {
+    match (output, template) {
+        (None, None) => format!("node {node} outputs"),
+        (None, Some(template)) => {
+            format!("node {node}, a clip of composition `{template}`, outputs")
+        }
+        (Some(output), _) => format!("output `{}` of node {node} is", output.name),
     }
 }
 

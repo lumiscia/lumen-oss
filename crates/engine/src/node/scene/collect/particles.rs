@@ -174,11 +174,12 @@ struct KeptTriangles {
     last_used: u64,
 }
 
-/// An instance buffer particles are placed into, and what it holds once they are.
+/// An instance buffer particles are placed into, and what it holds once they are: the params and
+/// parts they were placed from, and the mesh parts of the surface they were placed over.
 struct Output {
     buffer: BufRef,
     capacity: u32,
-    holds: Option<(GpuParticles, Vec<GpuPart>)>,
+    holds: Option<(GpuParticles, Vec<GpuPart>, Vec<MeshPart>)>,
     last_used: u64,
 }
 
@@ -267,11 +268,16 @@ fn forget_node(rec: &mut Recorder, node: &NodeBuffers) {
 /// A `particles_3d`'s particles at a frame: what the compute pass places them from, and where
 /// they can be.
 pub(crate) struct ParticleSystem {
+    /// The node and the scene whose graph holds it, which may be a template's rather than the
+    /// render's.
     node: NodeId,
+    scene: SceneId,
     params: GpuParticles,
     parts: Vec<GpuPart>,
-    /// The surface's triangles, unless particles are emitted from the origin.
+    /// The surface's triangles, unless particles are emitted from the origin, and the mesh parts
+    /// they are of.
     triangles: Option<BufRef>,
+    meshes: Vec<MeshPart>,
     /// Where particles' origins can be, in the node's space.
     reach: Bounds,
     /// The largest scale a particle can have.
@@ -306,8 +312,8 @@ impl ParticleSystem {
 /// node placed them into before, when it holds them still, or one placed into now.
 pub(crate) fn instance_buffer(cx: &mut FrameCx<'_>, system: &ParticleSystem) -> crate::Result<Res> {
     let program = cx.program(&PARTICLES)?;
-    let (scope, tick, rec, _, cache) = cx.particle_cache();
-    let node = cache.nodes.entry((scope, system.node)).or_default();
+    let (_, tick, rec, _, cache) = cx.particle_cache();
+    let node = cache.nodes.entry((system.scene, system.node)).or_default();
     node.last_used = tick;
     if node.tick != tick {
         node.tick = tick;
@@ -340,7 +346,7 @@ pub(crate) fn instance_buffer(cx: &mut FrameCx<'_>, system: &ParticleSystem) -> 
     }
     let output = &mut node.outputs[index];
     output.last_used = tick;
-    let holds = (system.params, system.parts.clone());
+    let holds = (system.params, system.parts.clone(), system.meshes.clone());
     if output.holds.as_ref() == Some(&holds) {
         return Ok(Res::Buffer(output.buffer));
     }
@@ -377,6 +383,8 @@ pub(crate) fn instance_buffer(cx: &mut FrameCx<'_>, system: &ParticleSystem) -> 
 struct Surface {
     parts: Vec<GpuPart>,
     triangles: BufRef,
+    /// The mesh parts `triangles` holds, one after another.
+    meshes: Vec<MeshPart>,
     bounds: Bounds,
 }
 
@@ -592,7 +600,7 @@ impl Collected {
         }
         self.scene.weights.extend_from_slice(&inner.scene.weights);
 
-        let system = system(node.id, &params, seconds, surface);
+        let system = system(node.id, cx.scene_id(), &params, seconds, surface);
         let list = self.lists.len() as u32;
         self.lists.push(CopyList {
             key: (node.id, 0),
@@ -818,13 +826,8 @@ impl Collected {
                     "lumen 3d particle surface",
                     bytemuck::cast_slice(&contents),
                 );
-                if let Some((_, replaced)) = node.surface.replace((used, buffer)) {
+                if let Some((_, replaced)) = node.surface.replace((used.clone(), buffer)) {
                     cache.retired.push((replaced, tick));
-                }
-                // A new surface buffer can take the slot of an old one, so what the outputs
-                // hold no longer says what they were placed from.
-                for output in &mut node.outputs {
-                    output.holds = None;
                 }
                 buffer
             }
@@ -832,6 +835,7 @@ impl Collected {
         Ok(Some(Surface {
             parts,
             triangles,
+            meshes: used,
             bounds,
         }))
     }
@@ -841,6 +845,7 @@ impl Collected {
 /// along +Y without one.
 fn system(
     node_id: NodeId,
+    scene: SceneId,
     params: &crate::node::scene::Particles3dParams,
     seconds: f64,
     surface: Option<Surface>,
@@ -870,11 +875,17 @@ fn system(
         oldest = oldest.min(lifetime);
     }
     let oldest = oldest as f32;
-    let (parts, triangles, emitted) = match surface {
-        Some(surface) => (surface.parts, Some(surface.triangles), surface.bounds),
+    let (parts, triangles, meshes, emitted) = match surface {
+        Some(surface) => (
+            surface.parts,
+            Some(surface.triangles),
+            surface.meshes,
+            surface.bounds,
+        ),
         None => (
             Vec::new(),
             None,
+            Vec::new(),
             Bounds {
                 min: Vec3::ZERO,
                 max: Vec3::ZERO,
@@ -897,6 +908,7 @@ fn system(
     }
     ParticleSystem {
         node: node_id,
+        scene,
         params: GpuParticles {
             count,
             seed: (seed ^ (seed >> 32)) as u32,
@@ -918,6 +930,7 @@ fn system(
         },
         parts,
         triangles,
+        meshes,
         reach,
         largest,
     }
@@ -969,7 +982,7 @@ mod tests {
             scale: (0.5, 2.0),
             ..Default::default()
         };
-        let system = system(NodeId::new(1), &params, 10.0, None);
+        let system = system(NodeId::new(1), SceneId::Root, &params, 10.0, None);
         // 3 units of travel either way, 4.5 down, and a unit cube's corner, √0.75 out, at twice
         // its size.
         let corner = 0.75_f32.sqrt() * 2.0;
@@ -986,6 +999,6 @@ mod tests {
     }
 
     fn system_at(params: &crate::node::scene::Particles3dParams, seconds: f64) -> ParticleSystem {
-        system(NodeId::new(1), params, seconds, None)
+        system(NodeId::new(1), SceneId::Root, params, seconds, None)
     }
 }

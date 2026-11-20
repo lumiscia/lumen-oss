@@ -992,7 +992,7 @@ Inputs:
 
 Params:
 
-- **`composition`** (string not an expression; default `""`; literal only) Template from `compositions` to play; empty plays the `source` input instead.
+- **`composition`** (string not an expression; default `""`; literal only) Template from `compositions` to play; empty plays the `source` input instead. A template whose `media_output` reads a scene makes the clip output that scene, for a `merge_3d` or `render_3d` to take.
 - **`duration`** (number, at least -1; default `-1`) Frames the clip plays for; -1 plays the template to its end, or a source to the end of this composition.
 - **`end`** (`"hide"` | `"hold"` | `"loop"`; default `"hide"`; literal only) What the clip shows after its window: nothing, its last frame, or the window again.
 - **`offset`** (number; default `0`) Frames of the content skipped at the start, in the content's frames.
@@ -1392,7 +1392,7 @@ Params:
 
 ## `media_output`
 
-Converts its source into the final composition output: sRGB-encoded and quantised once to the output's format.
+Converts its source into the final composition output: sRGB-encoded and quantised once to the output's format. In a template it may read a scene instead, which the clips playing the template output.
 
 Category: output. Output: raster.
 
