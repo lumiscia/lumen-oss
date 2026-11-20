@@ -114,6 +114,7 @@ struct GpuLensParams {
     modes: [u32; 4],
     origins: [i32; 4],
     source: [i32; 4],
+    branch: [f32; 4],
 }
 
 const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
@@ -141,42 +142,95 @@ fn finite(value: f64) -> f64 {
 
 /// Points taken along each side of the frame to find how far the lens reaches beyond it.
 const FIT_POINTS_PER_SIDE: usize = 16;
-/// Newton iterations and the relative change that ends them, shared with the shader.
-const NEWTON_ITERATIONS: usize = 8;
+/// Iterations and the relative change that end the inverse lens's search, shared with the shader.
+const NEWTON_ITERATIONS: usize = 32;
 const NEWTON_TOLERANCE: f64 = 1e-6;
+/// How far an output pixel's outermost subsample lies from its centre along each axis.
+const SUBSAMPLE_REACH: f64 = 0.375;
+
+/// The radius `rho * (1 + k1 rho² + k2 rho⁴)` the lens moves `rho` to.
+fn lens_radius(rho: f64, k1: f64, k2: f64) -> f64 {
+    let rho2 = rho * rho;
+    rho * (1.0 + k1 * rho2 + k2 * rho2 * rho2)
+}
+
+/// The smallest radius at which the lens stops growing outward, where it starts folding back on
+/// itself. Up to it the lens is one-to-one, so only radii below it are undistorted. `None` when it
+/// never folds.
+fn fold_radius(k1: f64, k2: f64) -> Option<f64> {
+    // The slope `1 + 3 k1 u + 5 k2 u²` in `u = rho²`.
+    let u = if k2 == 0.0 {
+        (k1 < 0.0).then(|| -1.0 / (3.0 * k1))?
+    } else {
+        let discriminant = 9.0 * k1 * k1 - 20.0 * k2;
+        if discriminant < 0.0 {
+            return None;
+        }
+        let root = discriminant.sqrt();
+        [
+            (-3.0 * k1 - root) / (10.0 * k2),
+            (-3.0 * k1 + root) / (10.0 * k2),
+        ]
+        .into_iter()
+        .filter(|u| *u > 0.0)
+        .reduce(f64::min)?
+    };
+    Some(u.sqrt())
+}
 
 /// Where a pixel at distance `r` reads: its offset from the optical centre is multiplied by this.
-/// `None` where the inverse lens has no solution, because the lens folds back on itself there.
+/// `None` where the inverse lens has no solution, past where the lens folds back on itself.
 fn source_factor(r: f64, k1: f64, k2: f64, direction: LensDirection) -> Option<f64> {
     match direction {
         LensDirection::Distort => Some(1.0 + k1 * r * r + k2 * r.powi(4)),
         LensDirection::Undistort => {
-            let slope = |rho: f64| 1.0 + 3.0 * k1 * rho * rho + 5.0 * k2 * rho.powi(4);
-            let mut rho = r;
-            for _ in 0..NEWTON_ITERATIONS {
-                let slope = slope(rho);
-                if slope <= 0.0 {
-                    return None;
+            if r <= 0.0 {
+                return Some(1.0);
+            }
+            let mut high = match fold_radius(k1, k2) {
+                Some(fold) if r >= lens_radius(fold, k1, k2) => return None,
+                Some(fold) => fold,
+                None => {
+                    let mut high = r.max(1.0);
+                    for _ in 0..64 {
+                        if lens_radius(high, k1, k2) >= r {
+                            break;
+                        }
+                        high *= 2.0;
+                    }
+                    high
                 }
-                let value = rho * (1.0 + k1 * rho * rho + k2 * rho.powi(4)) - r;
-                let next = rho - value / slope;
+            };
+            // Newton's method kept inside a bracket on the one-to-one branch, bisecting when a
+            // step would leave it.
+            let mut low = 0.0;
+            let mut rho = r.min(high);
+            for _ in 0..NEWTON_ITERATIONS {
+                let value = lens_radius(rho, k1, k2) - r;
+                if value > 0.0 {
+                    high = rho;
+                } else {
+                    low = rho;
+                }
+                let slope = 1.0 + 3.0 * k1 * rho * rho + 5.0 * k2 * rho.powi(4);
+                let mut next = rho - value / slope;
+                if !(next > low && next < high) {
+                    next = 0.5 * (low + high);
+                }
                 let done = (next - rho).abs() <= NEWTON_TOLERANCE * next.abs();
                 rho = next;
                 if done {
                     break;
                 }
             }
-            if slope(rho) <= 0.0 {
-                return None;
-            }
-            Some(if r > 0.0 { rho / r } else { 1.0 })
+            Some(rho / r)
         }
     }
 }
 
-/// The scale about the optical centre, at most 1, under which the 64 points along the boundary of
-/// the frame's pixel centres read inside it, where every sample's bilinear footprint is on source
-/// pixels.
+/// The scale about the optical centre, at most 1, under which 64 points along the boundary of the
+/// frame, as far out as any output pixel's subsamples reach, read inside the frame's pixel
+/// centres, where every sample's bilinear footprint is on source pixels.
 fn fill_scale(
     display: [f64; 2],
     center: [f64; 2],
@@ -185,16 +239,18 @@ fn fill_scale(
     direction: LensDirection,
 ) -> f64 {
     let (low, high) = ([0.5; 2], [display[0] - 0.5, display[1] - 0.5]);
+    let inset = 0.5 - SUBSAMPLE_REACH;
+    let (out_low, out_high) = ([inset; 2], [display[0] - inset, display[1] - inset]);
     let mut scale: f64 = 1.0;
     let steps = FIT_POINTS_PER_SIDE as f64;
     for side in 0..4 {
         for step in 0..FIT_POINTS_PER_SIDE {
             let t = step as f64 / steps;
             let point = match side {
-                0 => [low[0] + t * (high[0] - low[0]), low[1]],
-                1 => [high[0], low[1] + t * (high[1] - low[1])],
-                2 => [high[0] - t * (high[0] - low[0]), high[1]],
-                _ => [low[0], high[1] - t * (high[1] - low[1])],
+                0 => [out_low[0] + t * (out_high[0] - out_low[0]), out_low[1]],
+                1 => [out_high[0], out_low[1] + t * (out_high[1] - out_low[1])],
+                2 => [out_high[0] - t * (out_high[0] - out_low[0]), out_high[1]],
+                _ => [out_low[0], out_high[1] - t * (out_high[1] - out_low[1])],
             };
             let offset = [point[0] - center[0], point[1] - center[1]];
             let r = offset[0].hypot(offset[1]) / half_diagonal;
@@ -265,6 +321,10 @@ impl crate::gpu::frame_graph::RecordNode for LensDistortion {
             modes: [params.direction as u32, params.edge as u32, 0, 0],
             origins: [domain.data_rect.x, domain.data_rect.y, data.x, data.y],
             source: [display.width as i32, display.height as i32, 0, 0],
+            branch: match fold_radius(k1, k2) {
+                Some(fold) => [fold as f32, lens_radius(fold, k1, k2) as f32, 1.0, 0.0],
+                None => [0.0; 4],
+            },
         };
         let size = domain.storage_size;
         let tex = cx.storage_target(size);
@@ -285,5 +345,26 @@ impl crate::gpu::frame_graph::RecordNode for LensDistortion {
             bounds: None,
             reduced: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn undistort(r: f64, k1: f64, k2: f64) -> Option<f64> {
+        source_factor(r, k1, k2, LensDirection::Undistort).map(|factor| factor * r)
+    }
+
+    #[test]
+    fn undistort_finds_the_root_before_the_fold() {
+        let rho = undistort(0.95, 1.0, -1.0).expect("a root before the fold");
+        assert!((lens_radius(rho, 1.0, -1.0) - 0.95).abs() < 1e-9);
+        assert!(rho < fold_radius(1.0, -1.0).unwrap());
+    }
+
+    #[test]
+    fn undistort_rejects_radii_past_the_fold() {
+        assert_eq!(undistort(0.8, -3.0, 3.0), None);
     }
 }

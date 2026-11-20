@@ -9,19 +9,27 @@ struct LensParams {
     origins: vec4<i32>,
     // The source's display size in `xy`.
     source: vec4<i32>,
+    // Where the lens folds back on itself, if `z` is 1: the radius in `x` and the radius it moves
+    // to in `y`. Only radii below `y` undistort.
+    branch: vec4<f32>,
 }
 
 @group(0) @binding(0) var source_tex: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> params: LensParams;
 @group(0) @binding(2) var output_tex: texture_storage_2d<rgba16float, write>;
 
-const NEWTON_ITERATIONS: i32 = 8;
+const NEWTON_ITERATIONS: i32 = 32;
 const NEWTON_TOLERANCE: f32 = 1e-6;
 // Where the inverse lens has no solution, pixels read this many times their own distance, far
 // enough out for the edge mode to decide what they show.
 const FOLDED_FACTOR: f32 = 1e4;
 // Minification past which a pixel is averaged over four subsamples.
 const MINIFY_LIMIT: f32 = 1.5;
+
+fn lens_radius(rho: f32) -> f32 {
+    let rho2 = rho * rho;
+    return rho * (1.0 + params.lens.x * rho2 + params.lens.y * rho2 * rho2);
+}
 
 // How a pixel at `p`, in half-diagonals from the optical centre, maps to where it reads. `x` is
 // the factor its offset is multiplied by, and `y` the largest factor by which the source is
@@ -36,15 +44,38 @@ fn lens_map(p: vec2<f32>) -> vec2<f32> {
         return vec2<f32>(factor, max(abs(factor), abs(slope)));
     }
     let r = sqrt(r2);
-    var rho = r;
-    for (var i = 0; i < NEWTON_ITERATIONS; i++) {
-        let rho2 = rho * rho;
-        let slope = 1.0 + 3.0 * k1 * rho2 + 5.0 * k2 * rho2 * rho2;
-        if (slope <= 0.0) {
+    if (r <= 0.0) {
+        return vec2<f32>(1.0, 1.0);
+    }
+    var high: f32;
+    if (params.branch.z == 1.0) {
+        if (r >= params.branch.y) {
             return vec2<f32>(FOLDED_FACTOR, FOLDED_FACTOR);
         }
-        let value = rho * (1.0 + k1 * rho2 + k2 * rho2 * rho2) - r;
-        let next = rho - value / slope;
+        high = params.branch.x;
+    } else {
+        high = max(r, 1.0);
+        for (var i = 0; i < 64 && lens_radius(high) < r; i++) {
+            high *= 2.0;
+        }
+    }
+    // Newton's method kept inside a bracket on the one-to-one branch, bisecting when a step would
+    // leave it.
+    var low = 0.0;
+    var rho = min(r, high);
+    for (var i = 0; i < NEWTON_ITERATIONS; i++) {
+        let value = lens_radius(rho) - r;
+        if (value > 0.0) {
+            high = rho;
+        } else {
+            low = rho;
+        }
+        let rho2 = rho * rho;
+        let slope = 1.0 + 3.0 * k1 * rho2 + 5.0 * k2 * rho2 * rho2;
+        var next = rho - value / slope;
+        if (!(next > low && next < high)) {
+            next = 0.5 * (low + high);
+        }
         let done = abs(next - rho) <= NEWTON_TOLERANCE * abs(next);
         rho = next;
         if (done) {
@@ -52,14 +83,8 @@ fn lens_map(p: vec2<f32>) -> vec2<f32> {
         }
     }
     let rho2 = rho * rho;
-    let slope = 1.0 + 3.0 * k1 * rho2 + 5.0 * k2 * rho2 * rho2;
-    if (slope <= 0.0) {
-        return vec2<f32>(FOLDED_FACTOR, FOLDED_FACTOR);
-    }
-    var factor = 1.0;
-    if (r > 0.0) {
-        factor = rho / r;
-    }
+    let slope = max(1.0 + 3.0 * k1 * rho2 + 5.0 * k2 * rho2 * rho2, 1e-6);
+    let factor = rho / r;
     return vec2<f32>(factor, max(abs(factor), 1.0 / slope));
 }
 
