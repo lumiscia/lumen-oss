@@ -200,14 +200,17 @@ export type NodeReference<TOutput extends NodePortKind = NodePortKind> =
   | { readonly id: number; readonly type?: NodeKindOutputting<TOutput> };
 
 /**
- * `toPort` is checked against the target's input ports, and the source against what that port
- * takes, when `connect` is given the node itself.
+ * What `connect` reads: a node of the composition, or one of its named outputs or those of a node
+ * value already added to it.
  */
-/** What `connect` reads: a node of the composition, or one of its named outputs. */
 export type ConnectSource<TOutput extends NodePortKind = NodePortKind> =
   | NodeReference<TOutput>
   | NodeOutput<TOutput>;
 
+/**
+ * `toPort` is checked against the target's input ports, and the source against what that port
+ * takes, when `connect` is given the node itself.
+ */
 export interface ConnectOptions<
   TKind extends NodeKind = NodeKind,
   TPort extends NodeInputPortName<TKind> = NodeInputPortName<TKind>,

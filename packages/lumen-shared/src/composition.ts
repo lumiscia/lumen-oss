@@ -279,12 +279,18 @@ export class Composition {
     );
   }
 
-  /** The id of a node of this composition, or of the node a node value became. */
+  /** The id of a node of this composition, or of the node an added node value became. */
   #sourceId(source: NodeSource): number {
     if (!this.#isValue(source)) {
       return this.#ownedNodeId(source as NodeReference);
     }
-    return (this.#valueNode(source as NodeInput) as CompositionNode).id;
+    const node = this.#valueNode(source as NodeInput);
+    if (node === undefined) {
+      throw new Error(
+        `A \`${(source as NodeInput).type}\` node value is read before it is added to this composition.`,
+      );
+    }
+    return node.id;
   }
 
   /** Checks that `template` fits and returns the function that registers it. */
@@ -368,7 +374,10 @@ export class Composition {
     return existing === undefined;
   }
 
-  /** Connects `from`, a node of this composition or one of its outputs, to a port of `to`. */
+  /**
+   * Connects `from`, a node of this composition or one of its outputs or those of a node value
+   * added to it, to a port of `to`.
+   */
   connect<
     TKind extends NodeKind,
     TPort extends NodeInputPortName<TKind> = NodeInputPortName<TKind>,
@@ -378,7 +387,7 @@ export class Composition {
     options: ConnectOptions<NoInfer<TKind>, TPort>,
   ): this {
     this.#connections.push({
-      from_node: this.#ownedNodeId(sourceNode(from) as NodeReference),
+      from_node: this.#sourceId(sourceNode(from)),
       ...fromPort(from),
       to_node: this.#ownedNodeId(to),
       to_port: options.toPort,

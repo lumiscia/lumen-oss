@@ -159,6 +159,23 @@ describe("Composition inputs", () => {
     ]);
   });
 
+  test("`connect` reads a named output of a node value its reader added", () => {
+    const composition = new Composition();
+    const render = nodes.render_3d({ scene: nodes.merge_3d({}) });
+    const fogged = composition.addNode({ type: "merge", inputs: { base: render } });
+    composition.connect(outputOf(render, "depth"), fogged, { toPort: "mask" });
+
+    expect(composition.toJSON().connections.at(-1)).toEqual({
+      from_node: 1,
+      from_port: "depth",
+      to_node: fogged.id,
+      to_port: "mask",
+    });
+    expect(() =>
+      composition.connect(outputOf(nodes.render_3d({}), "depth"), fogged, { toPort: "overlay" }),
+    ).toThrow("A `render_3d` node value is read before it is added to this composition.");
+  });
+
   test("a failed addNode leaves the composition and the next automatic ID as they were", () => {
     const composition = new Composition();
     const foreign = new Composition().addNode({ type: "background" });
