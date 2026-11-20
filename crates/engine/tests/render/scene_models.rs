@@ -4,8 +4,8 @@ use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
 use crate::support::scene::{
-    CENTER, Quad, SIZE, fox, fox_media, gradient, image, merge, model, model_glb, ortho, plane,
-    plate, quads, render_3d, render_3d_with, texel_png, unlit,
+    CENTER, Quad, SIZE, fox, fox_media, gradient, image, material, merge, model, model_glb, ortho,
+    plane, plate, quads, render_3d, render_3d_with, rgba_png, texel_png, unlit, with_material,
 };
 use crate::support::{
     BLUE, CLEAR, Case, Expect, Frame, GREEN, RED, Scene, TestMedia, check, gpu, render, scene,
@@ -363,6 +363,79 @@ fn masked_materials_cut_out_and_blended_ones_show_through() {
             with(0.25, json!({})),
             Expect::Uniform(BLUE),
         ),
+    ]);
+}
+
+#[test]
+fn a_masked_image_plane_shows_what_a_masked_model_of_the_same_image_shows() {
+    // Blue where fully opaque, red where three quarters so, which a premultiplied raster stores
+    // darker, and nothing on the right.
+    let pixels: Vec<u8> = (0..SIZE.0 * SIZE.1)
+        .flat_map(|i| match i % SIZE.0 {
+            0..24 => BLUE,
+            24..40 => [255, 0, 0, 200],
+            _ => CLEAR,
+        })
+        .collect();
+    let media = TestMedia::default()
+        .straight_image("plate", SIZE.0, SIZE.1, pixels.clone())
+        .model(
+            "card.glb",
+            model_glb(
+                json!([{
+                    "name": "card",
+                    "alphaMode": "MASK",
+                    "pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } },
+                    "extensions": { "KHR_materials_unlit": {} },
+                }]),
+                Some(&rgba_png(SIZE.0, SIZE.1, &pixels)),
+                &[Quad {
+                    edges: [-2.0, -2.0, 2.0, 2.0],
+                    material: 0,
+                    normal: [0.0, 0.0, 1.0],
+                    mirrored_u: false,
+                }],
+            ),
+        );
+    let card = render_3d_with(
+        json!({ "supersample": 1 }),
+        vec![
+            model(1, json!({ "source": "card.glb" })),
+            ortho(2, json!({})),
+            merge(3, &[1, 2], json!({})),
+        ],
+    );
+    let masked_plane = render_3d_with(
+        json!({ "supersample": 1 }),
+        vec![
+            plate(10),
+            material(
+                4,
+                json!({ "unlit": true, "double_sided": true, "alpha_mode": "mask" }),
+            ),
+            with_material(plane(1, 10, json!({ "width": 4 })), 4),
+            ortho(2, json!({})),
+            merge(3, &[1, 2], json!({})),
+        ],
+    );
+    check(vec![
+        Case::new(
+            "the plane shows the cut-out at full opacity, in the image's own colours",
+            Scene(masked_plane.0.clone()),
+            Expect::Probes(vec![
+                (12, CENTER, BLUE),
+                (32, CENTER, RED),
+                (56, CENTER, CLEAR),
+            ]),
+        )
+        .media(media.clone()),
+        Case::new(
+            "the plane matches the model",
+            masked_plane,
+            Expect::Matches(card.into()),
+        )
+        .media(media)
+        .tolerance(1),
     ]);
 }
 

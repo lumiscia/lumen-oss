@@ -453,3 +453,35 @@ fn a_clip_canvas_larger_than_the_device_allows_fails_naming_the_clip() {
         "{error}"
     );
 }
+
+#[test]
+fn masked_planes_that_cross_draw_in_depth_order_where_they_cross() {
+    let masked = |id: u32, color: &str, params: Value| {
+        [
+            material(
+                id + 10,
+                json!({
+                    "color": color, "unlit": true, "double_sided": true, "alpha_mode": "mask"
+                }),
+            ),
+            with_material(plane(id, 10, params), id + 10),
+        ]
+    };
+    // The second plane's right half turns away from the camera, behind the first.
+    let mut nodes = vec![plate(10)];
+    nodes.extend(masked(1, "#ff0000", json!({ "width": 4 })));
+    nodes.extend(masked(
+        4,
+        "#0000ff",
+        json!({ "width": 4, "rotation": [0, 60, 0] }),
+    ));
+    nodes.extend([ortho(2, json!({})), merge(3, &[1, 4, 2], json!({}))]);
+    check(vec![
+        Case::new(
+            "each plane is in front on its own side of where they cross",
+            render_3d_with(json!({ "supersample": 1 }), nodes),
+            Expect::Probes(vec![(24, CENTER, BLUE), (40, CENTER, RED)]),
+        )
+        .media(image(|_, _| [255, 255, 255, 255])),
+    ]);
+}

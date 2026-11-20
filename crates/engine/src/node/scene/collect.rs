@@ -24,7 +24,10 @@ use lumen_3d::{
 };
 use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
-use super::{Light3dKind, Material3dParams, Model3d, Placement3d, Pose3d, Shape3d, Shape3dKind};
+use super::{
+    Light3dKind, Material3dParams, MaterialAlphaMode, Model3d, Placement3d, Pose3d, Shape3d,
+    Shape3dKind,
+};
 use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
 use crate::gpu::evictions;
 use crate::gpu::frame_graph::{FrameCx, Raster};
@@ -535,6 +538,10 @@ fn surface<N: crate::node::JsonNode>(
 ) -> crate::Result<Surface<TexRef>> {
     let mut base_color = solid_linear::<N>(node_id, &material.color)?;
     base_color[3] *= material.opacity.clamp(0.0, 1.0) as f32;
+    let masked = material.alpha_mode == MaterialAlphaMode::Mask;
+    if masked && material.shadow_catcher {
+        return Err(RenderError::evaluating::<N>(node_id, super::MASKED_CATCHER).into());
+    }
     let emissive = material.emissive.max(0.0) as f32;
     Ok(Surface {
         base_color,
@@ -542,7 +549,11 @@ fn surface<N: crate::node::JsonNode>(
         roughness: material.roughness.clamp(0.0, 1.0) as f32,
         emissive: [0, 1, 2].map(|i| base_color[i] * emissive),
         // A catcher's alpha only scales how dark its shadows are.
-        blending: if base_color[3] < 1.0 && !material.shadow_catcher {
+        blending: if masked {
+            Blending::Mask {
+                cutoff: material.alpha_cutoff.clamp(0.0, 1.0) as f32,
+            }
+        } else if base_color[3] < 1.0 && !material.shadow_catcher {
             Blending::Blend
         } else {
             Blending::Opaque
@@ -1204,12 +1215,15 @@ impl Collected {
                     Material3dParams::flat(),
                 )?;
                 // A raster has transparent texels whatever its opacity, so a plane blends unless
-                // told it has none. A shadow catcher keeps its alpha, which sets its coverage.
-                surface.blending = if params.opaque && !surface.shadow_catcher {
-                    Blending::Opaque
-                } else {
-                    Blending::Blend
-                };
+                // told it has none or its material masks. A shadow catcher keeps its alpha, which
+                // sets its coverage.
+                if !matches!(surface.blending, Blending::Mask { .. }) {
+                    surface.blending = if params.opaque && !surface.shadow_catcher {
+                        Blending::Opaque
+                    } else {
+                        Blending::Blend
+                    };
+                }
                 surface.texture = Some(source.tex);
                 surface.nearest = params.sampling == RasterSampling::Nearest;
                 let (rec, cache) = cx.scene_cache();

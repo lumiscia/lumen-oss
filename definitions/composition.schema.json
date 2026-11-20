@@ -4348,7 +4348,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "How a surface responds to light, for the 3D objects it is wired into through their `material`\ninput. One `material_3d` can be wired to any number of objects, which then share its params,\nso changing it changes them all. Each param takes an expression as it does on any node.\nObjects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses\nan unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by\n`color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest\nof the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.\nIts alpha counts where the material blends, through `opacity` or the colour's alpha. Wired\ninto any other object, a material with a texture fails the render.",
+            "description": "How a surface responds to light, for the 3D objects it is wired into through their `material`\ninput. One `material_3d` can be wired to any number of objects, which then share its params,\nso changing it changes them all. Each param takes an expression as it does on any node.\nObjects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses\nan unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by\n`color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest\nof the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.\nIts alpha counts where the material blends or masks, through `opacity` or the colour's alpha.\nWired into any other object, a material with a texture fails the render.\n\n`alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose\nmaterial is unlit and double-sided, with the opaque objects so it orders correctly where cards\ncross. As a glTF `MASK` material does, it shows only the texels that reach `alpha_cutoff`.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -4357,6 +4357,46 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "alpha_cutoff": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.5,
+                    "description": "The alpha a texel needs to show when `alpha_mode` is `mask`. Not read otherwise.",
+                    "title": "Alpha Cutoff",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "alpha_mode": {
+                    "default": "blend",
+                    "description": "`blend` draws the surface blended where its alpha is below 1. `mask` draws it with the\nopaque objects, so it writes depth and crossing masked surfaces order correctly: texels\nwhose alpha, the colour's times `opacity` times the texture's or raster's, is below\n`alpha_cutoff` are discarded and the rest show at full opacity. Masked surfaces cast\nshadows shaped by the cut-out. It takes precedence over `opaque` on an `image_plane_3d`,\nand with `shadow_catcher` fails `check`.",
+                    "enum": ["blend", "mask"],
+                    "title": "Alpha Mode",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Blend",
+                        "name": "blend",
+                        "value": 0
+                      },
+                      {
+                        "label": "Mask",
+                        "name": "mask",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "MaterialAlphaMode"
+                  },
                   "cast_shadows": {
                     "anyOf": [
                       {
@@ -4449,7 +4489,7 @@
                       }
                     ],
                     "default": 1.0,
-                    "description": "Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.",
+                    "description": "Opacity multiplier. With `alpha_mode` `blend`, anything below 1 is drawn blended, after\nopaque objects.",
                     "title": "Opacity",
                     "x-lumen-constraints": {
                       "max": 1.0,

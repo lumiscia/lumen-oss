@@ -797,7 +797,9 @@ Params:
 
 ## `material_3d`
 
-How a surface responds to light, for the 3D objects it is wired into through their `material` input. One `material_3d` can be wired to any number of objects, which then share its params, so changing it changes them all. Each param takes an expression as it does on any node. Objects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses an unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`. Its alpha counts where the material blends, through `opacity` or the colour's alpha. Wired into any other object, a material with a texture fails the render.
+How a surface responds to light, for the 3D objects it is wired into through their `material` input. One `material_3d` can be wired to any number of objects, which then share its params, so changing it changes them all. Each param takes an expression as it does on any node. Objects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses an unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`. Its alpha counts where the material blends or masks, through `opacity` or the colour's alpha. Wired into any other object, a material with a texture fails the render.
+
+`alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose material is unlit and double-sided, with the opaque objects so it orders correctly where cards cross. As a glTF `MASK` material does, it shows only the texels that reach `alpha_cutoff`.
 
 Category: scene. Output: material.
 
@@ -807,12 +809,14 @@ Inputs:
 
 Params:
 
+- **`alpha_cutoff`** (number, 0 to 1; default `0.5`) The alpha a texel needs to show when `alpha_mode` is `mask`. Not read otherwise.
+- **`alpha_mode`** (`"blend"` | `"mask"`; default `"blend"`; literal only) `blend` draws the surface blended where its alpha is below 1. `mask` draws it with the opaque objects, so it writes depth and crossing masked surfaces order correctly: texels whose alpha, the colour's times `opacity` times the texture's or raster's, is below `alpha_cutoff` are discarded and the rest show at full opacity. Masked surfaces cast shadows shaped by the cut-out. It takes precedence over `opaque` on an `image_plane_3d`, and with `shadow_catcher` fails `check`.
 - **`cast_shadows`** (boolean; default `true`) Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light, such as a bulb around a point light, needs this off.
 - **`color`** ([color](#type-color); default `[255,255,255,255]`) Base colour, which multiplies the `texture` on a shape and the raster on an image plane. Must be a solid color; a gradient fails `check`.
 - **`double_sided`** (boolean; default `false`) Draws the back of each face too.
 - **`emissive`** (number, at least 0; default `0`) Light the surface gives off on its own, as a multiple of its base colour.
 - **`metallic`** (number, 0 to 1; default `0`) 0 is a dielectric such as plastic, 1 a bare metal.
-- **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.
+- **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier. With `alpha_mode` `blend`, anything below 1 is drawn blended, after opaque objects.
 - **`receive_shadows`** (boolean; default `true`) Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says.
 - **`roughness`** (number, 0 to 1; default `0.5`) 0 is a mirror finish, 1 fully diffuse.
 - **`sampling`** (`"nearest"` | `"linear"`; default `"linear"`) How a shape reads its `texture`, as `sampling` on `image_plane_3d`: `nearest` gives each pixel the one texel under it at any size, for pixel art.
