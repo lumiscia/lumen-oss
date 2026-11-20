@@ -398,6 +398,9 @@ fn shader_error(node_id: NodeId, details: impl Into<String>) -> crate::error::Lu
     RenderError::evaluating::<WgslShader>(node_id, details.into()).into()
 }
 
+/// How far, relative to its size, a number may miss a whole number and still fill an integer field.
+const INTEGER_TOLERANCE: f64 = 1e-9;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Scalar {
     F32,
@@ -645,7 +648,7 @@ fn uniform_components(
         Ok(())
     };
 
-    let values = match value {
+    let mut values = match value {
         ShaderUniformValue::Number(value) => vec![*value],
         ShaderUniformValue::Expr(expr) => {
             let Some(ctx) = ctx else {
@@ -695,7 +698,16 @@ fn uniform_components(
             values.len()
         )));
     }
-    for &value in &values {
+    for value in &mut values {
+        // Integer fields take the nearest whole number, so arithmetic such as `3 - 1e-16` that
+        // misses one by a rounding error still counts.
+        if field.scalar != Scalar::F32 {
+            let whole = value.round();
+            if (*value - whole).abs() <= INTEGER_TOLERANCE * whole.abs().max(1.0) {
+                *value = whole;
+            }
+        }
+        let value = *value;
         let fits = match field.scalar {
             Scalar::F32 => (value as f32).is_finite(),
             Scalar::I32 => {
@@ -1298,6 +1310,20 @@ mod tests {
             .unwrap();
         let floats: &[f32] = bytemuck::cast_slice(&bytes);
         assert_eq!(&floats[4..7], &[0.5, 0.25, 2.0]);
+        // A number a rounding error off a whole one fills an integer field with that whole one.
+        let bytes_for = |value| {
+            interface
+                .uniform_bytes(node_id, &uniforms(json!({ "count": value })), &ctx)
+                .unwrap()
+        };
+        assert_eq!(
+            bytes_for(json!("=3 - 0.0000000000000004")),
+            bytes_for(json!(3))
+        );
+        assert_eq!(
+            bytes_for(json!("=3 + 0.0000000000000004")),
+            bytes_for(json!(3))
+        );
 
         for (value, expected) in [
             (
