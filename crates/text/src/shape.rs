@@ -281,6 +281,7 @@ impl TextSystem {
         };
         let truncated = shown < runs.len();
         let mut has_ellipsis = false;
+        let first_line_y = runs[..shown].first().map_or(0.0, |run| run.line_y);
         for (run_index, run) in runs[..shown].iter().enumerate() {
             let mut line_glyphs = run.glyphs.to_vec();
             // cosmic-text aligned the untrimmed line within the widened width. Justified
@@ -540,6 +541,7 @@ impl TextSystem {
                 span: request.spans.len() as u32,
             },
             segments,
+            first_line_y,
             span_boxes,
             span_metrics: span_metrics
                 .into_iter()
@@ -942,6 +944,8 @@ pub struct ShapedText {
     /// Each contiguous run of one span and direction on a line, by line and then from left
     /// to right. An ellipsis is a segment of its own, covering no bytes.
     pub segments: Vec<TextSegment>,
+    /// Baseline of the first line, empty or not, from the text's top.
+    first_line_y: f32,
     /// The box of each span's segments as `[x, y, width, height]`, or `None` for a span that
     /// draws none.
     pub span_boxes: Vec<Option<[f32; 4]>>,
@@ -1032,6 +1036,12 @@ pub(crate) struct ShapedGlyph {
 }
 
 impl ShapedText {
+    /// Y of the first line's baseline from the text's top, even when that line is empty, or 0
+    /// for text with no lines.
+    pub fn first_baseline(&self) -> f32 {
+        self.first_line_y
+    }
+
     /// This text with every length scaled by `scale`, keeping its lines as they were shaped.
     /// Glyphs keep their place on each line and are rasterized at their scaled size, and the
     /// decorations' own sizes scale with `fit_scale`.
@@ -1074,6 +1084,7 @@ impl ShapedText {
                 })
                 .collect(),
             fit_scale: self.fit_scale * scale,
+            first_line_y: self.first_line_y * scale,
             span_starts: self.span_starts.clone(),
             paragraphs: self.paragraphs,
             glyphs: self

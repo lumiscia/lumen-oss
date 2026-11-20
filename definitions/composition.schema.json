@@ -10682,8 +10682,8 @@
                   },
                   "alignment_vertical": {
                     "default": "top",
-                    "description": "Vertical text alignment.",
-                    "enum": ["top", "middle", "bottom"],
+                    "description": "Vertical text alignment: `top`, `middle` and `bottom` put that edge of the text at\n`position`. `baseline`: the position is on the first line's baseline, so texts in\ndifferent fonts line up.",
+                    "enum": ["top", "middle", "bottom", "baseline"],
                     "title": "Alignment Vertical",
                     "type": "string",
                     "x-lumen-enumOptions": [
@@ -10701,6 +10701,11 @@
                         "label": "Bottom",
                         "name": "bottom",
                         "value": 2
+                      },
+                      {
+                        "label": "Baseline",
+                        "name": "baseline",
+                        "value": 3
                       }
                     ],
                     "x-lumen-kind": "enum",
@@ -11346,8 +11351,8 @@
                   },
                   "alignment_vertical": {
                     "default": "top",
-                    "description": "Which point of the text's box sits at `position` vertically: the top of its first line,\nits middle, or the bottom of its last line.",
-                    "enum": ["top", "middle", "bottom"],
+                    "description": "Which point of the text sits at `position` vertically: the top of its first line, its\nmiddle, or the bottom of its last line. `baseline`: the position is on the first line's\nbaseline, so texts in different fonts line up.",
+                    "enum": ["top", "middle", "bottom", "baseline"],
                     "title": "Alignment Vertical",
                     "type": "string",
                     "x-lumen-enumOptions": [
@@ -11365,6 +11370,11 @@
                         "label": "Bottom",
                         "name": "bottom",
                         "value": 2
+                      },
+                      {
+                        "label": "Baseline",
+                        "name": "baseline",
+                        "value": 3
                       }
                     ],
                     "x-lumen-kind": "enum",
@@ -11697,8 +11707,8 @@
                   },
                   "alignment_vertical": {
                     "default": "middle",
-                    "description": "Which point of the text's box sits at `position` vertically: the top of its first line,\nits middle, or the bottom of its last line.",
-                    "enum": ["top", "middle", "bottom"],
+                    "description": "Which point of the text sits at `position` vertically: the top of its first line, its\nmiddle, or the bottom of its last line. `baseline`: the position is on the first line's\nbaseline, so texts in different fonts line up.",
+                    "enum": ["top", "middle", "bottom", "baseline"],
                     "title": "Alignment Vertical",
                     "type": "string",
                     "x-lumen-enumOptions": [
@@ -11716,6 +11726,11 @@
                         "label": "Bottom",
                         "name": "bottom",
                         "value": 2
+                      },
+                      {
+                        "label": "Baseline",
+                        "name": "baseline",
+                        "value": 3
                       }
                     ],
                     "x-lumen-kind": "enum",

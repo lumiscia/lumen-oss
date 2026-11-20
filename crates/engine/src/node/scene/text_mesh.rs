@@ -71,8 +71,9 @@ struct TextKey {
     /// World units per pixel of the layout.
     scale: f32,
     extrusion: Extrusion,
-    /// The point of the text's box at its origin, as fractions of its width and height.
-    anchor: [f32; 2],
+    /// The point of the text's box at its origin, as a fraction of its width.
+    anchor_x: f32,
+    alignment_vertical: TextAlignmentVertical,
 }
 
 impl TextKey {
@@ -87,18 +88,12 @@ impl TextKey {
                 bevel: params.bevel_size as f32,
                 bevel_segments: params.bevel_segments.min(MAX_BEVEL_SEGMENTS),
             },
-            anchor: [
-                match params.alignment_horizontal {
-                    TextAlignmentHorizontal::Left | TextAlignmentHorizontal::Justify => 0.0,
-                    TextAlignmentHorizontal::Center => 0.5,
-                    TextAlignmentHorizontal::Right => 1.0,
-                },
-                match params.alignment_vertical {
-                    TextAlignmentVertical::Top => 0.0,
-                    TextAlignmentVertical::Middle => 0.5,
-                    TextAlignmentVertical::Bottom => 1.0,
-                },
-            ],
+            anchor_x: match params.alignment_horizontal {
+                TextAlignmentHorizontal::Left | TextAlignmentHorizontal::Justify => 0.0,
+                TextAlignmentHorizontal::Center => 0.5,
+                TextAlignmentHorizontal::Right => 1.0,
+            },
+            alignment_vertical: params.alignment_vertical,
         }
     }
 
@@ -491,7 +486,7 @@ fn build(
         extrusion.bevel.to_bits(),
         extrusion.bevel_segments,
     ];
-    let (layout, measurement, outlined) = {
+    let (layout, measurement, offset_y, outlined) = {
         let mut system = text_system(media).map_err(BuildError::Lumen)?;
         let shaped = system.shape_changed(&key.request);
         let layout = shaped.place([0.0, 0.0]);
@@ -515,7 +510,12 @@ fn build(
             }
             outlined.insert(glyph, commands > 0);
         }
-        (layout, shaped.measurement, outlined)
+        (
+            layout,
+            shaped.measurement,
+            key.alignment_vertical.offset(&shaped),
+            outlined,
+        )
     };
 
     let drawn = layout
@@ -539,7 +539,7 @@ fn build(
 
     let em = key.scale * SHAPE_EM as f32;
     let width = key.request.max_width.unwrap_or(measurement.width);
-    let origin = [key.anchor[0] * width, key.anchor[1] * measurement.height];
+    let origin = [key.anchor_x * width, offset_y];
     let (mut vertex_count, mut index_count, mut skipped) = (0, 0, 0);
     let mut work_left = max_work;
     // The glyphs whose work has counted.
@@ -1012,6 +1012,29 @@ mod tests {
         // Capitals are about 0.7 of the font size tall.
         let height = centred.max.y - centred.min.y;
         assert!((height - 0.71).abs() < 0.02, "{height}");
+    }
+
+    #[test]
+    fn baseline_alignment_puts_the_first_lines_baseline_at_the_origin() {
+        let lowest = |alignment_vertical| {
+            let mesh = built(
+                Text3dParams {
+                    alignment_vertical,
+                    ..text("H")
+                },
+                &mut GlyphMeshes::default(),
+                100,
+            )
+            .unwrap()
+            .mesh
+            .unwrap();
+            Bounds::of(mesh.vertices.iter().map(|v| Vec3::from(v.position)))
+                .min
+                .y
+        };
+        // An `H` has no descender, so its bottom is on the baseline.
+        assert!(lowest(TextAlignmentVertical::Baseline).abs() < 0.01);
+        assert!(lowest(TextAlignmentVertical::Top) < -0.5);
     }
 
     #[test]

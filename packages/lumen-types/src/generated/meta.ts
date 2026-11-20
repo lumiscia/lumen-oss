@@ -1616,7 +1616,7 @@ export type Text3dAlignmentVertical = TextAlignmentVertical;
 export type Text3dFontStyle = TextFontStyle;
 export type Text3dTextTransform = TextTransform;
 export type TextAlignmentHorizontal = "left" | "center" | "right" | "justify";
-export type TextAlignmentVertical = "top" | "middle" | "bottom";
+export type TextAlignmentVertical = "top" | "middle" | "bottom" | "baseline";
 /** Text to render: a string, or spans that each override the node's text style. */
 export type TextContent = string | readonly TextSpan[];
 export type TextFit = "none" | "shrink";
@@ -3717,7 +3717,11 @@ export interface TextNode extends CompositionNodeBase<"text"> {
   readonly params?: {
     /** Horizontal text alignment. */
     readonly alignment_horizontal?: TextAlignmentHorizontal;
-    /** Vertical text alignment. */
+    /**
+     * Vertical text alignment: `top`, `middle` and `bottom` put that edge of the text at
+     * `position`. `baseline`: the position is on the first line's baseline, so texts in
+     * different fonts line up.
+     */
     readonly alignment_vertical?: TextAlignmentVertical;
     /** Pivot for scale and rotation, in pixels relative to `position`. */
     readonly anchor?: ExpressionValue<Vec2>;
@@ -3877,8 +3881,9 @@ export interface Text2dNode extends CompositionNodeBase<"text_2d"> {
      */
     readonly alignment_horizontal?: TextAlignmentHorizontal;
     /**
-     * Which point of the text's box sits at `position` vertically: the top of its first line,
-     * its middle, or the bottom of its last line.
+     * Which point of the text sits at `position` vertically: the top of its first line, its
+     * middle, or the bottom of its last line. `baseline`: the position is on the first line's
+     * baseline, so texts in different fonts line up.
      */
     readonly alignment_vertical?: TextAlignmentVertical;
     /** Pivot for scale and rotation, in pixels relative to `position`. */
@@ -3948,8 +3953,9 @@ export interface Text3dNode extends CompositionNodeBase<"text_3d"> {
      */
     readonly alignment_horizontal?: TextAlignmentHorizontal;
     /**
-     * Which point of the text's box sits at `position` vertically: the top of its first line,
-     * its middle, or the bottom of its last line.
+     * Which point of the text sits at `position` vertically: the top of its first line, its
+     * middle, or the bottom of its last line. `baseline`: the position is on the first line's
+     * baseline, so texts in different fonts line up.
      */
     readonly alignment_vertical?: TextAlignmentVertical;
     /**
