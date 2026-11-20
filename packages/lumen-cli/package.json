@@ -1,6 +1,6 @@
 {
   "name": "@lumiscia/lumen-cli",
-  "version": "0.6.0-beta.5",
+  "version": "0.6.0",
   "description": "The lumen command, and a Node, Bun and Deno API to check, render and preview Lumen compositions on a local GPU.",
   "keywords": [
     "cli",

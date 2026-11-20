@@ -1,5 +1,355 @@
 # @lumiscia/lumen-shared
 
+## 0.6.0
+
+### Minor Changes
+
+- 8ef4ee5: Audio clips fade, volumes animate, and templates carry their own sound.
+
+  - A track's or clip's `volume` takes an `=expression` as well as a number, evaluated in the time of the composition the audio is in: `frame`, `time`, `fps`, `width`, `height` and, inside a template, props. Gains are evaluated every 512 samples and move linearly in between, so they never step. A volume expression that reads a node, a glyph or text, or a prop the template doesn't declare, fails the check with `audio.invalid`; a value below 0 plays as silence.
+  - Clips take `fade_in_ms` and `fade_out_ms`, which fade from and to silence at the clip's start and end on an equal-power curve. Fades longer than a short clip multiply where they overlap.
+  - A template in `compositions` can have its own `audio`. It plays wherever a `clip` that reaches the output plays the template, at the clip's start, duration, offset, speed and end, as its frames do, through nested clips. Speed resamples, so pitch follows it; past a `hold` window the audio is silent. A `switch` plays only its selected layer's audio, and a `time_remap` plays its source's audio at the remapped time, silent where that time holds or runs backwards.
+  - Audio planning is bounded. The root and each template may hold at most 512 audio tracks and 8192 audio clips, and clips that play templates with sound more than 4096 times in all, counting the clips inside the templates they play, fail the check with `audio.invalid`; planning an interval only looks at the clips that overlap it. While rendering or previewing, a 512-sample interval may be inside at most 1024 clips and time remaps (a loop may restart at most 32 times in it) and sound at most 1024 clips, one planning call (the server mixes 30 s at a time) returns at most 500,000 segments, and the preview's plan of the whole timeline covers at most about 3 hours and 200,000 segments; past a limit the render or the preview load fails with the new `audio.limit` code.
+  - A prop a clip sets by expression moves a gain smoothly, as the gain's own expression does. Nested audio keeps sounding after a parent loop restarts, including under a `switch` or another loop, and a looping `time_remap` no longer silences the 512 samples around its wrap, whatever its loop bounds.
+  - The builder's `addAudio` takes `fadeIn` and `fadeOut` in seconds and `gain` as a number or an `Expr<number>`, `addAudioTrack` takes an `Expr<number>` gain, and `defineComposition` keeps the audio its `build` adds.
+
+  ```json
+  {
+    "compositions": {
+      "whoosh": {
+        "timeline": { "fps": 30, "duration_frames": 30 },
+        "props": { "level": { "type": "number", "default": 1 } },
+        "audio": {
+          "tracks": [{ "id": "main" }],
+          "clips": [
+            {
+              "id": "a",
+              "source_id": "whoosh.wav",
+              "track_id": "main",
+              "start_ms": 0,
+              "duration_ms": 500,
+              "fade_out_ms": 100,
+              "volume": "=prop('level')"
+            }
+          ]
+        },
+        "nodes": [
+          { "id": 1, "type": "background" },
+          { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+      }
+    },
+    "audio": {
+      "tracks": [{ "id": "music", "volume": "=if(time >= 2 && time < 6, 0.25, 1)" }],
+      "clips": [
+        {
+          "id": "bed",
+          "source_id": "music.mp3",
+          "track_id": "music",
+          "start_ms": 0,
+          "duration_ms": 10000,
+          "fade_in_ms": 1000,
+          "fade_out_ms": 1000
+        }
+      ]
+    }
+  }
+  ```
+
+  The browser preview plays the same mix: the engine plans it and the preview's audio worker plays the plan.
+
+  Breaking changes:
+
+  - `audioTimeline()` on the preview's wasm controller (`LumenPreviewControllerBinding` in `@lumiscia/lumen-preview/advanced`) returns the engine's audio plan, `{ voices, segments, durationFrames, fps }`, instead of the parsed tracks and clips. The preview's audio engine is internal and takes the plan itself; only a custom host that reads `audioTimeline()` is affected.
+  - The generated `AudioClip` and `AudioTrack` types have `volume: ExpressionValue<number>`, and the root `audio` is the new `AudioTimeline` type.
+  - In Rust, `AudioMixer::new` takes the `Composition` instead of its timeline, and `mix_range` takes `&mut self` and fails with a `LumenError`. `AudioTrack::volume` and `AudioClip::volume` are an `AudioGain`, and `CompositionTemplate` has an `audio` field. Use `Composition::has_audio` to ask whether a render has sound.
+
+- 0b4d4bc: **An audio track's or clip's level is `gain` in the document, as it is in the builder.** The JSON key was `volume` while `addAudio({ gain })` wrote it, so a hand-written `"gain"` was ignored and the clip played at full level. Audio tracks, clips and the `audio` object now reject keys they do not list, like the rest of the document, so a leftover `volume` (or any other stray key) is an error naming its path, such as `audio.clips[0].volume: unknown field`. `name` stays accepted on tracks and clips. Error messages and JSON pointers say `gain` too: `audio.tracks[0].gain: must be at least 0`.
+
+  Before:
+
+  ```json
+  {
+    "audio": {
+      "tracks": [{ "id": "music", "volume": 0.5 }],
+      "clips": [
+        {
+          "id": "a",
+          "source_id": "music.mp3",
+          "track_id": "music",
+          "start_ms": 0,
+          "duration_ms": 4000,
+          "volume": "=tween(0, 1, 60, 15)"
+        }
+      ]
+    }
+  }
+  ```
+
+  After:
+
+  ```json
+  {
+    "audio": {
+      "tracks": [{ "id": "music", "gain": 0.5 }],
+      "clips": [
+        {
+          "id": "a",
+          "source_id": "music.mp3",
+          "track_id": "music",
+          "start_ms": 0,
+          "duration_ms": 4000,
+          "gain": "=tween(0, 1, 60, 15)"
+        }
+      ]
+    }
+  }
+  ```
+
+  `addAudio` and `addAudioTrack` keep taking `gain`; they now write `gain`. In a connection, `from_port` may be left out: it defaults to `output`, the only output any node has, and the schema no longer lists it as required.
+
+- 811741d: **`addAudio` names the unit of its times, and a timeline takes one length.** Audio clip options were `start`, `duration`, `offset`, `fadeIn` and `fadeOut`, in seconds, next to visual clip nodes whose `start` and `duration` are frames. They are now `startSeconds`, `durationSeconds`, `offsetSeconds`, `fadeInSeconds` and `fadeOutSeconds`. The JSON they write (`start_ms` and the rest) is unchanged.
+
+  Before:
+
+  ```ts
+  composition.addAudio({
+    source: "music.mp3",
+    start: 2,
+    duration: 10,
+    offset: 1.5,
+    fadeIn: 1,
+    fadeOut: 0.5,
+  });
+  ```
+
+  After:
+
+  ```ts
+  composition.addAudio({
+    source: "music.mp3",
+    startSeconds: 2,
+    durationSeconds: 10,
+    offsetSeconds: 1.5,
+    fadeInSeconds: 1,
+    fadeOutSeconds: 0.5,
+  });
+  ```
+
+  `timeline` takes `duration_frames` or `durationSeconds`, not both. TypeScript rejects passing both, and a JavaScript caller that does gets a `TypeError` instead of the seconds silently winning.
+
+  ```ts
+  new Composition({ timeline: { durationSeconds: 3 } });
+  new Composition({ timeline: { duration_frames: 90 } });
+  new Composition({ timeline: { duration_frames: 90, durationSeconds: 3 } }); // type error, throws
+  ```
+
+- dea8cf4: **A composition no longer holds encoding settings.** `codec`, `quality`, `bit_depth` and `alpha` are gone from `render_settings`, and a document that still has them is rejected as an unknown field. How a video is encoded is decided by the render request, then by the codec the output container holds (`prores` in a `.mov`, `vp9` in a `.webm`), then by the host's defaults. Every surface already took these options, so move them there; `lumen render comp.json -o out.mov` with no flags still picks ProRes.
+
+  Before:
+
+  ```json
+  {
+    "render_settings": {
+      "width": 1920,
+      "height": 1080,
+      "codec": "hevc",
+      "quality": "high",
+      "bit_depth": 10
+    }
+  }
+  ```
+
+  After, a composition with only the canvas, and the encoding on the render:
+
+  ```json
+  { "render_settings": { "width": 1920, "height": 1080 } }
+  ```
+
+  ```bash
+  lumen render comp.json -o out.mp4 --codec hevc --quality high --bit-depth 10
+  ```
+
+  ```ts
+  await lumen.render(composition, { codec: "hevc", quality: "high", bitDepth: 10 });
+  await render(composition, { output: "out.mp4", codec: "hevc", quality: "high", bitDepth: 10 });
+  ```
+
+  `new Composition({ renderSettings })` takes only `width` and `height`. `VideoCodec` and `VideoBitDepth` stay exported from `@lumiscia/lumen-types`, which the SDK and the `lumen` wrapper now import them from.
+
+  **Rust API:** `lumen_engine::composition::{OutputCodec, OutputSettings, BitDepth}` and `Composition::output_settings()` are removed; use `lumen_ffmpeg::{EncodeCodec, BitDepth}`. The engine's GPU encode targets take `lumen_engine::gpu::BitDepth`, which converts from `lumen_ffmpeg::BitDepth` with `From`. `lumen_server::render::resolve_encoder` reads only the request, the container and the host's config.
+
+- c657075: Expressions can write numbers as text with a fixed number of decimals and padding, and join text from parts, so a frame counter, timecode or coordinate readout follows the frame.
+
+  `format(value, decimals?, width?, fill?)` gives `decimals` digits after the point (default 0), then pads on the left with the one-character `fill` (default a space) to `width` characters (default 0). Halves round away from zero on the number as written, so `format(2.5)` is `"3"`, `format(-2.5)` is `"-3"`, `format(0.125, 2)` is `"0.13"` and `format(1.005, 2)` is `"1.01"`; a result that rounds to zero never prints a minus. With a `"0"` fill the sign stays first: `format(-5, 0, 4, "0")` is `"-005"`. `value` must be finite, `decimals` a whole number from 0 to 20 and `width` one from 0 to 64. `concat(a, b, ...)` joins strings and numbers, with numbers shown as a text param shows them (`concat("f ", frame / 7)` reads like `=frame / 7`); vec2, vec3 and colour parts are errors. `+` stays numeric.
+
+  ```json
+  {
+    "type": "text",
+    "params": { "content": "=concat('frame ', format(frame, 0, 4, '0'), ' / 1200')" }
+  }
+  ```
+
+  ```ts
+  c.addNode({
+    type: "text",
+    params: { content: concat("frame ", format(frame, 0, 4, "0"), " / 1200") },
+  });
+  ```
+
+  In the TypeScript builder, `format` and `concat` are `Expr<string>`, and a text node's `content` and a span's `text` take `Expr<number>` as well, so `content: round(frame.mul(3.7))` type-checks.
+
+  `format` and `concat` are now reserved names: a composition function or parameter called either needs another name.
+
+- dd03a5c: `expr` can be used as a template tag. ``expr<Vec2>`vec2(0, ${lift})` `` lowers each interpolated value the way builtin arguments are lowered, so built expressions, numbers, strings and tuples go in without stripping a leading `=` by hand. Raw expressions are bracketed where they meet an operator.
+- d94ba0e: Expressions gain typed conditions. `Expr` has `gt`, `gte`, `lt`, `lte`, `eq` and `neq`, which evaluate to `Expr<boolean>`, and `and`, `or` and `not` on booleans. `when(condition, then, otherwise)` builds `if(..)` for numbers, vec2 and vec3 values, colours and strings, and `node(id, 'property')` reads another node's param.
+- cf41f99: **Expression helpers show their documentation and argument names on hover.** `abs`, `clamp`, `tween`, `keyframes` and the rest are now generated as one documented function per builtin from the engine's table, instead of being derived from it with conditional types. Hovering a helper shows the table's description and its real parameter names; before, an editor showed `args_0`.
+
+  Before, hovering `smoothstep` showed `(args_0: Num, args_1: Num, args_2: Num) => Expr<number>` and no description. After:
+
+  ```ts
+  /** Hermite smoothing of `x` between two edges. */
+  function smoothstep(edge0: Num, edge1: Num, x: Num): Expr<number>;
+  ```
+
+  Every call that type-checked before still does, with the same result type, with one loss: an optional argument can be skipped with an explicit `undefined` before a later one, as in `spring(0, undefined, 20)`, without a type error. It still throws at run time, as it did.
+
+  The helper types `Builtins`, `CamelCase`, `Interpolate`, `Tween`, `MakeKey` and `Keyframes` are no longer exported; their overloads are part of the functions. `expressionBuiltins` in `@lumiscia/lumen-types` says `"same"` instead of `"any"` for the arguments of `lerp`, `tween` and `key` that must share one type, and for the return of `lerp` and `tween`. The engine accepts and evaluates the same expressions.
+
+- dc06fed: `instance_3d` draws its input scene `count` times, from 0 to 100000, sharing the input's meshes, textures, materials and skinned models' joint matrices on the GPU instead of repeating a node for each copy. Each copy is placed by `position`, `rotation` and `scale`, which are evaluated once per copy, and two new expression globals say which copy that is: `instance` is its index from 0 and `instance_count` is `count`, so one node lays out a grid, a ring or a path (`path_point(d, instance / instance_count)`) without separate layout modes. They are only readable in this node's `position`, `rotation` and `scale`, and reading them elsewhere fails like `glyph` does outside a text node's `glyph_*` params. In the TypeScript SDK they are `instance` and `instanceCount`, exported with `frame` and `time`.
+
+  Only the input's objects are copied. Its lights and camera appear once, placed as without the node. Every copy of a skinned model plays the same clip at the same time, and shadows, fog and the environment treat copies like any other object. An `instance_3d` may hold another, up to 8 deep, with their counts multiplied. A scene draws at most 100000 objects in all, counting every copy's objects, and one that would draw more, or more vertices than fit one draw, fails the render naming the node before anything is copied. `count` 0 leaves the scene out entirely. A node whose params don't read `frame` or `time`, or another node, stays static when its input is, so its `render_3d` is kept across frames. The names `instance` and `instance_count` are now reserved, so a composition function can't use them as parameter names.
+
+  ```json
+  {
+    "nodes": [
+      {
+        "id": 1,
+        "type": "shape_3d",
+        "params": { "size": [0.6, 0.6, 0.6], "position": [0, 0.3, 0] }
+      },
+      {
+        "id": 2,
+        "type": "instance_3d",
+        "params": {
+          "count": 100,
+          "position": "=vec3(instance % 10 * 1.5 - 6.75, 0, floor(instance / 10) * 1.5 - 6.75)"
+        }
+      },
+      { "id": 3, "type": "render_3d" },
+      { "id": 4, "type": "media_output" }
+    ],
+    "connections": [
+      { "from_node": 1, "to_node": 2, "to_port": "scene" },
+      { "from_node": 2, "to_node": 3, "to_port": "scene" },
+      { "from_node": 3, "to_node": 4, "to_port": "source" }
+    ]
+  }
+  ```
+
+- fe146b5: **Breaking:** `lumenSchemaVersion` is now the Lumen `major.minor` a composition was written for, `"0.6"` for the 0.6 line, instead of the frozen `"0.1.0"`. An engine reads only its own line: it accepts its `major.minor` or a full `major.minor.patch` of that line (`"0.6.3"`), and rejects everything else, including today's `"0.1.0"`, with `document.schema_version`:
+
+  ```
+  this composition declares schema version 0.1.0; this engine reads 0.6, so it was written for a different Lumen version
+  ```
+
+  Every stored composition that declares `"lumenSchemaVersion": "0.1.0"` must change it to `"0.6"`. A composition that leaves the field out is still read as the engine's own version. 0.x minor releases are breaking, so there is no migration between lines.
+
+  `Composition.toJSON()` in the SDK always writes the current version, so compositions built with the SDK need no change, and the `lumenSchemaVersion` option of `Composition` is removed. `@lumiscia/lumen-types` exports `lumenSchemaVersion` (`"0.6"`), `lumen_engine::SCHEMA_VERSION` is the Rust side, and the JSON schema constrains the property to `^0\.6(\.[0-9]+)?$`. `just set-schema-version <major.minor>` moves the engine constant, the tracked fixtures and docs, and the generated output together.
+
+- ac4bc51: Compositions can be built as nested node values. `nodes` has one function per node kind, named after its `type`, that takes the node's params and input ports by name in one object and returns the `NodeInput` `addNode` takes, without adding anything. A port takes a node value as well as a node, and `composition.addOutput(source)` adds a `media_output` reading it. A value is added when a node reading it is, after its own inputs, so it gets the ids and JSON the same `addNode` calls would; the same object read twice is one node with two readers, and a value mutated into a cycle is an error. Ports keep their kinds: a scene value in a raster port, or a raster in `render_3d`'s `scene`, doesn't compile.
+
+  ```ts
+  import { Composition, nodes as n } from "@lumiscia/lumen-sdk";
+
+  const scene = n.merge_3d({
+    objects: [n.camera_3d({ position: [0, 1, 6] }), n.shape_3d({ shape: "torus" })],
+  });
+  const composition = new Composition().addOutput(
+    n.raster_multimerge({
+      layers: [
+        n.render_3d({ scene, tone_mapping: "agx" }),
+        n.glow({ glow_only: true, radius: 46, source: n.render_3d({ scene, exposure: -1 }) }),
+      ],
+    }),
+  );
+  ```
+
+  `defineComposition`'s `build` may return a node value, and a `clip()` nests in one like any other node. `addNode` takes node values in its `inputs` too, and values may read nodes `addNode` returned.
+
+  `@lumiscia/lumen-types` adds `nodeInputPorts`, each kind's input ports with their kind and whether they take a list, and `NodeParamPortNameClash`, which is `never`: the generated types stop compiling if a kind ever gives a param and an input port the same name.
+
+  `addNode` itself still adds a node every time it is called. A failed `addNode` leaves the composition as it was, nested values included.
+
+- 49b2878: Node inputs and outputs have a kind, `raster` or `scene`, so a scene can't be wired where a raster goes or the reverse. A connection joining a node's output to an input of another kind fails validation with `connection.wrong_kind`, naming both nodes, the input and the two kinds, and its diagnostic points at the connection. The generated definitions give each port's and output's kind as `raster` or `scene`, where they said `raster_frame`, and list the kinds as `x-lumen-portKinds`; `NodePortKind` is `"raster" | "scene"`, and `NodeOutputKind` and `NodeInputPortKind` give a node kind's output and an input's kind. In the SDK, `addNode` inputs and `connect` only take nodes whose `type` outputs what the port takes. `NodeReference<"scene">` or `NodeReference<"raster">` is a node for a port of that kind, and a plain `NodeReference` is any node; a bare id isn't checked.
+- 3ab8aa0: Params can now hold three numbers, written `[x, y, z]` in JSON or as an expression, ready for the 3D nodes' `position`, `rotation` and `scale`. Expressions gain `vec3(x, y, z)`, and vec3 values work like vec2 values: they add and subtract with each other, multiply and divide componentwise or by a number on either side, negate, and interpolate in `lerp`, `tween` and `keyframes`, e.g. `"=tween(vec3(0, 0, -400), vec3(0, 0, 0), 0, 24, 'out_expo') + vec3(0, 10 * sin(time), 0)"`. Mixing a vec3 with a vec2 is an error. Template props can be declared `"type": "vec3"`, and a `wgsl_shader` vec3 uniform takes a vec3 expression. In `@lumiscia/lumen-shared` the helper is `vec3`, which returns an `Expr<Vec3Value>` that TypeScript keeps apart from colour expressions, so a vec3 can't reach a colour param or share a `lerp` or keyframe track with a colour. `prop.vec3(..)` declares a prop, and params and prop defaults take a plain `Vec3` tuple `[x, y, z]`. A three-number tuple passed to a helper still means `rgb(..)`, so write `vec3(x, y, z)` there. `vec3` is now a reserved name, so composition functions and their parameters can't use it.
+
+### Patch Changes
+
+- d09b553: Documentation for 3D. The `lumen-sdk`, `lumen-shared` and `lumen-preview` READMEs link to the new 3D guide, and `lumen-shared`'s shows a scene. The descriptions of a 3D material's `color` and `shadow_catcher` params, which `lumen-types` carries as doc comments and `lumen-bindings` as node metadata, now say that only an image plane has a raster to multiply by `color` or to count in `shadow_catcher`. Nothing about how a composition renders changes.
+- e716303: `fn()` now rejects a signature the engine would reject, such as `1bad(x)` or `f(x + y)`, when you call it instead of when the composition renders. The function name and each parameter must be an identifier: a letter or `_`, then letters, digits or `_`.
+
+  `uploadMedia` no longer throws when it cannot tell a file's content type. It sends `application/octet-stream`, which hosts accept because they read the file's bytes to tell what it is. It also names `.ttf`, `.otf`, `.woff`, `.woff2`, `.hdr`, `.exr`, `.cube` and `.gltf` files by their extension.
+
+  `RenderOptions.idempotencyKey` is documented as honoured only by the hosted API; `lumen-server` ignores it.
+
+- cd82e6d: A node whose expressions can't change from frame to frame is kept across frames like one with literal params. `"=vec3(0, 0, 520)"` or `"=max(0.9, 0.5)"` no longer redraws its node, and everything downstream, on every frame. An expression counts as changing when it reads `frame` or `time`, calls `progress` or `tween`, or reads another node, a template prop or measured text, as an `instance_3d` already counted.
+
+  `vec2(..)` and `vec3(..)` of plain numbers are written to a node's params as the literal `[x, y]` or `[x, y, z]`. They are still expressions, so `vec2(1, 2).add(..)` works and `String(vec2(1, 2))` is `"=vec2(1, 2)"`.
+
+  A number written in a composition's JSON is now read exactly, so `[0.9999999999999999, 0]` compares equal to `vec2(0.9999999999999999, 0)` as it does when the vector is written as an expression.
+
+- Updated dependencies [fe4bf15]
+- Updated dependencies [ec34c26]
+- Updated dependencies [d09b553]
+- Updated dependencies [4bacce6]
+- Updated dependencies [a822c9b]
+- Updated dependencies [8ef4ee5]
+- Updated dependencies [0b4d4bc]
+- Updated dependencies [06e8c8d]
+- Updated dependencies [97c7016]
+- Updated dependencies [b050d65]
+- Updated dependencies [84d1aa7]
+- Updated dependencies [dea8cf4]
+- Updated dependencies [c4d3140]
+- Updated dependencies [c657075]
+- Updated dependencies [0ffadaf]
+- Updated dependencies [cf41f99]
+- Updated dependencies [28eea4f]
+- Updated dependencies [cab42d2]
+- Updated dependencies [ce70b5c]
+- Updated dependencies [c4d3f90]
+- Updated dependencies [dc06fed]
+- Updated dependencies [af40822]
+- Updated dependencies [ceaba3c]
+- Updated dependencies [d3e4ce9]
+- Updated dependencies [9cb96fe]
+- Updated dependencies [fe9ddf6]
+- Updated dependencies [89568da]
+- Updated dependencies [16aae16]
+- Updated dependencies [b9cc4f1]
+- Updated dependencies [a37b057]
+- Updated dependencies [1879afe]
+- Updated dependencies [2a50568]
+- Updated dependencies [3a7cd1a]
+- Updated dependencies [ef0a093]
+- Updated dependencies [f962b09]
+- Updated dependencies [c0f96e6]
+- Updated dependencies [edc2aa0]
+- Updated dependencies [5233133]
+- Updated dependencies [fe146b5]
+- Updated dependencies [7573c49]
+- Updated dependencies [ac4bc51]
+- Updated dependencies [4be16fa]
+- Updated dependencies [0382574]
+- Updated dependencies [f045a94]
+- Updated dependencies [ef94bcb]
+- Updated dependencies [49b2878]
+- Updated dependencies [e1d88ad]
+- Updated dependencies [3ab8aa0]
+  - @lumiscia/lumen-types@0.6.0
+
 ## 0.6.0-beta.5
 
 ### Patch Changes
