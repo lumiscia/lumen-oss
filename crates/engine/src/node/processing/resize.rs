@@ -117,8 +117,8 @@ struct ResizeUniforms {
     /// The mip level that a filtered minification reads.
     lod: f32,
     _pad: u32,
-    /// Texels of the source per pixel along its axes.
-    density: [f32; 2],
+    /// The source's size in pixels, which its texels cover at a density of their own.
+    shown: [f32; 2],
 }
 
 impl crate::gpu::frame_graph::RecordNode for Resize {
@@ -176,7 +176,6 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
             ],
             mode: evaluated.mode as u32,
             sampling: evaluated.sampling as u32,
-            density: source.density(),
             ..bytemuck::Zeroable::zeroed()
         };
         // Sources that don't publish bounds fill their whole storage texture.
@@ -187,17 +186,19 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
                 source.domain.storage_size.height,
             ],
         });
+        let shown = match source.reduced {
+            Some(shown) => [shown.width, shown.height],
+            None => bounds.size,
+        };
+        params.shown = shown.map(|side| side as f32);
         let size = cx.canvas_size();
         let tex = cx.storage_target(size);
         let mut input = source.tex;
         let image = Size::new(bounds.size[0], bounds.size[1]);
         if evaluated.sampling == RasterSampling::Linear && image.width > 0 && image.height > 0 {
-            let shown = match source.reduced {
-                Some(shown) => [shown.width, shown.height],
-                None => bounds.size,
-            };
+            let density = source.density();
             let footprint = footprint(evaluated.mode, shown, params.size);
-            let footprint = [0, 1].map(|axis| footprint[axis] * params.density[axis]);
+            let footprint = [0, 1].map(|axis| footprint[axis] * density[axis]);
             let mips = Minification::mips_fit(cx, image);
             if let Some(minification) = Minification::new(footprint, image, mips) {
                 params.footprint = minification.footprint;

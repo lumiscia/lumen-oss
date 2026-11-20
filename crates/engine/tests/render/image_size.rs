@@ -153,6 +153,31 @@ fn a_transform_bounds_a_reduced_image_by_its_filtered_texels() {
     assert_eq!(bounded.rgba, full.rgba);
 }
 
+#[test]
+fn a_reduced_image_fits_exactly_the_area_of_its_own_size() {
+    let gpu = gpu();
+    // Fitted into 8x8, a 7x8 image's left edge falls on the first column's centre.
+    let composition = shown_at(
+        (8, 8),
+        json!([
+            photo_in(),
+            { "id": 2, "type": "resize", "in": { "source": 1 },
+              "params": { "width": 8, "height": 8, "mode": "fit" } },
+        ]),
+    );
+    let media = TestMedia::default().image("photo", 7, 8, RED.repeat(7 * 8));
+    let shown = |limit: u32| {
+        let mut renderer = gpu.renderer();
+        renderer.set_max_image_side(limit);
+        render(&mut renderer, &composition, 0.0, &media)
+    };
+    let (native, reduced) = (shown(u32::MAX), shown(1));
+    assert_eq!(native.pixel(0, 4)[3], 255);
+    for x in 0..8 {
+        assert_eq!(reduced.pixel(x, 4)[3], native.pixel(x, 4)[3], "column {x}");
+    }
+}
+
 #[cfg(feature = "3d")]
 #[test]
 fn an_image_past_the_size_limit_renders_reduced_on_an_image_plane() {
