@@ -1096,6 +1096,11 @@ pub enum WarningKind {
         /// The lights left without shadows, in scene order.
         lights: Vec<NodeId>,
     },
+    /// A `render_3d` lists a matte name in `mattes` that no object of its scene takes, so the
+    /// channel for it in the `matte` output is 0.
+    #[code("scene.matte_unused")]
+    #[error("no object takes the matte `{name}`, so its channel of the matte output is 0")]
+    MatteUnused { name: String },
     /// A video's colour tags name a transfer or primaries the renderer doesn't convert, so it reads
     /// as SDR or BT.709 in their place, or an image's embedded ICC profile can't be honoured, so it
     /// reads as sRGB.
@@ -1140,7 +1145,7 @@ impl WarningKind {
         match self {
             Self::FontFallback { .. } => Some("text"),
             Self::NoOutlines { .. } => None,
-            Self::ShadowLimit { .. } => Some("render_3d"),
+            Self::ShadowLimit { .. } | Self::MatteUnused { .. } => Some("render_3d"),
             Self::UnsupportedColor { .. } | Self::ImageReduced { .. } => Some("media_in"),
             Self::ModelPrimitivesSkipped { .. } => Some("model_3d"),
         }
@@ -1152,6 +1157,7 @@ impl WarningKind {
             Self::FontFallback { family } => Some(family),
             Self::UnsupportedColor { media, .. } => Some(media),
             Self::ImageReduced { image, .. } => Some(image),
+            Self::MatteUnused { name } => Some(name),
             Self::NoOutlines { .. }
             | Self::ShadowLimit { .. }
             | Self::ModelPrimitivesSkipped { .. } => None,

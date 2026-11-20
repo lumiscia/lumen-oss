@@ -30,6 +30,11 @@ pub struct Extrude3dParams {
     /// bevel.
     #[meta(min = 0, max = 16, step = 1)]
     pub bevel_segments: u32,
+    /// The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
+    /// render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
+    /// `particles_3d` holding it that names one, or none.
+    #[meta()]
+    pub matte: String,
     #[meta(flatten)]
     pub placement: Placement3d,
 }
@@ -57,6 +62,7 @@ impl Default for Extrude3dParams {
             depth: 0.25,
             bevel_size: 0.0,
             bevel_segments: 4,
+            matte: String::new(),
             placement: Placement3d::default(),
         }
     }

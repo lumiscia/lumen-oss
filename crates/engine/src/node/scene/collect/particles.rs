@@ -502,6 +502,7 @@ impl Collected {
         cx: &mut FrameCx<'_>,
         node: &Particles3d,
         parent: Mat4,
+        matte: Option<u8>,
     ) -> crate::Result<()> {
         let (params, seconds) = {
             let expr = cx.expr();
@@ -518,9 +519,7 @@ impl Collected {
             return Ok(());
         }
         let object = required_input(node.id, "object", node.object)?;
-        let mut inner = Collected::new(self.render_id);
-        inner.reached = self.reached;
-        inner.nesting = self.nesting + 1;
+        let mut inner = self.nested(matte);
         inner.instance_room = self.instance_room.saturating_sub(self.drawn);
         inner.add(cx, object.node)?;
         self.reached = inner.reached;
@@ -638,9 +637,7 @@ impl Collected {
         node_id: NodeId,
         surface: NodeId,
     ) -> crate::Result<Option<Surface>> {
-        let mut collected = Collected::new(self.render_id);
-        collected.reached = self.reached;
-        collected.nesting = self.nesting + 1;
+        let mut collected = self.nested(None);
         collected.add(cx, surface)?;
         self.reached = collected.reached;
 

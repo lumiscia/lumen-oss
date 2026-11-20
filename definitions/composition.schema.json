@@ -735,6 +735,15 @@
       "type": "object",
       "x-lumen-type": "InstanceCopy"
     },
+    "matteNames": {
+      "description": "Matte names, one for each channel of a `render_3d`'s `matte` output in turn: red, green, blue and alpha. Each is a literal, listed once.",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 4,
+      "type": "array",
+      "x-lumen-type": "MatteNames"
+    },
     "paint": {
       "description": "A solid color or a gradient.",
       "oneOf": [
@@ -3851,6 +3860,20 @@
                     },
                     "x-lumen-kind": "float"
                   },
+                  "matte": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that\nrender's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or\n`particles_3d` holding it that names one, or none.",
+                    "title": "Matte",
+                    "x-lumen-kind": "string"
+                  },
                   "position": {
                     "anyOf": [
                       {
@@ -4826,6 +4849,20 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "matte": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that\nrender's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or\n`particles_3d` holding it that names one, or none.",
+                    "title": "Matte",
+                    "x-lumen-kind": "string"
+                  },
                   "opaque": {
                     "anyOf": [
                       {
@@ -5013,6 +5050,20 @@
                     },
                     "x-lumen-kind": "int"
                   },
+                  "matte": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names\nnone of its own, for that render's `matte` output. Empty passes on the matte of the\nnearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.",
+                    "title": "Matte",
+                    "x-lumen-kind": "string"
+                  },
                   "position": {
                     "anyOf": [
                       {
@@ -5118,6 +5169,20 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "matte": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that\nrender's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or\n`particles_3d` holding it that names one, or none.",
+                    "title": "Matte",
+                    "x-lumen-kind": "string"
+                  },
                   "position": {
                     "anyOf": [
                       {
@@ -6492,7 +6557,7 @@
                   "mask_mode": {
                     "default": "alpha",
                     "description": "Channel of the `mask` input that controls overlay visibility.",
-                    "enum": ["alpha", "luma"],
+                    "enum": ["alpha", "luma", "red", "green", "blue"],
                     "title": "Mask Mode",
                     "type": "string",
                     "x-lumen-enumOptions": [
@@ -6505,6 +6570,21 @@
                         "label": "Luma",
                         "name": "luma",
                         "value": 1
+                      },
+                      {
+                        "label": "Red",
+                        "name": "red",
+                        "value": 2
+                      },
+                      {
+                        "label": "Green",
+                        "name": "green",
+                        "value": 3
+                      },
+                      {
+                        "label": "Blue",
+                        "name": "blue",
+                        "value": 4
                       }
                     ],
                     "x-lumen-kind": "enum",
@@ -6674,6 +6754,20 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "matte": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names\nnone of its own, for that render's `matte` output. Empty passes on the matte of the\nnearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.",
+                    "title": "Matte",
+                    "x-lumen-kind": "string"
+                  },
                   "position": {
                     "anyOf": [
                       {
@@ -6865,6 +6959,20 @@
                     "description": "Adds the model's own `KHR_lights_punctual` lights to the scene, where its nodes place\nthem, as `light_3d` nodes there would light it: a directional light's intensity, in lux, and\na point or spot light's, in candela, are `light_3d` intensities as they are, so a point\nlight of intensity `I` lights a surface `d` metres away as a directional one of `I / d²`\ndoes. A spot light's cone fades from its inner angle out to its outer one. They cast no\nshadows, and a scene they light gets no default lights.",
                     "title": "Lights",
                     "x-lumen-kind": "bool"
+                  },
+                  "matte": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that\nrender's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or\n`particles_3d` holding it that names one, or none.",
+                    "title": "Matte",
+                    "x-lumen-kind": "string"
                   },
                   "position": {
                     "anyOf": [
@@ -7423,6 +7531,20 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "float"
+                  },
+                  "matte": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names\nnone of its own, for that render's `matte` output. Empty passes on the matte of the\nnearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.",
+                    "title": "Matte",
+                    "x-lumen-kind": "string"
                   },
                   "position": {
                     "anyOf": [
@@ -8372,7 +8494,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Draws a 3D scene into a raster, with a transparent background unless it shows its environment\nmap; or, by `output`, its depth or normals, for 2D effects such as fog. Its `color`, `depth`\nand `normal` outputs read each of them from the one render.",
+            "description": "Draws a 3D scene into a raster, with a transparent background unless it shows its environment\nmap; or, by `output`, its depth or normals, for 2D effects such as fog, or the mattes of its\nobjects. Its `color`, `depth`, `normal` and `matte` outputs read each of them from the one\nrender.\n\nA matte selects objects after rendering without drawing the scene again: name the lettering\n`title` with its `matte` param, list `mattes: [\"title\"]`, and a `merge` whose `overlay` is the\n`color` output, whose `base` is a `blur` of it, and whose `mask` is the `matte` output with\n`mask_mode` `red` keeps the title sharp while the rest blurs. A matte's edges are antialiased\nwith the colour's, by `supersample`, so they line up.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -8569,10 +8691,17 @@
                     },
                     "x-lumen-kind": "int"
                   },
+                  "mattes": {
+                    "$ref": "#/$defs/matteNames",
+                    "default": [],
+                    "description": "The matte names whose objects' coverage the `matte` output holds, in its red, green, blue\nand alpha channels in turn: at most 4, each listed once, or the render fails. Objects take\na name from their `matte` param, or from the `merge_3d`, `instance_3d` or `particles_3d`\nholding them. A name no object takes leaves its channel 0, with a `scene.matte_unused`\nwarning when the `matte` output is drawn.",
+                    "title": "Mattes",
+                    "x-lumen-kind": "matte_names"
+                  },
                   "output": {
                     "default": "color",
-                    "description": "What the default `output` holds: the lit scene, its depth or its normals. The `color`,\n`depth` and `normal` outputs each hold one whatever this is, and one `render_3d` draws all\nthat are read with one walk of the scene.",
-                    "enum": ["color", "depth", "normal"],
+                    "description": "What the default `output` holds: the lit scene, its depth, its normals or its mattes. The\n`color`, `depth`, `normal` and `matte` outputs each hold one whatever this is, and one\n`render_3d` draws all that are read with one walk of the scene, the colour and mattes with\none draw of it.",
+                    "enum": ["color", "depth", "normal", "matte"],
                     "title": "Output",
                     "type": "string",
                     "x-lumen-enumOptions": [
@@ -8590,6 +8719,11 @@
                         "label": "Normal",
                         "name": "normal",
                         "value": 2
+                      },
+                      {
+                        "label": "Matte",
+                        "name": "matte",
+                        "value": 3
                       }
                     ],
                     "x-lumen-kind": "enum",
@@ -8688,6 +8822,10 @@
               {
                 "kind": "raster",
                 "name": "normal"
+              },
+              {
+                "kind": "raster",
+                "name": "matte"
               }
             ]
           },
@@ -9492,6 +9630,20 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "matte": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that\nrender's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or\n`particles_3d` holding it that names one, or none.",
+                    "title": "Matte",
+                    "x-lumen-kind": "string"
+                  },
                   "position": {
                     "anyOf": [
                       {
@@ -11247,6 +11399,20 @@
                       "step": 0.05
                     },
                     "x-lumen-kind": "float"
+                  },
+                  "matte": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that\nrender's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or\n`particles_3d` holding it that names one, or none.",
+                    "title": "Matte",
+                    "x-lumen-kind": "string"
                   },
                   "max_width": {
                     "anyOf": [

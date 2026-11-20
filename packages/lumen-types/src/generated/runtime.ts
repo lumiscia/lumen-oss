@@ -61,6 +61,8 @@ export type DiagnosticCode =
   | "font.no_outlines"
   /** A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none. */
   | "scene.shadow_limit"
+  /** A `render_3d`'s `mattes` lists a name no object of its scene takes, so that channel of its `matte` output is 0. */
+  | "scene.matte_unused"
   /** A `model_3d`'s model has points, lines, or triangle strips or fans, which aren't drawn. */
   | "scene.model_primitives_skipped"
   /** A video's colour tags name a transfer or primaries the engine doesn't convert, so it renders as SDR or BT.709 in their place, or an image's ICC profile can't be honoured, so it renders as sRGB. */
@@ -144,6 +146,7 @@ export const diagnosticCodes = [
   { code: "font.fallback", severity: "warning", foundBy: "check, render", meaning: "A `text` or `text_3d` node's font family resolved to no font, so it renders in a fallback." },
   { code: "font.no_outlines", severity: "warning", foundBy: "render", meaning: "A `text_2d` or `text_3d` node's glyphs have no outlines, such as colour emoji, so they are left out." },
   { code: "scene.shadow_limit", severity: "warning", foundBy: "render", meaning: "A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none." },
+  { code: "scene.matte_unused", severity: "warning", foundBy: "render", meaning: "A `render_3d`'s `mattes` lists a name no object of its scene takes, so that channel of its `matte` output is 0." },
   { code: "scene.model_primitives_skipped", severity: "warning", foundBy: "render", meaning: "A `model_3d`'s model has points, lines, or triangle strips or fans, which aren't drawn." },
   { code: "media.color_unsupported", severity: "warning", foundBy: "render", meaning: "A video's colour tags name a transfer or primaries the engine doesn't convert, so it renders as SDR or BT.709 in their place, or an image's ICC profile can't be honoured, so it renders as sRGB." },
   { code: "media.image_reduced", severity: "warning", foundBy: "render", meaning: "An image read only by `resize`, `transform` and `image_plane_3d` nodes is larger on a side than the device's texture limit, or the host's `set_max_image_side`, so it is shown from a copy reduced to fit." },

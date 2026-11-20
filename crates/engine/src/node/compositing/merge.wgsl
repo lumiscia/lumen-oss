@@ -22,17 +22,33 @@ struct MergeParams {
 @group(0) @binding(5) var raw_mask_tex: texture_2d<f32>;
 
 const MASK_MODE_LUMA: u32 = 1u;
+const MASK_MODE_RED: u32 = 2u;
+const MASK_MODE_GREEN: u32 = 3u;
+const MASK_MODE_BLUE: u32 = 4u;
 const REC709_LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
 // Matte value of one texel of the (possibly blurred) mask. Luma is taken over black: the
 // Rec. 709 luminance of the linear, premultiplied colour, so antialiased edges keep their
-// coverage. Both alpha and luminance are linear in the premultiplied channels, so the blur can
-// run on the colour and be reduced to a matte afterwards.
+// coverage. A single channel is read as stored. Each is linear in the premultiplied channels, so
+// the blur can run on the colour and be reduced to a matte afterwards.
 fn matte_of(texel: vec4<f32>) -> f32 {
-    if (params.mask_mode == MASK_MODE_LUMA) {
-        return dot(texel.rgb, REC709_LUMA);
+    switch (params.mask_mode) {
+        case MASK_MODE_LUMA: {
+            return dot(texel.rgb, REC709_LUMA);
+        }
+        case MASK_MODE_RED: {
+            return texel.r;
+        }
+        case MASK_MODE_GREEN: {
+            return texel.g;
+        }
+        case MASK_MODE_BLUE: {
+            return texel.b;
+        }
+        default: {
+            return texel.a;
+        }
     }
-    return texel.a;
 }
 
 @compute @workgroup_size(8, 8, 1)

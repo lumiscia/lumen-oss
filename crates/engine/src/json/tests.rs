@@ -241,8 +241,8 @@ fn a_connection_names_an_output_its_source_has_or_none() {
         ("background", "mask", "its only output is `output`"),
         (
             "render_3d",
-            "matte",
-            "its outputs are `output`, `color`, `depth` and `normal`",
+            "velocity",
+            "its outputs are `output`, `color`, `depth`, `normal` and `matte`",
         ),
     ] {
         let document = composition(source, serde_json::json!(port));

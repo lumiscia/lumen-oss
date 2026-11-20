@@ -474,6 +474,8 @@ pub(super) struct SceneState {
     /// The scenes walked this frame for nodes recording more than one output from a walk, with
     /// what each walk found out for retention.
     pub(super) walks: HashMap<MemoKey, (Arc<crate::node::scene::collect::Collected>, HoldTrack)>,
+    /// The colour and mattes drawn this frame for nodes recording both from one draw.
+    pub(super) draws: HashMap<MemoKey, (Raster, Raster)>,
 }
 
 /// An `instance_3d` in a graph, and which of the lists of copies it draws from.
@@ -516,6 +518,7 @@ impl SceneState {
     /// Drops the placements that neither this frame nor the last one read.
     fn begin_frame(&mut self, tick: u64) {
         self.walks.clear();
+        self.draws.clear();
         self.placements
             .retain(|_, kept| kept.last_used.saturating_add(1) >= tick);
         self.flattened
@@ -536,6 +539,7 @@ impl SceneState {
 
     fn reset(&mut self, recorder: &mut Recorder) {
         self.walks.clear();
+        self.draws.clear();
         self.placements.clear();
         self.flattened.clear();
         for (_, kept) in self.buffers.drain() {

@@ -132,6 +132,8 @@ struct Object {
     first_map_uv: u32,
     // How much an unlit surface darkens where it is shadowed, from 0 to 1.
     unlit_shadows: f32,
+    // The channel of the mattes its coverage goes to, from 0 to 3, or above 3 for none.
+    matte: u32,
     // With `FLAG_PART`, the part of the textured quad drawn: its left, top, right and bottom
     // edges in its texture coordinates.
     part: vec4<f32>,
@@ -927,6 +929,71 @@ struct Shaded {
 @fragment
 fn fs_masked(in: VsOut, @builtin(front_facing) front: bool) -> Shaded {
     return Shaded(shade(in, front), in.clip.z);
+}
+
+// The colour and mattes of a render with up to three matte names, the first three channels in red,
+// green and blue of the second target.
+struct Matted {
+    @location(0) color: vec4<f32>,
+    @location(1) matte: vec4<f32>,
+}
+
+// The colour and mattes of a render with four matte names, the fourth in red of the third target.
+struct Mattes {
+    @location(0) color: vec4<f32>,
+    @location(1) matte: vec4<f32>,
+    @location(2) fourth: vec4<f32>,
+}
+
+struct MaskedMatted {
+    @location(0) color: vec4<f32>,
+    @location(1) matte: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+}
+
+struct MaskedMattes {
+    @location(0) color: vec4<f32>,
+    @location(1) matte: vec4<f32>,
+    @location(2) fourth: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+}
+
+// What a surface of `object` whose colour has `alpha` draws into the matte targets: the alpha in
+// the object's channel, and as the targets' own alpha, so that the mattes blend as the colour does
+// and a surface hides the channels behind it by its alpha.
+fn matte_texels(object: u32, alpha: f32) -> array<vec4<f32>, 2> {
+    var channels = vec4<f32>(0.0);
+    let channel = objects[object].matte;
+    if (channel < 4u) {
+        channels[channel] = alpha;
+    }
+    return array<vec4<f32>, 2>(vec4<f32>(channels.rgb, alpha), vec4<f32>(channels.a, 0.0, 0.0, alpha));
+}
+
+@fragment
+fn fs_matte(in: VsOut, @builtin(front_facing) front: bool) -> Matted {
+    let color = shade(in, front);
+    return Matted(color, matte_texels(in.object, color.a)[0]);
+}
+
+@fragment
+fn fs_mattes(in: VsOut, @builtin(front_facing) front: bool) -> Mattes {
+    let color = shade(in, front);
+    let matte = matte_texels(in.object, color.a);
+    return Mattes(color, matte[0], matte[1]);
+}
+
+@fragment
+fn fs_masked_matte(in: VsOut, @builtin(front_facing) front: bool) -> MaskedMatted {
+    let color = shade(in, front);
+    return MaskedMatted(color, matte_texels(in.object, color.a)[0], in.clip.z);
+}
+
+@fragment
+fn fs_masked_mattes(in: VsOut, @builtin(front_facing) front: bool) -> MaskedMattes {
+    let color = shade(in, front);
+    let matte = matte_texels(in.object, color.a);
+    return MaskedMattes(color, matte[0], matte[1], in.clip.z);
 }
 
 fn shade(in: VsOut, front: bool) -> vec4<f32> {

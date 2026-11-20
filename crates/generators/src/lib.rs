@@ -123,7 +123,7 @@ fn value_defs_json() -> Map<String, Value> {
 fn kind_defs_json() -> Result<Map<String, Value>> {
     use lumen_engine::node::{
         processing::color_curves::MAX_CURVE_POINTS,
-        scene::MAX_INSTANCES,
+        scene::{MAX_INSTANCES, MAX_MATTES},
         source::text_content::{
             TextHighlightDelegate, TextLineDelegate, TextSpanDelegate, TextStrokeDelegate,
         },
@@ -289,6 +289,16 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
             "type": "array",
             "maxItems": MAX_INSTANCES,
             "items": { "$ref": "#/$defs/instanceCopy" }
+        }),
+    );
+    insert_def(
+        &mut defs,
+        "MatteNames",
+        json!({
+            "description": "Matte names, one for each channel of a `render_3d`'s `matte` output in turn: red, green, blue and alpha. Each is a literal, listed once.",
+            "type": "array",
+            "maxItems": MAX_MATTES,
+            "items": { "type": "string" }
         }),
     );
     insert_def(

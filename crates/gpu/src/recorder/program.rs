@@ -69,6 +69,7 @@ pub(super) struct ProgramKey {
     format: Option<wgpu::TextureFormat>,
     depth: Option<DepthTest>,
     cull: Option<wgpu::Face>,
+    extra_targets: u32,
 }
 
 /// The format of every depth attachment a render pass draws with.
@@ -92,7 +93,13 @@ pub struct RenderTargetSpec {
     /// Set for programs drawn into a pass with a depth attachment.
     pub depth: Option<DepthTest>,
     pub cull: Option<wgpu::Face>,
+    /// Colour targets after the first, up to [`MAX_EXTRA_TARGETS`], of the same format and
+    /// blending, which the fragment shader writes at the locations after 0.
+    pub extra_targets: u32,
 }
+
+/// The most colour targets a draw writes beside its first.
+pub const MAX_EXTRA_TARGETS: usize = 2;
 
 impl RenderTargetSpec {
     /// A target without depth or culling.
@@ -102,6 +109,7 @@ impl RenderTargetSpec {
             blend,
             depth: None,
             cull: None,
+            extra_targets: 0,
         }
     }
 
@@ -112,6 +120,7 @@ impl RenderTargetSpec {
             blend: wgpu::BlendState::REPLACE,
             depth: Some(depth),
             cull,
+            extra_targets: 0,
         }
     }
 }
@@ -132,6 +141,7 @@ impl Recorder {
             format: None,
             depth: None,
             cull: None,
+            extra_targets: 0,
         };
         self.compute_with_key(key, label, || shader.to_string(), entry, layout, false)
     }
@@ -153,6 +163,7 @@ impl Recorder {
             format: None,
             depth: None,
             cull: None,
+            extra_targets: 0,
         };
         self.compute_with_key(key, label, shader, entry, layout, true)
     }
@@ -239,6 +250,7 @@ impl Recorder {
             format: target.format,
             depth: target.depth,
             cull: target.cull,
+            extra_targets: target.extra_targets,
         };
         if let Some(&program) = self.program_keys.get(&key) {
             return Ok(program);
@@ -251,9 +263,17 @@ impl Recorder {
                 "render program `{label}` binds a storage texture"
             )));
         }
+        if target.extra_targets as usize > MAX_EXTRA_TARGETS
+            || (target.extra_targets > 0 && target.format.is_none())
+        {
+            return Err(FrameError::Misuse(format!(
+                "render program `{label}` asks for {} colour targets beside its first",
+                target.extra_targets
+            )));
+        }
         let contents = format!(
-            "{vertex}{fragment}{variant}{:?}{:?}{:?}{:?}{layout:?}{shader}",
-            target.format, target.blend, target.depth, target.cull
+            "{vertex}{fragment}{variant}{:?}{:?}{:?}{:?}{}{layout:?}{shader}",
+            target.format, target.blend, target.depth, target.cull, target.extra_targets
         );
         if let Some(&program) = self.program_contents.get(&contents) {
             self.program_keys.insert(key, program);
@@ -272,9 +292,9 @@ impl Recorder {
             blend: (target.blend != wgpu::BlendState::REPLACE).then_some(target.blend),
             write_mask: wgpu::ColorWrites::ALL,
         });
-        let color_targets = match color_target {
-            Some(_) => std::slice::from_ref(&color_target),
-            None => &[],
+        let color_targets: Vec<_> = match color_target {
+            Some(_) => vec![color_target; 1 + target.extra_targets as usize],
+            None => Vec::new(),
         };
         let group = self.bind_group_layout(layout);
         let pipeline_layout = self
@@ -311,7 +331,7 @@ impl Recorder {
                     module: &module,
                     entry_point: Some(fragment),
                     compilation_options: Default::default(),
-                    targets: color_targets,
+                    targets: &color_targets,
                 }),
                 multiview_mask: None,
                 cache: None,

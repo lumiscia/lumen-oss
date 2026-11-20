@@ -1,7 +1,7 @@
 use super::program::RuntimeProgram;
 use super::{
-    BindKey, FrameError, KeyRes, PassBindings, ProgramRef, RecordedPass, Recorder, Res, Result,
-    TargetLoad, TexRef,
+    BindKey, FrameError, KeyRes, MAX_EXTRA_TARGETS, PassBindings, ProgramRef, RecordedPass,
+    Recorder, Res, Result, TargetLoad, TexRef,
 };
 use crate::renderer::ValidationScope;
 
@@ -9,6 +9,7 @@ use crate::renderer::ValidationScope;
 struct OpenRender {
     pass: wgpu::RenderPass<'static>,
     target: Option<TexRef>,
+    extra: [Option<TexRef>; MAX_EXTRA_TARGETS],
     depth: Option<TexRef>,
     viewport_set: bool,
 }
@@ -62,6 +63,7 @@ impl Recorder {
                     program,
                     bindings,
                     target,
+                    extra,
                     load,
                     depth,
                     vertices,
@@ -84,34 +86,37 @@ impl Recorder {
                         && depth.is_none_or(|(_, load)| matches!(load, TargetLoad::Load))
                         && open.as_ref().is_some_and(|open| {
                             open.target == *target
+                                && open.extra == *extra
                                 && open.depth == depth_tex
                                 && (viewport.is_some() || !open.viewport_set)
                         });
                     if !continues {
                         drop(open.take());
-                        let color = target.map(|target| wgpu::RenderPassColorAttachment {
-                            view: self.view(target),
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: match load {
-                                    TargetLoad::Clear => {
-                                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
-                                    }
-                                    TargetLoad::Load => wgpu::LoadOp::Load,
-                                },
-                                store: wgpu::StoreOp::Store,
-                            },
-                        });
-                        let color_attachments = match color {
-                            Some(_) => std::slice::from_ref(&color),
-                            None => &[],
-                        };
+                        let color_attachments: Vec<_> = std::iter::once(target)
+                            .chain(extra)
+                            .flatten()
+                            .map(|&target| {
+                                Some(wgpu::RenderPassColorAttachment {
+                                    view: self.view(target),
+                                    depth_slice: None,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: match load {
+                                            TargetLoad::Clear => {
+                                                wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                                            }
+                                            TargetLoad::Load => wgpu::LoadOp::Load,
+                                        },
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                })
+                            })
+                            .collect();
                         open = Some(OpenRender {
                             pass: encoder
                                 .begin_render_pass(&wgpu::RenderPassDescriptor {
                                     label: None,
-                                    color_attachments,
+                                    color_attachments: &color_attachments,
                                     depth_stencil_attachment: depth.map(|(depth, load)| {
                                         wgpu::RenderPassDepthStencilAttachment {
                                             view: self.view(depth),
@@ -131,6 +136,7 @@ impl Recorder {
                                 })
                                 .forget_lifetime(),
                             target: *target,
+                            extra: *extra,
                             depth: depth_tex,
                             viewport_set: false,
                         });

@@ -257,6 +257,8 @@ pub struct Object<M, T> {
     /// For an object drawn once for each of a run of copies, which take their placements from a
     /// list the drawer holds. `None` draws the object once, placed by `world`.
     pub instanced: Option<Instanced>,
+    /// The channel of the drawer's mattes the object's coverage goes to, if any.
+    pub matte: Option<u8>,
 }
 
 /// How the copies of an instanced object face, from the sign of their placements' determinant.

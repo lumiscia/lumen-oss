@@ -29,6 +29,13 @@ pub enum MaskMode {
     /// Uses the mask's Rec. 709 luminance in linear light over black, so transparent areas are
     /// fully masked out, and white lets everything through.
     Luma = 1,
+    /// Uses the mask's red channel as it is stored, premultiplied, such as a channel of
+    /// `render_3d`'s `matte` output.
+    Red = 2,
+    /// Uses the mask's green channel as it is stored, premultiplied.
+    Green = 3,
+    /// Uses the mask's blue channel as it is stored, premultiplied.
+    Blue = 4,
 }
 
 /// Composites an overlay raster over a base raster.
