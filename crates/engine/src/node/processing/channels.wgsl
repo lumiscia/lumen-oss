@@ -14,6 +14,15 @@ struct ChannelsParams {
 
 const CHANNELS_LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
+// Straight colour that keeps the alpha and any colour a nearly transparent pixel still holds, since
+// a pick of `one` or of the other raster's alpha can make that pixel opaque.
+fn channels_straight(color: vec4<f32>) -> vec4<f32> {
+    if (color.a <= 0.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, color.a);
+    }
+    return vec4<f32>(color.rgb / color.a, color.a);
+}
+
 fn channels_pick(source: vec4<f32>, other: vec4<f32>, pick: u32) -> f32 {
     switch (pick) {
         case 0u, 1u, 2u, 3u: { return source[pick]; }
@@ -31,9 +40,9 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= size.x || id.y >= size.y) {
         return;
     }
-    let source = unpremultiply(textureLoad(source_tex, vec2<i32>(id.xy), 0));
+    let source = channels_straight(textureLoad(source_tex, vec2<i32>(id.xy), 0));
     let pixel = vec2<i32>(id.xy) + params.origins.xy;
-    let other = unpremultiply(sample_or_transparent(other_tex, pixel, params.origins.zw));
+    let other = channels_straight(sample_or_transparent(other_tex, pixel, params.origins.zw));
     let picked = vec4<f32>(
         channels_pick(source, other, params.picks.x),
         channels_pick(source, other, params.picks.y),
