@@ -1,6 +1,7 @@
 //! Sharpen against its definition: it leaves flat colour, amount 0 and detail under the threshold
 //! alone, holds hard edges without halos, and steepens soft ones.
 
+use lumen_engine::composition::Composition;
 use serde_json::{Value, json};
 
 use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
@@ -114,4 +115,40 @@ fn soft_edges_get_steeper() {
         steepest(&before)
     );
     assert!(after[0] == 0 && after[63] == 255);
+}
+
+/// An image smaller than the canvas is sharpened as it would be on a full canvas: the blur reads
+/// the transparent canvas past the image's edge rather than clamping to it.
+#[test]
+fn bounded_sources_sharpen_like_full_canvas_ones() {
+    const SIDE: u32 = 16;
+    let rgba = (0..SIDE * SIDE)
+        .flat_map(|index| {
+            let grey = match index % SIDE {
+                0 => 128,
+                1 => 0,
+                _ => 255,
+            };
+            [grey, grey, grey, 255]
+        })
+        .collect();
+    let media = TestMedia::default().image("tile", SIDE, SIDE, rgba);
+    let composition: Composition = scene(
+        (64, 32),
+        json!([
+            { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "tile" } },
+            { "id": 2, "type": "transform", "in": { "source": 1 },
+              "params": { "translate_x": 8, "translate_y": 4, "sampling": "nearest" } },
+            { "id": 3, "type": "sharpen", "in": { "source": 2 },
+              "params": { "amount": 1, "radius": 2 } }
+        ]),
+    )
+    .into();
+    let gpu = gpu();
+    let shown = |full_frame: bool| {
+        let mut renderer = gpu.renderer();
+        renderer.set_full_frame_sources(full_frame);
+        render(&mut renderer, &composition, 0.0, &media)
+    };
+    assert_eq!(within_one(&shown(false).rgba, &shown(true).rgba), Ok(()));
 }

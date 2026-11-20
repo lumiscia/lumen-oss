@@ -62,6 +62,8 @@ pub struct Sharpen {
 struct GpuSharpenParams {
     /// Amount and threshold.
     values: [f32; 4],
+    /// Canvas pixel of the blur's first texel minus that of the source's, in `xy`.
+    blur_offset: [i32; 4],
 }
 
 const COMPOSITE_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
@@ -104,10 +106,19 @@ impl crate::gpu::frame_graph::RecordNode for Sharpen {
         }
 
         let domain = source.domain;
+        let blur_domain = cx.domain_within(
+            domain.display_size(),
+            cx.bounds_of(gaussian::blur_bounds(
+                domain.data_rect,
+                [0.0; 2],
+                radius,
+                cx.pixel_scale(),
+            )),
+        );
         let blurred = gaussian::record_passes(
             cx,
             source,
-            domain,
+            blur_domain,
             false,
             &gaussian::GaussianSettings {
                 radius,
@@ -121,6 +132,12 @@ impl crate::gpu::frame_graph::RecordNode for Sharpen {
                 finite_or(params.threshold, 0.0).clamp(0.0, 1.0) as f32,
                 0.0,
                 0.0,
+            ],
+            blur_offset: [
+                blur_domain.data_rect.x - domain.data_rect.x,
+                blur_domain.data_rect.y - domain.data_rect.y,
+                0,
+                0,
             ],
         });
         let size = domain.storage_size;

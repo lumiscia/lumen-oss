@@ -1,6 +1,8 @@
 struct SharpenParams {
     // `x`: amount, `y`: threshold.
     values: vec4<f32>,
+    // Canvas pixel of the blur's first texel minus that of the source's, in `xy`.
+    blur_offset: vec4<i32>,
 }
 
 @group(0) @binding(0) var source_tex: texture_2d<f32>;
@@ -35,7 +37,11 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let rgb = sharpen_straight(source);
     let luma = dot(rgb, SHARPEN_LUMA);
-    let blurred = textureLoad(blur_tex, pixel, 0);
+    let blur_pixel = pixel - params.blur_offset.xy;
+    var blurred = vec4<f32>(0.0);
+    if (all(blur_pixel >= vec2<i32>(0)) && all(blur_pixel < vec2<i32>(textureDimensions(blur_tex)))) {
+        blurred = textureLoad(blur_tex, blur_pixel, 0);
+    }
     var detail = 0.0;
     if (blurred.a > 1e-6) {
         detail = luma - sharpen_luma(blurred);
