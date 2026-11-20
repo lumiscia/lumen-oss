@@ -166,14 +166,12 @@ fn fold_radius(k1: f64, k2: f64) -> Option<f64> {
         if discriminant < 0.0 {
             return None;
         }
-        let root = discriminant.sqrt();
-        [
-            (-3.0 * k1 - root) / (10.0 * k2),
-            (-3.0 * k1 + root) / (10.0 * k2),
-        ]
-        .into_iter()
-        .filter(|u| *u > 0.0)
-        .reduce(f64::min)?
+        // The roots as `q / a` and `c / q`, which avoids cancelling `b` against the root.
+        let q = -0.5 * (3.0 * k1 + (3.0 * k1).signum() * discriminant.sqrt());
+        [q / (5.0 * k2), 1.0 / q]
+            .into_iter()
+            .filter(|u| *u > 0.0)
+            .reduce(f64::min)?
     };
     Some(u.sqrt())
 }
@@ -207,6 +205,9 @@ fn source_factor(r: f64, k1: f64, k2: f64, direction: LensDirection) -> Option<f
             let mut rho = r.min(high);
             for _ in 0..NEWTON_ITERATIONS {
                 let value = lens_radius(rho, k1, k2) - r;
+                if value == 0.0 {
+                    break;
+                }
                 if value > 0.0 {
                     high = rho;
                 } else {
@@ -214,7 +215,7 @@ fn source_factor(r: f64, k1: f64, k2: f64, direction: LensDirection) -> Option<f
                 }
                 let slope = 1.0 + 3.0 * k1 * rho * rho + 5.0 * k2 * rho.powi(4);
                 let mut next = rho - value / slope;
-                if !(next > low && next < high) {
+                if !(next >= low && next <= high) {
                     next = 0.5 * (low + high);
                 }
                 let done = (next - rho).abs() <= NEWTON_TOLERANCE * next.abs();
@@ -366,5 +367,17 @@ mod tests {
     #[test]
     fn undistort_rejects_radii_past_the_fold() {
         assert_eq!(undistort(0.8, -3.0, 3.0), None);
+    }
+
+    #[test]
+    fn undistort_keeps_a_root_it_starts_on() {
+        let rho = undistort(0.5, -1e-20, 0.0).unwrap();
+        assert!((rho - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fold_radius_survives_a_tiny_k2() {
+        let fold = fold_radius(-1.0, -1e-16).unwrap();
+        assert!((fold - (1.0f64 / 3.0).sqrt()).abs() < 1e-6);
     }
 }

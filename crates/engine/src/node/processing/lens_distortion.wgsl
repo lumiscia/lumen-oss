@@ -65,6 +65,9 @@ fn lens_map(p: vec2<f32>) -> vec2<f32> {
     var rho = min(r, high);
     for (var i = 0; i < NEWTON_ITERATIONS; i++) {
         let value = lens_radius(rho) - r;
+        if (value == 0.0) {
+            break;
+        }
         if (value > 0.0) {
             high = rho;
         } else {
@@ -73,7 +76,7 @@ fn lens_map(p: vec2<f32>) -> vec2<f32> {
         let rho2 = rho * rho;
         let slope = 1.0 + 3.0 * k1 * rho2 + 5.0 * k2 * rho2 * rho2;
         var next = rho - value / slope;
-        if (!(next > low && next < high)) {
+        if (!(next >= low && next <= high)) {
             next = 0.5 * (low + high);
         }
         let done = abs(next - rho) <= NEWTON_TOLERANCE * abs(next);
