@@ -1081,26 +1081,32 @@ fn shade(in: VsOut, front: bool) -> vec4<f32> {
     let raster_uv = select(in.uv, projected_uv(o, in.world), projected);
     let raster_dx = dpdx(raster_uv);
     let raster_dy = dpdy(raster_uv);
-    let raster = has(o.flags, FLAG_RASTER);
+    // The raster's texel, and how much of it shows: all of it, or as much as the projector casts.
     var texel = vec4<f32>(1.0);
-    if (raster) {
+    var shows = 0.0;
+    if (has(o.flags, FLAG_RASTER)) {
         let at = in_part(o, pixel_centre_uv(in.clip.xy, raster_uv, raster_dx, raster_dy), raster_dx, raster_dy);
         texel = raster_texel(at.uv, at.dx, at.dy);
+        shows = 1.0;
         if (projected) {
             let face = seen_face(world_dx, world_dy);
-            texel = mix(vec4<f32>(1.0), texel, projection_weight(o, in.world, face, in.clip.xy));
+            shows = projection_weight(o, in.world, face, in.clip.xy);
         }
     }
-    var emissive = o.emissive * texel.rgb * in.tint;
+    let shown_texel = mix(vec4<f32>(1.0), texel, shows);
+    // The emissive and base colours without the raster.
+    var glow = o.emissive * in.tint;
     if (has(o.flags, FLAG_EMISSIVE_MAP)) {
         let at = map_coords(o, SLOT_EMISSIVE, uvs);
-        emissive *= textureSampleGrad(emissive_map, emissive_sampler, at.uv, at.dx, at.dy).rgb;
+        glow *= textureSampleGrad(emissive_map, emissive_sampler, at.uv, at.dx, at.dy).rgb;
     }
+    var plain = o.base_color * in.color * vec4<f32>(in.tint, 1.0);
     if (has(o.flags, FLAG_BASE_COLOR_MAP)) {
         let at = map_coords(o, SLOT_BASE_COLOR, uvs);
-        texel *= textureSampleGrad(base_color_map, base_color_sampler, at.uv, at.dx, at.dy);
+        plain *= textureSampleGrad(base_color_map, base_color_sampler, at.uv, at.dx, at.dy);
     }
-    var base = o.base_color * texel * in.color * vec4<f32>(in.tint, 1.0);
+    let emissive = glow * shown_texel.rgb;
+    var base = plain * shown_texel;
     // A shadow catcher shows none of its colour, and catches shadows as much as its alpha covers
     // it, with its raster's and maps', which hide nothing where they are 0.
     let catcher = has(o.flags, FLAG_SHADOW_CATCHER);
@@ -1117,9 +1123,10 @@ fn shade(in: VsOut, front: bool) -> vec4<f32> {
         base.a = 1.0;
     }
     if (has(o.flags, FLAG_UNLIT) && !catcher) {
-        // A raster shown unlit keeps its colours as in 2D, whatever the exposure and tone mapping.
-        let shown = base.rgb + emissive;
-        var color = select(display(shown), shown, raster);
+        // A raster shown unlit keeps its colours as in 2D, whatever the exposure and tone mapping,
+        // and the surface shows as it does without one where none of the raster shows.
+        let unlit = plain.rgb + glow;
+        var color = mix(display(unlit), unlit * texel.rgb, shows);
         if (o.unlit_shadows > 0.0 && has(o.flags, FLAG_RECEIVE_SHADOWS)) {
             let v = view_direction(in.world);
             let n = shading_normal(o, in.normal, v, front, uvs, world_dx, world_dy);

@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::support::scene::{
     CENTER, Quad, frame_of, gradient, image, material, merge, model, model_glb, plate, render_3d,
-    unlit,
+    render_3d_with, unlit,
 };
 use crate::support::{BLUE, Frame, GREEN, RED, Scene, TestMedia, gpu, render};
 
@@ -364,4 +364,29 @@ fn an_animated_model_camera_moves_its_projection_on_a_still_scene() {
     );
     let media = image(|_, _| BLUE).model("rig.glb", rig);
     assert_the_projection_moves_off(sliding_projector(vec![projector]), &media);
+}
+
+#[test]
+fn an_unlit_surface_out_of_the_projection_is_exposed_as_without_one() {
+    // The projector looks straight down -Z from 5 units right of the wall's middle, which is out
+    // of its view.
+    let exposed = json!({ "exposure": -2 });
+    let projected_red = |projector: bool| {
+        let mut material = projected(11, json!({ "color": RED }));
+        if !projector {
+            material["in"] = json!({});
+        }
+        let nodes = vec![
+            plate(10),
+            material,
+            wall(1, 6.0, [0.0; 3], 11),
+            camera(PROJECTOR, [5.0, 0.0, 5.0], [5.0, 0.0, 0.0], 40.0),
+            camera(21, [0.0, 0.0, 5.0], [0.0; 3], 40.0),
+            merge(3, &[1, 21], json!({})),
+        ];
+        frame_of(render_3d_with(exposed.clone(), nodes), &image(|_, _| BLUE))
+    };
+    let plain = projected_red(false).pixel(CENTER, CENTER);
+    assert!(plain[0] < 200, "the exposure darkens the red: {plain:?}");
+    assert_eq!(projected_red(true).pixel(CENTER, CENTER), plain);
 }
