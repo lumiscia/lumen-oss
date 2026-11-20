@@ -5,8 +5,8 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
-export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "matte_names" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "corner_pin" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "corner_pin" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_blur" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1536,12 +1536,10 @@ export type LensFit = "none" | "fill";
 export type Light3dKind = "directional" | "point" | "spot" | "ambient";
 export type Light3dLight = Light3dKind;
 export type LoopMode = "clamp" | "repeat" | "ping_pong";
-export type MaskMode = "alpha" | "luma" | "red" | "green" | "blue";
+export type MaskMode = "alpha" | "luma";
 export type Material3dAlphaMode = MaterialAlphaMode;
 export type Material3dSampling = RasterSampling;
 export type MaterialAlphaMode = "blend" | "mask";
-/** Matte names, one for each channel of a `render_3d`'s `matte` output in turn: red, green, blue and alpha. Each is a literal, listed once. */
-export type MatteNames = readonly string[];
 export type MediaInAlpha = AlphaMode;
 export type MediaInKind = MediaInSourceKind;
 export type MediaInLoopMode = LoopMode;
@@ -1560,7 +1558,7 @@ export type RasterMultimergeBlendMode = BlendMode;
 export type RasterSampling = "nearest" | "linear";
 /** A rectangle of pixels, `[x, y, width, height]`. Each number takes an integer or an expression. */
 export type Region = readonly [ExpressionValue<number>, ExpressionValue<number>, ExpressionValue<number>, ExpressionValue<number>];
-export type Render3dOutput = "color" | "depth" | "normal" | "matte";
+export type Render3dOutput = "color" | "depth" | "normal";
 export type Render3dToneMapping = ToneMapping;
 /** The canvas size in pixels. */
 export type RenderSettings = {
@@ -2136,12 +2134,6 @@ export interface Extrude3dNode extends CompositionNodeBase<"extrude_3d"> {
      * +Z at half of it. 0 is flat.
      */
     readonly depth?: ExpressionValue<number>;
-    /**
-     * The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
-     * render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
-     * `particles_3d` holding it that names one, or none.
-     */
-    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
     /**
@@ -2327,12 +2319,6 @@ export interface HueSaturationNode extends CompositionNodeBase<"hue_saturation">
 export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> {
   readonly params?: {
     /**
-     * The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
-     * render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
-     * `particles_3d` holding it that names one, or none.
-     */
-    readonly matte?: ExpressionValue<string>;
-    /**
      * Draws the plane with the opaque objects, writing depth, rather than blended. For a source
      * with no transparent pixels, this orders the plane correctly against any geometry it
      * intersects or crosses in depth. Alpha is then ignored: the colour's alpha, `opacity` and the
@@ -2430,12 +2416,6 @@ export interface Instance3dNode extends CompositionNodeBase<"instance_3d"> {
      * cameras too. Not set together with `copies`.
      */
     readonly count?: ExpressionValue<number>;
-    /**
-     * The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names
-     * none of its own, for that render's `matte` output. Empty passes on the matte of the
-     * nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
-     */
-    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z of each copy, in the scene's own space. Evaluated for every copy, and can read `instance` and `instance_count`. */
     readonly position?: ExpressionValue<Vec3>;
     /** Rotation in degrees about X, Y and Z of each copy, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z. Evaluated for every copy, and can read `instance` and `instance_count`. */
@@ -2477,12 +2457,6 @@ export interface Instance3dNode extends CompositionNodeBase<"instance_3d"> {
  */
 export interface Lathe3dNode extends CompositionNodeBase<"lathe_3d"> {
   readonly params?: {
-    /**
-     * The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
-     * render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
-     * `particles_3d` holding it that names one, or none.
-     */
-    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
     /**
@@ -2509,6 +2483,86 @@ export interface Lathe3dNode extends CompositionNodeBase<"lathe_3d"> {
      * before it. 0 draws nothing. At most 1000000.
      */
     readonly units_per_pixel?: ExpressionValue<number>;
+  };
+}
+
+/**
+ * Blurs a raster as an out-of-focus lens does: every point spreads into an evenly lit disc, or a
+ * polygon with `blades`, so highlights turn into bokeh rather than the soft glow of `blur`.
+ * 
+ * Without `depth`, everything blurs by `radius`. With it, each pixel blurs by its depth: sharp
+ * within `focus_range` of `focus`, and more so further away, up to `radius`. Depth is the red
+ * channel of `depth`, read where each pixel is, and 0 where it stores nothing, so a
+ * `render_3d`'s `depth` output gives depth of field and any greyscale raster works, as a
+ * gradient that is dark in a band across the frame gives tilt-shift. `focus` is in that 0 to 1
+ * range, not in world units. A blurred pixel nearer than its neighbours spreads over them even
+ * where they are sharp, and one further away doesn't spread over nearer, sharper pixels, so a
+ * sharp subject keeps its edges in front of a blurred background.
+ * 
+ * The cost stays bounded at any radius: circles of more than 6 pixels are gathered from copies
+ * of the source at half, a quarter or less of its resolution, so each pixel reads about 130
+ * texels at most, twice that with `depth`. The widest blurs have softer bokeh edges. Blurring
+ * widens the output past the source's area by the radius.
+ * 
+ * Defocusing a whole frame into hexagonal bokeh:
+ * 
+ * ```json
+ * { "id": 2, "type": "lens_blur", "params": { "radius": 12, "blades": 6 }, "in": { "source": 1 } }
+ * ```
+ * 
+ * ```ts
+ * n.lens_blur({ source: photo, radius: 12, blades: 6 });
+ * ```
+ * 
+ * Depth of field from a `render_3d`, node 9, sharp at a fifth of the way from its `depth_near`
+ * to its `depth_far`:
+ * 
+ * ```json
+ * { "id": 10, "type": "lens_blur", "params": { "radius": 16, "focus": 0.2 } },
+ * { "from_node": 9, "from_port": "color", "to_node": 10, "to_port": "source" },
+ * { "from_node": 9, "from_port": "depth", "to_node": 10, "to_port": "depth" }
+ * ```
+ * 
+ * ```ts
+ * const depth = outputOf(render, "depth");
+ * n.lens_blur({ source: outputOf(render, "color"), depth, radius: 16, focus: 0.2 });
+ * ```
+ * 
+ * Tilt-shift, sharp across the middle of the frame and blurred towards the top and bottom:
+ * 
+ * ```json
+ * { "id": 2, "type": "background", "params": { "paint": { "type": "linear_gradient", "interpolation": "linear_srgb", "start": [0, 0], "end": [0, 1], "stops": [{ "offset": 0, "color": [255, 255, 255, 255] }, { "offset": 0.5, "color": [0, 0, 0, 255] }, { "offset": 1, "color": [255, 255, 255, 255] }] } } },
+ * { "id": 3, "type": "lens_blur", "params": { "radius": 10, "focus": 0, "focus_range": 0.1, "aperture": 1.5 }, "in": { "source": 1, "depth": 2 } }
+ * ```
+ */
+export interface LensBlurNode extends CompositionNodeBase<"lens_blur"> {
+  readonly params?: {
+    /**
+     * How fast the blur grows past `focus_range`: a pixel `aperture × (|depth - focus| -
+     * focus_range)` of the way to `radius`, up to all of it. Higher is a shallower depth of
+     * field.
+     */
+    readonly aperture?: ExpressionValue<number>;
+    /**
+     * Blades of the lens's aperture, which shape a blurred highlight: 0 is a circle, and 3 to
+     * 16 a polygon with that many sides.
+     */
+    readonly blades?: ExpressionValue<number>;
+    /**
+     * The depth that stays sharp, in the depth raster's 0 to 1 range. For a `render_3d`'s
+     * `depth`, 0 is at its `depth_near` and 1 at its `depth_far`, so a distance in world units
+     * is `(distance - depth_near) / (depth_far - depth_near)`. Unused without `depth`.
+     */
+    readonly focus?: ExpressionValue<number>;
+    /** How far either side of `focus`, in the same range, depth stays sharp. */
+    readonly focus_range?: ExpressionValue<number>;
+    /**
+     * Blur radius in pixels: the blur everywhere without `depth`, and the largest blur with it.
+     * 0 leaves the source as it is. Radii above 4096 look the same.
+     */
+    readonly radius?: ExpressionValue<number>;
+    /** Turn of the polygon in degrees, clockwise. At 0 one corner points up. */
+    readonly rotation?: ExpressionValue<number>;
   };
 }
 
@@ -2619,19 +2673,7 @@ export interface Light3dNode extends CompositionNodeBase<"light_3d"> {
  * `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest
  * of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.
  * Its alpha counts where the material blends or masks, through `opacity` or the colour's alpha.
- * Wired into any other object, a material with a texture fails the render, unless it has a
- * `projector`; an `image_plane_3d` shows its own source and fails with either.
- * 
- * A scene wired into `projector` projects the `texture` from its camera, chosen as `render_3d`
- * would choose it, in place of texture coordinates, so it shows on any object but an image
- * plane, `instance_3d` copies included. Each point of the surface takes the texel the projector
- * sees it at: the texture fills the projector's view at the texture's own aspect ratio, with the
- * camera's `fov` or `ortho_height`, `near` and `far`. Faces turned away from the projector,
- * points outside its view and, with `projector_occlusion`, points it can't see show `color`
- * alone. The projector stands where its own scene places it, whatever places the objects, at the
- * frame being drawn, so a moving camera moves the projection: a plate projected onto geometry
- * wants a still `camera_3d` of its own, apart from the camera the scene is drawn from. A
- * `projector` without a `texture` fails the render.
+ * Wired into any other object, a material with a texture fails the render.
  * 
  * `alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose
  * material is unlit and double-sided, with the opaque objects so it orders correctly where cards
@@ -2672,11 +2714,6 @@ export interface Material3dNode extends CompositionNodeBase<"material_3d"> {
      * opaque objects.
      */
     readonly opacity?: ExpressionValue<number>;
-    /**
-     * With a `projector` wired, surfaces the projector can't see, behind surfaces that cast
-     * shadows, show the colour alone.
-     */
-    readonly projector_occlusion?: ExpressionValue<boolean>;
     /** Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says. */
     readonly receive_shadows?: ExpressionValue<boolean>;
     /** 0 is a mirror finish, 1 fully diffuse. */
@@ -2774,12 +2811,6 @@ export interface Merge2dNode extends CompositionNodeBase<"merge_2d"> {
 /** Groups scenes into one, placed together by its transform. */
 export interface Merge3dNode extends CompositionNodeBase<"merge_3d"> {
   readonly params?: {
-    /**
-     * The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names
-     * none of its own, for that render's `matte` output. Empty passes on the matte of the
-     * nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
-     */
-    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
     /**
@@ -2796,12 +2827,9 @@ export interface Merge3dNode extends CompositionNodeBase<"merge_3d"> {
  * A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex
  * colours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets
  * and animation clips. A raster wired into `texture` shows on the surfaces of the material
- * `texture_material` names, such as a screen. With a scene wired into `projector` as well, the
- * texture is projected onto those surfaces from the scene's camera instead, as a `material_3d`'s
- * `projector` projects its texture, where faces turned away and points out of view show white;
- * naming the model's only material projects a plate onto all of it. The model's own lights and a
- * camera are added with `lights` and `camera`. Points, lines, and triangle strips and fans aren't
- * drawn, with a `scene.model_primitives_skipped` warning.
+ * `texture_material` names, such as a screen. The model's own lights and a camera are added with
+ * `lights` and `camera`. Points, lines, and triangle strips and fans aren't drawn, with a
+ * `scene.model_primitives_skipped` warning.
  */
 export interface Model3dNode extends CompositionNodeBase<"model_3d"> {
   readonly params?: {
@@ -2840,19 +2868,8 @@ export interface Model3dNode extends CompositionNodeBase<"model_3d"> {
      * shadows, and a scene they light gets no default lights.
      */
     readonly lights?: ExpressionValue<boolean>;
-    /**
-     * The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
-     * render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
-     * `particles_3d` holding it that names one, or none.
-     */
-    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
-    /**
-     * With a `projector` wired, the surfaces showing `texture` that the projector can't see,
-     * behind surfaces that cast shadows, show white.
-     */
-    readonly projector_occlusion?: ExpressionValue<boolean>;
     /** Darkens where shadows fall on its lit surfaces. */
     readonly receive_shadows?: ExpressionValue<boolean>;
     /**
@@ -3015,12 +3032,6 @@ export interface Particles3dNode extends CompositionNodeBase<"particles_3d"> {
      * particle is born again every `count / rate` seconds, which cuts a longer lifetime short.
      */
     readonly lifetime?: ExpressionValue<number>;
-    /**
-     * The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names
-     * none of its own, for that render's `matte` output. Empty passes on the matte of the
-     * nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
-     */
-    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z of the whole system in the parent's space: the surface, the particles and, without a surface, the point they are emitted from move with it. */
     readonly position?: ExpressionValue<Vec3>;
     /**
@@ -3193,15 +3204,8 @@ export interface Render2dNode extends CompositionNodeBase<"render_2d"> {
 
 /**
  * Draws a 3D scene into a raster, with a transparent background unless it shows its environment
- * map; or, by `output`, its depth or normals, for 2D effects such as fog, or the mattes of its
- * objects. Its `color`, `depth`, `normal` and `matte` outputs read each of them from the one
- * render.
- * 
- * A matte selects objects after rendering without drawing the scene again: name the lettering
- * `title` with its `matte` param, list `mattes: ["title"]`, and a `merge` whose `overlay` is the
- * `color` output, whose `base` is a `blur` of it, and whose `mask` is the `matte` output with
- * `mask_mode` `red` keeps the title sharp while the rest blurs. A matte's edges are antialiased
- * with the colour's, by `supersample`, so they line up.
+ * map; or, by `output`, its depth or normals, for 2D effects such as fog. Its `color`, `depth`
+ * and `normal` outputs read each of them from the one render.
  */
 export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
   readonly params?: {
@@ -3252,18 +3256,9 @@ export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
     /** Output height in pixels. Use 0 to match the composition height. */
     readonly height?: number;
     /**
-     * The matte names whose objects' coverage the `matte` output holds, in its red, green, blue
-     * and alpha channels in turn: at most 4, each listed once, or the render fails. Objects take
-     * a name from their `matte` param, or from the `merge_3d`, `instance_3d` or `particles_3d`
-     * holding them. A name no object takes leaves its channel 0, with a `scene.matte_unused`
-     * warning when the `matte` output is drawn.
-     */
-    readonly mattes?: MatteNames;
-    /**
-     * What the default `output` holds: the lit scene, its depth, its normals or its mattes. The
-     * `color`, `depth`, `normal` and `matte` outputs each hold one whatever this is, and one
-     * `render_3d` draws all that are read with one walk of the scene, the colour and mattes with
-     * one draw of it.
+     * What the default `output` holds: the lit scene, its depth or its normals. The `color`,
+     * `depth` and `normal` outputs each hold one whatever this is, and one `render_3d` draws all
+     * that are read with one walk of the scene.
      */
     readonly output?: Render3dOutput;
     /** Renders this many times wider and taller, then averages down, to antialias edges. */
@@ -3432,12 +3427,6 @@ export interface Shape2dNode extends CompositionNodeBase<"shape_2d"> {
  */
 export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
   readonly params?: {
-    /**
-     * The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
-     * render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
-     * `particles_3d` holding it that names one, or none.
-     */
-    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
     /**
@@ -3824,12 +3813,6 @@ export interface Text3dNode extends CompositionNodeBase<"text_3d"> {
     readonly letter_spacing?: ExpressionValue<number>;
     /** Distance between lines in world units. Use 0 for 1.2 × the font size. */
     readonly line_height?: ExpressionValue<number>;
-    /**
-     * The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
-     * render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
-     * `particles_3d` holding it that names one, or none.
-     */
-    readonly matte?: ExpressionValue<string>;
     /** Maximum line width in world units, at which lines wrap. Use 0 for automatic width. */
     readonly max_width?: ExpressionValue<number>;
     /** Position in world units along X, Y and Z, in the parent's space. */
@@ -3949,6 +3932,7 @@ export interface CompositionNodeByKind {
   readonly "image_plane_3d": ImagePlane3dNode;
   readonly "instance_3d": Instance3dNode;
   readonly "lathe_3d": Lathe3dNode;
+  readonly "lens_blur": LensBlurNode;
   readonly "lens_distortion": LensDistortionNode;
   readonly "levels": LevelsNode;
   readonly "light_3d": Light3dNode;
@@ -4062,6 +4046,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "lathe_3d": Omit<Lathe3dNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "lens_blur": Omit<LensBlurNode, "id"> & {
     readonly id?: number;
   };
   readonly "lens_distortion": Omit<LensDistortionNode, "id"> & {
@@ -4203,16 +4190,17 @@ export interface NodeInputPortNameByKind {
   readonly "image_plane_3d": "material" | "source";
   readonly "instance_3d": "scene";
   readonly "lathe_3d": "geometry" | "material";
+  readonly "lens_blur": "depth" | "source";
   readonly "lens_distortion": "source";
   readonly "levels": "source";
   readonly "light_3d": never;
-  readonly "material_3d": "projector" | "texture";
+  readonly "material_3d": "texture";
   readonly "media_in": never;
   readonly "media_output": "source";
   readonly "merge": "base" | "mask" | "overlay";
   readonly "merge_2d": "drawings";
   readonly "merge_3d": "objects";
-  readonly "model_3d": "projector" | "texture";
+  readonly "model_3d": "texture";
   readonly "motion_blur": "source";
   readonly "offset_2d": "geometry";
   readonly "opacity": "source";
@@ -4268,6 +4256,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "image_plane_3d": never;
   readonly "instance_3d": never;
   readonly "lathe_3d": never;
+  readonly "lens_blur": never;
   readonly "lens_distortion": never;
   readonly "levels": never;
   readonly "light_3d": never;
@@ -4333,6 +4322,7 @@ export interface NodeOutputKindByKind {
   readonly "image_plane_3d": "scene";
   readonly "instance_3d": "scene";
   readonly "lathe_3d": "scene";
+  readonly "lens_blur": "raster";
   readonly "lens_distortion": "raster";
   readonly "levels": "raster";
   readonly "light_3d": "scene";
@@ -4398,16 +4388,17 @@ export interface NodeInputPortKindByKind {
   readonly "image_plane_3d": { readonly "source": "raster"; readonly "material": "material" };
   readonly "instance_3d": { readonly "scene": "scene" };
   readonly "lathe_3d": { readonly "geometry": "geometry"; readonly "material": "material" };
+  readonly "lens_blur": { readonly "source": "raster"; readonly "depth": "raster" };
   readonly "lens_distortion": { readonly "source": "raster" };
   readonly "levels": { readonly "source": "raster" };
   readonly "light_3d": {};
-  readonly "material_3d": { readonly "texture": "raster"; readonly "projector": "scene" };
+  readonly "material_3d": { readonly "texture": "raster" };
   readonly "media_in": {};
   readonly "media_output": { readonly "source": "raster" };
   readonly "merge": { readonly "base": "raster"; readonly "overlay": "raster"; readonly "mask": "raster" };
   readonly "merge_2d": { readonly "drawings": "drawing" };
   readonly "merge_3d": { readonly "objects": "scene" };
-  readonly "model_3d": { readonly "texture": "raster"; readonly "projector": "scene" };
+  readonly "model_3d": { readonly "texture": "raster" };
   readonly "motion_blur": { readonly "source": "raster" };
   readonly "offset_2d": { readonly "geometry": "geometry" };
   readonly "opacity": { readonly "source": "raster" };
@@ -4463,6 +4454,7 @@ export interface NodeOutputPortKindByKind {
   readonly "image_plane_3d": { readonly "output": "scene" };
   readonly "instance_3d": { readonly "output": "scene" };
   readonly "lathe_3d": { readonly "output": "scene" };
+  readonly "lens_blur": { readonly "output": "raster" };
   readonly "lens_distortion": { readonly "output": "raster" };
   readonly "levels": { readonly "output": "raster" };
   readonly "light_3d": { readonly "output": "scene" };
@@ -4483,7 +4475,7 @@ export interface NodeOutputPortKindByKind {
   readonly "radial_blur": { readonly "output": "raster" };
   readonly "raster_multimerge": { readonly "output": "raster" };
   readonly "render_2d": { readonly "output": "raster" };
-  readonly "render_3d": { readonly "output": "raster"; readonly "color": "raster"; readonly "depth": "raster"; readonly "normal": "raster"; readonly "matte": "raster" };
+  readonly "render_3d": { readonly "output": "raster"; readonly "color": "raster"; readonly "depth": "raster"; readonly "normal": "raster" };
   readonly "resize": { readonly "output": "raster" };
   readonly "shadow": { readonly "output": "raster" };
   readonly "shadow_2d": { readonly "output": "drawing" };
@@ -4802,6 +4794,56 @@ export const nodeInputPorts = {
    */
   "lathe_3d": { "geometry": { kind: "geometry", variadic: false }, "material": { kind: "material", variadic: false } },
   /**
+   * Blurs a raster as an out-of-focus lens does: every point spreads into an evenly lit disc, or a
+   * polygon with `blades`, so highlights turn into bokeh rather than the soft glow of `blur`.
+   * 
+   * Without `depth`, everything blurs by `radius`. With it, each pixel blurs by its depth: sharp
+   * within `focus_range` of `focus`, and more so further away, up to `radius`. Depth is the red
+   * channel of `depth`, read where each pixel is, and 0 where it stores nothing, so a
+   * `render_3d`'s `depth` output gives depth of field and any greyscale raster works, as a
+   * gradient that is dark in a band across the frame gives tilt-shift. `focus` is in that 0 to 1
+   * range, not in world units. A blurred pixel nearer than its neighbours spreads over them even
+   * where they are sharp, and one further away doesn't spread over nearer, sharper pixels, so a
+   * sharp subject keeps its edges in front of a blurred background.
+   * 
+   * The cost stays bounded at any radius: circles of more than 6 pixels are gathered from copies
+   * of the source at half, a quarter or less of its resolution, so each pixel reads about 130
+   * texels at most, twice that with `depth`. The widest blurs have softer bokeh edges. Blurring
+   * widens the output past the source's area by the radius.
+   * 
+   * Defocusing a whole frame into hexagonal bokeh:
+   * 
+   * ```json
+   * { "id": 2, "type": "lens_blur", "params": { "radius": 12, "blades": 6 }, "in": { "source": 1 } }
+   * ```
+   * 
+   * ```ts
+   * n.lens_blur({ source: photo, radius: 12, blades: 6 });
+   * ```
+   * 
+   * Depth of field from a `render_3d`, node 9, sharp at a fifth of the way from its `depth_near`
+   * to its `depth_far`:
+   * 
+   * ```json
+   * { "id": 10, "type": "lens_blur", "params": { "radius": 16, "focus": 0.2 } },
+   * { "from_node": 9, "from_port": "color", "to_node": 10, "to_port": "source" },
+   * { "from_node": 9, "from_port": "depth", "to_node": 10, "to_port": "depth" }
+   * ```
+   * 
+   * ```ts
+   * const depth = outputOf(render, "depth");
+   * n.lens_blur({ source: outputOf(render, "color"), depth, radius: 16, focus: 0.2 });
+   * ```
+   * 
+   * Tilt-shift, sharp across the middle of the frame and blurred towards the top and bottom:
+   * 
+   * ```json
+   * { "id": 2, "type": "background", "params": { "paint": { "type": "linear_gradient", "interpolation": "linear_srgb", "start": [0, 0], "end": [0, 1], "stops": [{ "offset": 0, "color": [255, 255, 255, 255] }, { "offset": 0.5, "color": [0, 0, 0, 255] }, { "offset": 1, "color": [255, 255, 255, 255] }] } } },
+   * { "id": 3, "type": "lens_blur", "params": { "radius": 10, "focus": 0, "focus_range": 0.1, "aperture": 1.5 }, "in": { "source": 1, "depth": 2 } }
+   * ```
+   */
+  "lens_blur": { "source": { kind: "raster", variadic: false }, "depth": { kind: "raster", variadic: false } },
+  /**
    * Bends a raster the way a lens does. With `direction: "distort"`, a pixel at `p` from the optical
    * centre reads the source at `p * (1 + k1 r² + k2 r⁴)`, where `r` is its distance in
    * half-diagonals, so positive `k1` gives barrel distortion and negative `k1` pincushion. With
@@ -4827,25 +4869,13 @@ export const nodeInputPorts = {
    * `color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest
    * of the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.
    * Its alpha counts where the material blends or masks, through `opacity` or the colour's alpha.
-   * Wired into any other object, a material with a texture fails the render, unless it has a
-   * `projector`; an `image_plane_3d` shows its own source and fails with either.
-   * 
-   * A scene wired into `projector` projects the `texture` from its camera, chosen as `render_3d`
-   * would choose it, in place of texture coordinates, so it shows on any object but an image
-   * plane, `instance_3d` copies included. Each point of the surface takes the texel the projector
-   * sees it at: the texture fills the projector's view at the texture's own aspect ratio, with the
-   * camera's `fov` or `ortho_height`, `near` and `far`. Faces turned away from the projector,
-   * points outside its view and, with `projector_occlusion`, points it can't see show `color`
-   * alone. The projector stands where its own scene places it, whatever places the objects, at the
-   * frame being drawn, so a moving camera moves the projection: a plate projected onto geometry
-   * wants a still `camera_3d` of its own, apart from the camera the scene is drawn from. A
-   * `projector` without a `texture` fails the render.
+   * Wired into any other object, a material with a texture fails the render.
    * 
    * `alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose
    * material is unlit and double-sided, with the opaque objects so it orders correctly where cards
    * cross. As a glTF `MASK` material does, it shows only the texels that reach `alpha_cutoff`.
    */
-  "material_3d": { "texture": { kind: "raster", variadic: false }, "projector": { kind: "scene", variadic: false } },
+  "material_3d": { "texture": { kind: "raster", variadic: false } },
   /** Binds an external image or video frame as a GPU texture. */
   "media_in": {},
   /**
@@ -4866,14 +4896,11 @@ export const nodeInputPorts = {
    * A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex
    * colours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets
    * and animation clips. A raster wired into `texture` shows on the surfaces of the material
-   * `texture_material` names, such as a screen. With a scene wired into `projector` as well, the
-   * texture is projected onto those surfaces from the scene's camera instead, as a `material_3d`'s
-   * `projector` projects its texture, where faces turned away and points out of view show white;
-   * naming the model's only material projects a plate onto all of it. The model's own lights and a
-   * camera are added with `lights` and `camera`. Points, lines, and triangle strips and fans aren't
-   * drawn, with a `scene.model_primitives_skipped` warning.
+   * `texture_material` names, such as a screen. The model's own lights and a camera are added with
+   * `lights` and `camera`. Points, lines, and triangle strips and fans aren't drawn, with a
+   * `scene.model_primitives_skipped` warning.
    */
-  "model_3d": { "texture": { kind: "raster", variadic: false }, "projector": { kind: "scene", variadic: false } },
+  "model_3d": { "texture": { kind: "raster", variadic: false } },
   /**
    * Blurs everything that moves in its source, including what analytic motion blur can't see:
    * animated sizes, path data, motion upstream of a transform and motion inside video. Analytic
@@ -4956,15 +4983,8 @@ export const nodeInputPorts = {
   "render_2d": { "drawing": { kind: "drawing", variadic: false } },
   /**
    * Draws a 3D scene into a raster, with a transparent background unless it shows its environment
-   * map; or, by `output`, its depth or normals, for 2D effects such as fog, or the mattes of its
-   * objects. Its `color`, `depth`, `normal` and `matte` outputs read each of them from the one
-   * render.
-   * 
-   * A matte selects objects after rendering without drawing the scene again: name the lettering
-   * `title` with its `matte` param, list `mattes: ["title"]`, and a `merge` whose `overlay` is the
-   * `color` output, whose `base` is a `blur` of it, and whose `mask` is the `matte` output with
-   * `mask_mode` `red` keeps the title sharp while the rest blurs. A matte's edges are antialiased
-   * with the colour's, by `supersample`, so they line up.
+   * map; or, by `output`, its depth or normals, for 2D effects such as fog. Its `color`, `depth`
+   * and `normal` outputs read each of them from the one render.
    */
   "render_3d": { "scene": { kind: "scene", variadic: false } },
   /** Resamples a raster into a rectangle placed on the composition canvas. */
@@ -5134,6 +5154,7 @@ export const nodeMediaSources = {
   "image_plane_3d": {},
   "instance_3d": {},
   "lathe_3d": {},
+  "lens_blur": {},
   "lens_distortion": {},
   "levels": {},
   "light_3d": {},

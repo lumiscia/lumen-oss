@@ -29,6 +29,7 @@ mod image_color;
 mod image_size;
 #[cfg(feature = "3d")]
 mod instance;
+mod lens_blur;
 mod lens_distortion;
 mod media;
 mod minify;

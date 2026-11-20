@@ -613,6 +613,60 @@ Params:
 - **`lightness`** (number; default `0`) Lightness offset.
 - **`saturation`** (number; default `1`) Saturation multiplier.
 
+## `lens_blur`
+
+Blurs a raster as an out-of-focus lens does: every point spreads into an evenly lit disc, or a polygon with `blades`, so highlights turn into bokeh rather than the soft glow of `blur`.
+
+Without `depth`, everything blurs by `radius`. With it, each pixel blurs by its depth: sharp within `focus_range` of `focus`, and more so further away, up to `radius`. Depth is the red channel of `depth`, read where each pixel is, and 0 where it stores nothing, so a `render_3d`'s `depth` output gives depth of field and any greyscale raster works, as a gradient that is dark in a band across the frame gives tilt-shift. `focus` is in that 0 to 1 range, not in world units. A blurred pixel nearer than its neighbours spreads over them even where they are sharp, and one further away doesn't spread over nearer, sharper pixels, so a sharp subject keeps its edges in front of a blurred background.
+
+The cost stays bounded at any radius: circles of more than 6 pixels are gathered from copies of the source at half, a quarter or less of its resolution, so each pixel reads about 130 texels at most, twice that with `depth`. The widest blurs have softer bokeh edges. Blurring widens the output past the source's area by the radius.
+
+Defocusing a whole frame into hexagonal bokeh:
+
+```json
+{ "id": 2, "type": "lens_blur", "params": { "radius": 12, "blades": 6 }, "in": { "source": 1 } }
+```
+
+```ts
+n.lens_blur({ source: photo, radius: 12, blades: 6 });
+```
+
+Depth of field from a `render_3d`, node 9, sharp at a fifth of the way from its `depth_near` to its `depth_far`:
+
+```json
+{ "id": 10, "type": "lens_blur", "params": { "radius": 16, "focus": 0.2 } },
+{ "from_node": 9, "from_port": "color", "to_node": 10, "to_port": "source" },
+{ "from_node": 9, "from_port": "depth", "to_node": 10, "to_port": "depth" }
+```
+
+```ts
+const depth = outputOf(render, "depth");
+n.lens_blur({ source: outputOf(render, "color"), depth, radius: 16, focus: 0.2 });
+```
+
+Tilt-shift, sharp across the middle of the frame and blurred towards the top and bottom:
+
+```json
+{ "id": 2, "type": "background", "params": { "paint": { "type": "linear_gradient", "interpolation": "linear_srgb", "start": [0, 0], "end": [0, 1], "stops": [{ "offset": 0, "color": [255, 255, 255, 255] }, { "offset": 0.5, "color": [0, 0, 0, 255] }, { "offset": 1, "color": [255, 255, 255, 255] }] } } },
+{ "id": 3, "type": "lens_blur", "params": { "radius": 10, "focus": 0, "focus_range": 0.1, "aperture": 1.5 }, "in": { "source": 1, "depth": 2 } }
+```
+
+Category: processing. Output: raster.
+
+Inputs:
+
+- `source`: raster, required
+- `depth`: raster, optional
+
+Params:
+
+- **`aperture`** (number, at least 0; default `4`) How fast the blur grows past `focus_range`: a pixel `aperture × (|depth - focus| - focus_range)` of the way to `radius`, up to all of it. Higher is a shallower depth of field.
+- **`blades`** (integer, 0 to 16; default `0`) Blades of the lens's aperture, which shape a blurred highlight: 0 is a circle, and 3 to 16 a polygon with that many sides.
+- **`focus`** (number, 0 to 1; default `0.5`) The depth that stays sharp, in the depth raster's 0 to 1 range. For a `render_3d`'s `depth`, 0 is at its `depth_near` and 1 at its `depth_far`, so a distance in world units is `(distance - depth_near) / (depth_far - depth_near)`. Unused without `depth`.
+- **`focus_range`** (number, 0 to 1; default `0.05`) How far either side of `focus`, in the same range, depth stays sharp.
+- **`radius`** (number, at least 0; default `8`) Blur radius in pixels: the blur everywhere without `depth`, and the largest blur with it. 0 leaves the source as it is. Radii above 4096 look the same.
+- **`rotation`** (number; default `0`) Turn of the polygon in degrees, clockwise. At 0 one corner points up.
+
 ## `lens_distortion`
 
 Bends a raster the way a lens does. With `direction: "distort"`, a pixel at `p` from the optical centre reads the source at `p * (1 + k1 r² + k2 r⁴)`, where `r` is its distance in half-diagonals, so positive `k1` gives barrel distortion and negative `k1` pincushion. With `direction: "undistort"` it reads where that lens would have put it, undoing a distortion with the same coefficients. The result covers the source's frame, and looks the same at any render scale.

@@ -1,0 +1,321 @@
+//! `lens_blur` on a point, whose bokeh is a flat disc or polygon of the radius, and on two halves
+//! at different depths, one in focus.
+
+use lumen_engine::gpu::GpuCompositionRenderer;
+use serde_json::{Value, json};
+
+use crate::color::linear;
+use crate::support::{Frame, TestMedia, gpu, render, scene};
+
+const CANVAS: u32 = 64;
+
+/// A white canvas pixel at (32, 32) over black, 256 times brighter than white so its bokeh shows
+/// in 8-bit output, then through `lens_blur` with `params` when there are any.
+fn point(renderer: &mut GpuCompositionRenderer, lens_blur: Option<Value>) -> Frame {
+    let mut nodes = vec![
+        json!({ "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255] } }),
+        json!({ "id": 2, "type": "shape", "params": {
+            "position": [32, 32], "width": 1, "height": 1, "fill_paint": [255, 255, 255, 255] } }),
+        json!({ "id": 3, "type": "raster_multimerge", "in": { "layers": [1, 2] } }),
+        json!({ "id": 4, "type": "exposure", "params": { "exposure": 8 }, "in": { "source": 3 } }),
+    ];
+    if let Some(params) = lens_blur {
+        nodes
+            .push(json!({ "id": 5, "type": "lens_blur", "params": params, "in": { "source": 4 } }));
+    }
+    let composition = scene((CANVAS, CANVAS), Value::Array(nodes)).into();
+    render(renderer, &composition, 0.0, &TestMedia::default())
+}
+
+/// The bokeh of a point in a frame: the light of its pixels, where it is centred, and how bright
+/// its middle is.
+struct Bokeh<'a> {
+    frame: &'a Frame,
+    centre: [f64; 2],
+    level: f64,
+}
+
+impl<'a> Bokeh<'a> {
+    fn of(frame: &'a Frame) -> Self {
+        let (mut total, mut x, mut y) = (0.0, 0.0, 0.0);
+        for py in 0..frame.height {
+            for px in 0..frame.width {
+                let light = linear(frame.pixel(px, py)[0]);
+                total += light;
+                x += light * (f64::from(px) + 0.5);
+                y += light * (f64::from(py) + 0.5);
+            }
+        }
+        let centre = [x / total, y / total];
+        let mut bokeh = Self {
+            frame,
+            centre,
+            level: 0.0,
+        };
+        bokeh.level = bokeh.light(centre);
+        bokeh
+    }
+
+    /// The light at `at`, in device pixels, between pixel centres.
+    fn light(&self, at: [f64; 2]) -> f64 {
+        let [x, y] = at.map(|value| value - 0.5);
+        let (x0, y0) = (x.floor(), y.floor());
+        let (fx, fy) = (x - x0, y - y0);
+        let texel =
+            |dx: f64, dy: f64| linear(self.frame.pixel((x0 + dx) as u32, (y0 + dy) as u32)[0]);
+        let top = texel(0.0, 0.0) * (1.0 - fx) + texel(1.0, 0.0) * fx;
+        let bottom = texel(0.0, 1.0) * (1.0 - fx) + texel(1.0, 1.0) * fx;
+        top * (1.0 - fy) + bottom * fy
+    }
+
+    /// How far from the centre, at `degrees` clockwise from straight right, the light falls below
+    /// half the middle's.
+    fn edge(&self, degrees: f64) -> f64 {
+        let (dy, dx) = degrees.to_radians().sin_cos();
+        let mut distance = 0.0;
+        while self.light([
+            self.centre[0] + dx * distance,
+            self.centre[1] + dy * distance,
+        ]) >= self.level * 0.5
+        {
+            distance += 0.02;
+        }
+        distance
+    }
+}
+
+#[test]
+fn a_point_spreads_into_an_evenly_lit_disc_or_polygon_of_the_radius() {
+    let gpu = gpu();
+    let frame = point(&mut gpu.renderer(), Some(json!({ "radius": 10 })));
+    let disc = Bokeh::of(&frame);
+    // A canvas pixel's 256 spread over the disc's 314.
+    let expected = 256.0 / (std::f64::consts::PI * 100.0);
+    assert!(
+        (disc.level / expected - 1.0).abs() < 0.08,
+        "the middle is {}, not {expected}",
+        disc.level
+    );
+    for degrees in [0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0] {
+        let edge = disc.edge(degrees);
+        assert!(
+            (edge - 10.0).abs() < 0.75,
+            "the edge at {degrees}° is {edge}"
+        );
+        // Flat to the edge's last two pixels.
+        for distance in [0.0, 2.0, 4.0, 6.0, 8.0] {
+            let (dy, dx) = f64::to_radians(degrees).sin_cos();
+            let light = disc.light([
+                disc.centre[0] + dx * distance,
+                disc.centre[1] + dy * distance,
+            ]);
+            assert!(
+                (light / disc.level - 1.0).abs() < 0.06,
+                "{distance} out at {degrees}° is {light} against {}",
+                disc.level
+            );
+        }
+    }
+
+    let frame = point(
+        &mut gpu.renderer(),
+        Some(json!({ "radius": 10, "blades": 6 })),
+    );
+    let hexagon = Bokeh::of(&frame);
+    // A corner points straight up, and the middle of a side straight right.
+    let corner = hexagon.edge(270.0);
+    let side = hexagon.edge(0.0);
+    assert!((corner - 10.0).abs() < 0.75, "the corner is {corner} out");
+    let ratio = corner / side;
+    let expected = 1.0 / 30f64.to_radians().cos();
+    assert!(
+        (ratio - expected).abs() < 0.05,
+        "corner over side is {ratio}, not {expected}"
+    );
+}
+
+#[test]
+fn no_radius_passes_the_source_through() {
+    let gpu = gpu();
+    let untouched = point(&mut gpu.renderer(), None);
+    let passed = point(&mut gpu.renderer(), Some(json!({ "radius": 0 })));
+    assert_eq!(passed.rgba, untouched.rgba);
+}
+
+#[test]
+fn bokeh_keeps_its_size_in_canvas_pixels_at_any_render_scale() {
+    let gpu = gpu();
+    let full = point(&mut gpu.renderer(), Some(json!({ "radius": 10 })));
+    let mut renderer = gpu.renderer();
+    renderer.set_render_scale(2.0).expect("a valid scale");
+    let double = point(&mut renderer, Some(json!({ "radius": 10 })));
+    assert_eq!((double.width, double.height), (2 * CANVAS, 2 * CANVAS));
+    let (full, double) = (Bokeh::of(&full), Bokeh::of(&double));
+    assert!(
+        (double.level / full.level - 1.0).abs() < 0.08,
+        "the middle is {} at scale 2 and {} at 1",
+        double.level,
+        full.level
+    );
+    for degrees in [0.0, 90.0, 180.0, 270.0] {
+        let (once, twice) = (full.edge(degrees), double.edge(degrees) / 2.0);
+        assert!(
+            (once - twice).abs() < 0.5,
+            "the edge at {degrees}° is {once} at scale 1 and {twice} at 2"
+        );
+    }
+}
+
+#[test]
+fn a_large_radius_costs_a_few_passes_more_than_a_small_one() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let mut passes = |params: Option<Value>| {
+        let frame = point(&mut renderer, params);
+        (frame, renderer.recorded_pass_count())
+    };
+    let (_, none) = passes(None);
+    let (_, small) = passes(Some(json!({ "radius": 4 })));
+    let (frame, large) = passes(Some(json!({ "radius": 200 })));
+    // A preparation, a reduction per level and a resolve: levels to half of 200 / 6 and one more.
+    assert_eq!(small - none, 3);
+    assert_eq!(large - none, 9);
+    // The point still lights the whole canvas, a disc 200 pixels across.
+    let corner = linear(frame.pixel(0, 0)[0]);
+    let expected = 256.0 / (std::f64::consts::PI * 200.0 * 200.0);
+    assert!(
+        (corner / expected - 1.0).abs() < 0.25,
+        "the corner is {corner}, not {expected}"
+    );
+}
+
+const RED: [u8; 4] = [255, 0, 0, 255];
+const GREEN: [u8; 4] = [0, 255, 0, 255];
+const BLUE: [u8; 4] = [0, 0, 255, 255];
+const BLACK: [u8; 4] = [0, 0, 0, 255];
+
+/// Where the near half ends: off the levels' block boundaries, so the blocks across it mix near
+/// and far.
+const SPLIT: u32 = 33;
+
+/// Red and black stripes, two pixels wide, left of `SPLIT` at depth 0, and green and blue ones
+/// right of it at depth 1, through `lens_blur` with `params` when there are any.
+fn halves(lens_blur: Option<Value>) -> Frame {
+    let (width, height) = (64, 16);
+    let pixels = |color: &dyn Fn(u32) -> [u8; 4]| -> Vec<u8> {
+        (0..width * height)
+            .flat_map(|index| color(index % width))
+            .collect()
+    };
+    let stripes = |x: u32| match (x < SPLIT, (x / 2).is_multiple_of(2)) {
+        (true, true) => RED,
+        (true, false) => BLACK,
+        (false, true) => GREEN,
+        (false, false) => BLUE,
+    };
+    let depth = |x: u32| if x < SPLIT { BLACK } else { [255; 4] };
+    let media = TestMedia::default()
+        .image("stripes", width, height, pixels(&stripes))
+        .image("depth", width, height, pixels(&depth));
+    let mut nodes = vec![
+        json!({ "id": 1, "type": "media_in", "params": { "kind": "image", "source": "depth" } }),
+        json!({ "id": 2, "type": "media_in", "params": { "kind": "image", "source": "stripes" } }),
+    ];
+    if let Some(params) = lens_blur {
+        nodes.push(json!({ "id": 3, "type": "lens_blur", "params": params,
+            "in": { "source": 2, "depth": 1 } }));
+    }
+    let composition = scene((width, height), Value::Array(nodes)).into();
+    render(&mut gpu().renderer(), &composition, 0.0, &media)
+}
+
+#[test]
+fn a_blurred_background_stays_behind_a_sharp_foreground() {
+    let source = halves(None);
+    let frame = halves(Some(
+        json!({ "radius": 8, "focus": 0, "focus_range": 0.05 }),
+    ));
+    for y in 0..16 {
+        for x in 0..SPLIT {
+            assert_eq!(
+                frame.pixel(x, y),
+                source.pixel(x, y),
+                "({x}, {y}) is in focus"
+            );
+        }
+        for x in SPLIT..64 {
+            let [red, green, blue, _] = frame.pixel(x, y);
+            assert_eq!(red, 0, "({x}, {y}) shows the foreground");
+            // The stripes blur into an even mix, away from the canvas's edge, which repeats.
+            if (SPLIT + 8..56).contains(&x) {
+                assert!(
+                    (150..=225).contains(&green) && (150..=225).contains(&blue),
+                    "({x}, {y}) is {green} green and {blue} blue"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_blurred_foreground_spreads_over_a_sharp_background() {
+    let source = halves(None);
+    let frame = halves(Some(
+        json!({ "radius": 8, "focus": 1, "focus_range": 0.05 }),
+    ));
+    for y in 0..16 {
+        // Red spreads over the background nearly as far as the radius.
+        for x in SPLIT..SPLIT + 4 {
+            assert!(
+                frame.pixel(x, y)[0] > 60,
+                "({x}, {y}) is {:?}",
+                frame.pixel(x, y)
+            );
+        }
+        for x in SPLIT + 10..64 {
+            assert_eq!(
+                frame.pixel(x, y),
+                source.pixel(x, y),
+                "({x}, {y}) is in focus"
+            );
+        }
+        // The foreground's stripes blur into an even mix.
+        for x in 4..SPLIT - 10 {
+            let red = frame.pixel(x, y)[0];
+            assert!((150..=225).contains(&red), "({x}, {y}) is {red} red");
+        }
+    }
+}
+
+#[test]
+fn a_source_sized_to_its_bounds_blurs_as_a_full_frame_one_does() {
+    let gpu = gpu();
+    let composition = scene(
+        (CANVAS, CANVAS),
+        json!([
+            { "id": 1, "type": "shape", "params": {
+                "position": [26, 28], "width": 6, "height": 4, "fill_paint": [255, 255, 255, 255] } },
+            { "id": 2, "type": "exposure", "params": { "exposure": 6 }, "in": { "source": 1 } },
+            { "id": 3, "type": "lens_blur", "params": { "radius": 20, "blades": 5 }, "in": { "source": 2 } },
+        ]),
+    )
+    .into();
+    let bounded = render(
+        &mut gpu.renderer(),
+        &composition,
+        0.0,
+        &TestMedia::default(),
+    );
+    let mut reference = gpu.renderer();
+    reference.set_full_frame_sources(true);
+    let full = render(&mut reference, &composition, 0.0, &TestMedia::default());
+    let differs = bounded
+        .rgba
+        .iter()
+        .zip(&full.rgba)
+        .filter(|(a, b)| a.abs_diff(**b) > 1)
+        .count();
+    assert_eq!(differs, 0, "{differs} channels differ");
+    // The bokeh reaches 20 pixels past the shape, beyond the shape's own bounds.
+    assert!(full.pixel(26 - 15, 30)[3] > 0);
+}
