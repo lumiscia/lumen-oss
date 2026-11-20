@@ -8,6 +8,7 @@ pub mod crop;
 pub(crate) mod cube_lut;
 pub mod directional_blur;
 pub mod displacement_map;
+pub mod erode_dilate;
 pub mod exposure;
 pub mod film_grain;
 pub(crate) mod gaussian;

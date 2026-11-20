@@ -475,6 +475,26 @@ Params:
 - **`edge`** (`"clamp"` | `"transparent"`; default `"clamp"`) What the source reads as beyond its edges.
 - **`sampling`** (`"nearest"` | `"linear"`; default `"linear"`) Sampling filter used to read the displaced source.
 
+## `erode_dilate`
+
+Grows or shrinks the opaque part of a raster by `radius` pixels, for pulling a key's edge in, widening a matte so a blur covers the whole object, or outlining a letter that is already pixels.
+
+A pixel counts as part of the shape when its alpha is at least 0.5. A positive `radius` makes every pixel within that distance of the shape opaque, in the colour of the nearest pixel of the shape, so the result composites without a dark fringe. A negative `radius` makes every pixel within that distance of transparency, or of an edge of the raster's area that is not an edge of the canvas, transparent, and keeps the colour of the pixels that remain. Alpha is never lowered by growing nor raised by shrinking, and `softness` fades the new edge over that many pixels. Growing widens the output past the source's area by the radius; shrinking keeps the source's area. With `radius` and `softness` 0, the raster is unchanged.
+
+For example, `radius` 3 grows a key's matte by 3 pixels, and merging the original over a `radius` 4 result outlines a rasterized letter.
+
+Category: processing. Output: raster.
+
+Inputs:
+
+- `source`: raster, required
+
+Params:
+
+- **`radius`** (number; default `2`) How far the alpha edge moves, in pixels: positive grows it, negative shrinks it. 0 leaves the edge where it is.
+- **`shape`** (`"round"` | `"square"`; default `"round"`) Whether corners round off or stay square.
+- **`softness`** (number, at least 0; default `0`) Width in pixels of the fade that feathers the moved edge. 0 gives a hard edge, one pixel wide.
+
 ## `exposure`
 
 Adjusts raster exposure, contrast, and offset.
