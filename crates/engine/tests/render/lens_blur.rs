@@ -12,10 +12,20 @@ const CANVAS: u32 = 64;
 /// A white canvas pixel at (32, 32) over black, 256 times brighter than white so its bokeh shows
 /// in 8-bit output, then through `lens_blur` with `params` when there are any.
 fn point(renderer: &mut GpuCompositionRenderer, lens_blur: Option<Value>) -> Frame {
+    point_at(renderer, (CANVAS, CANVAS), [32, 32], lens_blur)
+}
+
+/// Like `point`, on a canvas of `size` with the pixel at `at`.
+fn point_at(
+    renderer: &mut GpuCompositionRenderer,
+    size: (u32, u32),
+    at: [u32; 2],
+    lens_blur: Option<Value>,
+) -> Frame {
     let mut nodes = vec![
         json!({ "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255] } }),
         json!({ "id": 2, "type": "shape", "params": {
-            "position": [32, 32], "width": 1, "height": 1, "fill_paint": [255, 255, 255, 255] } }),
+            "position": at, "width": 1, "height": 1, "fill_paint": [255, 255, 255, 255] } }),
         json!({ "id": 3, "type": "raster_multimerge", "in": { "layers": [1, 2] } }),
         json!({ "id": 4, "type": "exposure", "params": { "exposure": 8 }, "in": { "source": 3 } }),
     ];
@@ -23,7 +33,7 @@ fn point(renderer: &mut GpuCompositionRenderer, lens_blur: Option<Value>) -> Fra
         nodes
             .push(json!({ "id": 5, "type": "lens_blur", "params": params, "in": { "source": 4 } }));
     }
-    let composition = scene((CANVAS, CANVAS), Value::Array(nodes)).into();
+    let composition = scene(size, Value::Array(nodes)).into();
     render(renderer, &composition, 0.0, &TestMedia::default())
 }
 
@@ -132,6 +142,34 @@ fn a_point_spreads_into_an_evenly_lit_disc_or_polygon_of_the_radius() {
         (ratio - expected).abs() < 0.05,
         "corner over side is {ratio}, not {expected}"
     );
+
+    let frame = point(
+        &mut gpu.renderer(),
+        Some(json!({ "radius": 10, "blades": 3 })),
+    );
+    let triangle = Bokeh::of(&frame);
+    // A corner points straight up, and the middle of a side straight down, half as far out.
+    let (up, down) = (triangle.edge(270.0), triangle.edge(90.0));
+    assert!(
+        (up - 10.0).abs() < 1.0 && (down - 5.0).abs() < 1.0,
+        "the triangle reaches {up} up and {down} down"
+    );
+}
+
+#[test]
+fn a_highlight_keeps_its_place_in_a_dark_block() {
+    // At radius 200 the point is gathered in 64-pixel blocks, and it is at the left edge of one.
+    let frame = point_at(
+        &mut gpu().renderer(),
+        (512, 64),
+        [256, 32],
+        Some(json!({ "radius": 200 })),
+    );
+    let centre = Bokeh::of(&frame).centre;
+    assert!(
+        (centre[0] - 256.5).abs() < 2.0,
+        "the bokeh is centred at {centre:?}"
+    );
 }
 
 #[test]
@@ -201,12 +239,6 @@ const SPLIT: u32 = 33;
 /// Red and black stripes, two pixels wide, left of `SPLIT` at depth 0, and green and blue ones
 /// right of it at depth 1, through `lens_blur` with `params` when there are any.
 fn halves(lens_blur: Option<Value>) -> Frame {
-    let (width, height) = (64, 16);
-    let pixels = |color: &dyn Fn(u32) -> [u8; 4]| -> Vec<u8> {
-        (0..width * height)
-            .flat_map(|index| color(index % width))
-            .collect()
-    };
     let stripes = |x: u32| match (x < SPLIT, (x / 2).is_multiple_of(2)) {
         (true, true) => RED,
         (true, false) => BLACK,
@@ -214,9 +246,26 @@ fn halves(lens_blur: Option<Value>) -> Frame {
         (false, false) => BLUE,
     };
     let depth = |x: u32| if x < SPLIT { BLACK } else { [255; 4] };
+    columns((64, 16), &stripes, 64, &depth, lens_blur)
+}
+
+/// A source of `size` coloured by column with `color`, and a depth as tall and `depth_width` wide
+/// coloured with `depth`, through `lens_blur` with `params` when there are any.
+fn columns(
+    (width, height): (u32, u32),
+    color: &dyn Fn(u32) -> [u8; 4],
+    depth_width: u32,
+    depth: &dyn Fn(u32) -> [u8; 4],
+    lens_blur: Option<Value>,
+) -> Frame {
+    let pixels = |width: u32, color: &dyn Fn(u32) -> [u8; 4]| -> Vec<u8> {
+        (0..width * height)
+            .flat_map(|index| color(index % width))
+            .collect()
+    };
     let media = TestMedia::default()
-        .image("stripes", width, height, pixels(&stripes))
-        .image("depth", width, height, pixels(&depth));
+        .image("stripes", width, height, pixels(width, color))
+        .image("depth", depth_width, height, pixels(depth_width, depth));
     let mut nodes = vec![
         json!({ "id": 1, "type": "media_in", "params": { "kind": "image", "source": "depth" } }),
         json!({ "id": 2, "type": "media_in", "params": { "kind": "image", "source": "stripes" } }),
@@ -283,6 +332,96 @@ fn a_blurred_foreground_spreads_over_a_sharp_background() {
         for x in 4..SPLIT - 10 {
             let red = frame.pixel(x, y)[0];
             assert!((150..=225).contains(&red), "({x}, {y}) is {red} red");
+        }
+    }
+}
+
+#[test]
+fn a_slightly_blurred_foreground_spreads_however_wide_the_radius() {
+    // With the far half at the focus, the near half's depth is about 0.44, a CoC of about 8 of
+    // the radius's 200.
+    let params = json!({ "radius": 200, "focus": 0.5, "focus_range": 0.05, "aperture": 4 });
+    let stripes = |x: u32| match (x < SPLIT, (x / 2).is_multiple_of(2)) {
+        (true, true) => RED,
+        (true, false) => BLACK,
+        (false, _) => GREEN,
+    };
+    let depth = |x: u32| if x < SPLIT { [112; 4] } else { [128; 4] };
+    let source = columns((64, 16), &stripes, 64, &depth, None);
+    let frame = columns((64, 16), &stripes, 64, &depth, Some(params));
+    for y in 0..16 {
+        for x in SPLIT..SPLIT + 4 {
+            assert!(
+                frame.pixel(x, y)[0] > 60,
+                "({x}, {y}) is {:?}",
+                frame.pixel(x, y)
+            );
+        }
+        for x in SPLIT + 12..64 {
+            assert_eq!(
+                frame.pixel(x, y),
+                source.pixel(x, y),
+                "({x}, {y}) is in focus"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_thin_blurred_foreground_spreads_from_blocks_it_shares() {
+    // An 8-pixel red stripe in front, blurred by 64, over a sharp green background: gathered in
+    // 16-pixel blocks, each holding some of both.
+    let stripe = |x: u32| (100..108).contains(&x);
+    let color = |x: u32| if stripe(x) { RED } else { GREEN };
+    let depth = |x: u32| if stripe(x) { BLACK } else { [255; 4] };
+    let params = json!({ "radius": 64, "focus": 1, "focus_range": 0.05 });
+    let source = columns((256, 16), &color, 256, &depth, None);
+    let frame = columns((256, 16), &color, 256, &depth, Some(params));
+    for y in 0..16 {
+        // The stripe covers about 8 of every 100 or so pixels of a disc this far out.
+        for x in (108..150).chain(50..100) {
+            let red = frame.pixel(x, y)[0];
+            assert!(red > 40, "({x}, {y}) is {red} red");
+        }
+        for x in (0..20).chain(190..256) {
+            assert_eq!(
+                frame.pixel(x, y),
+                source.pixel(x, y),
+                "({x}, {y}) is out of reach"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_depth_smaller_than_the_canvas_is_missing_past_its_edge() {
+    let stripes = |x: u32| {
+        if (x / 2).is_multiple_of(2) {
+            GREEN
+        } else {
+            BLUE
+        }
+    };
+    let white = |_| [255; 4];
+    let params = json!({ "radius": 8, "focus": 1, "focus_range": 0.05 });
+    let source = columns((128, 16), &stripes, 64, &white, None);
+    let frame = columns((128, 16), &stripes, 64, &white, Some(params));
+    for y in 0..16 {
+        // In focus where the depth is white.
+        for x in 0..50 {
+            assert_eq!(
+                frame.pixel(x, y),
+                source.pixel(x, y),
+                "({x}, {y}) is in focus"
+            );
+        }
+        // Past it, depth 0 is far from the focus, so the stripes blur into an even mix.
+        for x in 72..120 {
+            let [_, green, blue, _] = frame.pixel(x, y);
+            assert!(
+                (150..=225).contains(&green) && (150..=225).contains(&blue),
+                "({x}, {y}) is {green} green and {blue} blue"
+            );
         }
     }
 }

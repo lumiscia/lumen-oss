@@ -136,7 +136,7 @@ struct GpuLensBlurParams {
     shape: [f32; 4],
     /// Canvas pixel of the output's first texel in `xy`, the source's in `zw`.
     origins: [i32; 4],
-    /// Canvas pixel of the depth's first texel in `xy`, and its display size in `zw`.
+    /// Canvas pixel of the depth's first texel in `xy`.
     depth: [i32; 4],
     /// Levels built, and the level a reduction writes in `z`.
     levels: [i32; 4],
@@ -171,6 +171,10 @@ const REDUCE: ComputeProgram = ComputeProgram {
         lumen_gpu::LayoutEntry::compute(4, lumen_gpu::LayoutKind::Texture),
         lumen_gpu::LayoutEntry::compute(5, lumen_gpu::LayoutKind::StorageTexture(LEVEL_FORMAT)),
         lumen_gpu::LayoutEntry::compute(6, lumen_gpu::LayoutKind::StorageTexture(LEVEL_FORMAT)),
+        lumen_gpu::LayoutEntry::compute(14, lumen_gpu::LayoutKind::Texture),
+        lumen_gpu::LayoutEntry::compute(15, lumen_gpu::LayoutKind::Texture),
+        lumen_gpu::LayoutEntry::compute(16, lumen_gpu::LayoutKind::StorageTexture(LEVEL_FORMAT)),
+        lumen_gpu::LayoutEntry::compute(17, lumen_gpu::LayoutKind::StorageTexture(LEVEL_FORMAT)),
     ],
 };
 const RESOLVE: ComputeProgram = ComputeProgram {
@@ -186,6 +190,10 @@ const RESOLVE: ComputeProgram = ComputeProgram {
         lumen_gpu::LayoutEntry::compute(11, lumen_gpu::LayoutKind::Texture),
         lumen_gpu::LayoutEntry::compute(12, lumen_gpu::LayoutKind::Texture),
         lumen_gpu::LayoutEntry::compute(13, RECORD_STORAGE_TEXTURE),
+        lumen_gpu::LayoutEntry::compute(18, lumen_gpu::LayoutKind::Texture),
+        lumen_gpu::LayoutEntry::compute(19, lumen_gpu::LayoutKind::Texture),
+        lumen_gpu::LayoutEntry::compute(20, lumen_gpu::LayoutKind::Texture),
+        lumen_gpu::LayoutEntry::compute(21, lumen_gpu::LayoutKind::Texture),
     ],
 };
 
@@ -338,13 +346,7 @@ impl crate::gpu::frame_graph::RecordNode for LensBlur {
             ],
             origins: [region.x, region.y, data.x, data.y],
             depth: depth_domain.map_or([0; 4], |domain| {
-                let size = domain.display_size();
-                [
-                    domain.data_rect.x,
-                    domain.data_rect.y,
-                    size.width as i32,
-                    size.height as i32,
-                ]
+                [domain.data_rect.x, domain.data_rect.y, 0, 0]
             }),
             levels: [levels as i32, 0, written as i32, 0],
             level_origin,
@@ -370,21 +372,19 @@ impl crate::gpu::frame_graph::RecordNode for LensBlur {
             dispatch_for(pyramid[0].size),
         );
 
-        // Even levels start at 2 and odd ones at 1.
+        // Even levels start at 2 and odd ones at 1. Each holds colour, CoC, and the near layer's
+        // colour and CoC; level 0 has no near layer, which the shader derives from its pixels.
         let unused = cx.unused_float();
-        let mut atlases = [(unused, unused); 2];
+        let mut atlases = [[unused; 4]; 2];
         for parity in 0..2 {
             if levels > 2 - parity {
-                atlases[parity] = (
-                    cx.float_target(atlas[parity]),
-                    cx.float_target(atlas[parity]),
-                );
+                atlases[parity] = [(); 4].map(|()| cx.float_target(atlas[parity]));
             }
         }
         let reduce = cx.program(&REDUCE)?;
         for (index, level) in pyramid.iter().enumerate().skip(1) {
             let input = if index == 1 {
-                (level_color, level_coc)
+                [level_color, level_coc, unused, unused]
             } else {
                 atlases[(index - 1) % 2]
             };
@@ -394,10 +394,14 @@ impl crate::gpu::frame_graph::RecordNode for LensBlur {
                 reduce,
                 &[
                     (2, uniform),
-                    (3, lumen_gpu::Res::Tex(input.0)),
-                    (4, lumen_gpu::Res::Tex(input.1)),
-                    (5, lumen_gpu::Res::Tex(output.0)),
-                    (6, lumen_gpu::Res::Tex(output.1)),
+                    (3, lumen_gpu::Res::Tex(input[0])),
+                    (4, lumen_gpu::Res::Tex(input[1])),
+                    (5, lumen_gpu::Res::Tex(output[0])),
+                    (6, lumen_gpu::Res::Tex(output[1])),
+                    (14, lumen_gpu::Res::Tex(input[2])),
+                    (15, lumen_gpu::Res::Tex(input[3])),
+                    (16, lumen_gpu::Res::Tex(output[2])),
+                    (17, lumen_gpu::Res::Tex(output[3])),
                 ],
                 dispatch_for(level.size),
             );
@@ -413,11 +417,15 @@ impl crate::gpu::frame_graph::RecordNode for LensBlur {
                 (2, uniform),
                 (7, lumen_gpu::Res::Tex(level_color)),
                 (8, lumen_gpu::Res::Tex(level_coc)),
-                (9, lumen_gpu::Res::Tex(atlases[1].0)),
-                (10, lumen_gpu::Res::Tex(atlases[1].1)),
-                (11, lumen_gpu::Res::Tex(atlases[0].0)),
-                (12, lumen_gpu::Res::Tex(atlases[0].1)),
+                (9, lumen_gpu::Res::Tex(atlases[1][0])),
+                (10, lumen_gpu::Res::Tex(atlases[1][1])),
+                (11, lumen_gpu::Res::Tex(atlases[0][0])),
+                (12, lumen_gpu::Res::Tex(atlases[0][1])),
                 (13, lumen_gpu::Res::Tex(tex)),
+                (18, lumen_gpu::Res::Tex(atlases[1][2])),
+                (19, lumen_gpu::Res::Tex(atlases[1][3])),
+                (20, lumen_gpu::Res::Tex(atlases[0][2])),
+                (21, lumen_gpu::Res::Tex(atlases[0][3])),
             ],
             dispatch_for(size),
         );
