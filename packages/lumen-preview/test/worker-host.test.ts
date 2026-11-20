@@ -70,6 +70,7 @@ const stored: Record<"environment" | "image" | "lut" | "model" | "video", Set<st
 class FakeController {
   #composition: string | null = null;
   #frame = 0;
+  #scale = 1;
   audioTimeline() {
     return undefined;
   }
@@ -134,6 +135,15 @@ class FakeController {
     stored.image.add(id);
   }
   setLogLevel() {}
+  setRenderScale(scale: number) {
+    this.#scale = scale;
+  }
+  outputHeight() {
+    return Math.ceil(this.height() * this.#scale);
+  }
+  outputWidth() {
+    return Math.ceil(this.width() * this.#scale);
+  }
   setVideoFrameCacheBytes() {}
   setVideoMetadata(id: string) {
     calls.push(`video ${id}`);
@@ -195,7 +205,13 @@ const lastMedia = () =>
     | undefined;
 
 async function startWorker() {
-  receive({ logLevel: "off", lookaheadCount: 0, type: "start", wasmUrl: "lumen.wasm" });
+  receive({
+    logLevel: "off",
+    lookaheadCount: 0,
+    renderScale: 1,
+    type: "start",
+    wasmUrl: "lumen.wasm",
+  });
   await settle();
   receive({ canvas: testCanvas as OffscreenCanvas, type: "attach-canvas" });
 }
@@ -427,6 +443,25 @@ describe("createLumenPreviewWorkerHost", () => {
     });
     // Stops the playing runner, which would otherwise draw on into the next test.
     receive({ loadId: 3, type: "unload" });
+  });
+
+  it("sizes the canvas to the render scale and draws the frame on screen again when it changes", async () => {
+    gpuReady.resolve();
+    await startWorker();
+    load(1, "B");
+    await settle();
+    expect(testCanvas).toEqual({ height: 2, width: 2 });
+
+    receive({ logLevel: "off", lookaheadCount: 0, renderScale: 2.5, type: "set-options" });
+    await settle();
+    expect(testCanvas).toEqual({ height: 5, width: 5 });
+    expect(drawn).toEqual(["B", "B"]);
+
+    receive({ logLevel: "off", lookaheadCount: 0, renderScale: 0.6, type: "set-options" });
+    receive({ logLevel: "off", lookaheadCount: 0, renderScale: 0.9, type: "set-options" });
+    await settle();
+    expect(testCanvas).toEqual({ height: 2, width: 2 });
+    expect(drawn.length).toBeGreaterThanOrEqual(4);
   });
 
   it("releases what a composition stops naming, so swapping doesn't grow what is registered", async () => {

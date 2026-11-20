@@ -75,7 +75,7 @@ fn sample_path(pixel: vec2<f32>, transform: DrawableTransform) -> vec4<f32> {
         return vec4<f32>(0.0);
     }
     let bounds_origin = params.position + params.bounds_min;
-    let local01 = clamp((local - bounds_origin) / max(params.bounds_size, vec2<f32>(1.0)), vec2<f32>(0.0), vec2<f32>(1.0));
+    let local01 = clamp((local - bounds_origin) / max(params.bounds_size, vec2<f32>(1e-6)), vec2<f32>(0.0), vec2<f32>(1.0));
     let fill = sample_paint(params.fill_paint, local, local01) * fill_alpha;
     let stroke = sample_paint(params.stroke_paint, local, local01) * stroke_alpha;
     return (stroke + fill * (1.0 - stroke.a)) * transform.opacity;

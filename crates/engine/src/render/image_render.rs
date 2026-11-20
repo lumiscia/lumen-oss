@@ -154,7 +154,7 @@ impl<'a> ImageRender<'a> {
                 &mut timing,
             )?;
             let raster = &rendered.raster;
-            let size = checked_size(self.composition, raster, frame)?;
+            let size = checked_size(self.renderer.output_size(self.composition), raster, frame)?;
             poll(
                 &self.renderer,
                 frame,

@@ -3,6 +3,7 @@ use bytemuck::{Pod, Zeroable};
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::frame_graph::ComputeProgram;
+use crate::gpu::render_scale::device_rect;
 
 pub(crate) const SHADER: &str = include_str!("crop.wgsl");
 const CROP: ComputeProgram = ComputeProgram::spatial("crop", SHADER);
@@ -100,11 +101,21 @@ impl crate::gpu::frame_graph::RecordNode for Crop {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
-        let x = pixel_origin(self.id, "x", params.x)?;
-        let y = pixel_origin(self.id, "y", params.y)?;
-        let width = pixel_extent(self.id, "width", params.width, 0)?;
-        let height = pixel_extent(self.id, "height", params.height, 0)?;
+        let [x, y, width, height] = device_rect(
+            [
+                params.x,
+                params.y,
+                params.width.max(0),
+                params.height.max(0),
+            ],
+            cx.pixel_scale(),
+        );
+        let x = pixel_origin(self.id, "x", x)?;
+        let y = pixel_origin(self.id, "y", y)?;
+        let width = pixel_extent(self.id, "width", width, 0)?;
+        let height = pixel_extent(self.id, "height", height, 0)?;
         let size = source.domain.display_size();
         let left = i64::from(x).clamp(0, i64::from(size.width));
         let top = i64::from(y).clamp(0, i64::from(size.height));

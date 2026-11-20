@@ -35,16 +35,16 @@ impl VulkanTarget {
         quality: &EncoderQuality,
         depth: lumen_ffmpeg::BitDepth,
     ) -> anyhow::Result<(GpuCompositionRenderer, Self)> {
-        let settings = composition.render_settings();
-        let (width, height) = (settings.width, settings.height);
+        let (mut renderer, device) = pollster::block_on(
+            GpuCompositionRenderer::new_vulkan_video_with_settings(&media_store.gpu),
+        )?;
+        renderer.set_render_scale(media_store.render_scale)?;
+        let lumen_gpu::Size { width, height } = renderer.output_size(composition);
         if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(anyhow!(
                 "YUV 4:2:0 frames for Vulkan encode need even dimensions, got {width}x{height}"
             ));
         }
-        let (renderer, device) = pollster::block_on(
-            GpuCompositionRenderer::new_vulkan_video_with_settings(&media_store.gpu),
-        )?;
         renderer.check_output_size(composition)?;
         let target = VulkanVideoTarget::new(
             renderer.gpu_renderer(),
@@ -90,7 +90,7 @@ impl VulkanTarget {
     ) -> Result<(), Error> {
         let RenderedFrame { raster, submission } =
             render_raster(renderer, composition, media_store, frame, timing)?;
-        checked_size(composition, &raster, frame)?;
+        checked_size(renderer.output_size(composition), &raster, frame)?;
         let video_frame = timed(&mut timing.render, || {
             self.target.convert(
                 renderer.gpu_renderer(),

@@ -55,6 +55,13 @@ export interface LumenPreviewSessionInputs {
   lookaheadCount?: number | undefined;
   /** Defaults to "off". */
   logLevel?: LumenLogLevel | undefined;
+  /**
+   * Renders at this fraction of the composition's size, such as 0.5 for half, which the canvas
+   * backing follows; above 1 renders larger. Frames look like the full render scaled, and
+   * expressions still see the composition's own size. Changing it re-renders the frame on screen
+   * without loading the composition again. Defaults to 1.
+   */
+  renderScale?: number | undefined;
   media?: LumenPreviewMedia | undefined;
   /** Silences the audio without changing `volume`, so un-muting restores it. Defaults to false. */
   muted?: boolean | undefined;

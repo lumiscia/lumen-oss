@@ -176,6 +176,8 @@ pub struct GpuCompositionRenderer {
     max_text_glyphs: usize,
     max_image_side: u32,
     profile_nodes: bool,
+    /// What [`Self::set_render_scale`] set, and the device pixels per canvas pixel it stands for.
+    render_scale: (f32, f64),
     cache_budgets: super::CacheBudgets,
     media_texture_cache: MediaTextureCache,
     #[cfg(feature = "ffmpeg")]
@@ -223,6 +225,7 @@ impl GpuCompositionRenderer {
             max_text_glyphs: DEFAULT_MAX_TEXT_GLYPHS,
             max_image_side: u32::MAX,
             profile_nodes: false,
+            render_scale: (1.0, 1.0),
             cache_budgets: super::CacheBudgets::default(),
             media_texture_cache: MediaTextureCache::new(),
             #[cfg(feature = "ffmpeg")]
@@ -262,6 +265,32 @@ impl GpuCompositionRenderer {
             self.max_image_side = pixels;
             self.reset_recorded(self.output_format);
         }
+    }
+
+    /// Sets how many device pixels each canvas pixel renders at, 1 by default. Output is
+    /// `ceil(width * scale)` by `ceil(height * scale)` and looks like the full render, scaled:
+    /// every raster a frame records is that much smaller or larger, while expressions still see
+    /// the composition's own size. A change drops what frames recorded so far and makes frames
+    /// bound before it stale, but keeps programs and the text atlas. Fails unless `scale` is
+    /// finite and above 0.
+    pub fn set_render_scale(&mut self, scale: f32) -> crate::Result<()> {
+        let device = super::render_scale::validate(scale)?;
+        if self.render_scale.1 != device {
+            self.render_scale = (scale, device);
+            self.reset_recorded(self.output_format);
+        }
+        Ok(())
+    }
+
+    /// The scale [`Self::set_render_scale`] set.
+    pub fn render_scale(&self) -> f32 {
+        self.render_scale.0
+    }
+
+    /// The size of `composition`'s output at the render scale.
+    pub fn output_size(&self, composition: &Composition) -> lumen_gpu::Size {
+        let settings = composition.render_settings();
+        super::render_scale::device_size(settings.width, settings.height, self.render_scale.1)
     }
 
     /// Sets the byte budget of each cache this renderer keeps media and derived GPU data in, which
@@ -554,6 +583,7 @@ impl GpuCompositionRenderer {
                 max_text_glyphs: self.max_text_glyphs,
                 max_image_side: self.max_image_side,
                 profile_nodes: self.profile_nodes,
+                render_scale: self.render_scale.1,
             },
             media_cache: &mut self.media_texture_cache,
             text_atlas: &self.text_atlas,
@@ -618,11 +648,11 @@ impl GpuCompositionRenderer {
         &self.renderer
     }
 
-    /// Fails with the error a render of `composition` gives when its canvas is larger than the
-    /// device's texture limit, for callers that create the output texture themselves.
+    /// Fails with the error a render of `composition` gives when its output, at the render scale,
+    /// is larger than the device's texture limit, for callers that create the output texture
+    /// themselves.
     pub fn check_output_size(&self, composition: &Composition) -> crate::Result<()> {
-        let settings = composition.render_settings();
-        let canvas = lumen_gpu::Size::new(settings.width.max(1), settings.height.max(1));
+        let canvas = self.output_size(composition);
         let output = &composition.graph().nodes[&composition.output()];
         let max = self.renderer.device.limits().max_texture_dimension_2d;
         super::frame_graph::ensure_texture_fits(output, canvas, canvas, max)

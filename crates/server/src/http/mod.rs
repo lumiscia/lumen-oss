@@ -168,6 +168,7 @@ impl Args {
                 .is_ok_and(|value| is_enabled_flag(&value)),
             gpu: GpuSettings::from_env(),
             temp_dir: Some(std::env::temp_dir()),
+            render_scale: 1.0,
         }
     }
 }

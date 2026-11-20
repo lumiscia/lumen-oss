@@ -131,6 +131,7 @@ impl crate::gpu::frame_graph::RecordNode for Glow {
         let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         let tint = if evaluated.tint_enabled {
             let Paint::SolidColor(r, g, b, a) = evaluated.tint else {
@@ -153,6 +154,7 @@ impl crate::gpu::frame_graph::RecordNode for Glow {
                 source.domain.data_rect,
                 [0.0; 2],
                 evaluated.radius,
+                cx.pixel_scale(),
             )),
         );
         let domain = if evaluated.glow_only {

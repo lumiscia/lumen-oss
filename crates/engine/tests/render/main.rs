@@ -33,6 +33,7 @@ mod operators;
 mod paint;
 #[cfg(feature = "3d")]
 mod particles;
+mod render_scale;
 mod repeat;
 #[cfg(feature = "3d")]
 mod scene;

@@ -368,6 +368,8 @@ pub(crate) struct RecordSettings {
     pub(crate) max_image_side: u32,
     /// Whether to time each node's own recording, which `take_node_timing` returns.
     pub(crate) profile_nodes: bool,
+    /// Device pixels per canvas pixel, which every raster is recorded at.
+    pub(crate) render_scale: f64,
 }
 
 pub(crate) struct RecordInput<'a> {
@@ -1161,9 +1163,30 @@ impl<'a> FrameCx<'a> {
         )
     }
 
+    /// The canvas of the scope being recorded, in device pixels.
     pub(crate) fn canvas_size(&self) -> Size {
+        self.device_size(self.logical_canvas_size())
+    }
+
+    /// The canvas of the scope being recorded, in canvas pixels, as expressions see it.
+    pub(crate) fn logical_canvas_size(&self) -> Size {
         let settings = &self.scope.scene.render_settings;
         Size::new(settings.width.max(1), settings.height.max(1))
+    }
+
+    /// Device pixels per canvas pixel.
+    pub(crate) fn pixel_scale(&self) -> f64 {
+        self.settings.render_scale
+    }
+
+    /// The device pixels a `logical` size of canvas pixels covers, each side rounded up.
+    pub(crate) fn device_size(&self, logical: Size) -> Size {
+        crate::gpu::render_scale::device_size(logical.width, logical.height, self.pixel_scale())
+    }
+
+    /// A node's explicit `width` or `height` in device pixels, 0 still meaning the canvas's.
+    pub(crate) fn explicit_extent(&self, logical: u32) -> u32 {
+        crate::gpu::render_scale::explicit_extent(logical, self.pixel_scale())
     }
 
     /// `node_id` stored at its full display size, where a clip keeps the canvas its content is
@@ -1173,7 +1196,7 @@ impl<'a> FrameCx<'a> {
     #[cfg(feature = "3d")]
     pub(crate) fn input_native(&mut self, node_id: NodeId) -> crate::Result<Raster> {
         if let Some(NodeKind::Clip(clip)) = self.scope.node(node_id) {
-            let canvas = clip.content_canvas(&self.scope)?;
+            let canvas = self.device_size(clip.content_canvas(&self.scope)?);
             let max = self.rec.device().limits().max_texture_dimension_2d;
             if canvas.width > max || canvas.height > max {
                 return Err(
@@ -1312,7 +1335,7 @@ impl<'a> FrameCx<'a> {
     /// What a clip's content shows, cropped to its canvas and the `canvas` it is placed on.
     fn place_routed(&mut self, routed: Routed<'a>, canvas: Size) -> crate::Result<Raster> {
         let settings = &routed.scope.scene.render_settings;
-        let content = Size::new(settings.width.max(1), settings.height.max(1));
+        let content = self.device_size(Size::new(settings.width, settings.height));
         let raster = self.record_routed(routed)?;
         let canvas_rect = lumen_gpu::RectI::from_size(canvas);
         let data = raster.domain.data_rect;

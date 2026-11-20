@@ -69,9 +69,13 @@ impl crate::gpu::frame_graph::RecordNode for Background {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
-        let dimension = |value: u32, canvas: u32| if value == 0 { canvas } else { value };
         let canvas = cx.canvas_size();
+        let dimension = |value: u32, canvas: u32| match cx.explicit_extent(value) {
+            0 => canvas,
+            value => value,
+        };
         let size = lumen_gpu::Size::new(
             dimension(params.width, canvas.width),
             dimension(params.height, canvas.height),

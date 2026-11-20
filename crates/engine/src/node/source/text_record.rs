@@ -251,8 +251,8 @@ pub(crate) fn record_text(
         let span_styles = layout.content.take_span_styles();
         let expr = cx.expr();
         let fields = DelegateEvalContext {
-            node_id: text.id,
-            expr: &expr,
+            pixel_scale: cx.pixel_scale(),
+            ..DelegateEvalContext::new(text.id, &expr)
         };
         Ok(TextInstance {
             node_id: text.id,
@@ -267,6 +267,7 @@ pub(crate) fn record_text(
             stroked: stroked(params),
             paint_count: text_span_paints(text),
             size,
+            pixel_scale: cx.pixel_scale(),
             layer_size,
             measure_ink: !blurred && text_may_be_bounded(text),
             motion_blur,
@@ -275,10 +276,7 @@ pub(crate) fn record_text(
     })?;
     let families: Vec<String> = {
         let expr = cx.expr();
-        let fields = DelegateEvalContext {
-            node_id: text.id,
-            expr: &expr,
-        };
+        let fields = DelegateEvalContext::new(text.id, &expr);
         let layout = instance.layout.get(&fields)?;
         used_font_families(&layout).map(str::to_string).collect()
     };

@@ -107,6 +107,13 @@ export class PreviewRunner<TTimer> {
     this.#wake();
   }
 
+  /** Renders the frame on screen again, after a change to how it looks, even after a failed render. */
+  redraw(): void {
+    this.#dirty = true;
+    this.#failed = false;
+    this.#wake();
+  }
+
   /** The newest seek wins, and one that lands on the frame on screen is answered without a render. */
   seek(seekId: number, clock: PreviewClock): void {
     this.#clock = this.#fit(clock);

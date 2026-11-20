@@ -81,7 +81,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaOutput {
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
         let source = cx.required(self.id, "source", self.source)?;
         let settings = cx.composition().render_settings();
-        let size = lumen_gpu::Size::new(settings.width.max(1), settings.height.max(1));
+        let size = cx.device_size(lumen_gpu::Size::new(settings.width, settings.height));
         let format = cx.output_format();
         let encoding = cx.output_encoding();
         // A float output takes the working space as it is, so a source that fills the frame is

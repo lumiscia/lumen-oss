@@ -731,10 +731,10 @@ impl<'a> Planner<'a> {
         found: &mut Found<'a>,
     ) -> crate::Result<()> {
         let params_at = |frame: f64| {
-            let params = remap.params.eval(&DelegateEvalContext {
-                node_id: remap.id,
-                expr: &walk.scope.expr_context(frame.into(), self.media),
-            })?;
+            let params = remap.params.eval(&DelegateEvalContext::new(
+                remap.id,
+                &walk.scope.expr_context(frame.into(), self.media),
+            ))?;
             remap_frame(remap.id, &params)?;
             crate::Result::Ok(params)
         };

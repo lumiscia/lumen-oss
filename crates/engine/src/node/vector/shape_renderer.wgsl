@@ -24,7 +24,8 @@ struct ShapeUniforms {
 fn sample_shape(pixel: vec2<f32>, transform: DrawableTransform) -> vec4<f32> {
     // Geometry is evaluated untransformed, about the shape's centre; distances are in
     // canvas pixels so antialiasing stays one canvas pixel wide at any scale.
-    let half_size = max(params.size * 0.5, vec2<f32>(0.5));
+    // The size is already at least a canvas pixel; an empty shape draws nothing.
+    let half_size = max(params.size * 0.5, vec2<f32>(1e-6));
     let center = params.position + half_size;
     let p = drawable_local_offset(transform, pixel, center);
     let local = center + p;
@@ -38,7 +39,7 @@ fn sample_shape(pixel: vec2<f32>, transform: DrawableTransform) -> vec4<f32> {
         stroke_coverage(shape.stroke, canvas_stroke_width(transform, params.stroke_width), edge_antialias),
         stroke_enabled,
     );
-    let local01 = clamp((local - params.position) / max(params.size, vec2<f32>(1.0)), vec2<f32>(0.0), vec2<f32>(1.0));
+    let local01 = clamp((local - params.position) / max(params.size, vec2<f32>(1e-6)), vec2<f32>(0.0), vec2<f32>(1.0));
     let fill = sample_paint(params.fill_paint, local, local01) * fill_alpha;
     let stroke = sample_paint(params.stroke_paint, local, local01) * stroke_alpha;
     return (stroke + fill * (1.0 - stroke.a)) * transform.opacity;

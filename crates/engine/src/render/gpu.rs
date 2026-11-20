@@ -55,6 +55,16 @@ pub fn render_project(
         return Err(Error::cancelled());
     }
     let media_root = media_root(options.media_root.as_deref())?;
+    crate::gpu::render_scale::validate(options.config.render_scale).map_err(|_| {
+        Error::new(
+            ErrorCode::InvalidConfig,
+            format!(
+                "render scale must be a finite number above 0, got {}",
+                options.config.render_scale
+            ),
+            false,
+        )
+    })?;
     if let Some(dir) = options.config.font_dir()
         && !dir.is_dir()
     {
@@ -428,11 +438,17 @@ pub(super) fn prefetch_media_frames(
     }
 }
 
-/// Creates a renderer that hardware decode can share a device with, when decode is asked for and
-/// the hardware has it.
+/// Creates a renderer at the media store's render scale that hardware decode can share a device
+/// with, when decode is asked for and the hardware has it.
 pub fn create_gpu_renderer(
     media_store: &mut LocalMediaStore,
 ) -> anyhow::Result<GpuCompositionRenderer> {
+    let mut renderer = open_gpu_renderer(media_store)?;
+    renderer.set_render_scale(media_store.render_scale)?;
+    Ok(renderer)
+}
+
+fn open_gpu_renderer(media_store: &mut LocalMediaStore) -> anyhow::Result<GpuCompositionRenderer> {
     #[cfg(all(target_os = "linux", feature = "vulkan"))]
     if media_store.video_options.prefer_hardware_decode {
         match pollster::block_on(GpuCompositionRenderer::new_vulkan_decode_with_settings(
@@ -445,8 +461,6 @@ pub fn create_gpu_renderer(
             Err(error) => tracing::info!(%error, "renderer has no Vulkan decode device"),
         }
     }
-    #[cfg(not(all(target_os = "linux", feature = "vulkan")))]
-    let _ = media_store;
     pollster::block_on(GpuCompositionRenderer::new_with_settings(&media_store.gpu))
         .context("failed to initialize wgpu renderer")
 }

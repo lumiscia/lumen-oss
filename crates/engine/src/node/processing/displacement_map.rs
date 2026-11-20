@@ -45,11 +45,11 @@ pub enum EdgeMode {
 pub struct DisplacementMapParams {
     /// Pixels the source moves horizontally at full strength: a channel byte of 0 moves it this
     /// far left, 255 nearly as far right, and 128 leaves it in place. Negative amounts reverse it.
-    #[meta(name = "Amount X", step = 1)]
+    #[meta(name = "Amount X", step = 1, pixels)]
     pub amount_x: f64,
     /// Pixels the source moves vertically at full strength: a channel byte of 0 moves it this far
     /// up, 255 nearly as far down, and 128 leaves it in place. Negative amounts reverse it.
-    #[meta(name = "Amount Y", step = 1)]
+    #[meta(name = "Amount Y", step = 1, pixels)]
     pub amount_y: f64,
     /// Map channel that drives horizontal displacement.
     #[meta(name = "Channel X")]
@@ -158,6 +158,7 @@ impl crate::gpu::frame_graph::RecordNode for DisplacementMap {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         let amount = [amount(params.amount_x), amount(params.amount_y)];
         // A pixel moves at most `amount`, and linear sampling reads one pixel further. Only

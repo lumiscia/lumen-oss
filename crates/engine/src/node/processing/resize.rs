@@ -12,6 +12,7 @@ use lumen_gpu::Size;
 
 use super::crop::{pixel_extent, pixel_origin};
 use crate::gpu::frame_graph::{ComputeProgram, CropParams, dispatch_for};
+use crate::gpu::render_scale::device_rect;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("resize.wgsl"),
@@ -132,15 +133,25 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
         let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
+        let [x, y, width, height] = device_rect(
+            [
+                evaluated.x,
+                evaluated.y,
+                evaluated.width.max(1),
+                evaluated.height.max(1),
+            ],
+            cx.pixel_scale(),
+        );
         let mut params = ResizeUniforms {
             origin: [
-                pixel_origin(self.id, "x", evaluated.x)?,
-                pixel_origin(self.id, "y", evaluated.y)?,
+                pixel_origin(self.id, "x", x)?,
+                pixel_origin(self.id, "y", y)?,
             ],
             size: [
-                pixel_extent(self.id, "width", evaluated.width, 1)?,
-                pixel_extent(self.id, "height", evaluated.height, 1)?,
+                pixel_extent(self.id, "width", width, 1)?,
+                pixel_extent(self.id, "height", height, 1)?,
             ],
             mode: evaluated.mode as u32,
             sampling: evaluated.sampling as u32,

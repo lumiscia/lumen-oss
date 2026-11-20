@@ -505,10 +505,7 @@ impl Collected {
     ) -> crate::Result<()> {
         let (params, seconds) = {
             let expr = cx.expr();
-            let ctx = DelegateEvalContext {
-                node_id: node.id,
-                expr: &expr,
-            };
+            let ctx = DelegateEvalContext::new(node.id, &expr);
             let seconds = if expr.fps > 0.0 {
                 expr.frame / f64::from(expr.fps)
             } else {

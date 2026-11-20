@@ -19,10 +19,10 @@ const COMPOSITE_SHADER: &str = concat!(
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ShadowParams {
     /// Horizontal shadow offset in pixels.
-    #[meta(name = "Offset X", step = 1)]
+    #[meta(name = "Offset X", step = 1, pixels)]
     pub offset_x: f64,
     /// Vertical shadow offset in pixels.
-    #[meta(name = "Offset Y", step = 1)]
+    #[meta(name = "Offset Y", step = 1, pixels)]
     pub offset_y: f64,
     /// Shadow blur radius in pixels. Fractional radii blend smoothly. Radii above about 588 look the same.
     #[meta(name = "Blur radius", min = 0, step = 0.5)]
@@ -98,11 +98,13 @@ impl crate::gpu::frame_graph::RecordNode for Shadow {
         let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         let bounds = cx.bounds_of(gaussian::blur_bounds(
             source.domain.data_rect,
             [evaluated.offset_x, evaluated.offset_y],
             evaluated.radius,
+            cx.pixel_scale(),
         ));
         let display = source.domain.display_size();
         let shadow_domain = cx.domain_within(display, bounds);

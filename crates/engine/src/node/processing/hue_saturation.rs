@@ -74,6 +74,7 @@ impl crate::gpu::frame_graph::RecordNode for HueSaturation {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         let gpu_params = HueSaturationUniforms {
             hue_offset: (params.hue_degrees / 360.0) as f32,

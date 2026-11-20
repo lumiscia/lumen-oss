@@ -341,10 +341,10 @@ pub(crate) fn expand_enum_delegate(
                 self,
             ) -> ::core::result::Result<#ident, ::lumen_engine::error::LumenError> {
                 let expr = ::lumen_engine::expr::ExpressionContext::default();
-                let ctx = ::lumen_engine::node::DelegateEvalContext {
-                    node_id: ::lumen_engine::node::NodeId::new(0),
-                    expr: &expr,
-                };
+                let ctx = ::lumen_engine::node::DelegateEvalContext::new(
+                    ::lumen_engine::node::NodeId::new(0),
+                    &expr,
+                );
                 self.try_into_evaluated(&ctx)
             }
         }

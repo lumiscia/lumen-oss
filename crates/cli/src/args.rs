@@ -127,6 +127,13 @@ pub(super) struct RenderArgs {
     #[arg(long)]
     pub(super) profile_nodes: bool,
 
+    /// Render at this fraction of the composition's size, such as 0.5 for half
+    ///
+    /// The output is the width and height times the scale, rounded up, and looks like the full
+    /// render scaled. Expressions still see the composition's own size. Above 1 renders larger.
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0, value_parser = parse_scale)]
+    pub(super) scale: f32,
+
     #[command(flatten)]
     pub(super) video: VideoArgs,
 
@@ -210,6 +217,13 @@ pub(super) struct ImageArgs {
     pub(super) jpeg_quality: Option<u8>,
 }
 
+fn parse_scale(raw: &str) -> Result<f32, String> {
+    raw.parse::<f32>()
+        .ok()
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .ok_or_else(|| format!("expected a number above 0, such as 0.5, got `{raw}`"))
+}
+
 pub(super) fn parse_frames(raw: &str) -> Result<FrameRange, String> {
     let invalid = || format!("expected START..END, such as 30..60, 30.. or ..60, got `{raw}`");
     let (start, end) = raw.split_once("..").ok_or_else(invalid)?;
@@ -280,13 +294,22 @@ impl SourceArgs {
                 .is_ok_and(|value| is_enabled_flag(&value)),
             gpu: GpuSettings::from_env(),
             temp_dir: Some(std::env::temp_dir()),
+            render_scale: 1.0,
         }
     }
 
     pub(super) fn media_store(&self) -> Result<LocalMediaStore> {
+        self.scaled_media_store(1.0)
+    }
+
+    /// The media store of a render at `render_scale`.
+    pub(super) fn scaled_media_store(&self, render_scale: f32) -> Result<LocalMediaStore> {
         Ok(LocalMediaStore::new(
             media_root(self.media_root.as_deref())?,
-            &self.render_config(),
+            &RenderConfig {
+                render_scale,
+                ..self.render_config()
+            },
         ))
     }
 }
@@ -464,6 +487,17 @@ pub(super) mod tests {
                  file {missing:?}, extra in the file {extra:?} (the list must be sorted); update \
                  packages/lumen-cli/src/flags.ts"
             );
+        }
+    }
+
+    #[test]
+    fn render_scale_defaults_to_one_and_is_above_zero() {
+        let scale =
+            |flags: &[&str]| parse(&[&["--output", "o.png"], flags].concat()).map(|cli| cli.scale);
+        assert_eq!(scale(&[]).unwrap(), 1.0);
+        assert_eq!(scale(&["--scale", "0.5"]).unwrap(), 0.5);
+        for invalid in ["0", "-1", "inf", "NaN", "half"] {
+            assert!(scale(&["--scale", invalid]).is_err(), "{invalid}");
         }
     }
 

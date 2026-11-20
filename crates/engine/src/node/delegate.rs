@@ -20,9 +20,21 @@ pub enum PropertyRead<'a> {
 pub struct DelegateEvalContext<'a> {
     pub node_id: NodeId,
     pub expr: &'a crate::expr::ExpressionContext<'a>,
+    /// Device pixels per canvas pixel. Params declared `#[meta(pixels)]` are multiplied by it
+    /// once evaluated; expressions still see canvas pixels.
+    pub pixel_scale: f64,
 }
 
-impl DelegateEvalContext<'_> {
+impl<'a> DelegateEvalContext<'a> {
+    /// A context whose pixel params keep their canvas values.
+    pub fn new(node_id: NodeId, expr: &'a crate::expr::ExpressionContext<'a>) -> Self {
+        Self {
+            node_id,
+            expr,
+            pixel_scale: 1.0,
+        }
+    }
+
     /// Evaluates `field` of the value being evaluated, naming it in the path of the failure.
     pub fn eval_field<D: DelegateEvaluable>(
         &self,
@@ -30,6 +42,91 @@ impl DelegateEvalContext<'_> {
         value: &D,
     ) -> crate::Result<D::Evaluated> {
         value.eval(self).map_err(|error| error.in_field(field))
+    }
+
+    /// [`Self::eval_field`] for a param in canvas pixels, scaled to device pixels.
+    pub fn eval_pixels<D>(&self, field: &str, value: &D) -> crate::Result<D::Evaluated>
+    where
+        D: DelegateEvaluable,
+        D::Evaluated: PixelScale,
+    {
+        self.eval_field(field, value)
+            .map(|evaluated| self.scale_pixels(evaluated))
+    }
+
+    /// `value` with its canvas-pixel lengths in device pixels.
+    pub fn scale_pixels<T: PixelScale>(&self, value: T) -> T {
+        if self.pixel_scale == 1.0 {
+            value
+        } else {
+            value.scale_pixels(self.pixel_scale)
+        }
+    }
+}
+
+/// A value holding lengths in canvas pixels, which a render scale turns into device pixels.
+pub trait PixelScale: Sized {
+    /// This value with its lengths multiplied by `scale`.
+    fn scale_pixels(self, scale: f64) -> Self;
+}
+
+impl PixelScale for f64 {
+    fn scale_pixels(self, scale: f64) -> Self {
+        self * scale
+    }
+}
+
+impl PixelScale for f32 {
+    fn scale_pixels(self, scale: f64) -> Self {
+        (f64::from(self) * scale) as f32
+    }
+}
+
+/// Integers round to the nearest device pixel, halves away from zero, and a nonzero length stays
+/// at least one pixel so that a small extent never vanishes.
+impl PixelScale for i64 {
+    fn scale_pixels(self, scale: f64) -> Self {
+        let scaled = (self as f64 * scale).round();
+        if self != 0 && scaled == 0.0 {
+            self.signum()
+        } else {
+            scaled.clamp(i64::MIN as f64, i64::MAX as f64) as i64
+        }
+    }
+}
+
+impl PixelScale for (f64, f64) {
+    fn scale_pixels(self, scale: f64) -> Self {
+        (self.0 * scale, self.1 * scale)
+    }
+}
+
+impl PixelScale for [f32; 2] {
+    fn scale_pixels(self, scale: f64) -> Self {
+        self.map(|value| value.scale_pixels(scale))
+    }
+}
+
+impl<T: PixelScale> PixelScale for Option<T> {
+    fn scale_pixels(self, scale: f64) -> Self {
+        self.map(|value| value.scale_pixels(scale))
+    }
+}
+
+impl<T: PixelScale> PixelScale for Override<T> {
+    fn scale_pixels(self, scale: f64) -> Self {
+        match self {
+            Self::Set(value) => Self::Set(value.scale_pixels(scale)),
+            other => other,
+        }
+    }
+}
+
+impl<T: PixelScale> PixelScale for Vec<T> {
+    fn scale_pixels(self, scale: f64) -> Self {
+        self.into_iter()
+            .map(|value| value.scale_pixels(scale))
+            .collect()
     }
 }
 
@@ -478,12 +575,9 @@ mod tests {
             },
             ..FlatDelegate::default()
         };
-        let error = DelegateEvalContext {
-            node_id: NodeId::new(3),
-            expr: &ExpressionContext::default(),
-        }
-        .eval_field("flat", &failing)
-        .unwrap_err();
+        let error = DelegateEvalContext::new(NodeId::new(3), &ExpressionContext::default())
+            .eval_field("flat", &failing)
+            .unwrap_err();
         assert_eq!(
             error.to_string(),
             "node 3 `flat.size`: vec2 expects numeric arguments"

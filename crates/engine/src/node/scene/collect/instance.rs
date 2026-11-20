@@ -380,10 +380,7 @@ impl Collected {
         parent: Mat4,
     ) -> crate::Result<()> {
         let expr = cx.expr();
-        let ctx = DelegateEvalContext {
-            node_id: node.id,
-            expr: &expr,
-        };
+        let ctx = DelegateEvalContext::new(node.id, &expr);
         let count = match literal_copies(node) {
             Some(copies) => copies.0.len() as u32,
             None => ctx.eval_field("count", &node.params.count)?.0,

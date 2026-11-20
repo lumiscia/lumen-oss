@@ -29,19 +29,19 @@ pub struct TransformParams {
     #[meta(name = "Scale Y", step = 0.1)]
     pub scale_y: f64,
     /// Horizontal translation in pixels.
-    #[meta(name = "Translate X", step = 1)]
+    #[meta(name = "Translate X", step = 1, pixels)]
     pub translate_x: f64,
     /// Vertical translation in pixels.
-    #[meta(name = "Translate Y", step = 1)]
+    #[meta(name = "Translate Y", step = 1, pixels)]
     pub translate_y: f64,
     /// Rotation in degrees.
     #[meta(name = "Rotate", step = 1)]
     pub rotate: f64,
     /// Horizontal pivot point in pixels.
-    #[meta(name = "Pivot X", step = 1)]
+    #[meta(name = "Pivot X", step = 1, pixels)]
     pub pivot_x: f64,
     /// Vertical pivot point in pixels.
-    #[meta(name = "Pivot Y", step = 1)]
+    #[meta(name = "Pivot Y", step = 1, pixels)]
     pub pivot_y: f64,
     /// Uses the pivot as given; when off, the pivot is the source centre.
     #[meta(name = "Custom pivot")]
@@ -118,6 +118,8 @@ struct TransformMotion {
     node_id: NodeId,
     params: TransformParamsDelegate,
     source_size: lumen_gpu::Size,
+    /// Device pixels per canvas pixel, which the translation and pivot are scaled by.
+    pixel_scale: f64,
 }
 
 impl TransformMotion {
@@ -213,14 +215,17 @@ impl TransformMotion {
             let eval = |value: &crate::node::Deferred<f64>, name: &str| {
                 value.eval(self.node_id, name, &expr)
             };
+            let pixels = |value: &crate::node::Deferred<f64>, name: &str| {
+                eval(value, name).map(|value| value * self.pixel_scale)
+            };
             Ok(self.key(&TransformParams {
                 scale_x: eval(&params.scale_x, "scale_x")?,
                 scale_y: eval(&params.scale_y, "scale_y")?,
-                translate_x: eval(&params.translate_x, "translate_x")?,
-                translate_y: eval(&params.translate_y, "translate_y")?,
+                translate_x: pixels(&params.translate_x, "translate_x")?,
+                translate_y: pixels(&params.translate_y, "translate_y")?,
                 rotate: eval(&params.rotate, "rotate")?,
-                pivot_x: eval(&params.pivot_x, "pivot_x")?,
-                pivot_y: eval(&params.pivot_y, "pivot_y")?,
+                pivot_x: pixels(&params.pivot_x, "pivot_x")?,
+                pivot_y: pixels(&params.pivot_y, "pivot_y")?,
                 ..evaluated.clone()
             }))
         };
@@ -383,12 +388,14 @@ impl crate::gpu::frame_graph::RecordNode for Transform {
             node_id: self.id,
             params: self.params.clone(),
             source_size: source.domain.display_size(),
+            pixel_scale: cx.pixel_scale(),
         };
         let (evaluated, taps) = {
             let expr = cx.expr();
             let mut evaluated = self.params.eval(&DelegateEvalContext {
                 node_id: self.id,
                 expr: &expr,
+                pixel_scale: motion.pixel_scale,
             })?;
             if !cx.analytic_motion_blur() {
                 evaluated.motion_blur = 0.0;

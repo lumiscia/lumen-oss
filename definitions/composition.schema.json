@@ -9603,7 +9603,7 @@
                       }
                     ],
                     "default": "",
-                    "description": "WGSL compute shader; the prelude provides inputs, `input_sampler`, `output` and `lumen`,\nwhich holds `resolution`, `time`, `frame`, and from the `camera` input `view`, `projection`\nand `camera_position`.",
+                    "description": "WGSL compute shader; the prelude provides inputs, `input_sampler`, `output` and `lumen`,\nwhich holds `resolution`, `render_scale`, `time`, `frame`, and from the `camera` input\n`view`, `projection` and `camera_position`.",
                     "title": "Shader source",
                     "x-lumen-constraints": {
                       "format": "wgsl",

@@ -92,6 +92,7 @@ impl crate::gpu::frame_graph::RecordNode for Boolean {
         let params = self.params.eval(&crate::node::DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         let gpu_params = BooleanUniforms {
             values: [params.operation as u32 as f32, params.threshold as f32],

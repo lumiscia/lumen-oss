@@ -134,6 +134,7 @@ impl crate::gpu::frame_graph::RecordNode for Merge {
         let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         // The blur reads the mask at full frame.
         let feathered = evaluated.feather > 0.0;

@@ -9,6 +9,19 @@ use crate::{Bounds, Camera, Light, LightKind, Projection};
 pub const MAX_SHADOW_LIGHTS: usize = 8;
 /// The widest an atlas grows, which a single view fills.
 const MAX_ATLAS_SIDE: u32 = 4096;
+/// The side of the smallest atlas [`atlas_side`] gives, which still holds a usable tile of every
+/// view the most lights can ask for.
+const MIN_SCALED_ATLAS_SIDE: u32 = 128;
+
+/// The widest and tallest an atlas may be at render `scale`: [`MAX_ATLAS_SIDE`] at a scale of 1,
+/// and in proportion below it, so that shadow maps shrink with the frame.
+pub fn atlas_side(scale: f64) -> u32 {
+    if scale >= 1.0 {
+        return MAX_ATLAS_SIDE;
+    }
+    let side = (f64::from(MAX_ATLAS_SIDE) * scale).ceil() as u32;
+    side.clamp(MIN_SCALED_ATLAS_SIDE, MAX_ATLAS_SIDE)
+}
 /// The widest a shadow edge blurs, in texels of its map, which a point light's faces overlap by.
 pub const MAX_FILTER_TEXELS: f32 = 16.0;
 /// The widest a spot light's shadow map reaches, in radians. Its cone past this is unshadowed.

@@ -648,7 +648,7 @@ fn measure_text_node(
     let layout = text
         .params
         .layout
-        .eval(&DelegateEvalContext { node_id, expr: ctx })?;
+        .eval(&DelegateEvalContext::new(node_id, ctx))?;
     measure_text_value(ctx, layout.request(&[]))
 }
 

@@ -28,6 +28,7 @@ use super::{Light3dKind, Material3dParams, Model3d, Placement3d, Pose3d, Shape3d
 use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
 use crate::gpu::evictions;
 use crate::gpu::frame_graph::{FrameCx, Raster};
+use crate::gpu::render_scale::device_rect;
 use crate::media::{AssetKind, MediaIdentity, ModelResolver, resolve_as};
 use crate::node::processing::RasterSampling;
 use crate::node::vector::paint::Paint;
@@ -572,10 +573,7 @@ fn wired_material<'a, N: crate::node::JsonNode>(
     };
     let _timed = cx.node_times().time(node);
     let expr = cx.expr();
-    let ctx = DelegateEvalContext {
-        node_id: material_id,
-        expr: &expr,
-    };
+    let ctx = DelegateEvalContext::new(material_id, &expr);
     Ok((material, material.params.eval(&ctx)?))
 }
 
@@ -1010,10 +1008,7 @@ impl Collected {
     ) -> crate::Result<Option<Vec<(NodeId, Mat4)>>> {
         let node_id = node.id();
         let expr = cx.expr();
-        let ctx = DelegateEvalContext {
-            node_id,
-            expr: &expr,
-        };
+        let ctx = DelegateEvalContext::new(node_id, &expr);
         match node {
             NodeKind::Merge3d(merge) => {
                 let world = parent * placement(&merge.params.eval(&ctx)?.placement).matrix();
@@ -1187,10 +1182,12 @@ impl Collected {
                 let source = cx.input_native(source_node)?;
                 let display = source.domain.display_size();
                 let part = match params.region.0 {
-                    Some(region) => match plane_part(display, region) {
-                        Some(part) => part.fractions(display),
-                        None => return Ok(None),
-                    },
+                    Some(region) => {
+                        match plane_part(display, device_rect(region, cx.pixel_scale())) {
+                            Some(part) => part.fractions(display),
+                            None => return Ok(None),
+                        }
+                    }
                     None => None,
                 };
                 self.rasters.push((source_node, source));

@@ -42,9 +42,9 @@ pub use plan::{CheckReport, RenderPlan, RenderRequest, plan};
 /// What renders take from their host. The library reads no environment variables: a binary reads
 /// [`FONT_DIR_ENV`], [`HARDWARE_DECODE_ENV`] and [`GpuSettings::from_env`], or its flags, and builds
 /// this, with [`std::env::temp_dir`] as `temp_dir`. The default has no font directory, decodes
-/// video on the CPU, picks the GPU with [`GpuSettings::default`] and leaves the temporary
-/// directory to the system.
-#[derive(Debug, Clone, Default)]
+/// video on the CPU, picks the GPU with [`GpuSettings::default`], leaves the temporary directory
+/// to the system and renders at the composition's size.
+#[derive(Debug, Clone)]
 pub struct RenderConfig {
     /// Fonts looked up before the media root's `assets/fonts` and the system fonts. A render fails
     /// with [`ErrorCode::InvalidConfig`] if it isn't a directory.
@@ -56,6 +56,23 @@ pub struct RenderConfig {
     /// Where a render keeps its output while encoding, in a directory of its own that it removes.
     /// `None` is the system temporary directory, which the standard library takes from `TMPDIR`.
     pub temp_dir: Option<PathBuf>,
+    /// Device pixels each canvas pixel renders at, as
+    /// [`GpuCompositionRenderer::set_render_scale`](crate::gpu::GpuCompositionRenderer::set_render_scale)
+    /// takes it: the output is `ceil(width * render_scale)` by `ceil(height * render_scale)`. A
+    /// render fails with [`ErrorCode::InvalidConfig`] unless it is finite and above 0.
+    pub render_scale: f32,
+}
+
+impl Default for RenderConfig {
+    fn default() -> Self {
+        Self {
+            font_dir: None,
+            hardware_decode: false,
+            gpu: GpuSettings::default(),
+            temp_dir: None,
+            render_scale: 1.0,
+        }
+    }
 }
 
 impl RenderConfig {

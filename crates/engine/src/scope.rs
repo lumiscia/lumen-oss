@@ -246,10 +246,10 @@ pub(crate) fn route_time_remap<'a>(
     frame: FrameTime,
     media: Option<&dyn MediaStore>,
 ) -> crate::Result<Routed<'a>> {
-    let params = node.params.eval(&DelegateEvalContext {
-        node_id: node.id,
-        expr: &scope.expr_context(frame, media),
-    })?;
+    let params = node.params.eval(&DelegateEvalContext::new(
+        node.id,
+        &scope.expr_context(frame, media),
+    ))?;
     let frame = remap_frame(node.id, &params)?;
     Ok(Routed {
         instance: Some(node.id),

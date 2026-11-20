@@ -53,6 +53,7 @@ impl crate::gpu::frame_graph::RecordNode for Opacity {
         let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         let params = OpacityUniforms {
             opacity: evaluated.opacity.clamp(0.0, 1.0) as f32,

@@ -3301,8 +3301,8 @@ export interface WgslShaderNode extends CompositionNodeBase<"wgsl_shader"> {
   readonly params?: {
     /**
      * WGSL compute shader; the prelude provides inputs, `input_sampler`, `output` and `lumen`,
-     * which holds `resolution`, `time`, `frame`, and from the `camera` input `view`, `projection`
-     * and `camera_position`.
+     * which holds `resolution`, `render_scale`, `time`, `frame`, and from the `camera` input
+     * `view`, `projection` and `camera_position`.
      */
     readonly shader?: ExpressionValue<string>;
     /** Uniform struct field values by name; unset fields are zero. */

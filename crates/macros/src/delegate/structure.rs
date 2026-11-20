@@ -89,6 +89,8 @@ pub(crate) fn expand_struct_delegate(
             let name = &meta.property.id;
             if meta.property.flatten {
                 quote!(#ident: ::lumen_engine::node::DelegateEvaluable::eval(&self.#ident, ctx)?)
+            } else if meta.property.pixels {
+                quote!(#ident: ctx.eval_pixels(#name, &self.#ident)?)
             } else {
                 quote!(#ident: ctx.eval_field(#name, &self.#ident)?)
             }
@@ -268,6 +270,9 @@ pub(crate) fn expand_struct_delegate(
         }
     });
     let field_idents = metas.iter().map(|meta| &meta.ident).collect::<Vec<_>>();
+    let scale_evaluated = delegate
+        .pixels
+        .then(|| quote!(let evaluated = ctx.scale_pixels(evaluated);));
     let assert_field_types = metas
         .iter()
         .map(|meta| {
@@ -376,9 +381,11 @@ pub(crate) fn expand_struct_delegate(
                 &self,
                 ctx: &::lumen_engine::node::DelegateEvalContext<'_>,
             ) -> ::core::result::Result<Self::Evaluated, ::lumen_engine::error::LumenError> {
-                Ok(#ident {
+                let evaluated = #ident {
                     #(#nested_evaluated_fields,)*
-                })
+                };
+                #scale_evaluated
+                Ok(evaluated)
             }
 
             fn for_each_expression(&self, f: &mut dyn FnMut(&::lumen_engine::expr::Expression)) {

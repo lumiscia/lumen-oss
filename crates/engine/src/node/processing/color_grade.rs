@@ -169,6 +169,7 @@ impl ColorGrade {
         let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
+            pixel_scale: cx.pixel_scale(),
         })?;
         let size = source.domain.storage_size;
         let mut gpu_params = ColorGradeUniforms {

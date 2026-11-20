@@ -103,10 +103,7 @@ impl MotionBlur {
         &self,
         expr: &ExpressionContext<'_>,
     ) -> crate::Result<Option<Vec<f64>>> {
-        let params = self.params.eval(&DelegateEvalContext {
-            node_id: self.id,
-            expr,
-        })?;
+        let params = self.params.eval(&DelegateEvalContext::new(self.id, expr))?;
         let invalid =
             |details: String| Err(RenderError::evaluating::<MotionBlur>(self.id, details).into());
         if !(1..=MAX_MOTION_BLUR_SAMPLES).contains(&params.samples) {

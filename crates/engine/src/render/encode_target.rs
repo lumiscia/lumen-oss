@@ -187,13 +187,7 @@ impl EncodeTarget {
             #[cfg(all(target_os = "macos", feature = "metal"))]
             EncoderFamily::VideoToolbox => {
                 let devices = reserve_devices(family, hardware_decode, cancel)?;
-                match metal::MetalTarget::open(
-                    composition,
-                    &media_store.gpu,
-                    output,
-                    encoder,
-                    quality,
-                ) {
+                match metal::MetalTarget::open(composition, media_store, output, encoder, quality) {
                     Ok((renderer, target)) => {
                         return Ok(OpenedTarget {
                             renderer,
@@ -211,11 +205,11 @@ impl EncodeTarget {
 
         let devices = reserve_devices(family, hardware_decode, cancel)?;
         let renderer = create_gpu_renderer(media_store).map_err(gpu_renderer_failed)?;
-        let settings = composition.render_settings();
+        let size = renderer.output_size(composition);
         let sink = EncoderSink::create(
             output,
-            settings.width,
-            settings.height,
+            size.width,
+            size.height,
             composition.timeline().fps,
             encoder,
             quality,
@@ -241,7 +235,7 @@ impl EncodeTarget {
                 false,
             )
         })?;
-        let layout = EncodeYuvLayout::new(settings.width, settings.height, format);
+        let layout = EncodeYuvLayout::new(size.width, size.height, format);
         let converter = YuvConverter::new(renderer.gpu_renderer(), layout, true);
         let ring = ReadbackRing::new(&renderer.gpu_renderer().device, layout.size());
         if let Some(error) = unavailable {
@@ -296,7 +290,7 @@ impl EncodeTarget {
                 let raster =
                     render_raster(renderer, composition, media_store, frame, timing)?.raster;
                 poll(renderer, frame, timing, None)?;
-                checked_size(composition, &raster, frame)?;
+                checked_size(renderer.output_size(composition), &raster, frame)?;
                 timed(&mut timing.render, || {
                     converter.submit(renderer.gpu_renderer(), &raster.texture)
                 });
@@ -547,17 +541,17 @@ pub(super) fn render_raster(
     timed(&mut timing.render, || renderer.submit_frame(&bound)).map_err(failed)
 }
 
+/// The size of `raster`, which fails unless it is the renderer's `output` size.
 pub(super) fn checked_size(
-    composition: &Composition,
+    output: lumen_gpu::Size,
     raster: &RasterHandle,
     frame: u32,
 ) -> Result<lumen_gpu::Size, Error> {
     let size = raster.domain.storage_size;
-    let settings = composition.render_settings();
-    if (size.width, size.height) != (settings.width, settings.height) {
+    if size != output {
         return Err(render_failed(format!(
-            "frame {frame} dimensions {}x{} do not match composition {}x{}",
-            size.width, size.height, settings.width, settings.height
+            "frame {frame} dimensions {}x{} do not match the output {}x{}",
+            size.width, size.height, output.width, output.height
         )));
     }
     Ok(size)

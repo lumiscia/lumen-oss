@@ -816,10 +816,8 @@ mod tests {
             PaintDelegate::from_json_value(&"=tween(#ff0000, #0000ff, 0, 24)".into(), "fill_paint")
                 .unwrap();
         assert!(matches!(delegate.read(), Some(PropertyRead::Expr(_))));
-        let ctx = DelegateEvalContext {
-            node_id: NodeId::new(3),
-            expr: &context(),
-        };
+        let expr = context();
+        let ctx = DelegateEvalContext::new(NodeId::new(3), &expr);
         assert_eq!(
             delegate.eval(&ctx).unwrap(),
             Paint::solid([128, 0, 128, 255])
