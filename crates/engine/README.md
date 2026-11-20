@@ -37,7 +37,9 @@ So an 8-bit image passed straight through comes out unchanged, and 50% white ove
 
 - Normal merges, opacity, masks, transform and resize sampling, blurs, glow, shadows, motion blur,
   text and shape antialiasing work in linear light. A luma matte is the linear BT.709 luminance;
-  the glow threshold compares sRGB-encoded luminance, so 0.5 is half way up the visible range.
+  the glow threshold compares sRGB-encoded luminance, so 0.5 is half way up the visible range,
+  and `halftone` and `ordered_dither` measure darkness the same way, then mix their colours in
+  linear light.
 - Every other blend mode, `levels`, `hue_saturation`, the `color_grade` LUT, `exposure`'s
   contrast and offset, `color_correct`'s curves, `displacement_map` (byte 128 is neutral) and
   `fractal_noise` work on sRGB-encoded values, as design tools do.

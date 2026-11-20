@@ -450,6 +450,26 @@ Params:
 - **`tint`** ([paint](#type-paint); default `[255,255,255,255]`) Glow colour when `tint_enabled` is set, at the brightness of the light that casts it. Must be a solid color; a gradient is an error.
 - **`tint_enabled`** (boolean; default `false`) Colours the glow with `tint` instead of the colours that cast it.
 
+## `halftone`
+
+Redraws a raster as a grid of dots or lines in `ink` on `paper`, as in a print screen. Each cell takes the darkness, 1 minus the luma of the sRGB-encoded colour, at its centre, and covers that fraction of its area, so a flat colour gives uniform dots and black fills the whole cell. The grid is anchored to the canvas origin, so the pattern stays put when the source moves, and the source's alpha is kept.
+
+For example, `{ "pitch": 55, "angle": -19, "ink": [110, 28, 38, 255], "paper": [120, 134, 150, 255] }` over a flat colour gives oxblood dots on a grey-blue ground, on a grid rotated -19 degrees.
+
+Category: processing. Output: raster.
+
+Inputs:
+
+- `source`: raster, required
+
+Params:
+
+- **`angle`** (number; default `45`) Rotation of the grid in degrees.
+- **`ink`** ([paint](#type-paint); default `[0,0,0,255]`) Color where the source is dark. Must be a solid color; a gradient is an error.
+- **`paper`** ([paint](#type-paint); default `[255,255,255,255]`) Color where the source is light. Must be a solid color; a gradient is an error.
+- **`pitch`** (number, at least 1; default `8`) Width and height of a cell in pixels.
+- **`shape`** (`"round"` | `"line"`; default `"round"`) What each cell draws.
+
 ## `hue_saturation`
 
 Adjusts raster hue, saturation, and lightness of the sRGB-encoded colour.
@@ -512,6 +532,27 @@ Inputs:
 Params:
 
 - **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier applied to the raster.
+
+## `ordered_dither`
+
+Reduces a raster to a few levels with a Bayer threshold matrix, which trades the banding of plain quantizing for a fixed, regular pattern. Values quantize in sRGB-encoded space. The matrix is anchored to the canvas origin and each cell is a whole number of device pixels, so cell edges are never antialiased. The source's alpha is kept.
+
+For example, `{ "matrix": "bayer8", "pitch": 2, "ink": [20, 24, 40, 255], "paper": [240, 232, 210, 255] }` redraws a photo in two colours with cells of 2 pixels.
+
+Category: processing. Output: raster.
+
+Inputs:
+
+- `source`: raster, required
+
+Params:
+
+- **`ink`** ([paint](#type-paint); default `[0,0,0,255]`) Color of the darkest level. Must be a solid color; a gradient is an error. Only `ink_paper` uses it.
+- **`levels`** (integer, at least 2; default `2`) Levels each value quantizes to, at least 2. 2 gives only the extremes.
+- **`matrix`** (`"bayer2"` | `"bayer4"` | `"bayer8"`; default `"bayer4"`) The threshold matrix.
+- **`mode`** (`"ink_paper"` | `"source"`; default `"ink_paper"`) What the node draws.
+- **`paper`** ([paint](#type-paint); default `[255,255,255,255]`) Color of the lightest level. Must be a solid color; a gradient is an error. Only `ink_paper` uses it.
+- **`pitch`** (number, at least 1; default `1`) Width and height of a matrix cell in pixels. A cell is a whole number of output pixels, at least one, so the pitch rounds at render scales where it isn't.
 
 ## `radial_blur`
 

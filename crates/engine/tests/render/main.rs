@@ -18,6 +18,7 @@ mod face_materials;
 mod frame_graph;
 mod geometry;
 mod glow;
+mod halftone;
 mod harness;
 #[cfg(feature = "image")]
 mod image_color;

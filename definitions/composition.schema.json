@@ -4078,6 +4078,140 @@
           },
           {
             "additionalProperties": false,
+            "description": "Redraws a raster as a grid of dots or lines in `ink` on `paper`, as in a print screen. Each\ncell takes the darkness, 1 minus the luma of the sRGB-encoded colour, at its centre, and\ncovers that fraction of its area, so a flat colour gives uniform dots and black fills the\nwhole cell. The grid is anchored to the canvas origin, so the pattern stays put when the\nsource moves, and the source's alpha is kept.\n\nFor example, `{ \"pitch\": 55, \"angle\": -19, \"ink\": [110, 28, 38, 255], \"paper\": [120, 134, 150, 255] }`\nover a flat colour gives oxblood dots on a grey-blue ground, on a grid rotated -19 degrees.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "angle": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 45.0,
+                    "description": "Rotation of the grid in degrees.",
+                    "title": "Angle",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "ink": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0, 0, 0, 255],
+                    "description": "Color where the source is dark. Must be a solid color; a gradient is an error.",
+                    "title": "Ink",
+                    "x-lumen-constraints": {
+                      "role": "color"
+                    },
+                    "x-lumen-kind": "paint"
+                  },
+                  "paper": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [255, 255, 255, 255],
+                    "description": "Color where the source is light. Must be a solid color; a gradient is an error.",
+                    "title": "Paper",
+                    "x-lumen-constraints": {
+                      "role": "color"
+                    },
+                    "x-lumen-kind": "paint"
+                  },
+                  "pitch": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 8.0,
+                    "description": "Width and height of a cell in pixels.",
+                    "title": "Pitch",
+                    "x-lumen-constraints": {
+                      "min": 1.0,
+                      "step": 0.5
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "shape": {
+                    "anyOf": [
+                      {
+                        "enum": ["round", "line"],
+                        "type": "string",
+                        "x-lumen-type": "HalftoneShape"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "round",
+                    "description": "What each cell draws.",
+                    "title": "Shape",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Round",
+                        "name": "round",
+                        "value": 0
+                      },
+                      {
+                        "label": "Line",
+                        "name": "line",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "halftone"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Halftone",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Adjusts raster hue, saturation, and lightness of the sRGB-encoded colour.",
             "properties": {
               "id": {
@@ -6322,6 +6456,174 @@
             },
             "required": ["id", "type"],
             "title": "Opacity",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "Reduces a raster to a few levels with a Bayer threshold matrix, which trades the banding of\nplain quantizing for a fixed, regular pattern. Values quantize in sRGB-encoded space. The\nmatrix is anchored to the canvas origin and each cell is a whole number of device pixels, so\ncell edges are never antialiased. The source's alpha is kept.\n\nFor example, `{ \"matrix\": \"bayer8\", \"pitch\": 2, \"ink\": [20, 24, 40, 255], \"paper\": [240, 232, 210, 255] }`\nredraws a photo in two colours with cells of 2 pixels.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "ink": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0, 0, 0, 255],
+                    "description": "Color of the darkest level. Must be a solid color; a gradient is an error. Only\n`ink_paper` uses it.",
+                    "title": "Ink",
+                    "x-lumen-constraints": {
+                      "role": "color"
+                    },
+                    "x-lumen-kind": "paint"
+                  },
+                  "levels": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 2,
+                    "description": "Levels each value quantizes to, at least 2. 2 gives only the extremes.",
+                    "title": "Levels",
+                    "x-lumen-constraints": {
+                      "min": 2.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "matrix": {
+                    "anyOf": [
+                      {
+                        "enum": ["bayer2", "bayer4", "bayer8"],
+                        "type": "string",
+                        "x-lumen-type": "DitherMatrix"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "bayer4",
+                    "description": "The threshold matrix.",
+                    "title": "Matrix",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Bayer2",
+                        "name": "bayer2",
+                        "value": 0
+                      },
+                      {
+                        "label": "Bayer4",
+                        "name": "bayer4",
+                        "value": 1
+                      },
+                      {
+                        "label": "Bayer8",
+                        "name": "bayer8",
+                        "value": 2
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "mode": {
+                    "anyOf": [
+                      {
+                        "enum": ["ink_paper", "source"],
+                        "type": "string",
+                        "x-lumen-type": "DitherMode"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "ink_paper",
+                    "description": "What the node draws.",
+                    "title": "Mode",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Ink Paper",
+                        "name": "ink_paper",
+                        "value": 0
+                      },
+                      {
+                        "label": "Source",
+                        "name": "source",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "paper": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [255, 255, 255, 255],
+                    "description": "Color of the lightest level. Must be a solid color; a gradient is an error. Only\n`ink_paper` uses it.",
+                    "title": "Paper",
+                    "x-lumen-constraints": {
+                      "role": "color"
+                    },
+                    "x-lumen-kind": "paint"
+                  },
+                  "pitch": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Width and height of a matrix cell in pixels. A cell is a whole number of output pixels, at\nleast one, so the pitch rounds at render scales where it isn't.",
+                    "title": "Pitch",
+                    "x-lumen-constraints": {
+                      "min": 1.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "ordered_dither"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Ordered Dither",
             "type": "object",
             "x-lumen-category": "processing",
             "x-lumen-inputs": [

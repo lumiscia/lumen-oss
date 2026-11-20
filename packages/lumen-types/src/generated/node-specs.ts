@@ -331,6 +331,26 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { edge: "clamp", glow_only: false, intensity: 1, radius: 12, threshold: 0.6, tint: [255, 255, 255, 255], tint_enabled: false },
   },
   {
+    kind: "halftone",
+    name: "Halftone",
+    description: "Redraws a raster as a grid of dots or lines in `ink` on `paper`, as in a print screen. Each\ncell takes the darkness, 1 minus the luma of the sRGB-encoded colour, at its centre, and\ncovers that fraction of its area, so a flat colour gives uniform dots and black fills the\nwhole cell. The grid is anchored to the canvas origin, so the pattern stays put when the\nsource moves, and the source's alpha is kept.\n\nFor example, `{ \"pitch\": 55, \"angle\": -19, \"ink\": [110, 28, 38, 255], \"paper\": [120, 134, 150, 255] }`\nover a flat colour gives oxblood dots on a grey-blue ground, on a grid rotated -19 degrees.",
+    category: "processing",
+    inputs: [
+      { name: "source", kind: "raster", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [
+      { id: "angle", name: "Angle", kind: "float", description: "Rotation of the grid in degrees.", defaultValue: 45, constraints: { step: 1 } },
+      { id: "ink", name: "Ink", kind: "paint", description: "Color where the source is dark. Must be a solid color; a gradient is an error.", defaultValue: [0, 0, 0, 255], constraints: { role: "color" } },
+      { id: "paper", name: "Paper", kind: "paint", description: "Color where the source is light. Must be a solid color; a gradient is an error.", defaultValue: [255, 255, 255, 255], constraints: { role: "color" } },
+      { id: "pitch", name: "Pitch", kind: "float", description: "Width and height of a cell in pixels.", defaultValue: 8, constraints: { min: 1, step: 0.5 } },
+      { id: "shape", name: "Shape", kind: "enum", description: "What each cell draws.", defaultValue: "round", enumOptions: [{ name: "round", label: "Round", value: 0 }, { name: "line", label: "Line", value: 1 }] },
+    ],
+    defaultParams: { angle: 45, ink: [0, 0, 0, 255], paper: [255, 255, 255, 255], pitch: 8, shape: "round" },
+  },
+  {
     kind: "hue_saturation",
     name: "Hue Saturation",
     description: "Adjusts raster hue, saturation, and lightness of the sRGB-encoded colour.",
@@ -656,6 +676,27 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { id: "opacity", name: "Opacity", kind: "float", description: "Opacity multiplier applied to the raster.", defaultValue: 1, constraints: { min: 0, max: 1, step: 0.01 } },
     ],
     defaultParams: { opacity: 1 },
+  },
+  {
+    kind: "ordered_dither",
+    name: "Ordered Dither",
+    description: "Reduces a raster to a few levels with a Bayer threshold matrix, which trades the banding of\nplain quantizing for a fixed, regular pattern. Values quantize in sRGB-encoded space. The\nmatrix is anchored to the canvas origin and each cell is a whole number of device pixels, so\ncell edges are never antialiased. The source's alpha is kept.\n\nFor example, `{ \"matrix\": \"bayer8\", \"pitch\": 2, \"ink\": [20, 24, 40, 255], \"paper\": [240, 232, 210, 255] }`\nredraws a photo in two colours with cells of 2 pixels.",
+    category: "processing",
+    inputs: [
+      { name: "source", kind: "raster", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [
+      { id: "ink", name: "Ink", kind: "paint", description: "Color of the darkest level. Must be a solid color; a gradient is an error. Only\n`ink_paper` uses it.", defaultValue: [0, 0, 0, 255], constraints: { role: "color" } },
+      { id: "levels", name: "Levels", kind: "int", description: "Levels each value quantizes to, at least 2. 2 gives only the extremes.", defaultValue: 2, constraints: { min: 2, step: 1 } },
+      { id: "matrix", name: "Matrix", kind: "enum", description: "The threshold matrix.", defaultValue: "bayer4", enumOptions: [{ name: "bayer2", label: "Bayer2", value: 0 }, { name: "bayer4", label: "Bayer4", value: 1 }, { name: "bayer8", label: "Bayer8", value: 2 }] },
+      { id: "mode", name: "Mode", kind: "enum", description: "What the node draws.", defaultValue: "ink_paper", enumOptions: [{ name: "ink_paper", label: "Ink Paper", value: 0 }, { name: "source", label: "Source", value: 1 }] },
+      { id: "paper", name: "Paper", kind: "paint", description: "Color of the lightest level. Must be a solid color; a gradient is an error. Only\n`ink_paper` uses it.", defaultValue: [255, 255, 255, 255], constraints: { role: "color" } },
+      { id: "pitch", name: "Pitch", kind: "float", description: "Width and height of a matrix cell in pixels. A cell is a whole number of output pixels, at\nleast one, so the pitch rounds at render scales where it isn't.", defaultValue: 1, constraints: { min: 1, step: 1 } },
+    ],
+    defaultParams: { ink: [0, 0, 0, 255], levels: 2, matrix: "bayer4", mode: "ink_paper", paper: [255, 255, 255, 255], pitch: 1 },
   },
   {
     kind: "particles_3d",
