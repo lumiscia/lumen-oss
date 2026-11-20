@@ -202,6 +202,7 @@ node_kinds! {
     ChromaKey(processing::chroma_key::ChromaKey),
     ColorCorrect(processing::color_correct::ColorCorrect),
     ColorGrade(processing::color_grade::ColorGrade),
+    CornerPin(processing::corner_pin::CornerPin),
     Exposure(processing::exposure::Exposure),
     FilmGrain(processing::film_grain::FilmGrain),
     Halftone(processing::halftone::Halftone),

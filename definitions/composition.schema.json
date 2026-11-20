@@ -3028,6 +3028,158 @@
           },
           {
             "additionalProperties": false,
+            "description": "Pins a raster's four corners to four points of the canvas, with the perspective that takes.\n\n`top_left`, `top_right`, `bottom_right` and `bottom_left` are where the source's own corners\nland, in canvas pixels, which run clockwise on screen from the top left when the source is\npinned upright. The source is stretched across the quad they make, with perspective, and the\ncanvas outside the quad is transparent. The corners can't default to the source's own, so\nthey default to a 100 pixel square at the canvas's top left; set all four.\n\nThe corners must make a convex quad with some area. Corners that cross each other, bend a\ncorner inwards or lie in a line fail the render, naming the corner at fault when it can. Run\nthe other way round, the corners mirror the source. They are checked at every frame, so\nanimated corners must stay convex throughout.\n\nThe quad's edges are antialiased, and the source is filtered for how much the pin shrinks it\nat each pixel, so the far end of a steep pin does not alias. With `motion_blur`, animated\ncorners smear along their motion.\n\nFor example, pinning a 1920 by 1080 video onto a tilted screen in a plate:\n`{ \"top_left\": [412, 210], \"top_right\": [905, 262], \"bottom_right\": [893, 540], \"bottom_left\": [405, 498] }`.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "bottom_left": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 100.0],
+                    "description": "Where the source's bottom-left corner lands, in canvas pixels.",
+                    "title": "Bottom left",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "vec2"
+                  },
+                  "bottom_right": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [100.0, 100.0],
+                    "description": "Where the source's bottom-right corner lands, in canvas pixels.",
+                    "title": "Bottom right",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "vec2"
+                  },
+                  "motion_blur": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the\nusual film look and 360 smears over the whole frame.",
+                    "title": "Motion blur",
+                    "x-lumen-constraints": {
+                      "max": 360.0,
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "sampling": {
+                    "anyOf": [
+                      {
+                        "enum": ["nearest", "linear"],
+                        "type": "string",
+                        "x-lumen-type": "RasterSampling"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "linear",
+                    "description": "Sampling filter used when pinning.",
+                    "title": "Sampling",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Nearest",
+                        "name": "nearest",
+                        "value": 0
+                      },
+                      {
+                        "label": "Linear",
+                        "name": "linear",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "top_left": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0],
+                    "description": "Where the source's top-left corner lands, in canvas pixels.",
+                    "title": "Top left",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "vec2"
+                  },
+                  "top_right": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [100.0, 0.0],
+                    "description": "Where the source's top-right corner lands, in canvas pixels.",
+                    "title": "Top right",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "vec2"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "corner_pin"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Corner Pin",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Keeps a raster region in place and clears everything outside it.",
             "properties": {
               "id": {

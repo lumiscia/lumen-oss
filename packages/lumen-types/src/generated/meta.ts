@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "corner_pin" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1458,6 +1458,7 @@ export type Connection = {
   readonly to_node: number;
   readonly to_port: string;
 };
+export type CornerPinSampling = RasterSampling;
 /** Lengths that a stroke alternately draws and skips, starting with a dash. Each takes a literal or an expression. */
 export type DashPattern = readonly ExpressionValue<number>[];
 export type DirectionalBlurEdge = EdgeMode;
@@ -1469,7 +1470,6 @@ export type DisplacementMapSampling = RasterSampling;
 export type DitherMatrix = "bayer2" | "bayer4" | "bayer8";
 export type DitherMode = "ink_paper" | "source";
 export type EdgeMode = "clamp" | "transparent";
-export type ErodeDilateShape = "round" | "square";
 /** OpenType features by four-character tag. 0 turns a feature off, 1 turns it on and larger values select an alternate. */
 export type FontFeatures = Readonly<Record<string, ExpressionValue<number>>>;
 export type FractalNoiseMode = NoiseMode;
@@ -1527,11 +1527,6 @@ export type InstanceCopy = {
   readonly scale?: Vec3;
   readonly tint?: Color;
 };
-export type LensDirection = "distort" | "undistort";
-export type LensDistortionDirection = LensDirection;
-export type LensDistortionEdge = EdgeMode;
-export type LensDistortionFit = LensFit;
-export type LensFit = "none" | "fill";
 export type Light3dKind = "directional" | "point" | "spot" | "ambient";
 export type Light3dLight = Light3dKind;
 export type LoopMode = "clamp" | "repeat" | "ping_pong";
@@ -1596,10 +1591,6 @@ export type Shape2dGeometryKind = ShapeGeometryKind;
 export type Shape3dKind = "box" | "sphere" | "plane" | "cylinder" | "torus" | "cone";
 export type Shape3dShape = Shape3dKind;
 export type ShapeGeometryKind = "rectangle" | "ellipse";
-export type Text2dAlignmentHorizontal = TextAlignmentHorizontal;
-export type Text2dAlignmentVertical = TextAlignmentVertical;
-export type Text2dFontStyle = TextFontStyle;
-export type Text2dTextTransform = TextTransform;
 export type Text3dAlignmentHorizontal = TextAlignmentHorizontal;
 export type Text3dAlignmentVertical = TextAlignmentVertical;
 export type Text3dFontStyle = TextFontStyle;
@@ -1950,6 +1941,47 @@ export interface ColorGradeNode extends CompositionNodeBase<"color_grade"> {
   };
 }
 
+/**
+ * Pins a raster's four corners to four points of the canvas, with the perspective that takes.
+ * 
+ * `top_left`, `top_right`, `bottom_right` and `bottom_left` are where the source's own corners
+ * land, in canvas pixels, which run clockwise on screen from the top left when the source is
+ * pinned upright. The source is stretched across the quad they make, with perspective, and the
+ * canvas outside the quad is transparent. The corners can't default to the source's own, so
+ * they default to a 100 pixel square at the canvas's top left; set all four.
+ * 
+ * The corners must make a convex quad with some area. Corners that cross each other, bend a
+ * corner inwards or lie in a line fail the render, naming the corner at fault when it can. Run
+ * the other way round, the corners mirror the source. They are checked at every frame, so
+ * animated corners must stay convex throughout.
+ * 
+ * The quad's edges are antialiased, and the source is filtered for how much the pin shrinks it
+ * at each pixel, so the far end of a steep pin does not alias. With `motion_blur`, animated
+ * corners smear along their motion.
+ * 
+ * For example, pinning a 1920 by 1080 video onto a tilted screen in a plate:
+ * `{ "top_left": [412, 210], "top_right": [905, 262], "bottom_right": [893, 540], "bottom_left": [405, 498] }`.
+ */
+export interface CornerPinNode extends CompositionNodeBase<"corner_pin"> {
+  readonly params?: {
+    /** Where the source's bottom-left corner lands, in canvas pixels. */
+    readonly bottom_left?: ExpressionValue<Vec2>;
+    /** Where the source's bottom-right corner lands, in canvas pixels. */
+    readonly bottom_right?: ExpressionValue<Vec2>;
+    /**
+     * Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the
+     * usual film look and 360 smears over the whole frame.
+     */
+    readonly motion_blur?: ExpressionValue<number>;
+    /** Sampling filter used when pinning. */
+    readonly sampling?: ExpressionValue<RasterSampling>;
+    /** Where the source's top-left corner lands, in canvas pixels. */
+    readonly top_left?: ExpressionValue<Vec2>;
+    /** Where the source's top-right corner lands, in canvas pixels. */
+    readonly top_right?: ExpressionValue<Vec2>;
+  };
+}
+
 /** Keeps a raster region in place and clears everything outside it. */
 export interface CropNode extends CompositionNodeBase<"crop"> {
   readonly params?: {
@@ -2004,40 +2036,6 @@ export interface DisplacementMapNode extends CompositionNodeBase<"displacement_m
   };
 }
 
-/**
- * Grows or shrinks the opaque part of a raster by `radius` pixels, for pulling a key's edge in,
- * widening a matte so a blur covers the whole object, or outlining a letter that is already
- * pixels.
- * 
- * A pixel counts as part of the shape when its alpha is at least 0.5. A positive `radius` makes
- * every pixel within that distance of the shape opaque, in the colour of the nearest pixel of the
- * shape, so the result composites without a dark fringe. A negative `radius` makes every pixel
- * within that distance of transparency, or of an edge of the raster's area that is not an edge of
- * the canvas, transparent, and keeps the colour of the pixels that remain. Alpha is never
- * lowered by growing nor raised by shrinking, and `softness` fades the new edge over that many
- * pixels. Growing widens the output past the source's area by the radius; shrinking keeps the
- * source's area. With `radius` and `softness` 0, the raster is unchanged.
- * 
- * For example, `radius` 3 grows a key's matte by 3 pixels, and merging the original over a
- * `radius` 4 result outlines a rasterized letter.
- */
-export interface ErodeDilateNode extends CompositionNodeBase<"erode_dilate"> {
-  readonly params?: {
-    /**
-     * How far the alpha edge moves, in pixels: positive grows it, negative shrinks it. 0 leaves
-     * the edge where it is.
-     */
-    readonly radius?: ExpressionValue<number>;
-    /** Whether corners round off or stay square. */
-    readonly shape?: ExpressionValue<ErodeDilateShape>;
-    /**
-     * Width in pixels of the fade that feathers the moved edge. 0 gives a hard edge, one pixel
-     * wide.
-     */
-    readonly softness?: ExpressionValue<number>;
-  };
-}
-
 /** Adjusts raster exposure, contrast, and offset. */
 export interface ExposureNode extends CompositionNodeBase<"exposure"> {
   readonly params?: {
@@ -2051,8 +2049,8 @@ export interface ExposureNode extends CompositionNodeBase<"exposure"> {
 }
 
 /**
- * A 2D outline, a `path_2d`, `shape_2d` or `text_2d` wired into `geometry`, extruded into a solid:
- * a front cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
+ * A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front
+ * cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
  * `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
  * side walls and the bevel instead, leaving the caps to `material`. The geometry's pixel coordinates, after its own
  * position, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with
@@ -2065,8 +2063,8 @@ export interface ExposureNode extends CompositionNodeBase<"exposure"> {
  * open subpaths are closed by a straight segment. Curves are flattened to within 0.001 world
  * units, so a larger or smaller `units_per_pixel` keeps them as smooth. An ellipse has as many
  * sides as that takes, at least 16 and at most 256, and each corner of a rounded rectangle a
- * quarter of as many for its own radius, at least 4 and at most 64. The flattening of a path or
- * a text coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,
+ * quarter of as many for its own radius, at least 4 and at most 64. A path's flattening
+ * coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,
  * 262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a
  * render error. An `offset_2d` in the geometry is not supported yet and fails the render. The
  * mesh is built again only when the outline, `units_per_pixel` or the bevel change, or the
@@ -2393,7 +2391,7 @@ export interface Instance3dNode extends CompositionNodeBase<"instance_3d"> {
 }
 
 /**
- * A 2D profile, a `path_2d`, `shape_2d` or `text_2d` wired into `geometry`, spun around the world Y axis
+ * A 2D profile, a `path_2d` or `shape_2d` wired into `geometry`, spun around the world Y axis
  * into a solid of revolution, lit, single-sided and white unless a `material_3d` is wired into
  * `material`. The geometry's pixel coordinates, after its own position, scale, rotation and
  * anchor, become world units at `units_per_pixel` each: a point's X is its distance from the axis
@@ -2441,45 +2439,6 @@ export interface Lathe3dNode extends CompositionNodeBase<"lathe_3d"> {
      * before it. 0 draws nothing. At most 1000000.
      */
     readonly units_per_pixel?: ExpressionValue<number>;
-  };
-}
-
-/**
- * Bends a raster the way a lens does. With `direction: "distort"`, a pixel at `p` from the optical
- * centre reads the source at `p * (1 + k1 r² + k2 r⁴)`, where `r` is its distance in
- * half-diagonals, so positive `k1` gives barrel distortion and negative `k1` pincushion. With
- * `direction: "undistort"` it reads where that lens would have put it, undoing a distortion with
- * the same coefficients. The result covers the source's frame, and looks the same at any render
- * scale.
- * 
- * To match graphics to footage, set the footage's coefficients and `direction: "undistort"` on
- * the footage, or leave `direction` as `"distort"` on the graphics. For a finishing look, try
- * `k1: 0.15` with `chromatic_aberration: 0.004`.
- */
-export interface LensDistortionNode extends CompositionNodeBase<"lens_distortion"> {
-  readonly params?: {
-    /** The optical centre as a fraction of the frame: `[0.5, 0.5]` is the middle. */
-    readonly center?: ExpressionValue<Vec2>;
-    /**
-     * How far red and blue scale apart from green, as a fraction of each pixel's distance from
-     * the optical centre. Positive values magnify red and shrink blue, so red fringes lie
-     * outside blue ones and grow toward the corners.
-     */
-    readonly chromatic_aberration?: ExpressionValue<number>;
-    /** Whether to apply the lens or remove it. */
-    readonly direction?: ExpressionValue<LensDirection>;
-    /** What the source reads as beyond its frame. */
-    readonly edge?: ExpressionValue<EdgeMode>;
-    /** Whether to scale the result so that no edge is exposed. */
-    readonly fit?: ExpressionValue<LensFit>;
-    /**
-     * Radial distortion, the `r²` coefficient. Positive values bow straight lines outward
-     * (barrel), negative values bow them inward (pincushion). Distances are measured from the
-     * optical centre in units of the frame's half-diagonal, so the corners are at 1.
-     */
-    readonly k1?: ExpressionValue<number>;
-    /** Radial distortion, the `r⁴` coefficient. It bends mostly toward the corners. */
-    readonly k2?: ExpressionValue<number>;
   };
 }
 
@@ -3519,97 +3478,6 @@ export interface TextNode extends CompositionNodeBase<"text"> {
 }
 
 /**
- * The outlines of text's glyphs, without paint, so fills, strokes, offsets and shadows style
- * type as they do any other geometry, and one `text_2d` can feed several of them:
- * 
- * ```json
- * { "id": 1, "type": "text_2d", "params": { "content": "Lumen", "font_size": 240, "position": [960, 540], "alignment_horizontal": "center", "alignment_vertical": "middle" } },
- * { "id": 2, "type": "offset_2d", "params": { "offset": 12 }, "in": { "geometry": 1 } },
- * { "id": 3, "type": "fill_2d", "params": { "paint": "#ee5b24" }, "in": { "geometry": 2 } },
- * { "id": 4, "type": "fill_2d", "params": { "paint": "#ffffff" }, "in": { "geometry": 1 } },
- * { "id": 5, "type": "stroke_2d", "params": { "paint": "#111111", "width": 4 }, "in": { "geometry": 1 } },
- * { "id": 6, "type": "merge_2d", "in": { "drawings": [3, 4, 5] } },
- * { "id": 7, "type": "render_2d", "in": { "drawing": 6 } }
- * ```
- * 
- * The text is shaped as a `text` node with the same font, size and layout shapes it, with its
- * kerning, ligatures, font fallback and wrapping, so with left and top alignment a white fill
- * lines up with a white `text` node at the same `position`. The outline covers what the glyphs
- * cover by the nonzero rule, as fonts expect, so contours that overlap, as in variable fonts,
- * and glyphs that overlap each other fill as one, and a stroke follows only the outline's
- * edge, measuring trim and dash along each of its contours. Glyphs are shaped and outlined
- * again only when the text, font or layout change, not when the transform or the styles
- * animate. Text of more than 8192 outline points is drawn as several outlines one after
- * another, glyph by glyph, which shadows and translucent paints treat as separate drawables
- * where they overlap. Curves are flattened for the largest scale `render_2d` draws them at,
- * coarser where a text would pass 1048576 points.
- * 
- * It suits titles and short lines. A moving paragraph costs far more than a `text` node, whose
- * glyphs are drawn from cached images, since its outline is placed again every frame. One
- * style covers the whole text: rich text spans, decorations and the `glyph_*` params of a
- * `text` node have no counterpart.
- */
-export interface Text2dNode extends CompositionNodeBase<"text_2d"> {
-  readonly params?: {
-    /**
-     * How lines align with each other, and which point of the text's box sits at `position`:
-     * its left edge, centre or right edge. Justified lines anchor at the left edge.
-     */
-    readonly alignment_horizontal?: TextAlignmentHorizontal;
-    /**
-     * Which point of the text's box sits at `position` vertically: the top of its first line,
-     * its middle, or the bottom of its last line.
-     */
-    readonly alignment_vertical?: TextAlignmentVertical;
-    /** Pivot for scale and rotation, in pixels relative to `position`. */
-    readonly anchor?: ExpressionValue<Vec2>;
-    /**
-     * Text to outline, in one style. Line breaks start new lines. Whitespace has no outline, and
-     * glyphs that their font draws from colour or bitmap tables, such as emoji, have none either
-     * and are left out with a `font.no_outlines` warning. A node outlines at most as many glyphs
-     * as the host's text glyph limit lets a `text` node draw, 16384 unless the host sets
-     * another, and one glyph's outline has at most 4096 commands; more is a render error.
-     */
-    readonly content?: ExpressionValue<string>;
-    /**
-     * Font family name, or `asset:<id>` for a font asset of the host's. A family no font answers
-     * to falls back as a `text` node's does.
-     */
-    readonly font_family?: ExpressionValue<string>;
-    /**
-     * OpenType features by four-character tag, such as `{ "tnum": 1, "liga": 0 }`. 0 turns a
-     * feature off, 1 turns it on and larger values select an alternate. Values take literals
-     * or expressions, but the whole map cannot be an expression.
-     */
-    readonly font_features?: FontFeatures;
-    /**
-     * Font size in pixels: the height of the font's em square. 0 draws nothing, and so does
-     * anything under 0.000001. At most 1000000, as are `max_width`, `letter_spacing` and
-     * `line_height`.
-     */
-    readonly font_size?: ExpressionValue<number>;
-    /** Font style. */
-    readonly font_style?: ExpressionValue<TextFontStyle>;
-    /** Font weight. Variable fonts render any value in their weight range. */
-    readonly font_weight?: ExpressionValue<number>;
-    /** Extra space after every glyph in pixels. Negative values tighten the text. */
-    readonly letter_spacing?: ExpressionValue<number>;
-    /** Distance between lines in pixels. Use 0 for 1.2 × the font size. */
-    readonly line_height?: ExpressionValue<number>;
-    /** Maximum line width in pixels, at which lines wrap. Use 0 for automatic width. */
-    readonly max_width?: ExpressionValue<number>;
-    /** Where the point of the text's box that the alignments pick sits, in pixels. */
-    readonly position?: ExpressionValue<Vec2>;
-    /** Clockwise rotation in degrees, about the anchor. */
-    readonly rotation?: ExpressionValue<number>;
-    /** Scale multiplier per axis, about the anchor. */
-    readonly scale?: ExpressionValue<Vec2>;
-    /** Case applied to the text. */
-    readonly text_transform?: ExpressionValue<TextTransform>;
-  };
-}
-
-/**
  * Text from its font's outlines, extruded into a solid, lit, single-sided and white unless
  * a `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
  * side walls and the bevel instead, leaving the front and back faces to `material`. The text is
@@ -3792,10 +3660,10 @@ export interface CompositionNodeByKind {
   readonly "clip": ClipNode;
   readonly "color_correct": ColorCorrectNode;
   readonly "color_grade": ColorGradeNode;
+  readonly "corner_pin": CornerPinNode;
   readonly "crop": CropNode;
   readonly "directional_blur": DirectionalBlurNode;
   readonly "displacement_map": DisplacementMapNode;
-  readonly "erode_dilate": ErodeDilateNode;
   readonly "exposure": ExposureNode;
   readonly "extrude_3d": Extrude3dNode;
   readonly "fill_2d": Fill2dNode;
@@ -3807,7 +3675,6 @@ export interface CompositionNodeByKind {
   readonly "image_plane_3d": ImagePlane3dNode;
   readonly "instance_3d": Instance3dNode;
   readonly "lathe_3d": Lathe3dNode;
-  readonly "lens_distortion": LensDistortionNode;
   readonly "levels": LevelsNode;
   readonly "light_3d": Light3dNode;
   readonly "material_3d": Material3dNode;
@@ -3838,7 +3705,6 @@ export interface CompositionNodeByKind {
   readonly "stroke_2d": Stroke2dNode;
   readonly "switch": SwitchNode;
   readonly "text": TextNode;
-  readonly "text_2d": Text2dNode;
   readonly "text_3d": Text3dNode;
   readonly "time_remap": TimeRemapNode;
   readonly "transform": TransformNode;
@@ -3874,6 +3740,9 @@ export interface CompositionNodeInputByKind {
   readonly "color_grade": Omit<ColorGradeNode, "id"> & {
     readonly id?: number;
   };
+  readonly "corner_pin": Omit<CornerPinNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "crop": Omit<CropNode, "id"> & {
     readonly id?: number;
   };
@@ -3881,9 +3750,6 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "displacement_map": Omit<DisplacementMapNode, "id"> & {
-    readonly id?: number;
-  };
-  readonly "erode_dilate": Omit<ErodeDilateNode, "id"> & {
     readonly id?: number;
   };
   readonly "exposure": Omit<ExposureNode, "id"> & {
@@ -3917,9 +3783,6 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "lathe_3d": Omit<Lathe3dNode, "id"> & {
-    readonly id?: number;
-  };
-  readonly "lens_distortion": Omit<LensDistortionNode, "id"> & {
     readonly id?: number;
   };
   readonly "levels": Omit<LevelsNode, "id"> & {
@@ -4012,9 +3875,6 @@ export interface CompositionNodeInputByKind {
   readonly "text": Omit<TextNode, "id"> & {
     readonly id?: number;
   };
-  readonly "text_2d": Omit<Text2dNode, "id"> & {
-    readonly id?: number;
-  };
   readonly "text_3d": Omit<Text3dNode, "id"> & {
     readonly id?: number;
   };
@@ -4042,10 +3902,10 @@ export interface NodeInputPortNameByKind {
   readonly "clip": "source";
   readonly "color_correct": "source";
   readonly "color_grade": "source";
+  readonly "corner_pin": "source";
   readonly "crop": "source";
   readonly "directional_blur": "source";
   readonly "displacement_map": "map" | "source";
-  readonly "erode_dilate": "source";
   readonly "exposure": "source";
   readonly "extrude_3d": "geometry" | "material" | "side_material";
   readonly "fill_2d": "geometry";
@@ -4057,7 +3917,6 @@ export interface NodeInputPortNameByKind {
   readonly "image_plane_3d": "material" | "source";
   readonly "instance_3d": "scene";
   readonly "lathe_3d": "geometry" | "material";
-  readonly "lens_distortion": "source";
   readonly "levels": "source";
   readonly "light_3d": never;
   readonly "material_3d": "texture";
@@ -4088,7 +3947,6 @@ export interface NodeInputPortNameByKind {
   readonly "stroke_2d": "geometry";
   readonly "switch": "layers";
   readonly "text": never;
-  readonly "text_2d": never;
   readonly "text_3d": "material" | "side_material";
   readonly "time_remap": "source";
   readonly "transform": "source";
@@ -4106,10 +3964,10 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "clip": never;
   readonly "color_correct": never;
   readonly "color_grade": never;
+  readonly "corner_pin": never;
   readonly "crop": never;
   readonly "directional_blur": never;
   readonly "displacement_map": never;
-  readonly "erode_dilate": never;
   readonly "exposure": never;
   readonly "extrude_3d": never;
   readonly "fill_2d": never;
@@ -4121,7 +3979,6 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "image_plane_3d": never;
   readonly "instance_3d": never;
   readonly "lathe_3d": never;
-  readonly "lens_distortion": never;
   readonly "levels": never;
   readonly "light_3d": never;
   readonly "material_3d": never;
@@ -4152,7 +4009,6 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "stroke_2d": never;
   readonly "switch": "layers";
   readonly "text": never;
-  readonly "text_2d": never;
   readonly "text_3d": never;
   readonly "time_remap": never;
   readonly "transform": never;
@@ -4170,10 +4026,10 @@ export interface NodeOutputKindByKind {
   readonly "clip": "raster";
   readonly "color_correct": "raster";
   readonly "color_grade": "raster";
+  readonly "corner_pin": "raster";
   readonly "crop": "raster";
   readonly "directional_blur": "raster";
   readonly "displacement_map": "raster";
-  readonly "erode_dilate": "raster";
   readonly "exposure": "raster";
   readonly "extrude_3d": "scene";
   readonly "fill_2d": "drawing";
@@ -4185,7 +4041,6 @@ export interface NodeOutputKindByKind {
   readonly "image_plane_3d": "scene";
   readonly "instance_3d": "scene";
   readonly "lathe_3d": "scene";
-  readonly "lens_distortion": "raster";
   readonly "levels": "raster";
   readonly "light_3d": "scene";
   readonly "material_3d": "material";
@@ -4216,7 +4071,6 @@ export interface NodeOutputKindByKind {
   readonly "stroke_2d": "drawing";
   readonly "switch": "raster";
   readonly "text": "raster";
-  readonly "text_2d": "geometry";
   readonly "text_3d": "scene";
   readonly "time_remap": "raster";
   readonly "transform": "raster";
@@ -4234,10 +4088,10 @@ export interface NodeInputPortKindByKind {
   readonly "clip": { readonly "source": "raster" };
   readonly "color_correct": { readonly "source": "raster" };
   readonly "color_grade": { readonly "source": "raster" };
+  readonly "corner_pin": { readonly "source": "raster" };
   readonly "crop": { readonly "source": "raster" };
   readonly "directional_blur": { readonly "source": "raster" };
   readonly "displacement_map": { readonly "source": "raster"; readonly "map": "raster" };
-  readonly "erode_dilate": { readonly "source": "raster" };
   readonly "exposure": { readonly "source": "raster" };
   readonly "extrude_3d": { readonly "geometry": "geometry"; readonly "material": "material"; readonly "side_material": "material" };
   readonly "fill_2d": { readonly "geometry": "geometry" };
@@ -4249,7 +4103,6 @@ export interface NodeInputPortKindByKind {
   readonly "image_plane_3d": { readonly "source": "raster"; readonly "material": "material" };
   readonly "instance_3d": { readonly "scene": "scene" };
   readonly "lathe_3d": { readonly "geometry": "geometry"; readonly "material": "material" };
-  readonly "lens_distortion": { readonly "source": "raster" };
   readonly "levels": { readonly "source": "raster" };
   readonly "light_3d": {};
   readonly "material_3d": { readonly "texture": "raster" };
@@ -4280,7 +4133,6 @@ export interface NodeInputPortKindByKind {
   readonly "stroke_2d": { readonly "geometry": "geometry" };
   readonly "switch": { readonly "layers": "raster" };
   readonly "text": {};
-  readonly "text_2d": {};
   readonly "text_3d": { readonly "material": "material"; readonly "side_material": "material" };
   readonly "time_remap": { readonly "source": "raster" };
   readonly "transform": { readonly "source": "raster" };
@@ -4397,6 +4249,28 @@ export const nodeInputPorts = {
   "color_correct": { "source": { kind: "raster", variadic: false } },
   /** Applies a LUT-driven color transform to a raster, looking up its sRGB-encoded colour. */
   "color_grade": { "source": { kind: "raster", variadic: false } },
+  /**
+   * Pins a raster's four corners to four points of the canvas, with the perspective that takes.
+   * 
+   * `top_left`, `top_right`, `bottom_right` and `bottom_left` are where the source's own corners
+   * land, in canvas pixels, which run clockwise on screen from the top left when the source is
+   * pinned upright. The source is stretched across the quad they make, with perspective, and the
+   * canvas outside the quad is transparent. The corners can't default to the source's own, so
+   * they default to a 100 pixel square at the canvas's top left; set all four.
+   * 
+   * The corners must make a convex quad with some area. Corners that cross each other, bend a
+   * corner inwards or lie in a line fail the render, naming the corner at fault when it can. Run
+   * the other way round, the corners mirror the source. They are checked at every frame, so
+   * animated corners must stay convex throughout.
+   * 
+   * The quad's edges are antialiased, and the source is filtered for how much the pin shrinks it
+   * at each pixel, so the far end of a steep pin does not alias. With `motion_blur`, animated
+   * corners smear along their motion.
+   * 
+   * For example, pinning a 1920 by 1080 video onto a tilted screen in a plate:
+   * `{ "top_left": [412, 210], "top_right": [905, 262], "bottom_right": [893, 540], "bottom_left": [405, 498] }`.
+   */
+  "corner_pin": { "source": { kind: "raster", variadic: false } },
   /** Keeps a raster region in place and clears everything outside it. */
   "crop": { "source": { kind: "raster", variadic: false } },
   /** Blurs a raster along a line, as a straight motion blur. */
@@ -4407,29 +4281,11 @@ export const nodeInputPorts = {
    * areas of the map, and everything outside it, leave the source in place.
    */
   "displacement_map": { "source": { kind: "raster", variadic: false }, "map": { kind: "raster", variadic: false } },
-  /**
-   * Grows or shrinks the opaque part of a raster by `radius` pixels, for pulling a key's edge in,
-   * widening a matte so a blur covers the whole object, or outlining a letter that is already
-   * pixels.
-   * 
-   * A pixel counts as part of the shape when its alpha is at least 0.5. A positive `radius` makes
-   * every pixel within that distance of the shape opaque, in the colour of the nearest pixel of the
-   * shape, so the result composites without a dark fringe. A negative `radius` makes every pixel
-   * within that distance of transparency, or of an edge of the raster's area that is not an edge of
-   * the canvas, transparent, and keeps the colour of the pixels that remain. Alpha is never
-   * lowered by growing nor raised by shrinking, and `softness` fades the new edge over that many
-   * pixels. Growing widens the output past the source's area by the radius; shrinking keeps the
-   * source's area. With `radius` and `softness` 0, the raster is unchanged.
-   * 
-   * For example, `radius` 3 grows a key's matte by 3 pixels, and merging the original over a
-   * `radius` 4 result outlines a rasterized letter.
-   */
-  "erode_dilate": { "source": { kind: "raster", variadic: false } },
   /** Adjusts raster exposure, contrast, and offset. */
   "exposure": { "source": { kind: "raster", variadic: false } },
   /**
-   * A 2D outline, a `path_2d`, `shape_2d` or `text_2d` wired into `geometry`, extruded into a solid:
-   * a front cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
+   * A 2D outline, a `path_2d` or `shape_2d` wired into `geometry`, extruded into a solid: a front
+   * cap facing +Z, a back cap facing -Z and side walls, lit, single-sided and white unless a
    * `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
    * side walls and the bevel instead, leaving the caps to `material`. The geometry's pixel coordinates, after its own
    * position, scale, rotation and anchor, become world X and Y at `units_per_pixel` units each, with
@@ -4442,8 +4298,8 @@ export const nodeInputPorts = {
    * open subpaths are closed by a straight segment. Curves are flattened to within 0.001 world
    * units, so a larger or smaller `units_per_pixel` keeps them as smooth. An ellipse has as many
    * sides as that takes, at least 16 and at most 256, and each corner of a rounded rectangle a
-   * quarter of as many for its own radius, at least 4 and at most 64. The flattening of a path or
-   * a text coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,
+   * quarter of as many for its own radius, at least 4 and at most 64. A path's flattening
+   * coarsens where it would pass 16384 points. A solid takes at most 256 contours, 16384 points,
    * 262144 vertices and 786432 indices, and bevels fit outlines of at most 4096 points; more is a
    * render error. An `offset_2d` in the geometry is not supported yet and fails the render. The
    * mesh is built again only when the outline, `units_per_pixel` or the bevel change, or the
@@ -4526,7 +4382,7 @@ export const nodeInputPorts = {
    */
   "instance_3d": { "scene": { kind: "scene", variadic: false } },
   /**
-   * A 2D profile, a `path_2d`, `shape_2d` or `text_2d` wired into `geometry`, spun around the world Y axis
+   * A 2D profile, a `path_2d` or `shape_2d` wired into `geometry`, spun around the world Y axis
    * into a solid of revolution, lit, single-sided and white unless a `material_3d` is wired into
    * `material`. The geometry's pixel coordinates, after its own position, scale, rotation and
    * anchor, become world units at `units_per_pixel` each: a point's X is its distance from the axis
@@ -4547,19 +4403,6 @@ export const nodeInputPorts = {
    * placement or the material costs no more than for a `shape_3d`.
    */
   "lathe_3d": { "geometry": { kind: "geometry", variadic: false }, "material": { kind: "material", variadic: false } },
-  /**
-   * Bends a raster the way a lens does. With `direction: "distort"`, a pixel at `p` from the optical
-   * centre reads the source at `p * (1 + k1 r² + k2 r⁴)`, where `r` is its distance in
-   * half-diagonals, so positive `k1` gives barrel distortion and negative `k1` pincushion. With
-   * `direction: "undistort"` it reads where that lens would have put it, undoing a distortion with
-   * the same coefficients. The result covers the source's frame, and looks the same at any render
-   * scale.
-   * 
-   * To match graphics to footage, set the footage's coefficients and `direction: "undistort"` on
-   * the footage, or leave `direction` as `"distort"` on the graphics. For a finishing look, try
-   * `k1: 0.15` with `chromatic_aberration: 0.004`.
-   */
-  "lens_distortion": { "source": { kind: "raster", variadic: false } },
   /** Remaps raster black, white, gamma, and output range of the sRGB-encoded colour. */
   "levels": { "source": { kind: "raster", variadic: false } },
   /** A light. A scene without any is lit by a default key light and ambient fill. */
@@ -4758,38 +4601,6 @@ export const nodeInputPorts = {
   /** Produces a text source. */
   "text": {},
   /**
-   * The outlines of text's glyphs, without paint, so fills, strokes, offsets and shadows style
-   * type as they do any other geometry, and one `text_2d` can feed several of them:
-   * 
-   * ```json
-   * { "id": 1, "type": "text_2d", "params": { "content": "Lumen", "font_size": 240, "position": [960, 540], "alignment_horizontal": "center", "alignment_vertical": "middle" } },
-   * { "id": 2, "type": "offset_2d", "params": { "offset": 12 }, "in": { "geometry": 1 } },
-   * { "id": 3, "type": "fill_2d", "params": { "paint": "#ee5b24" }, "in": { "geometry": 2 } },
-   * { "id": 4, "type": "fill_2d", "params": { "paint": "#ffffff" }, "in": { "geometry": 1 } },
-   * { "id": 5, "type": "stroke_2d", "params": { "paint": "#111111", "width": 4 }, "in": { "geometry": 1 } },
-   * { "id": 6, "type": "merge_2d", "in": { "drawings": [3, 4, 5] } },
-   * { "id": 7, "type": "render_2d", "in": { "drawing": 6 } }
-   * ```
-   * 
-   * The text is shaped as a `text` node with the same font, size and layout shapes it, with its
-   * kerning, ligatures, font fallback and wrapping, so with left and top alignment a white fill
-   * lines up with a white `text` node at the same `position`. The outline covers what the glyphs
-   * cover by the nonzero rule, as fonts expect, so contours that overlap, as in variable fonts,
-   * and glyphs that overlap each other fill as one, and a stroke follows only the outline's
-   * edge, measuring trim and dash along each of its contours. Glyphs are shaped and outlined
-   * again only when the text, font or layout change, not when the transform or the styles
-   * animate. Text of more than 8192 outline points is drawn as several outlines one after
-   * another, glyph by glyph, which shadows and translucent paints treat as separate drawables
-   * where they overlap. Curves are flattened for the largest scale `render_2d` draws them at,
-   * coarser where a text would pass 1048576 points.
-   * 
-   * It suits titles and short lines. A moving paragraph costs far more than a `text` node, whose
-   * glyphs are drawn from cached images, since its outline is placed again every frame. One
-   * style covers the whole text: rich text spans, decorations and the `glyph_*` params of a
-   * `text` node have no counterpart.
-   */
-  "text_2d": {},
-  /**
    * Text from its font's outlines, extruded into a solid, lit, single-sided and white unless
    * a `material_3d` is wired into `material`. A `material_3d` wired into `side_material` covers the
    * side walls and the bevel instead, leaving the front and back faces to `material`. The text is
@@ -4841,10 +4652,10 @@ export const nodeMediaSources = {
   "clip": {},
   "color_correct": {},
   "color_grade": { "lut_source": { kinds: ["lut"] } },
+  "corner_pin": {},
   "crop": {},
   "directional_blur": {},
   "displacement_map": {},
-  "erode_dilate": {},
   "exposure": {},
   "extrude_3d": {},
   "fill_2d": {},
@@ -4856,7 +4667,6 @@ export const nodeMediaSources = {
   "image_plane_3d": {},
   "instance_3d": {},
   "lathe_3d": {},
-  "lens_distortion": {},
   "levels": {},
   "light_3d": {},
   "material_3d": {},
@@ -4887,7 +4697,6 @@ export const nodeMediaSources = {
   "stroke_2d": {},
   "switch": {},
   "text": {},
-  "text_2d": {},
   "text_3d": {},
   "time_remap": {},
   "transform": {},

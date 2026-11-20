@@ -9,6 +9,7 @@ mod chroma_key;
 mod clips;
 mod color;
 mod color_correct;
+mod corner_pin;
 mod depth;
 mod displacement;
 mod drawing;
