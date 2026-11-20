@@ -16,10 +16,6 @@ struct FilmGrainParams {
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 // A uniform value in 0..1 has a standard deviation of 1 / sqrt(12).
 const UNIFORM_SCALE: f32 = 3.4641016;
-// Smoothstep interpolation of independent lattice values leaves a standard deviation of 26 / 35
-// on average over a cell, which this restores to 1.
-const INTERPOLATION_GAIN: f32 = 1.3461539;
-
 fn pcg(value: u32) -> u32 {
     let state = value * 747796405u + 2891336453u;
     let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
@@ -32,6 +28,8 @@ fn lattice_value(cell: vec2<i32>, salt: u32) -> f32 {
     return (f32(hash >> 8u) / 16777216.0 - 0.5) * UNIFORM_SCALE;
 }
 
+// Smoothstep-interpolated value noise at `point`, scaled by the interpolation's own standard
+// deviation at that point so the result has unit standard deviation anywhere in a cell.
 fn value_noise(point: vec2<f32>, salt: u32) -> f32 {
     let base = floor(point);
     let t = point - base;
@@ -43,7 +41,59 @@ fn value_noise(point: vec2<f32>, salt: u32) -> f32 {
         lattice_value(cell + vec2<i32>(1, 1), salt),
         s.x,
     );
-    return mix(top, bottom, s.y) * INTERPOLATION_GAIN;
+    let power = ((1.0 - s.x) * (1.0 - s.x) + s.x * s.x) * ((1.0 - s.y) * (1.0 - s.y) + s.y * s.y);
+    return mix(top, bottom, s.y) * inverseSqrt(power);
+}
+
+// The lattice weights along one axis of the mean of two interpolated samples.
+struct Taps {
+    index: vec4<i32>,
+    weight: vec4<f32>,
+}
+
+fn taps(first: f32, second: f32) -> Taps {
+    let first_base = floor(first);
+    let second_base = floor(second);
+    let first_t = first - first_base;
+    let second_t = second - second_base;
+    let first_s = first_t * first_t * (3.0 - 2.0 * first_t);
+    let second_s = second_t * second_t * (3.0 - 2.0 * second_t);
+    let first_index = i32(first_base);
+    let second_index = i32(second_base);
+    return Taps(
+        vec4<i32>(first_index, first_index + 1, second_index, second_index + 1),
+        0.5 * vec4<f32>(1.0 - first_s, first_s, 1.0 - second_s, second_s),
+    );
+}
+
+// The sum of the squared weights per lattice index, where taps on the same index add first.
+fn energy(axis: Taps) -> f32 {
+    var sum = 0.0;
+    for (var i = 0; i < 4; i++) {
+        for (var j = 0; j < 4; j++) {
+            if (axis.index[i] == axis.index[j]) {
+                sum += axis.weight[i] * axis.weight[j];
+            }
+        }
+    }
+    return sum;
+}
+
+// The mean of the four value-noise samples at the corners of a square around `center`, scaled to
+// unit standard deviation. The samples share lattice values, so the scale comes from the combined
+// weight of each lattice value; with a square pattern that factors into the two axes.
+fn value_noise_2x2(center: vec2<f32>, half_extent: f32, salt: u32) -> f32 {
+    let low = center - vec2<f32>(half_extent);
+    let high = center + vec2<f32>(half_extent);
+    let x = taps(low.x, high.x);
+    let y = taps(low.y, high.y);
+    var sum = 0.0;
+    for (var i = 0; i < 4; i++) {
+        for (var j = 0; j < 4; j++) {
+            sum += x.weight[i] * y.weight[j] * lattice_value(vec2<i32>(x.index[i], y.index[j]), salt);
+        }
+    }
+    return sum * inverseSqrt(energy(x) * energy(y));
 }
 
 // One octave of grain at the device pixel centred on `center`, averaged over 2x2 subsamples when
@@ -52,12 +102,7 @@ fn octave(center: vec2<f32>, cells_per_pixel: f32, salt: u32) -> f32 {
     if (cells_per_pixel <= 1.0) {
         return value_noise(center * cells_per_pixel, salt);
     }
-    var sum = 0.0;
-    for (var i = 0; i < 4; i++) {
-        let offset = vec2<f32>(f32(i & 1) - 0.5, f32(i >> 1u) - 0.5) * 0.5;
-        sum += value_noise((center + offset) * cells_per_pixel, salt);
-    }
-    return sum * 0.25;
+    return value_noise_2x2(center * cells_per_pixel, 0.25 * cells_per_pixel, salt);
 }
 
 // The grain of one channel: the fine and coarse octaves mixed at equal power, so that the
@@ -82,7 +127,7 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let source = textureLoad(input_tex, vec2<i32>(id.xy), 0);
-    if (params.grain.x == 0.0) {
+    if (params.grain.x == 0.0 || source.a <= ALPHA_EPSILON) {
         textureStore(output_tex, vec2<i32>(id.xy), source);
         return;
     }

@@ -100,6 +100,21 @@ fn grain_has_zero_mean_and_the_amount_as_its_deviation() {
 }
 
 #[test]
+fn grain_strength_does_not_depend_on_size_or_render_scale() {
+    // Size 0.5 at scale 1 takes the subsampled path, and size 1 at scale 2 puts texel centres a
+    // quarter cell from the lattice.
+    for (size, scale) in [(0.5, 1.0), (1.0, 1.0), (1.5, 1.0), (1.0, 2.0)] {
+        let params = json!({ "amount": 0.1, "size": size, "response": 0 });
+        let frame = render_scene(grained(CANVAS, grey(), params), scale);
+        let (_, deviation) = statistics(&frame, 0);
+        assert!(
+            (deviation / 25.5 - 1.0).abs() < 0.05,
+            "size {size}, scale {scale}: deviation {deviation}"
+        );
+    }
+}
+
+#[test]
 fn roughness_keeps_the_strength_and_coarsens_the_grain() {
     let params = |roughness: f64| json!({ "amount": 0.1, "response": 0, "roughness": roughness });
     let fine = render_scene(grained(CANVAS, grey(), params(0.0)), 1.0);
