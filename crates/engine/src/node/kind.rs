@@ -213,6 +213,7 @@ node_kinds! {
     Resize(processing::resize::Resize),
     Shadow(processing::shadow::Shadow),
     Glow(processing::glow::Glow),
+    Sharpen(processing::sharpen::Sharpen),
     DirectionalBlur(processing::directional_blur::DirectionalBlur),
     RadialBlur(processing::directional_blur::RadialBlur),
     ZoomBlur(processing::directional_blur::ZoomBlur),

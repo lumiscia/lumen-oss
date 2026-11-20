@@ -56,6 +56,7 @@ mod scene_regions;
 #[cfg(feature = "3d")]
 mod scene_shadows;
 mod shaders;
+mod sharpen;
 #[cfg(feature = "3d")]
 mod solids_3d;
 mod support;

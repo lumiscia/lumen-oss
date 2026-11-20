@@ -9092,6 +9092,98 @@
           },
           {
             "additionalProperties": false,
+            "description": "Sharpens a raster with an unsharp mask: detail is the difference between a pixel's luminance\nand that of a blurred copy, and sharpening adds `amount` times it back.\n\nIt works on straight colour, with luminance (Rec. 709) on the sRGB-encoded values. The detail\nis `luminance - blurred luminance`, reduced towards 0 by `threshold`, and the sharpened\nluminance is `luminance + amount * detail`. That is held between the darkest and brightest\nluminance in the 3×3 pixels around it, so hard edges get no light or dark halo. The change is\nadded equally to red, green and blue, which keeps the hue and adds no colour fringes; colour\nbrighter than white stays unclipped. Alpha is unchanged and the output covers the source's\narea. For example, `amount` 1.5 with `radius` 2 and `threshold` 0.02 firms up edges and fine\ntexture while leaving faint grain alone.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Strength of the sharpening. 0 leaves the raster as it is; 1 adds the detail back once.",
+                    "title": "Amount",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "radius": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.5,
+                    "description": "Blur radius in pixels of the soft copy the detail is measured against, as on `blur`. Small\nradii sharpen fine texture, large ones broad edges. 0 leaves the raster as it is.",
+                    "title": "Radius",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "threshold": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "The smallest local contrast that is sharpened, from 0 to 1, in sRGB-encoded luminance. Finer\ndetail, such as noise, is left alone, and stronger detail is sharpened by what exceeds it.",
+                    "title": "Threshold",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.005
+                    },
+                    "x-lumen-kind": "float"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "sharpen"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Sharpen",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Strokes its geometry's outline with a paint, as a drawing of one drawable. Caps and joins are\nround. Trim and dash apply to paths; a shape's stroke is always whole.",
             "properties": {
               "id": {
