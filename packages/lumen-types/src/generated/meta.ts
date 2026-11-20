@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "matte_names" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "corner_pin" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "corner_pin" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_blur" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -2513,6 +2513,86 @@ export interface Lathe3dNode extends CompositionNodeBase<"lathe_3d"> {
 }
 
 /**
+ * Blurs a raster as an out-of-focus lens does: every point spreads into an evenly lit disc, or a
+ * polygon with `blades`, so highlights turn into bokeh rather than the soft glow of `blur`.
+ * 
+ * Without `depth`, everything blurs by `radius`. With it, each pixel blurs by its depth: sharp
+ * within `focus_range` of `focus`, and more so further away, up to `radius`. Depth is the red
+ * channel of `depth`, read where each pixel is, and 0 where it stores nothing, so a
+ * `render_3d`'s `depth` output gives depth of field and any greyscale raster works, as a
+ * gradient that is dark in a band across the frame gives tilt-shift. `focus` is in that 0 to 1
+ * range, not in world units. A blurred pixel nearer than its neighbours spreads over them even
+ * where they are sharp, and one further away doesn't spread over nearer, sharper pixels, so a
+ * sharp subject keeps its edges in front of a blurred background.
+ * 
+ * The cost stays bounded at any radius: circles of more than 6 pixels are gathered from copies
+ * of the source at half, a quarter or less of its resolution, so each pixel reads about 130
+ * texels at most, twice that with `depth`. The widest blurs have softer bokeh edges. Blurring
+ * widens the output past the source's area by the radius.
+ * 
+ * Defocusing a whole frame into hexagonal bokeh:
+ * 
+ * ```json
+ * { "id": 2, "type": "lens_blur", "params": { "radius": 12, "blades": 6 }, "in": { "source": 1 } }
+ * ```
+ * 
+ * ```ts
+ * n.lens_blur({ source: photo, radius: 12, blades: 6 });
+ * ```
+ * 
+ * Depth of field from a `render_3d`, node 9, sharp at a fifth of the way from its `depth_near`
+ * to its `depth_far`:
+ * 
+ * ```json
+ * { "id": 10, "type": "lens_blur", "params": { "radius": 16, "focus": 0.2 } },
+ * { "from_node": 9, "from_port": "color", "to_node": 10, "to_port": "source" },
+ * { "from_node": 9, "from_port": "depth", "to_node": 10, "to_port": "depth" }
+ * ```
+ * 
+ * ```ts
+ * const depth = outputOf(render, "depth");
+ * n.lens_blur({ source: outputOf(render, "color"), depth, radius: 16, focus: 0.2 });
+ * ```
+ * 
+ * Tilt-shift, sharp across the middle of the frame and blurred towards the top and bottom:
+ * 
+ * ```json
+ * { "id": 2, "type": "background", "params": { "paint": { "type": "linear_gradient", "interpolation": "linear_srgb", "start": [0, 0], "end": [0, 1], "stops": [{ "offset": 0, "color": [255, 255, 255, 255] }, { "offset": 0.5, "color": [0, 0, 0, 255] }, { "offset": 1, "color": [255, 255, 255, 255] }] } } },
+ * { "id": 3, "type": "lens_blur", "params": { "radius": 10, "focus": 0, "focus_range": 0.1, "aperture": 1.5 }, "in": { "source": 1, "depth": 2 } }
+ * ```
+ */
+export interface LensBlurNode extends CompositionNodeBase<"lens_blur"> {
+  readonly params?: {
+    /**
+     * How fast the blur grows past `focus_range`: a pixel `aperture × (|depth - focus| -
+     * focus_range)` of the way to `radius`, up to all of it. Higher is a shallower depth of
+     * field.
+     */
+    readonly aperture?: ExpressionValue<number>;
+    /**
+     * Blades of the lens's aperture, which shape a blurred highlight: 0 is a circle, and 3 to
+     * 16 a polygon with that many sides.
+     */
+    readonly blades?: ExpressionValue<number>;
+    /**
+     * The depth that stays sharp, in the depth raster's 0 to 1 range. For a `render_3d`'s
+     * `depth`, 0 is at its `depth_near` and 1 at its `depth_far`, so a distance in world units
+     * is `(distance - depth_near) / (depth_far - depth_near)`. Unused without `depth`.
+     */
+    readonly focus?: ExpressionValue<number>;
+    /** How far either side of `focus`, in the same range, depth stays sharp. */
+    readonly focus_range?: ExpressionValue<number>;
+    /**
+     * Blur radius in pixels: the blur everywhere without `depth`, and the largest blur with it.
+     * 0 leaves the source as it is. Radii above 4096 look the same.
+     */
+    readonly radius?: ExpressionValue<number>;
+    /** Turn of the polygon in degrees, clockwise. At 0 one corner points up. */
+    readonly rotation?: ExpressionValue<number>;
+  };
+}
+
+/**
  * Bends a raster the way a lens does. With `direction: "distort"`, a pixel at `p` from the optical
  * centre reads the source at `p * (1 + k1 r² + k2 r⁴)`, where `r` is its distance in
  * half-diagonals, so positive `k1` gives barrel distortion and negative `k1` pincushion. With
@@ -3949,6 +4029,7 @@ export interface CompositionNodeByKind {
   readonly "image_plane_3d": ImagePlane3dNode;
   readonly "instance_3d": Instance3dNode;
   readonly "lathe_3d": Lathe3dNode;
+  readonly "lens_blur": LensBlurNode;
   readonly "lens_distortion": LensDistortionNode;
   readonly "levels": LevelsNode;
   readonly "light_3d": Light3dNode;
@@ -4062,6 +4143,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "lathe_3d": Omit<Lathe3dNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "lens_blur": Omit<LensBlurNode, "id"> & {
     readonly id?: number;
   };
   readonly "lens_distortion": Omit<LensDistortionNode, "id"> & {
@@ -4203,6 +4287,7 @@ export interface NodeInputPortNameByKind {
   readonly "image_plane_3d": "material" | "source";
   readonly "instance_3d": "scene";
   readonly "lathe_3d": "geometry" | "material";
+  readonly "lens_blur": "depth" | "source";
   readonly "lens_distortion": "source";
   readonly "levels": "source";
   readonly "light_3d": never;
@@ -4268,6 +4353,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "image_plane_3d": never;
   readonly "instance_3d": never;
   readonly "lathe_3d": never;
+  readonly "lens_blur": never;
   readonly "lens_distortion": never;
   readonly "levels": never;
   readonly "light_3d": never;
@@ -4333,6 +4419,7 @@ export interface NodeOutputKindByKind {
   readonly "image_plane_3d": "scene";
   readonly "instance_3d": "scene";
   readonly "lathe_3d": "scene";
+  readonly "lens_blur": "raster";
   readonly "lens_distortion": "raster";
   readonly "levels": "raster";
   readonly "light_3d": "scene";
@@ -4398,6 +4485,7 @@ export interface NodeInputPortKindByKind {
   readonly "image_plane_3d": { readonly "source": "raster"; readonly "material": "material" };
   readonly "instance_3d": { readonly "scene": "scene" };
   readonly "lathe_3d": { readonly "geometry": "geometry"; readonly "material": "material" };
+  readonly "lens_blur": { readonly "source": "raster"; readonly "depth": "raster" };
   readonly "lens_distortion": { readonly "source": "raster" };
   readonly "levels": { readonly "source": "raster" };
   readonly "light_3d": {};
@@ -4463,6 +4551,7 @@ export interface NodeOutputPortKindByKind {
   readonly "image_plane_3d": { readonly "output": "scene" };
   readonly "instance_3d": { readonly "output": "scene" };
   readonly "lathe_3d": { readonly "output": "scene" };
+  readonly "lens_blur": { readonly "output": "raster" };
   readonly "lens_distortion": { readonly "output": "raster" };
   readonly "levels": { readonly "output": "raster" };
   readonly "light_3d": { readonly "output": "scene" };
@@ -4802,6 +4891,56 @@ export const nodeInputPorts = {
    */
   "lathe_3d": { "geometry": { kind: "geometry", variadic: false }, "material": { kind: "material", variadic: false } },
   /**
+   * Blurs a raster as an out-of-focus lens does: every point spreads into an evenly lit disc, or a
+   * polygon with `blades`, so highlights turn into bokeh rather than the soft glow of `blur`.
+   * 
+   * Without `depth`, everything blurs by `radius`. With it, each pixel blurs by its depth: sharp
+   * within `focus_range` of `focus`, and more so further away, up to `radius`. Depth is the red
+   * channel of `depth`, read where each pixel is, and 0 where it stores nothing, so a
+   * `render_3d`'s `depth` output gives depth of field and any greyscale raster works, as a
+   * gradient that is dark in a band across the frame gives tilt-shift. `focus` is in that 0 to 1
+   * range, not in world units. A blurred pixel nearer than its neighbours spreads over them even
+   * where they are sharp, and one further away doesn't spread over nearer, sharper pixels, so a
+   * sharp subject keeps its edges in front of a blurred background.
+   * 
+   * The cost stays bounded at any radius: circles of more than 6 pixels are gathered from copies
+   * of the source at half, a quarter or less of its resolution, so each pixel reads about 130
+   * texels at most, twice that with `depth`. The widest blurs have softer bokeh edges. Blurring
+   * widens the output past the source's area by the radius.
+   * 
+   * Defocusing a whole frame into hexagonal bokeh:
+   * 
+   * ```json
+   * { "id": 2, "type": "lens_blur", "params": { "radius": 12, "blades": 6 }, "in": { "source": 1 } }
+   * ```
+   * 
+   * ```ts
+   * n.lens_blur({ source: photo, radius: 12, blades: 6 });
+   * ```
+   * 
+   * Depth of field from a `render_3d`, node 9, sharp at a fifth of the way from its `depth_near`
+   * to its `depth_far`:
+   * 
+   * ```json
+   * { "id": 10, "type": "lens_blur", "params": { "radius": 16, "focus": 0.2 } },
+   * { "from_node": 9, "from_port": "color", "to_node": 10, "to_port": "source" },
+   * { "from_node": 9, "from_port": "depth", "to_node": 10, "to_port": "depth" }
+   * ```
+   * 
+   * ```ts
+   * const depth = outputOf(render, "depth");
+   * n.lens_blur({ source: outputOf(render, "color"), depth, radius: 16, focus: 0.2 });
+   * ```
+   * 
+   * Tilt-shift, sharp across the middle of the frame and blurred towards the top and bottom:
+   * 
+   * ```json
+   * { "id": 2, "type": "background", "params": { "paint": { "type": "linear_gradient", "interpolation": "linear_srgb", "start": [0, 0], "end": [0, 1], "stops": [{ "offset": 0, "color": [255, 255, 255, 255] }, { "offset": 0.5, "color": [0, 0, 0, 255] }, { "offset": 1, "color": [255, 255, 255, 255] }] } } },
+   * { "id": 3, "type": "lens_blur", "params": { "radius": 10, "focus": 0, "focus_range": 0.1, "aperture": 1.5 }, "in": { "source": 1, "depth": 2 } }
+   * ```
+   */
+  "lens_blur": { "source": { kind: "raster", variadic: false }, "depth": { kind: "raster", variadic: false } },
+  /**
    * Bends a raster the way a lens does. With `direction: "distort"`, a pixel at `p` from the optical
    * centre reads the source at `p * (1 + k1 r² + k2 r⁴)`, where `r` is its distance in
    * half-diagonals, so positive `k1` gives barrel distortion and negative `k1` pincushion. With
@@ -5134,6 +5273,7 @@ export const nodeMediaSources = {
   "image_plane_3d": {},
   "instance_3d": {},
   "lathe_3d": {},
+  "lens_blur": {},
   "lens_distortion": {},
   "levels": {},
   "light_3d": {},

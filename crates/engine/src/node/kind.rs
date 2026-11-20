@@ -244,6 +244,7 @@ node_kinds! {
     ZoomBlur(processing::directional_blur::ZoomBlur),
     DisplacementMap(processing::displacement_map::DisplacementMap),
     LensDistortion(processing::lens_distortion::LensDistortion),
+    LensBlur(processing::lens_blur::LensBlur),
     ErodeDilate(processing::erode_dilate::ErodeDilate),
     WgslShader(processing::wgsl_shader::WgslShader),
     MediaOutput(media_output::MediaOutput),

@@ -519,6 +519,28 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { matte: "", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], segments: 48, sweep: 360, units_per_pixel: 0.01 },
   },
   {
+    kind: "lens_blur",
+    name: "Lens Blur",
+    description: "Blurs a raster as an out-of-focus lens does: every point spreads into an evenly lit disc, or a\npolygon with `blades`, so highlights turn into bokeh rather than the soft glow of `blur`.\n\nWithout `depth`, everything blurs by `radius`. With it, each pixel blurs by its depth: sharp\nwithin `focus_range` of `focus`, and more so further away, up to `radius`. Depth is the red\nchannel of `depth`, read where each pixel is, and 0 where it stores nothing, so a\n`render_3d`'s `depth` output gives depth of field and any greyscale raster works, as a\ngradient that is dark in a band across the frame gives tilt-shift. `focus` is in that 0 to 1\nrange, not in world units. A blurred pixel nearer than its neighbours spreads over them even\nwhere they are sharp, and one further away doesn't spread over nearer, sharper pixels, so a\nsharp subject keeps its edges in front of a blurred background.\n\nThe cost stays bounded at any radius: circles of more than 6 pixels are gathered from copies\nof the source at half, a quarter or less of its resolution, so each pixel reads about 130\ntexels at most, twice that with `depth`. The widest blurs have softer bokeh edges. Blurring\nwidens the output past the source's area by the radius.\n\nDefocusing a whole frame into hexagonal bokeh:\n\n```json\n{ \"id\": 2, \"type\": \"lens_blur\", \"params\": { \"radius\": 12, \"blades\": 6 }, \"in\": { \"source\": 1 } }\n```\n\n```ts\nn.lens_blur({ source: photo, radius: 12, blades: 6 });\n```\n\nDepth of field from a `render_3d`, node 9, sharp at a fifth of the way from its `depth_near`\nto its `depth_far`:\n\n```json\n{ \"id\": 10, \"type\": \"lens_blur\", \"params\": { \"radius\": 16, \"focus\": 0.2 } },\n{ \"from_node\": 9, \"from_port\": \"color\", \"to_node\": 10, \"to_port\": \"source\" },\n{ \"from_node\": 9, \"from_port\": \"depth\", \"to_node\": 10, \"to_port\": \"depth\" }\n```\n\n```ts\nconst depth = outputOf(render, \"depth\");\nn.lens_blur({ source: outputOf(render, \"color\"), depth, radius: 16, focus: 0.2 });\n```\n\nTilt-shift, sharp across the middle of the frame and blurred towards the top and bottom:\n\n```json\n{ \"id\": 2, \"type\": \"background\", \"params\": { \"paint\": { \"type\": \"linear_gradient\", \"interpolation\": \"linear_srgb\", \"start\": [0, 0], \"end\": [0, 1], \"stops\": [{ \"offset\": 0, \"color\": [255, 255, 255, 255] }, { \"offset\": 0.5, \"color\": [0, 0, 0, 255] }, { \"offset\": 1, \"color\": [255, 255, 255, 255] }] } } },\n{ \"id\": 3, \"type\": \"lens_blur\", \"params\": { \"radius\": 10, \"focus\": 0, \"focus_range\": 0.1, \"aperture\": 1.5 }, \"in\": { \"source\": 1, \"depth\": 2 } }\n```",
+    category: "processing",
+    inputs: [
+      { name: "source", kind: "raster", optional: false, variadic: false },
+      { name: "depth", kind: "raster", optional: true, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [
+      { id: "aperture", name: "Aperture", kind: "float", description: "How fast the blur grows past `focus_range`: a pixel `aperture × (|depth - focus| -\nfocus_range)` of the way to `radius`, up to all of it. Higher is a shallower depth of\nfield.", defaultValue: 4, constraints: { min: 0, step: 0.1 } },
+      { id: "blades", name: "Blades", kind: "int", description: "Blades of the lens's aperture, which shape a blurred highlight: 0 is a circle, and 3 to\n16 a polygon with that many sides.", defaultValue: 0, constraints: { min: 0, max: 16, step: 1 } },
+      { id: "focus", name: "Focus", kind: "float", description: "The depth that stays sharp, in the depth raster's 0 to 1 range. For a `render_3d`'s\n`depth`, 0 is at its `depth_near` and 1 at its `depth_far`, so a distance in world units\nis `(distance - depth_near) / (depth_far - depth_near)`. Unused without `depth`.", defaultValue: 0.5, constraints: { min: 0, max: 1, step: 0.01 } },
+      { id: "focus_range", name: "Focus Range", kind: "float", description: "How far either side of `focus`, in the same range, depth stays sharp.", defaultValue: 0.05, constraints: { min: 0, max: 1, step: 0.01 } },
+      { id: "radius", name: "Radius", kind: "float", description: "Blur radius in pixels: the blur everywhere without `depth`, and the largest blur with it.\n0 leaves the source as it is. Radii above 4096 look the same.", defaultValue: 8, constraints: { min: 0, step: 0.5 } },
+      { id: "rotation", name: "Rotation", kind: "float", description: "Turn of the polygon in degrees, clockwise. At 0 one corner points up.", defaultValue: 0, constraints: { step: 1 } },
+    ],
+    defaultParams: { aperture: 4, blades: 0, focus: 0.5, focus_range: 0.05, radius: 8, rotation: 0 },
+  },
+  {
     kind: "lens_distortion",
     name: "Lens Distortion",
     description: "Bends a raster the way a lens does. With `direction: \"distort\"`, a pixel at `p` from the optical\ncentre reads the source at `p * (1 + k1 r² + k2 r⁴)`, where `r` is its distance in\nhalf-diagonals, so positive `k1` gives barrel distortion and negative `k1` pincushion. With\n`direction: \"undistort\"` it reads where that lens would have put it, undoing a distortion with\nthe same coefficients. The result covers the source's frame, and looks the same at any render\nscale.\n\nTo match graphics to footage, set the footage's coefficients and `direction: \"undistort\"` on\nthe footage, or leave `direction` as `\"distort\"` on the graphics. For a finishing look, try\n`k1: 0.15` with `chromatic_aberration: 0.004`.",
