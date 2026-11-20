@@ -476,6 +476,23 @@ impl FrameCx<'_> {
         Ok(collected)
     }
 
+    /// The colour and mattes `draw` records for `node_id`, drawn once per path and sample of a
+    /// frame for both outputs. What the draw reads of the scene is noted by the walk it draws.
+    #[cfg(feature = "3d")]
+    pub(crate) fn shared_scene_draw(
+        &mut self,
+        node_id: NodeId,
+        draw: impl FnOnce(&mut Self) -> crate::Result<(Raster, Raster)>,
+    ) -> crate::Result<(Raster, Raster)> {
+        let key = ((self.scope.id, self.path, node_id), self.sample);
+        if let Some(&drawn) = self.st.scene.draws.get(&key) {
+            return Ok(drawn);
+        }
+        let drawn = draw(self)?;
+        self.st.scene.draws.insert(key, drawn);
+        Ok(drawn)
+    }
+
     /// The values that the params reading the frame take at `frame`: those of `node` and of each
     /// node it reads that is kept while they hold, in the same order on every frame. A node that
     /// blurs its own motion adds their values at either end of its shutter, where it evaluates

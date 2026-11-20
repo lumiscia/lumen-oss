@@ -171,6 +171,12 @@ impl NodeParamType for super::scene::Region {
     }
 }
 
+impl NodeParamType for super::scene::MatteNames {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Custom(&super::scene::MATTE_NAMES)
+    }
+}
+
 impl NodeParamType for super::vector::repeat::Repeat {
     fn property_kind() -> PropertyKind {
         PropertyKind::Custom(&super::vector::repeat::REPEAT)

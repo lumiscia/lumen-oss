@@ -5,7 +5,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
-export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
+export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "matte_names" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
 export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "corner_pin" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
@@ -1536,10 +1536,12 @@ export type LensFit = "none" | "fill";
 export type Light3dKind = "directional" | "point" | "spot" | "ambient";
 export type Light3dLight = Light3dKind;
 export type LoopMode = "clamp" | "repeat" | "ping_pong";
-export type MaskMode = "alpha" | "luma";
+export type MaskMode = "alpha" | "luma" | "red" | "green" | "blue";
 export type Material3dAlphaMode = MaterialAlphaMode;
 export type Material3dSampling = RasterSampling;
 export type MaterialAlphaMode = "blend" | "mask";
+/** Matte names, one for each channel of a `render_3d`'s `matte` output in turn: red, green, blue and alpha. Each is a literal, listed once. */
+export type MatteNames = readonly string[];
 export type MediaInAlpha = AlphaMode;
 export type MediaInKind = MediaInSourceKind;
 export type MediaInLoopMode = LoopMode;
@@ -1558,7 +1560,7 @@ export type RasterMultimergeBlendMode = BlendMode;
 export type RasterSampling = "nearest" | "linear";
 /** A rectangle of pixels, `[x, y, width, height]`. Each number takes an integer or an expression. */
 export type Region = readonly [ExpressionValue<number>, ExpressionValue<number>, ExpressionValue<number>, ExpressionValue<number>];
-export type Render3dOutput = "color" | "depth" | "normal";
+export type Render3dOutput = "color" | "depth" | "normal" | "matte";
 export type Render3dToneMapping = ToneMapping;
 /** The canvas size in pixels. */
 export type RenderSettings = {
@@ -2134,6 +2136,12 @@ export interface Extrude3dNode extends CompositionNodeBase<"extrude_3d"> {
      * +Z at half of it. 0 is flat.
      */
     readonly depth?: ExpressionValue<number>;
+    /**
+     * The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
+     * render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
+     * `particles_3d` holding it that names one, or none.
+     */
+    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
     /**
@@ -2319,6 +2327,12 @@ export interface HueSaturationNode extends CompositionNodeBase<"hue_saturation">
 export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> {
   readonly params?: {
     /**
+     * The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
+     * render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
+     * `particles_3d` holding it that names one, or none.
+     */
+    readonly matte?: ExpressionValue<string>;
+    /**
      * Draws the plane with the opaque objects, writing depth, rather than blended. For a source
      * with no transparent pixels, this orders the plane correctly against any geometry it
      * intersects or crosses in depth. Alpha is then ignored: the colour's alpha, `opacity` and the
@@ -2416,6 +2430,12 @@ export interface Instance3dNode extends CompositionNodeBase<"instance_3d"> {
      * cameras too. Not set together with `copies`.
      */
     readonly count?: ExpressionValue<number>;
+    /**
+     * The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names
+     * none of its own, for that render's `matte` output. Empty passes on the matte of the
+     * nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
+     */
+    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z of each copy, in the scene's own space. Evaluated for every copy, and can read `instance` and `instance_count`. */
     readonly position?: ExpressionValue<Vec3>;
     /** Rotation in degrees about X, Y and Z of each copy, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z. Evaluated for every copy, and can read `instance` and `instance_count`. */
@@ -2457,6 +2477,12 @@ export interface Instance3dNode extends CompositionNodeBase<"instance_3d"> {
  */
 export interface Lathe3dNode extends CompositionNodeBase<"lathe_3d"> {
   readonly params?: {
+    /**
+     * The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
+     * render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
+     * `particles_3d` holding it that names one, or none.
+     */
+    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
     /**
@@ -2731,6 +2757,12 @@ export interface Merge2dNode extends CompositionNodeBase<"merge_2d"> {
 /** Groups scenes into one, placed together by its transform. */
 export interface Merge3dNode extends CompositionNodeBase<"merge_3d"> {
   readonly params?: {
+    /**
+     * The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names
+     * none of its own, for that render's `matte` output. Empty passes on the matte of the
+     * nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
+     */
+    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
     /**
@@ -2788,6 +2820,12 @@ export interface Model3dNode extends CompositionNodeBase<"model_3d"> {
      * shadows, and a scene they light gets no default lights.
      */
     readonly lights?: ExpressionValue<boolean>;
+    /**
+     * The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
+     * render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
+     * `particles_3d` holding it that names one, or none.
+     */
+    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
     /** Darkens where shadows fall on its lit surfaces. */
@@ -2952,6 +2990,12 @@ export interface Particles3dNode extends CompositionNodeBase<"particles_3d"> {
      * particle is born again every `count / rate` seconds, which cuts a longer lifetime short.
      */
     readonly lifetime?: ExpressionValue<number>;
+    /**
+     * The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names
+     * none of its own, for that render's `matte` output. Empty passes on the matte of the
+     * nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
+     */
+    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z of the whole system in the parent's space: the surface, the particles and, without a surface, the point they are emitted from move with it. */
     readonly position?: ExpressionValue<Vec3>;
     /**
@@ -3124,8 +3168,15 @@ export interface Render2dNode extends CompositionNodeBase<"render_2d"> {
 
 /**
  * Draws a 3D scene into a raster, with a transparent background unless it shows its environment
- * map; or, by `output`, its depth or normals, for 2D effects such as fog. Its `color`, `depth`
- * and `normal` outputs read each of them from the one render.
+ * map; or, by `output`, its depth or normals, for 2D effects such as fog, or the mattes of its
+ * objects. Its `color`, `depth`, `normal` and `matte` outputs read each of them from the one
+ * render.
+ * 
+ * A matte selects objects after rendering without drawing the scene again: name the lettering
+ * `title` with its `matte` param, list `mattes: ["title"]`, and a `merge` whose `overlay` is the
+ * `color` output, whose `base` is a `blur` of it, and whose `mask` is the `matte` output with
+ * `mask_mode` `red` keeps the title sharp while the rest blurs. A matte's edges are antialiased
+ * with the colour's, by `supersample`, so they line up.
  */
 export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
   readonly params?: {
@@ -3176,9 +3227,18 @@ export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
     /** Output height in pixels. Use 0 to match the composition height. */
     readonly height?: number;
     /**
-     * What the default `output` holds: the lit scene, its depth or its normals. The `color`,
-     * `depth` and `normal` outputs each hold one whatever this is, and one `render_3d` draws all
-     * that are read with one walk of the scene.
+     * The matte names whose objects' coverage the `matte` output holds, in its red, green, blue
+     * and alpha channels in turn: at most 4, each listed once, or the render fails. Objects take
+     * a name from their `matte` param, or from the `merge_3d`, `instance_3d` or `particles_3d`
+     * holding them. A name no object takes leaves its channel 0, with a `scene.matte_unused`
+     * warning when the `matte` output is drawn.
+     */
+    readonly mattes?: MatteNames;
+    /**
+     * What the default `output` holds: the lit scene, its depth, its normals or its mattes. The
+     * `color`, `depth`, `normal` and `matte` outputs each hold one whatever this is, and one
+     * `render_3d` draws all that are read with one walk of the scene, the colour and mattes with
+     * one draw of it.
      */
     readonly output?: Render3dOutput;
     /** Renders this many times wider and taller, then averages down, to antialias edges. */
@@ -3347,6 +3407,12 @@ export interface Shape2dNode extends CompositionNodeBase<"shape_2d"> {
  */
 export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
   readonly params?: {
+    /**
+     * The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
+     * render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
+     * `particles_3d` holding it that names one, or none.
+     */
+    readonly matte?: ExpressionValue<string>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
     /**
@@ -3733,6 +3799,12 @@ export interface Text3dNode extends CompositionNodeBase<"text_3d"> {
     readonly letter_spacing?: ExpressionValue<number>;
     /** Distance between lines in world units. Use 0 for 1.2 × the font size. */
     readonly line_height?: ExpressionValue<number>;
+    /**
+     * The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
+     * render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
+     * `particles_3d` holding it that names one, or none.
+     */
+    readonly matte?: ExpressionValue<string>;
     /** Maximum line width in world units, at which lines wrap. Use 0 for automatic width. */
     readonly max_width?: ExpressionValue<number>;
     /** Position in world units along X, Y and Z, in the parent's space. */
@@ -4386,7 +4458,7 @@ export interface NodeOutputPortKindByKind {
   readonly "radial_blur": { readonly "output": "raster" };
   readonly "raster_multimerge": { readonly "output": "raster" };
   readonly "render_2d": { readonly "output": "raster" };
-  readonly "render_3d": { readonly "output": "raster"; readonly "color": "raster"; readonly "depth": "raster"; readonly "normal": "raster" };
+  readonly "render_3d": { readonly "output": "raster"; readonly "color": "raster"; readonly "depth": "raster"; readonly "normal": "raster"; readonly "matte": "raster" };
   readonly "resize": { readonly "output": "raster" };
   readonly "shadow": { readonly "output": "raster" };
   readonly "shadow_2d": { readonly "output": "drawing" };
@@ -4844,8 +4916,15 @@ export const nodeInputPorts = {
   "render_2d": { "drawing": { kind: "drawing", variadic: false } },
   /**
    * Draws a 3D scene into a raster, with a transparent background unless it shows its environment
-   * map; or, by `output`, its depth or normals, for 2D effects such as fog. Its `color`, `depth`
-   * and `normal` outputs read each of them from the one render.
+   * map; or, by `output`, its depth or normals, for 2D effects such as fog, or the mattes of its
+   * objects. Its `color`, `depth`, `normal` and `matte` outputs read each of them from the one
+   * render.
+   * 
+   * A matte selects objects after rendering without drawing the scene again: name the lettering
+   * `title` with its `matte` param, list `mattes: ["title"]`, and a `merge` whose `overlay` is the
+   * `color` output, whose `base` is a `blur` of it, and whose `mask` is the `matte` output with
+   * `mask_mode` `red` keeps the title sharp while the rest blurs. A matte's edges are antialiased
+   * with the colour's, by `supersample`, so they line up.
    */
   "render_3d": { "scene": { kind: "scene", variadic: false } },
   /** Resamples a raster into a rectangle placed on the composition canvas. */

@@ -27,8 +27,8 @@ use lumen_3d::{
 use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
 use super::{
-    Light3dKind, Material3dParams, MaterialAlphaMode, Model3d, Placement3d, Pose3d, Shape3d,
-    Shape3dKind,
+    Light3dKind, Material3dParams, MaterialAlphaMode, MatteNames, Model3d, Placement3d, Pose3d,
+    Shape3d, Shape3dKind,
 };
 use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
 use crate::gpu::evictions;
@@ -782,6 +782,7 @@ fn solid_object(
         bounds: Bounds::EMPTY,
         part: None,
         instanced: None,
+        matte: None,
     };
     (object, Extent::Local(local))
 }
@@ -894,10 +895,14 @@ pub(crate) struct Collected {
     /// The most objects an `instance_3d` may bring the scene to, which is what the nodes holding it
     /// leave room for once they have copied it.
     instance_room: usize,
+    /// The names of the render's mattes, which objects' `matte` params pick a channel by.
+    mattes: Arc<MatteNames>,
+    /// The channel objects that name no matte of their own take, from the group holding the scene.
+    inherited_matte: Option<u8>,
 }
 
 impl Collected {
-    pub(super) fn new(render_id: NodeId) -> Self {
+    pub(super) fn new(render_id: NodeId, mattes: Arc<MatteNames>) -> Self {
         Self {
             scene: Scene::default(),
             light_nodes: Vec::new(),
@@ -913,7 +918,35 @@ impl Collected {
             quad: None,
             nesting: 0,
             instance_room: MAX_SCENE_NODES,
+            mattes,
+            inherited_matte: None,
         }
+    }
+
+    /// An empty scene for a node of this one to collect its input scene into, giving the objects
+    /// that name no matte `matte`.
+    pub(super) fn nested(&self, matte: Option<u8>) -> Self {
+        let mut inner = Self::new(self.render_id, self.mattes.clone());
+        inner.reached = self.reached;
+        inner.nesting = self.nesting + 1;
+        inner.inherited_matte = matte;
+        inner
+    }
+
+    /// The names of the render's mattes that no object takes.
+    pub(super) fn unused_mattes(&self) -> impl Iterator<Item = &str> {
+        self.mattes
+            .0
+            .iter()
+            .enumerate()
+            .filter_map(|(index, name)| {
+                let used = self
+                    .scene
+                    .objects
+                    .iter()
+                    .any(|object| object.matte == u8::try_from(index).ok());
+                (!used).then_some(name.as_str())
+            })
     }
 
     /// Adds `object`, which `node` made.
@@ -1023,9 +1056,10 @@ impl Collected {
     /// that reaches more than [`MAX_SCENE_NODES`] nodes fails as soon as it does, before a node
     /// wired in many times over can expand much further.
     pub(super) fn add(&mut self, cx: &mut FrameCx<'_>, node_id: NodeId) -> crate::Result<()> {
-        // Each node still to walk, with the transform its parents place it by.
-        let mut pending = vec![(node_id, Mat4::IDENTITY)];
-        while let Some((node_id, parent)) = pending.pop() {
+        // Each node still to walk, with the transform its parents place it by and the matte channel
+        // they give objects that name none.
+        let mut pending = vec![(node_id, Mat4::IDENTITY, self.inherited_matte)];
+        while let Some((node_id, parent, inherited)) = pending.pop() {
             self.reached += 1;
             if self.reached > MAX_SCENE_NODES {
                 return Err(super::render::render_error(
@@ -1039,21 +1073,56 @@ impl Collected {
             let node = cx.node(node_id).ok_or(RenderError::MissingNode {
                 at: crate::error::At::node(node_id),
             })?;
-            let children = cx.time_node(node, |cx| self.add_node(cx, node, parent));
+            let matte = self.matte_of(cx, node)?.unwrap_or(inherited);
+            let first = self.scene.objects.len();
+            let children = cx.time_node(node, |cx| self.add_node(cx, node, parent, matte));
             if let Some(children) = children? {
-                pending.extend(children.into_iter().rev());
+                pending.extend(
+                    children
+                        .into_iter()
+                        .rev()
+                        .map(|(child, world)| (child, world, matte)),
+                );
+            }
+            // A group's objects have taken their channels as their own nodes were walked.
+            if !matches!(node, NodeKind::Instance3d(_) | NodeKind::Particles3d(_)) {
+                for object in &mut self.scene.objects[first..] {
+                    object.matte = matte;
+                }
             }
         }
         Ok(())
     }
 
+    /// The matte channel `node` gives its objects by its own `matte` param, `Some(None)` for a name
+    /// the render doesn't list, or `None` when it names none.
+    fn matte_of(&self, cx: &FrameCx<'_>, node: &NodeKind) -> crate::Result<Option<Option<u8>>> {
+        let matte = match node {
+            NodeKind::Shape3d(node) => &node.params.matte,
+            NodeKind::ImagePlane3d(node) => &node.params.matte,
+            NodeKind::Model3d(node) => &node.params.matte,
+            NodeKind::Text3d(node) => &node.params.matte,
+            NodeKind::Extrude3d(node) => &node.params.matte,
+            NodeKind::Lathe3d(node) => &node.params.matte,
+            NodeKind::Instance3d(node) => &node.params.matte,
+            NodeKind::Particles3d(node) => &node.params.matte,
+            NodeKind::Merge3d(node) => &node.params.matte,
+            _ => return Ok(None),
+        };
+        let expr = cx.expr();
+        let name = DelegateEvalContext::new(node.id(), &expr).eval_field("matte", matte)?;
+        Ok((!name.is_empty()).then(|| self.mattes.channel(&name)))
+    }
+
     /// Adds what `node_id`, placed by `parent`, outputs itself, and returns the nodes a group
-    /// places, with the transform it places them by.
+    /// places, with the transform it places them by. A node holding a scene of its own gives the
+    /// objects in it that name no matte `matte`.
     fn add_node(
         &mut self,
         cx: &mut FrameCx<'_>,
         node: &NodeKind,
         parent: Mat4,
+        matte: Option<u8>,
     ) -> crate::Result<Option<Vec<(NodeId, Mat4)>>> {
         let node_id = node.id();
         let expr = cx.expr();
@@ -1069,8 +1138,8 @@ impl Collected {
                         .collect(),
                 ));
             }
-            NodeKind::Instance3d(instance) => self.add_instances(cx, instance, parent)?,
-            NodeKind::Particles3d(particles) => self.add_particles(cx, particles, parent)?,
+            NodeKind::Instance3d(instance) => self.add_instances(cx, instance, parent, matte)?,
+            NodeKind::Particles3d(particles) => self.add_particles(cx, particles, parent, matte)?,
             NodeKind::Shape3d(shape) => {
                 let params = shape.params.eval(&ctx)?;
                 let size = vec3(params.size).max(Vec3::ZERO);
@@ -1106,6 +1175,7 @@ impl Collected {
                     bounds: Bounds::EMPTY,
                     part: None,
                     instanced: None,
+                    matte: None,
                 };
                 match faces {
                     None => self.push(node_id, object, Extent::Local(UNIT_BOUNDS)),
@@ -1157,6 +1227,7 @@ impl Collected {
                         bounds: Bounds::EMPTY,
                         part: None,
                         instanced: None,
+                        matte: None,
                     };
                     match text.side_material {
                         None => self.push(node_id, object, Extent::Local(local)),
@@ -1289,6 +1360,7 @@ impl Collected {
                         bounds: Bounds::EMPTY,
                         part,
                         instanced: None,
+                        matte: None,
                     },
                     Extent::Local(local),
                 );
@@ -1533,6 +1605,7 @@ impl Collected {
                     bounds: Bounds::EMPTY,
                     part: None,
                     instanced: None,
+                    matte: None,
                 },
                 extent,
             );

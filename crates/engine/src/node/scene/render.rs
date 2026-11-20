@@ -1,7 +1,7 @@
 //! Records `render_3d`: the scene's shadow maps, depth-tested draws of its objects into a
-//! supersampled float target, the environment map behind them if it shows, then a resolve into
-//! the node's raster. Depth and normal output draw the objects once at the output's size, unlit,
-//! then store what they drew.
+//! supersampled float target, and into targets beside it for their mattes when those are read,
+//! the environment map behind them if it shows, then resolves into the node's rasters. Depth and
+//! normal output draw the objects once at the output's size, unlit, then store what they drew.
 
 use bytemuck::{Pod, Zeroable};
 use lumen_3d::{
@@ -26,6 +26,7 @@ use std::borrow::Cow;
 pub(crate) const SHADER: &str = include_str!("scene.wgsl");
 const RESOLVE_SHADER: &str = include_str!("resolve.wgsl");
 const DATA_SHADER: &str = include_str!("data.wgsl");
+const MATTE_SHADER: &str = include_str!("matte.wgsl");
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 const VERTEX_FRAGMENT: wgpu::ShaderStages =
@@ -86,6 +87,17 @@ const DATA_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(29, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
     LayoutEntry::staged(30, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
 ];
+/// What resolving the mattes binds: the first matte target, the params, the output and the second
+/// target.
+const MATTE_LAYOUT: &[LayoutEntry] = &[
+    LayoutEntry::compute(0, LayoutKind::Texture),
+    LayoutEntry::compute(1, LayoutKind::Uniform),
+    LayoutEntry::compute(
+        2,
+        LayoutKind::StorageTexture(crate::gpu::WORKING_COLOR_FORMAT),
+    ),
+    LayoutEntry::compute(3, LayoutKind::Texture),
+];
 /// What drawing the environment behind the scene binds.
 const BACKGROUND_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(0, wgpu::ShaderStages::FRAGMENT, LayoutKind::Uniform),
@@ -125,6 +137,27 @@ const SCENE_3D_MASKED: RenderProgram = RenderProgram {
     fragment: "fs_masked",
     ..SCENE_3D
 };
+/// The lit scene with up to three mattes in a second target, and with four in a third as well.
+const SCENE_3D_MATTE: RenderProgram = RenderProgram {
+    label: "scene-3d-matte",
+    fragment: "fs_matte",
+    ..SCENE_3D
+};
+const SCENE_3D_MATTES: RenderProgram = RenderProgram {
+    label: "scene-3d-mattes",
+    fragment: "fs_mattes",
+    ..SCENE_3D
+};
+const SCENE_3D_MASKED_MATTE: RenderProgram = RenderProgram {
+    label: "scene-3d-masked-matte",
+    fragment: "fs_masked_matte",
+    ..SCENE_3D
+};
+const SCENE_3D_MASKED_MATTES: RenderProgram = RenderProgram {
+    label: "scene-3d-masked-mattes",
+    fragment: "fs_masked_mattes",
+    ..SCENE_3D
+};
 const SCENE_3D_SHADOW: RenderProgram = RenderProgram {
     label: "scene-3d-shadow",
     shader: SHADER,
@@ -156,6 +189,12 @@ const SCENE_3D_NORMAL: RenderProgram = RenderProgram {
 const SCENE_3D_DATA: ComputeProgram = ComputeProgram::spatial("scene-3d-data", DATA_SHADER);
 const SCENE_3D_RESOLVE: ComputeProgram =
     ComputeProgram::spatial("scene-3d-resolve", RESOLVE_SHADER);
+const SCENE_3D_MATTE_RESOLVE: ComputeProgram = ComputeProgram {
+    label: "scene-3d-matte-resolve",
+    shader: MATTE_SHADER,
+    entry: "cs_main",
+    layout: MATTE_LAYOUT,
+};
 
 const CLAMP_SAMPLER: u64 = 0x3d00_0001;
 const NEAREST_SAMPLER: u64 = 0x3d00_0006;
@@ -290,7 +329,8 @@ pub(crate) struct GpuObject {
     /// Where the object's five rows of the map coordinates table start.
     pub(crate) first_map_uv: u32,
     pub(crate) unlit_shadows: f32,
-    _pad: u32,
+    /// The channel of the mattes the object's coverage goes to, or [`NO_MATTE`].
+    pub(crate) matte: u32,
     /// [`Object::part`]'s edges, or the whole quad's.
     pub(crate) part: [f32; 4],
 }
@@ -324,6 +364,7 @@ pub(crate) struct GpuRun {
 }
 
 pub(crate) const NO_INSTANCES: u32 = u32::MAX;
+pub(crate) const NO_MATTE: u32 = u32::MAX;
 
 /// One copy's row of an instance buffer, 64 bytes; keep in sync with `Instance` in `scene.wgsl`.
 #[repr(C)]
@@ -362,6 +403,16 @@ struct ResolveParams {
     _pad: [u32; 3],
 }
 
+/// Keep in sync with `Params` in `matte.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Params", source = MATTE_SHADER)]
+struct MatteParams {
+    supersample: u32,
+    second: u32,
+    _pad: [u32; 2],
+}
+
 /// Keep in sync with `Params` in `data.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
@@ -378,6 +429,17 @@ fn spec(depth: DepthTest, cull: Option<wgpu::Face>) -> RenderTargetSpec {
         blend: wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         depth: Some(depth),
         cull,
+        extra_targets: 0,
+    }
+}
+
+/// The programs drawing the lit scene and its masked surfaces with `names` mattes, and the matte
+/// targets they draw them into beside the colour: one for up to three names, two for four.
+fn lit_programs(names: usize) -> (&'static RenderProgram, &'static RenderProgram, u32) {
+    match names {
+        0 => (&SCENE_3D, &SCENE_3D_MASKED, 0),
+        1..=3 => (&SCENE_3D_MATTE, &SCENE_3D_MASKED_MATTE, 1),
+        _ => (&SCENE_3D_MATTES, &SCENE_3D_MASKED_MATTES, 2),
     }
 }
 
@@ -401,10 +463,10 @@ fn background_spec() -> RenderTargetSpec {
 /// The program drawing depth or normal output, and what the raster holds where nothing is drawn.
 type DataProgram = (&'static RenderProgram, [f32; 4]);
 
-/// How `output` is drawn, unless it is colour.
+/// How `output` is drawn, unless it is drawn lit, as colour and mattes are.
 fn data_program(output: Render3dOutput) -> Option<DataProgram> {
     match output {
-        Render3dOutput::Color => None,
+        Render3dOutput::Color | Render3dOutput::Matte => None,
         Render3dOutput::Depth => Some((&SCENE_3D_DEPTH, [1.0; 4])),
         Render3dOutput::Normal => Some((&SCENE_3D_NORMAL, [0.0; 4])),
     }
@@ -542,7 +604,7 @@ fn gpu_object(
         first_weight: object.morph.map_or(0, |(_, weight)| weight),
         first_map_uv,
         unlit_shadows: surface.unlit_shadows,
-        _pad: 0,
+        matte: object.matte.map_or(NO_MATTE, u32::from),
         part: object.part.unwrap_or([0.0, 0.0, 1.0, 1.0]),
     }
 }
@@ -700,6 +762,7 @@ impl Render3d {
         match self.params.output {
             Render3dOutputDelegate::Depth => Render3dOutput::Depth,
             Render3dOutputDelegate::Normal => Render3dOutput::Normal,
+            Render3dOutputDelegate::Matte => Render3dOutput::Matte,
             _ => Render3dOutput::Color,
         }
     }
@@ -868,7 +931,14 @@ impl RecordNode for Render3d {
     /// for those drawing shadow maps and catchers, which the lights and surfaces asking for them
     /// build. Masked surfaces build their programs when first drawn.
     fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
-        for output in Render3dOutput::of_ports(programs.reads()) {
+        let reads: Vec<_> = Render3dOutput::of_ports(programs.reads()).collect();
+        // Colour and mattes, read together or alone, draw from one lit draw.
+        let mattes = match reads.contains(&Render3dOutput::Matte) {
+            true => self.params.mattes.0.len(),
+            false => 0,
+        };
+        let mut lit = false;
+        for output in reads {
             if let Some((data_program, _)) = data_program(output) {
                 for cull in [Some(wgpu::Face::Back), Some(wgpu::Face::Front), None] {
                     programs.render(data_program, data_spec(cull), 0)?;
@@ -876,14 +946,25 @@ impl RecordNode for Render3d {
                 programs.compute(&SCENE_3D_DATA)?;
                 continue;
             }
+            if std::mem::replace(&mut lit, true) {
+                continue;
+            }
+            let (shader, _, extra_targets) = lit_programs(mattes);
             for (depth, cull) in VARIANTS {
-                programs.render(&SCENE_3D, spec(depth, cull), 0)?;
+                let target = RenderTargetSpec {
+                    extra_targets,
+                    ..spec(depth, cull)
+                };
+                programs.render(shader, target, 0)?;
             }
             crate::gpu::mips::programs(programs)?;
             if self.may_show_background() {
                 programs.render(&SCENE_3D_BACKGROUND, background_spec(), 0)?;
             }
             programs.compute(&SCENE_3D_RESOLVE)?;
+            if mattes > 0 {
+                programs.compute(&SCENE_3D_MATTE_RESOLVE)?;
+            }
         }
         Ok(())
     }
@@ -926,9 +1007,13 @@ impl RecordNode for Render3d {
                 ),
             ));
         }
+        if let Some(problem) = params.mattes.problem() {
+            return Err(render_error(self.id, problem));
+        }
         let scene = required_input(self.id, "scene", self.scene)?.node;
+        let mattes = std::sync::Arc::new(params.mattes.clone());
         let walk = |cx: &mut FrameCx<'_>| {
-            let mut collected = Collected::new(self.id);
+            let mut collected = Collected::new(self.id, mattes);
             collected.add(cx, scene)?;
             #[cfg(feature = "test-hooks")]
             cx.count_scene_walk();
@@ -938,34 +1023,58 @@ impl RecordNode for Render3d {
             }
             Ok(collected)
         };
+        let reads: Vec<_> = Render3dOutput::of_ports(cx.outputs_read(self)).collect();
         // Outputs the graph reads more than one of share a walk of the scene.
         let shared;
-        let collected = if Render3dOutput::of_ports(cx.outputs_read(self))
-            .nth(1)
-            .is_some()
-        {
+        let collected = if reads.len() > 1 {
             shared = cx.shared_scene_walk(self.id, walk)?;
             Cow::Borrowed(&*shared)
         } else {
             Cow::Owned(walk(cx)?)
         };
         let output = Render3dOutput::of_port(port).unwrap_or(self.default_output());
-        match data_program(output) {
-            Some(program) => self.record_data(cx, &params, &collected, size, output, program),
-            None => self.record_color(cx, &params, collected.into_owned(), size),
+        if let Some(program) = data_program(output) {
+            return self.record_data(cx, &params, &collected, size, output, program);
         }
+        if output == Render3dOutput::Matte {
+            for name in collected.unused_mattes() {
+                let name = name.to_string();
+                cx.warn(self.id, crate::error::WarningKind::MatteUnused { name });
+            }
+        }
+        // Colour read with the mattes draws them both at once.
+        let both = [Render3dOutput::Color, Render3dOutput::Matte]
+            .iter()
+            .all(|lit| reads.contains(lit));
+        let mattes = match both || output == Render3dOutput::Matte {
+            true => params.mattes.0.len(),
+            false => 0,
+        };
+        let draw = |cx: &mut FrameCx<'_>| {
+            self.record_lit(cx, &params, collected.into_owned(), size, mattes)
+        };
+        let (color, matte) = match both {
+            true => cx.shared_scene_draw(self.id, draw)?,
+            false => draw(cx)?,
+        };
+        Ok(match output {
+            Render3dOutput::Matte => matte,
+            _ => color,
+        })
     }
 }
 
 impl Render3d {
-    /// Draws the lit scene `collected` holds at `size`.
-    fn record_color(
+    /// Draws the lit scene `collected` holds at `size`, with the mattes of its first `mattes`
+    /// matte names beside it, and returns the colour and the mattes, transparent for none.
+    fn record_lit(
         &self,
         cx: &mut FrameCx<'_>,
         params: &super::Render3dParams,
         mut collected: Collected,
         size: Size,
-    ) -> crate::Result<Raster> {
+        mattes: usize,
+    ) -> crate::Result<(Raster, Raster)> {
         let max = cx.rec.device().limits().max_texture_dimension_2d;
         if collected
             .scene
@@ -999,7 +1108,7 @@ impl Render3d {
         let draws = Draws::new(&scene.objects, &view)
             .map_err(|error| render_error(self.id, error.to_string()))?;
         if draws.runs.is_empty() && !background {
-            return Ok(cx.transparent(size));
+            return Ok((cx.transparent(size), cx.transparent(size)));
         }
 
         // An environment map lights a scene without lights in place of the default ones.
@@ -1063,6 +1172,15 @@ impl Render3d {
             DEPTH_FORMAT,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
+        let (lit, masked, extra_targets) = lit_programs(mattes);
+        let mut targets = vec![color];
+        for _ in 0..extra_targets {
+            targets.push(cx.rec.acquire(
+                target_size,
+                COLOR_FORMAT,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            ));
+        }
         let clamp = clamp_sampler(cx);
         let mipped_sampler = cx
             .rec
@@ -1109,10 +1227,14 @@ impl Render3d {
             } else {
                 (spec(depth_test, cull), 0)
             };
+            let target = RenderTargetSpec {
+                extra_targets,
+                ..target
+            };
             let shader = if run.key.masked && !run.key.shadow_catcher {
-                &SCENE_3D_MASKED
+                masked
             } else {
-                &SCENE_3D
+                lit
             };
             let program = cx.render_program(shader, target, variant)?;
             let maps = &run.key.maps;
@@ -1178,10 +1300,10 @@ impl Render3d {
             } else {
                 TargetLoad::Load
             };
-            cx.rec.draw_with_depth(
+            cx.rec.draw_targets_with_depth(
                 program,
                 &bindings,
-                color,
+                &targets,
                 load,
                 depth,
                 load,
@@ -1194,7 +1316,14 @@ impl Render3d {
             background_pass(cx, &loaded, globals, &environment_bindings, color, &draws)?;
         }
 
-        resolve(cx, color, supersample, size)
+        let color = resolve(cx, color, supersample, size)?;
+        let matte = match targets[1..] {
+            [first, ref second @ ..] if !draws.runs.is_empty() => {
+                resolve_mattes(cx, first, second.first().copied(), supersample, size)?
+            }
+            _ => cx.transparent(size),
+        };
+        Ok((color, matte))
     }
 }
 
@@ -1414,6 +1543,40 @@ fn resolve(
         output,
         size,
     )?;
+    Ok(Raster {
+        tex: output,
+        domain: TextureDomain::full_frame(size),
+        bounds: None,
+        reduced: None,
+    })
+}
+
+/// Resolves the supersampled matte targets, `first` and the `second` a fourth name draws into, into
+/// the matte output at `size`.
+fn resolve_mattes(
+    cx: &mut FrameCx<'_>,
+    first: TexRef,
+    second: Option<TexRef>,
+    supersample: u32,
+    size: Size,
+) -> crate::Result<Raster> {
+    let output = cx.storage_target(size);
+    let program = cx.program(&SCENE_3D_MATTE_RESOLVE)?;
+    let uniform = cx.rec.uniform(&MatteParams {
+        supersample,
+        second: u32::from(second.is_some()),
+        _pad: [0; 2],
+    });
+    cx.dispatch(
+        program,
+        &[
+            (0, Res::Tex(first)),
+            (1, uniform),
+            (2, Res::Tex(output)),
+            (3, Res::Tex(second.unwrap_or(first))),
+        ],
+        crate::gpu::frame_graph::dispatch_for(size),
+    );
     Ok(Raster {
         tex: output,
         domain: TextureDomain::full_frame(size),

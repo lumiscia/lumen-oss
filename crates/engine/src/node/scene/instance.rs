@@ -100,6 +100,11 @@ pub struct Instance3dParams {
     /// `rotation`, `scale` and `tint` must not be set, and `check` fails if they are.
     #[meta()]
     pub copies: InstanceCopies,
+    /// The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names
+    /// none of its own, for that render's `matte` output. Empty passes on the matte of the
+    /// nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
+    #[meta()]
+    pub matte: String,
 }
 
 impl Default for Instance3dParams {
@@ -109,6 +114,7 @@ impl Default for Instance3dParams {
             placement: Placement3d::default(),
             tint: Paint::solid([255, 255, 255, 255]),
             copies: InstanceCopies::default(),
+            matte: String::new(),
         }
     }
 }

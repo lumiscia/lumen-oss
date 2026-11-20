@@ -27,6 +27,11 @@ pub struct Lathe3dParams {
     /// before it. 0 draws nothing. At most 1000000.
     #[meta(min = 0, enforced_min, step = 0.001)]
     pub units_per_pixel: f64,
+    /// The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
+    /// render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
+    /// `particles_3d` holding it that names one, or none.
+    #[meta()]
+    pub matte: String,
     #[meta(flatten)]
     pub placement: Placement3d,
 }
@@ -52,6 +57,7 @@ impl Default for Lathe3dParams {
             segments: 48,
             sweep: 360.0,
             units_per_pixel: 0.01,
+            matte: String::new(),
             placement: Placement3d::default(),
         }
     }

@@ -12,6 +12,7 @@ mod extrude_3d;
 mod instance;
 mod instance_copies;
 mod lathe_3d;
+mod matte;
 #[cfg(feature = "3d")]
 pub(crate) mod mips;
 mod particles;
@@ -31,6 +32,8 @@ pub use collect::check_model;
 pub use environment::check_environment;
 pub use extrude_3d::{Extrude3d, Extrude3dParams, Extrude3dParamsDelegate};
 pub use lathe_3d::{Lathe3d, Lathe3dParams, Lathe3dParamsDelegate};
+pub(crate) use matte::MATTE_NAMES;
+pub use matte::{MAX_MATTES, MatteNames};
 pub use text_3d::{Text3d, Text3dParams, Text3dParamsDelegate};
 
 pub use instance::{Instance3d, Instance3dParams, InstanceCount, MAX_INSTANCES};
@@ -264,6 +267,11 @@ pub struct Shape3dParams {
     /// Width, height and depth in world units, along X, Y and Z before the rotation.
     #[meta(step = 0.1)]
     pub size: [f64; 3],
+    /// The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
+    /// render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
+    /// `particles_3d` holding it that names one, or none.
+    #[meta()]
+    pub matte: String,
     #[meta(flatten)]
     pub placement: Placement3d,
 }
@@ -273,6 +281,7 @@ impl Default for Shape3dParams {
         Self {
             shape: Shape3dKind::Box,
             size: [1.0; 3],
+            matte: String::new(),
             placement: Placement3d::default(),
         }
     }
@@ -364,6 +373,11 @@ pub struct ImagePlane3dParams {
     /// `render_3d`'s `supersample` still averages its samples within each pixel.
     #[meta()]
     pub sampling: RasterSampling,
+    /// The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
+    /// render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
+    /// `particles_3d` holding it that names one, or none.
+    #[meta()]
+    pub matte: String,
     #[meta(flatten)]
     pub placement: Placement3d,
 }
@@ -375,6 +389,7 @@ impl Default for ImagePlane3dParams {
             region: Region::default(),
             opaque: false,
             sampling: RasterSampling::Linear,
+            matte: String::new(),
             placement: Placement3d::default(),
         }
     }
@@ -458,6 +473,11 @@ pub struct Model3dParams {
     /// a host that takes uploads, and by `modelInfo` in the browser bindings.
     #[meta()]
     pub camera: String,
+    /// The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that
+    /// render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or
+    /// `particles_3d` holding it that names one, or none.
+    #[meta()]
+    pub matte: String,
     #[meta(flatten)]
     pub placement: Placement3d,
 }
@@ -475,6 +495,7 @@ impl Default for Model3dParams {
             receive_shadows: true,
             lights: false,
             camera: String::new(),
+            matte: String::new(),
             placement: Placement3d::default(),
         }
     }
@@ -679,6 +700,11 @@ pub struct Light3d {
 
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
 pub struct Merge3dParams {
+    /// The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names
+    /// none of its own, for that render's `matte` output. Empty passes on the matte of the
+    /// nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
+    #[meta()]
+    pub matte: String,
     #[meta(flatten)]
     pub placement: Placement3d,
 }
@@ -715,12 +741,13 @@ pub enum ToneMapping {
     Agx = 2,
 }
 
-/// What `render_3d` draws into a raster, each also an output of it of the same name. Depth and
-/// normals hold data, with no transfer function applied, drawn from opaque surfaces and shadow
-/// catchers, masked surfaces where they reach their cutoff, and blended ones, such as image
-/// planes, where their alpha reaches half. They skip lighting, shadows and the environment, and
-/// ignore `supersample`: each pixel holds the nearest surface at its centre, never an average
-/// across an edge.
+/// What `render_3d` draws into a raster, each also an output of it of the same name. Depth,
+/// normals and mattes hold data, with no transfer function applied. Depth and normals are drawn
+/// from opaque surfaces and shadow catchers, masked surfaces where they reach their cutoff, and
+/// blended ones, such as image planes, where their alpha reaches half. They skip lighting, shadows
+/// and the environment, and ignore `supersample`: each pixel holds the nearest surface at its
+/// centre, never an average across an edge. Mattes are drawn with the colour, and antialiased
+/// with it.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
 )]
@@ -737,12 +764,22 @@ pub enum Render3dOutput {
     /// towards the camera, each of its components `n` stored as `n * 0.5 + 0.5` in red, green and
     /// blue; transparent where nothing is drawn.
     Normal = 2,
+    /// The visible coverage of the objects each of `mattes` names, one name to a channel: red,
+    /// green, blue, then alpha. A surface covers its channel by its alpha as the colour shows
+    /// it, so a surface `alpha_mode` `mask` cuts out covers none where it is cut, and a surface in
+    /// front hides a channel behind it by its own alpha, as it hides colour: an object behind a
+    /// plane at 0.5 opacity is 0.5 in its channel, and an opaque one in front leaves 0. A shadow
+    /// catcher covers its channel by how much it darkens. Channels no name is for, and the alpha
+    /// of a render with fewer than four, are 0. It is data rather than a picture, so the channels
+    /// aren't premultiplied by the alpha: read one with `merge`'s `mask_mode` `red`, `green` or
+    /// `blue`, or the alpha with `alpha`.
+    Matte = 3,
 }
 
 #[cfg(feature = "3d")]
 impl Render3dOutput {
     /// The outputs in the order `render_3d` names them, which their ports count.
-    const PORTS: [Self; 3] = [Self::Color, Self::Depth, Self::Normal];
+    const PORTS: [Self; 4] = [Self::Color, Self::Depth, Self::Normal, Self::Matte];
 
     /// The port of `render_3d` that reads this output.
     pub(super) fn port(self) -> crate::node::OutputPort {
@@ -763,11 +800,19 @@ impl Render3dOutput {
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Render3dParams {
-    /// What the default `output` holds: the lit scene, its depth or its normals. The `color`,
-    /// `depth` and `normal` outputs each hold one whatever this is, and one `render_3d` draws all
-    /// that are read with one walk of the scene.
+    /// What the default `output` holds: the lit scene, its depth, its normals or its mattes. The
+    /// `color`, `depth`, `normal` and `matte` outputs each hold one whatever this is, and one
+    /// `render_3d` draws all that are read with one walk of the scene, the colour and mattes with
+    /// one draw of it.
     #[meta(constant)]
     pub output: Render3dOutput,
+    /// The matte names whose objects' coverage the `matte` output holds, in its red, green, blue
+    /// and alpha channels in turn: at most 4, each listed once, or the render fails. Objects take
+    /// a name from their `matte` param, or from the `merge_3d`, `instance_3d` or `particles_3d`
+    /// holding them. A name no object takes leaves its channel 0, with a `scene.matte_unused`
+    /// warning when the `matte` output is drawn.
+    #[meta()]
+    pub mattes: MatteNames,
     /// Distance from the camera, in world units, that `depth` output maps to 0. 0 uses the
     /// camera's `near`.
     #[meta(min = 0, step = 0.1)]
@@ -829,6 +874,7 @@ impl Default for Render3dParams {
     fn default() -> Self {
         Self {
             output: Render3dOutput::Color,
+            mattes: MatteNames::default(),
             depth_near: 0.0,
             depth_far: 0.0,
             width: 0,
@@ -848,14 +894,21 @@ impl Default for Render3dParams {
 }
 
 /// Draws a 3D scene into a raster, with a transparent background unless it shows its environment
-/// map; or, by `output`, its depth or normals, for 2D effects such as fog. Its `color`, `depth`
-/// and `normal` outputs read each of them from the one render.
+/// map; or, by `output`, its depth or normals, for 2D effects such as fog, or the mattes of its
+/// objects. Its `color`, `depth`, `normal` and `matte` outputs read each of them from the one
+/// render.
+///
+/// A matte selects objects after rendering without drawing the scene again: name the lettering
+/// `title` with its `matte` param, list `mattes: ["title"]`, and a `merge` whose `overlay` is the
+/// `color` output, whose `base` is a `blur` of it, and whose `mask` is the `matte` output with
+/// `mask_mode` `red` keeps the title sharp while the rest blurs. A matte's edges are antialiased
+/// with the colour's, by `supersample`, so they line up.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "render_3d",
     name = "Render 3D",
     category = "scene",
-    outputs(color, depth, normal)
+    outputs(color, depth, normal, matte)
 )]
 pub struct Render3d {
     pub id: NodeId,

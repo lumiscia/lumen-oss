@@ -899,7 +899,7 @@ Params:
 - **`blend_mode`** (`"normal"` | `"multiply"` | `"screen"` | `"overlay"` | `"darken"` | `"lighten"` | `"add"` | `"difference"` | `"exclusion"` | `"color_dodge"` | `"color_burn"` | `"hard_light"` | `"soft_light"` | `"hue"` | `"saturation"` | `"color"` | `"luminosity"`; default `"normal"`) Blend mode used when combining the overlay with the base raster. `normal` composites in linear light; every other mode applies its formula to the sRGB-encoded colours and composites the result in linear light.
 - **`feather`** (number, at least 0; default `0`) Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`. Radii above about 588 look the same.
 - **`invert`** (boolean; default `false`) Swaps the masked and unmasked areas.
-- **`mask_mode`** (`"alpha"` | `"luma"`; default `"alpha"`; literal only) Channel of the `mask` input that controls overlay visibility.
+- **`mask_mode`** (`"alpha"` | `"luma"` | `"red"` | `"green"` | `"blue"`; default `"alpha"`; literal only) Channel of the `mask` input that controls overlay visibility.
 - **`opacity`** (number, 0 to 1; default `1`) Overlay opacity applied before compositing.
 
 ## `raster_multimerge`
@@ -966,6 +966,7 @@ Params:
 - **`bevel_segments`** (integer, 0 to 16; default `4`) Steps of the bevel's quarter-round profile, up to 16: 1 is a flat 45° chamfer, and 0 is no bevel.
 - **`bevel_size`** (number, at least 0; default `0`) How far the bevel rounds off the outline's edges in world units, in from the outline and in from the front and back, up to half of `depth`; 0 is none. The outline keeps its size where the sides meet the bevel. Where the outline is too thin or too tightly curved for the bevel it gets the widest one that fits.
 - **`depth`** (number, at least 0; default `0.25`) Thickness along Z in world units, centred on Z = 0 before `placement`, so the front faces +Z at half of it. 0 is flat.
+- **`matte`** (string; default `""`) The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z, applied before the rotation.
@@ -984,6 +985,7 @@ Inputs:
 
 Params:
 
+- **`matte`** (string; default `""`) The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
 - **`opaque`** (boolean; default `false`) Draws the plane with the opaque objects, writing depth, rather than blended. For a source with no transparent pixels, this orders the plane correctly against any geometry it intersects or crosses in depth. Alpha is then ignored: the colour's alpha, `opacity` and the source's alpha. A source pixel that is transparent shows its colour at full opacity, which is black for a fully transparent one, and a half-transparent one shows its colour undimmed. It casts a shadow over its whole rectangle. A shadow catcher is always drawn as one, so this has no effect on it.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
 - **`region`** ([region](#type-region); literal as a whole) Shows only this part of the source, `[x, y, width, height]` in the source's pixels from its top left, on a plane that covers just that part, so a plane showing a region is where it would be and as big as it would be with the whole source on it: it looks as a plane showing a `crop` of that region does, where `width` is still the width of the whole source, and `position`, `rotation` and `scale` pivot about the whole source's centre. Cut off at the source's edges as `crop` cuts its region, and a region with no pixel left shows nothing. Each of the four numbers takes an integer or an expression, which is truncated toward zero as `crop`'s are; the whole region cannot be an expression. Unset shows the whole source. Planes showing parts of one source share its texture and mip levels and draw together, so a region costs nothing beyond the plane, where a `crop` costs a raster the size of the source and a draw of its own. Sampling is kept inside the region, so what is outside it isn't meant to show. To keep it so under strong minification, the band along each edge of the region that is inside the source, and all of a narrow region, is sampled from a sharper mip level than its footprint, since a texel of a shared level can hold pixels from both sides of the edge: it can alias or shimmer there where a `crop` would be smooth, across the whole of a piece drawn much smaller than its pixels.
@@ -1012,6 +1014,7 @@ Params:
 
 - **`copies`** ([instanceCopies](#type-instancecopies); default `[]`; literal as a whole) Copies to place, each given literally as `{ position, rotation, scale, tint }` with any field left out taking the default of the param of that name: position and rotation 0, scale 1 and a white tint. The list can't hold expressions and holds at most 100000 copies. An empty list places none of its own. When it has copies, `count`, `position`, `rotation`, `scale` and `tint` must not be set, and `check` fails if they are.
 - **`count`** (integer, 0 to 100000; default `1`) Copies to place, from 0 to 100000. 0 leaves the node's scene out entirely, lights and cameras too. Not set together with `copies`.
+- **`matte`** (string; default `""`) The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names none of its own, for that render's `matte` output. Empty passes on the matte of the nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z of each copy, in the scene's own space. Evaluated for every copy, and can read `instance` and `instance_count`.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z of each copy, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z. Evaluated for every copy, and can read `instance` and `instance_count`.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z of each copy, applied before the rotation. Evaluated for every copy, and can read `instance` and `instance_count`.
@@ -1030,6 +1033,7 @@ Inputs:
 
 Params:
 
+- **`matte`** (string; default `""`) The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z, applied before the rotation.
@@ -1098,6 +1102,7 @@ Inputs:
 
 Params:
 
+- **`matte`** (string; default `""`) The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names none of its own, for that render's `matte` output. Empty passes on the matte of the nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z, applied before the rotation.
@@ -1121,6 +1126,7 @@ Params:
 - **`camera`** (string; default `""`) The model's camera to view the scene from, by its name or else its index, placed by the first node that places it, without that node's scale; empty uses none. It counts as a `camera_3d` at this node, so the first camera in the scene still wins. Its aspect ratio is the output's. A model's cameras are listed in the `cameras` of its upload's `metadata` on a host that takes uploads, and by `modelInfo` in the browser bindings.
 - **`cast_shadows`** (boolean; default `true`) Blocks light from lights that cast shadows, in the posed shape and where masked or blended materials' alpha reaches their cutoff, or half for blended ones. Unlit and glowing materials block it too, so a model of a lamp around a light needs this off.
 - **`lights`** (boolean; default `false`) Adds the model's own `KHR_lights_punctual` lights to the scene, where its nodes place them, as `light_3d` nodes there would light it: a directional light's intensity, in lux, and a point or spot light's, in candela, are `light_3d` intensities as they are, so a point light of intensity `I` lights a surface `d` metres away as a directional one of `I / d²` does. A spot light's cone fades from its inner angle out to its outer one. They cast no shadows, and a scene they light gets no default lights.
+- **`matte`** (string; default `""`) The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
 - **`receive_shadows`** (boolean; default `true`) Darkens where shadows fall on its lit surfaces.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
@@ -1151,6 +1157,7 @@ Params:
 - **`count`** (integer, 0 to 100000; default `1000`) Particles, from 0 to 100000. Each is one copy of `object`. With `rate` above 0, they are slots that are born one after another and born again once all have been.
 - **`gravity`** ([number, number, number]; default `[0,0,0]`) Acceleration in world units per second squared along X, Y and Z, in the node's own space: `[0, -9.8, 0]` makes particles fall. A particle is at `emit + velocity * age + gravity * age² / 2`.
 - **`lifetime`** (number, at least 0; default `0`) Seconds a particle lives once born, after which it draws nothing until it is born again. 0 lives until it is born again, or forever when `rate` is 0. With `rate` above 0, a particle is born again every `count / rate` seconds, which cuts a longer lifetime short.
+- **`matte`** (string; default `""`) The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names none of its own, for that render's `matte` output. Empty passes on the matte of the nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z of the whole system in the parent's space: the surface, the particles and, without a surface, the point they are emitted from move with it.
 - **`rate`** (number, at least 0; default `0`) Particles born per second: particle `k` is born `k / rate` seconds into the composition, and born again, somewhere new, every `count / rate` seconds after. 0 gives birth to all of them at once, at 0 seconds, and never again.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z of the whole system, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z. It turns `gravity`, and the direction particles are emitted along without a surface, with the rest.
@@ -1163,7 +1170,9 @@ Params:
 
 ## `render_3d`
 
-Draws a 3D scene into a raster, with a transparent background unless it shows its environment map; or, by `output`, its depth or normals, for 2D effects such as fog. Its `color`, `depth` and `normal` outputs read each of them from the one render.
+Draws a 3D scene into a raster, with a transparent background unless it shows its environment map; or, by `output`, its depth or normals, for 2D effects such as fog, or the mattes of its objects. Its `color`, `depth`, `normal` and `matte` outputs read each of them from the one render.
+
+A matte selects objects after rendering without drawing the scene again: name the lettering `title` with its `matte` param, list `mattes: ["title"]`, and a `merge` whose `overlay` is the `color` output, whose `base` is a `blur` of it, and whose `mask` is the `matte` output with `mask_mode` `red` keeps the title sharp while the rest blurs. A matte's edges are antialiased with the colour's, by `supersample`, so they line up.
 
 Category: scene. Output: raster.
 
@@ -1176,6 +1185,7 @@ Outputs beside `output`, which a connection's `from_port` names:
 - `color`: raster
 - `depth`: raster
 - `normal`: raster
+- `matte`: raster
 
 Params:
 
@@ -1190,7 +1200,8 @@ Params:
 - **`fog_color`** ([color](#type-color); default `[255,255,255,255]`) Colour surfaces fade to with distance. Must be a solid color; a gradient fails `check`.
 - **`fog_density`** (number, at least 0; default `0`) How quickly surfaces fade into the fog: the fraction of their colour left after `d` world units is e^(-density * d). 0 turns fog off.
 - **`height`** (integer, at least 0; default `0`; literal only) Output height in pixels. Use 0 to match the composition height.
-- **`output`** (`"color"` | `"depth"` | `"normal"`; default `"color"`; literal only) What the default `output` holds: the lit scene, its depth or its normals. The `color`, `depth` and `normal` outputs each hold one whatever this is, and one `render_3d` draws all that are read with one walk of the scene.
+- **`mattes`** ([matteNames](#type-mattenames); default `[]`; literal as a whole) The matte names whose objects' coverage the `matte` output holds, in its red, green, blue and alpha channels in turn: at most 4, each listed once, or the render fails. Objects take a name from their `matte` param, or from the `merge_3d`, `instance_3d` or `particles_3d` holding them. A name no object takes leaves its channel 0, with a `scene.matte_unused` warning when the `matte` output is drawn.
+- **`output`** (`"color"` | `"depth"` | `"normal"` | `"matte"`; default `"color"`; literal only) What the default `output` holds: the lit scene, its depth, its normals or its mattes. The `color`, `depth`, `normal` and `matte` outputs each hold one whatever this is, and one `render_3d` draws all that are read with one walk of the scene, the colour and mattes with one draw of it.
 - **`supersample`** (integer, 1 to 4; default `2`) Renders this many times wider and taller, then averages down, to antialias edges.
 - **`tone_mapping`** (`"none"` | `"aces"` | `"agx"`; default `"none"`; literal only) How light brighter than white is brought into range.
 - **`width`** (integer, at least 0; default `0`; literal only) Output width in pixels. Use 0 to match the composition width.
@@ -1215,6 +1226,7 @@ Inputs:
 
 Params:
 
+- **`matte`** (string; default `""`) The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z, applied before the rotation.
@@ -1247,6 +1259,7 @@ Params:
 - **`font_weight`** (integer, 1 to 1000; default `400`) Font weight. Variable fonts render any value in their weight range.
 - **`letter_spacing`** (number; default `0`) Extra space after every glyph in world units. Negative values tighten the text.
 - **`line_height`** (number, at least 0; default `0`) Distance between lines in world units. Use 0 for 1.2 × the font size.
+- **`matte`** (string; default `""`) The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that render's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
 - **`max_width`** (number, at least 0; default `0`) Maximum line width in world units, at which lines wrap. Use 0 for automatic width.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
@@ -1372,6 +1385,12 @@ Fields:
 - **`tint`** ([color](#type-color); default `[255,255,255]`; literal as a whole)
 
 No other fields.
+
+### Type `matteNames`
+
+Matte names, one for each channel of a `render_3d`'s `matte` output in turn: red, green, blue and alpha. Each is a literal, listed once.
+
+Value: array of string, at most 4 items.
 
 ### Type `paint`
 

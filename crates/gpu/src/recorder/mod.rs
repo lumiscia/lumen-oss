@@ -22,7 +22,9 @@ use crate::Size;
 
 use arena::Arena;
 use pool::{FrameTexture, PoolBucket, PoolEntry, PoolKey};
-pub use program::{DEPTH_FORMAT, DepthTest, LayoutEntry, LayoutKind, RenderTargetSpec};
+pub use program::{
+    DEPTH_FORMAT, DepthTest, LayoutEntry, LayoutKind, MAX_EXTRA_TARGETS, RenderTargetSpec,
+};
 use program::{ProgramEntry, ProgramKey};
 
 type Result<T, E = FrameError> = std::result::Result<T, E>;
@@ -193,6 +195,8 @@ enum RecordedPass {
         bindings: PassBindings,
         /// `None` for a pass that only draws depth.
         target: Option<TexRef>,
+        /// The colour targets after `target`, loaded as it is.
+        extra: [Option<TexRef>; MAX_EXTRA_TARGETS],
         load: TargetLoad,
         depth: Option<(TexRef, TargetLoad)>,
         vertices: u32,
@@ -225,11 +229,12 @@ impl RecordedPass {
             Self::Render {
                 bindings,
                 target,
+                extra,
                 depth,
                 ..
             } => {
                 bound(bindings);
-                if let Some(target) = target {
+                for target in std::iter::once(target).chain(extra).flatten() {
                     visit(target);
                 }
                 if let Some((depth, _)) = depth {
@@ -433,6 +438,7 @@ impl Recorder {
             program,
             bindings: PassBindings::new(bindings),
             target: Some(target),
+            extra: [None; MAX_EXTRA_TARGETS],
             load,
             depth: None,
             vertices,
@@ -455,11 +461,47 @@ impl Recorder {
         vertices: u32,
         instances: u32,
     ) {
+        self.draw_targets_with_depth(
+            program,
+            bindings,
+            &[target],
+            load,
+            depth,
+            depth_load,
+            vertices,
+            instances,
+        );
+    }
+
+    /// `draw_with_depth` into `targets`, the first and then those a program made with as many
+    /// `RenderTargetSpec::extra_targets` writes, all of one size and loaded by `load`.
+    #[allow(clippy::too_many_arguments, reason = "a draw's flat inputs")]
+    pub fn draw_targets_with_depth(
+        &mut self,
+        program: ProgramRef,
+        bindings: &[(u32, Res)],
+        targets: &[TexRef],
+        load: TargetLoad,
+        depth: TexRef,
+        depth_load: TargetLoad,
+        vertices: u32,
+        instances: u32,
+    ) {
+        let (&target, rest) = targets.split_first().expect("a colour target");
+        assert!(
+            rest.len() <= MAX_EXTRA_TARGETS,
+            "a draw writes at most {MAX_EXTRA_TARGETS} colour targets beside its first"
+        );
+        let mut extra = [None; MAX_EXTRA_TARGETS];
+        for (slot, &tex) in extra.iter_mut().zip(rest) {
+            *slot = Some(tex);
+        }
         self.pin_program(program);
         self.passes.push(RecordedPass::Render {
             program,
             bindings: PassBindings::new(bindings),
             target: Some(target),
+            extra,
             load,
             depth: Some((depth, depth_load)),
             vertices,
@@ -484,6 +526,7 @@ impl Recorder {
             program,
             bindings: PassBindings::new(bindings),
             target: None,
+            extra: [None; MAX_EXTRA_TARGETS],
             load: TargetLoad::Load,
             depth: Some((depth, load)),
             vertices,

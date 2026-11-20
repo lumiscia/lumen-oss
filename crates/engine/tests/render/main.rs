@@ -50,6 +50,8 @@ mod scene_capture;
 #[cfg(feature = "3d")]
 mod scene_environment;
 #[cfg(feature = "3d")]
+mod scene_mattes;
+#[cfg(feature = "3d")]
 mod scene_mips;
 #[cfg(feature = "3d")]
 mod scene_models;

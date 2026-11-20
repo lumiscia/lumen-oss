@@ -286,6 +286,11 @@ pub const CODE_DOCS: &[CodeDoc] = &[
         meaning: "A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none.",
     },
     CodeDoc {
+        code: "scene.matte_unused",
+        found_by: FoundBy::Render,
+        meaning: "A `render_3d`'s `mattes` lists a name no object of its scene takes, so that channel of its `matte` output is 0.",
+    },
+    CodeDoc {
         code: "scene.model_primitives_skipped",
         found_by: FoundBy::Render,
         meaning: "A `model_3d`'s model has points, lines, or triangle strips or fans, which aren't drawn.",

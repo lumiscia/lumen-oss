@@ -378,6 +378,7 @@ impl Collected {
         cx: &mut FrameCx<'_>,
         node: &Instance3d,
         parent: Mat4,
+        matte: Option<u8>,
     ) -> crate::Result<()> {
         let expr = cx.expr();
         let ctx = DelegateEvalContext::new(node.id, &expr);
@@ -395,9 +396,7 @@ impl Collected {
             ));
         }
         let input = required_input(node.id, "scene", node.scene)?;
-        let mut inner = Collected::new(self.render_id);
-        inner.reached = self.reached;
-        inner.nesting = self.nesting + 1;
+        let mut inner = self.nested(matte);
         inner.instance_room = self.instance_room.saturating_sub(self.drawn) / count as usize;
         inner.add(cx, input.node)?;
         self.reached = inner.reached;

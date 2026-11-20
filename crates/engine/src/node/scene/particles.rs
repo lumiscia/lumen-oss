@@ -118,6 +118,11 @@ pub struct Particles3dParams {
     /// `lifetime` of 0 the start applies throughout.
     #[meta(step = 0.1)]
     pub scale_over_life: (f64, f64),
+    /// The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names
+    /// none of its own, for that render's `matte` output. Empty passes on the matte of the
+    /// nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
+    #[meta()]
+    pub matte: String,
     #[meta(
         flatten,
         doc(
@@ -142,6 +147,7 @@ impl Default for Particles3dParams {
             scale: (1.0, 1.0),
             rotation_jitter: 0.0,
             scale_over_life: (1.0, 1.0),
+            matte: String::new(),
             pose: Pose3d::default(),
         }
     }

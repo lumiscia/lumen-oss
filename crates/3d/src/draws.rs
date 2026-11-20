@@ -212,6 +212,7 @@ mod tests {
             bounds: crate::Bounds::EMPTY,
             part: None,
             instanced: None,
+            matte: None,
         }
     }
 
