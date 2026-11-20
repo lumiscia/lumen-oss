@@ -143,11 +143,19 @@ impl TransformMotion {
         ))
     }
 
-    fn bounds_of_keys(&self, data: lumen_gpu::RectI, keys: &[TransformKey]) -> Option<[f32; 4]> {
-        let (x0, y0) = (f64::from(data.x) - 0.5, f64::from(data.y) - 0.5);
+    /// Bilinear filtering reaches half a source texel past `data`, which is `0.5 / density`
+    /// source pixels.
+    fn bounds_of_keys(
+        &self,
+        data: lumen_gpu::RectI,
+        density: [f32; 2],
+        keys: &[TransformKey],
+    ) -> Option<[f32; 4]> {
+        let [margin_x, margin_y] = density.map(|density| 0.5 / f64::from(density));
+        let (x0, y0) = (f64::from(data.x) - margin_x, f64::from(data.y) - margin_y);
         let (x1, y1) = (
-            x0 + f64::from(data.width) + 1.0,
-            y0 + f64::from(data.height) + 1.0,
+            x0 + f64::from(data.width) + 2.0 * margin_x,
+            y0 + f64::from(data.height) + 2.0 * margin_y,
         );
         let corners = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]];
         let mut bounds = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
@@ -414,7 +422,7 @@ impl crate::gpu::frame_graph::RecordNode for Transform {
         };
         let frame_key = [motion.key(&evaluated)];
         let keys = taps.as_deref().unwrap_or(&frame_key);
-        let bounds = motion.bounds_of_keys(data_rect, keys);
+        let bounds = motion.bounds_of_keys(data_rect, density, keys);
         let bounds = cx.bounds_of(bounds);
         let domain = cx.source_domain(bounds);
         let pivot = resolve_pivot(

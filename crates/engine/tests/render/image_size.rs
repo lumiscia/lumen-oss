@@ -125,6 +125,34 @@ fn an_image_past_the_size_limit_renders_reduced_through_an_animated_transform() 
     assert_eq!(warnings[0].code, "media.image_reduced");
 }
 
+#[test]
+fn a_transform_bounds_a_reduced_image_by_its_filtered_texels() {
+    let gpu = gpu();
+    // A 64x32 image under a limit of 4 has a texel to every 16 pixels, whose bilinear filtering
+    // reaches 8 pixels past the image's edge.
+    let composition = shown_at(
+        (128, 64),
+        json!([
+            photo_in(),
+            { "id": 2, "type": "transform", "in": { "source": 1 },
+              "params": { "translate_x": 32, "translate_y": 16 } },
+        ]),
+    );
+    let media = TestMedia::default().image("photo", 64, 32, RED.repeat(64 * 32));
+    let shown = |full_frame: bool| {
+        let mut renderer = gpu.renderer();
+        renderer.set_max_image_side(4);
+        renderer.set_full_frame_sources(full_frame);
+        render(&mut renderer, &composition, 0.0, &media)
+    };
+    let (bounded, full) = (shown(false), shown(true));
+    assert!(
+        full.pixel(26, 32)[3] > 0,
+        "the filtering reaches past the edge"
+    );
+    assert_eq!(bounded.rgba, full.rgba);
+}
+
 #[cfg(feature = "3d")]
 #[test]
 fn an_image_past_the_size_limit_renders_reduced_on_an_image_plane() {
