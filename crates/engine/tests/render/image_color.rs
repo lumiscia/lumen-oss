@@ -314,6 +314,7 @@ fn a_16_bit_gradient_keeps_more_than_256_levels() {
 #[test]
 fn a_16_bit_image_shrunk_by_a_transform_is_averaged_in_linear_light() {
     // Single-texel black and white squares, which a quarter of their size averages to half white.
+    // The scale is an expression so that the image keeps its size and its mips do the averaging.
     const SIZE: u32 = 256;
     let samples: Vec<u16> = (0..SIZE * SIZE)
         .flat_map(|index| {
@@ -331,7 +332,7 @@ fn a_16_bit_image_shrunk_by_a_transform_is_averaged_in_linear_light() {
         json!([
             { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "plate" } },
             { "id": 2, "type": "transform", "in": { "source": 1 },
-              "params": { "scale_x": 0.25, "scale_y": 0.25, "translate_x": 0.125, "translate_y": 0.125 } },
+              "params": { "scale_x": "=0.25", "scale_y": "=0.25", "translate_x": 0.125, "translate_y": 0.125 } },
         ]),
     )
     .into();

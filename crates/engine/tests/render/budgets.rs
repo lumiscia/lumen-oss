@@ -90,12 +90,13 @@ fn mip_chains_past_their_budget_keep_only_what_the_frame_uses() {
             json!([
                 { "id": 1, "type": "media_in", "params": { "kind": "image", "source": source } },
                 { "id": 2, "type": "transform", "in": { "source": 1 },
-                  "params": { "scale_x": 0.125, "scale_y": 0.125 } },
+                  "params": { "scale_x": "=0.125", "scale_y": "=0.125" } },
             ]),
         )
         .into()
     };
-    // Idle chains of a size are reused for the next of it, so the images differ in size.
+    // Idle chains of a size are reused for the next of it, so the images differ in size. The
+    // scale is an expression so that the images keep their size and are shrunk through mips.
     let media = TestMedia::default()
         .image("a", 128, 128, vec![255; 128 * 128 * 4])
         .image("b", 96, 96, vec![128; 96 * 96 * 4]);
