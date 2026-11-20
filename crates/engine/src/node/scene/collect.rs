@@ -22,7 +22,7 @@ use lumen_3d::model::{
 };
 use lumen_3d::{
     Blending, Bounds, BoxFace, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive,
-    Scene, Shadow, Surface, Transform,
+    Projector, Scene, Shadow, Surface, Transform,
 };
 use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
@@ -592,31 +592,36 @@ fn wired_material<'a, N: crate::node::JsonNode>(
     Ok((material, material.params.eval(&ctx)?))
 }
 
-/// The surface the `material_3d` wired into `object`'s `material` input gives it, evaluated at
-/// the frame, or `unwired`, `object`'s material when none is. Errors in the params name the
-/// material node. Only a `shape_3d` shows a material's texture, so one with a texture fails.
-fn material_surface<N: crate::node::JsonNode>(
-    cx: &FrameCx<'_>,
-    object: NodeId,
-    material: Option<OutputRef>,
-    unwired: Material3dParams,
-) -> crate::Result<Surface<TexRef>> {
-    let Some(material_id) = material.map(|material| material.node) else {
-        return surface::<N>(object, &unwired);
-    };
-    let (material, params) = wired_material::<N>(cx, object, material_id)?;
-    if material.texture.is_some() {
-        return Err(RenderError::evaluating::<N>(
-            object,
-            format!(
-                "{} can't show the `texture` of material_3d node {material_id}; only a shape_3d \
-                 shows one",
-                N::KIND
-            ),
-        )
-        .into());
-    }
-    surface::<super::Material3d>(material_id, &params)
+/// Which of its material's textures an object shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shows {
+    /// Through its texture coordinates, or from the material's projector.
+    Texture,
+    /// Only from the material's projector.
+    Projected,
+    /// None, as an image plane, which shows its own source.
+    Source,
+}
+
+/// Why a `projector` input does nothing.
+const PROJECTOR_WITHOUT_TEXTURE: &str = "a `projector` needs a `texture` to project";
+
+/// The projector that the camera of the scene `projector` gives the node `node_id`, a node `N`,
+/// for projecting `raster`, at the frame.
+fn projector_of<N: crate::node::JsonNode>(
+    cx: &mut FrameCx<'_>,
+    node_id: NodeId,
+    projector: OutputRef,
+    occlusion: bool,
+    raster: &Raster,
+) -> crate::Result<Projector> {
+    let camera = find_camera::<N>(cx, node_id, projector.node)?.unwrap_or_default();
+    let size = raster.shown_size();
+    Ok(Projector {
+        camera,
+        aspect: size.width.max(1) as f32 / size.height.max(1) as f32,
+        occlusion,
+    })
 }
 
 /// Part of an object's indices, and the `material_3d` that shades it, or `None` for the object's
@@ -738,6 +743,7 @@ fn model_surface(
     Surface {
         base_color: material.base_color,
         texture: None,
+        projector: None,
         nearest: false,
         // Reading checked that every map names one of the model's textures.
         maps: material.maps.map(|&texture| textures[texture]),
@@ -973,19 +979,82 @@ impl Collected {
         self.push(node, object, extent);
     }
 
+    /// The surface the `material_3d` wired into `object`'s `material` input gives it, evaluated at
+    /// the frame, or `unwired`, `object`'s material when none is, with the material's texture as
+    /// `shows` allows; a texture it can't show fails. Errors in the params name the material node.
+    fn material_surface<N: crate::node::JsonNode>(
+        &mut self,
+        cx: &mut FrameCx<'_>,
+        object: NodeId,
+        material: Option<OutputRef>,
+        unwired: Material3dParams,
+        shows: Shows,
+    ) -> crate::Result<Surface<TexRef>> {
+        let Some(material_id) = material.map(|material| material.node) else {
+            return surface::<N>(object, &unwired);
+        };
+        let (material, params) = wired_material::<N>(cx, object, material_id)?;
+        let mut surface = surface::<super::Material3d>(material_id, &params)?;
+        let Some(texture) = material.texture else {
+            if material.projector.is_some() {
+                return Err(RenderError::evaluating::<super::Material3d>(
+                    material_id,
+                    PROJECTOR_WITHOUT_TEXTURE,
+                )
+                .into());
+            }
+            return Ok(surface);
+        };
+        let refused = match (shows, material.projector) {
+            (Shows::Source, _) => Some(format!(
+                "{} shows its `source`, so it can't show the `texture` of material_3d node \
+                 {material_id}",
+                N::KIND
+            )),
+            (Shows::Projected, None) => Some(format!(
+                "{} can't show the `texture` of material_3d node {material_id}; only a shape_3d \
+                 shows one, or any object when the material has a `projector`",
+                N::KIND
+            )),
+            _ => None,
+        };
+        if let Some(details) = refused {
+            return Err(RenderError::evaluating::<N>(object, details).into());
+        }
+        let raster = cx.input_native(texture)?;
+        self.rasters.push((texture, raster));
+        surface.texture = Some(raster.tex);
+        surface.nearest = params.sampling == RasterSampling::Nearest;
+        if let Some(projector) = material.projector {
+            surface.projector = Some(projector_of::<super::Material3d>(
+                cx,
+                material_id,
+                projector,
+                params.projector_occlusion,
+                &raster,
+            )?);
+        }
+        Ok(surface)
+    }
+
     /// Adds `object` once for each of `runs`, drawing the indices the run covers with the run's
     /// material, or the node's default one where it has none.
     fn push_runs<N: crate::node::JsonNode>(
         &mut self,
-        cx: &FrameCx<'_>,
+        cx: &mut FrameCx<'_>,
         node_id: NodeId,
         object: Object<GpuMesh, TexRef>,
         extent: Extent,
         runs: Vec<Face>,
     ) -> crate::Result<()> {
         for (part, (indices, material)) in runs.into_iter().enumerate() {
-            let surface =
-                material_surface::<N>(cx, node_id, material, Material3dParams::default())?;
+            let surface = self.material_surface::<N>(
+                cx,
+                node_id,
+                material,
+                Material3dParams::default(),
+                Shows::Projected,
+            )?;
             self.push(
                 node_id,
                 Object {
@@ -1202,11 +1271,12 @@ impl Collected {
                 let world = parent * placement(&params.placement).matrix();
                 let surface = match text.side_material {
                     Some(_) => Surface::default(),
-                    None => material_surface::<super::Text3d>(
+                    None => self.material_surface::<super::Text3d>(
                         cx,
                         node_id,
                         text.material,
                         Material3dParams::default(),
+                        Shows::Projected,
                     )?,
                 };
                 let mesh = super::text_mesh::text_mesh(cx, node_id, &params).map_err(|error| {
@@ -1252,11 +1322,12 @@ impl Collected {
                 let world = parent * placement(&params.placement).matrix();
                 let surface = match extrude.side_material {
                     Some(_) => Surface::default(),
-                    None => material_surface::<super::Extrude3d>(
+                    None => self.material_surface::<super::Extrude3d>(
                         cx,
                         node_id,
                         extrude.material,
                         Material3dParams::default(),
+                        Shows::Projected,
                     )?,
                 };
                 if let Some((solid, depth)) =
@@ -1287,11 +1358,12 @@ impl Collected {
                 let params = lathe.params.eval(&ctx)?;
                 let geometry = required_input(node_id, "geometry", lathe.geometry)?;
                 let world = parent * placement(&params.placement).matrix();
-                let surface = material_surface::<super::Lathe3d>(
+                let surface = self.material_surface::<super::Lathe3d>(
                     cx,
                     node_id,
                     lathe.material,
                     Material3dParams::default(),
+                    Shows::Projected,
                 )?;
                 if let Some(solid) =
                     super::solid_mesh::lathe_mesh(cx, node_id, geometry.node, &params)?
@@ -1320,11 +1392,12 @@ impl Collected {
                 );
                 let world =
                     parent * placement(&params.placement).matrix() * Mat4::from_scale(scale);
-                let mut surface = material_surface::<super::ImagePlane3d>(
+                let mut surface = self.material_surface::<super::ImagePlane3d>(
                     cx,
                     node_id,
                     plane.material,
                     Material3dParams::flat(),
+                    Shows::Source,
                 )?;
                 // A raster has transparent texels whatever its opacity, so a plane blends unless
                 // told it has none or its material masks. A shadow catcher keeps its alpha, which
@@ -1420,18 +1493,13 @@ impl Collected {
         node_id: NodeId,
         material: Option<OutputRef>,
     ) -> crate::Result<Surface<TexRef>> {
-        let Some(material_id) = material.map(|material| material.node) else {
-            return surface::<super::Shape3d>(node_id, &Material3dParams::default());
-        };
-        let (material, params) = wired_material::<super::Shape3d>(cx, node_id, material_id)?;
-        let mut surface = surface::<super::Material3d>(material_id, &params)?;
-        if let Some(texture) = material.texture {
-            let raster = cx.input_native(texture)?;
-            self.rasters.push((texture, raster));
-            surface.texture = Some(raster.tex);
-            surface.nearest = params.sampling == RasterSampling::Nearest;
-        }
-        Ok(surface)
+        self.material_surface::<Shape3d>(
+            cx,
+            node_id,
+            material,
+            Material3dParams::default(),
+            Shows::Texture,
+        )
     }
 
     /// Adds the primitives of `node`'s model, posed `seconds` into the composition's clip.
@@ -1458,6 +1526,11 @@ impl Collected {
         }
         let clip = scene.animation(&params.animation).map_err(error)?;
         let camera = scene.camera(&params.camera).map_err(error)?;
+        if node.projector.is_some() && node.texture.is_none() {
+            return Err(
+                RenderError::evaluating::<Model3d>(node.id, PROJECTOR_WITHOUT_TEXTURE).into(),
+            );
+        }
         let replaced = match (params.texture_material.as_str(), node.texture) {
             ("", None) => None,
             ("", Some(_)) => {
@@ -1472,7 +1545,19 @@ impl Collected {
                     Some(texture) => {
                         let raster = cx.input_native(texture)?;
                         self.rasters.push((texture, raster));
-                        Some((material, raster.tex))
+                        let projector = node
+                            .projector
+                            .map(|projector| {
+                                projector_of::<Model3d>(
+                                    cx,
+                                    node.id,
+                                    projector,
+                                    params.projector_occlusion,
+                                    &raster,
+                                )
+                            })
+                            .transpose()?;
+                        Some((material, raster.tex, projector))
                     }
                     None => None,
                 }
@@ -1558,11 +1643,12 @@ impl Collected {
                 .and_then(|index| scene.materials().get(index))
                 .unwrap_or(&default);
             let mut surface = model_surface(material, &model.textures, &primitive, &params);
-            if let Some((replaced, raster)) = replaced
+            if let Some((replaced, raster, projector)) = replaced
                 && primitive.material == Some(replaced)
             {
                 surface = Surface {
                     texture: Some(raster),
+                    projector,
                     unlit: true,
                     blending: material.blending,
                     double_sided: material.double_sided,

@@ -31,8 +31,8 @@ pub use mesh::{
     BoxFace, Mesh, MorphDelta, Primitive, SkinVertex, Vertex, VertexExtra, plane_scale,
 };
 pub use scene::{
-    Blending, Filter, Instanced, MAX_SCENE_NODES, Map, MapUv, Maps, Morph, Object, Orientation,
-    Sampler, Scene, Surface, Wrap,
+    Blending, Filter, Instanced, MAX_PROJECTORS, MAX_SCENE_NODES, Map, MapUv, Maps, Morph, Object,
+    Orientation, Projector, Sampler, Scene, Surface, Wrap,
 };
 pub use shadow::{MAX_FILTER_TEXELS, MAX_SHADOW_LIGHTS, ShadowAtlas, ShadowView, atlas_side};
 pub use transform::{Transform, look_at, mirrors, normal_matrix, rotation};

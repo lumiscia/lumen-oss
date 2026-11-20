@@ -587,10 +587,11 @@ export const nodeSpecs: readonly NodeSpec[] = [
   {
     kind: "material_3d",
     name: "Material 3D",
-    description: "How a surface responds to light, for the 3D objects it is wired into through their `material`\ninput. One `material_3d` can be wired to any number of objects, which then share its params,\nso changing it changes them all. Each param takes an expression as it does on any node.\nObjects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses\nan unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by\n`color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest\nof the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.\nIts alpha counts where the material blends or masks, through `opacity` or the colour's alpha.\nWired into any other object, a material with a texture fails the render.\n\n`alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose\nmaterial is unlit and double-sided, with the opaque objects so it orders correctly where cards\ncross. As a glTF `MASK` material does, it shows only the texels that reach `alpha_cutoff`.",
+    description: "How a surface responds to light, for the 3D objects it is wired into through their `material`\ninput. One `material_3d` can be wired to any number of objects, which then share its params,\nso changing it changes them all. Each param takes an expression as it does on any node.\nObjects with no material wired in use a lit, single-sided white one; an `image_plane_3d` uses\nan unlit, double-sided one. A raster wired into `texture` shows on a `shape_3d`, multiplied by\n`color`, through the texture coordinates `shape_3d` describes, lit and shadowed like the rest\nof the surface, and filtered as an image plane's source is unless `sampling` is `nearest`.\nIts alpha counts where the material blends or masks, through `opacity` or the colour's alpha.\nWired into any other object, a material with a texture fails the render, unless it has a\n`projector`; an `image_plane_3d` shows its own source and fails with either.\n\nA scene wired into `projector` projects the `texture` from its camera, chosen as `render_3d`\nwould choose it, in place of texture coordinates, so it shows on any object but an image\nplane, `instance_3d` copies included. Each point of the surface takes the texel the projector\nsees it at: the texture fills the projector's view at the texture's own aspect ratio, with the\ncamera's `fov` or `ortho_height`, `near` and `far`. Faces turned away from the projector,\npoints outside its view and, with `projector_occlusion`, points it can't see show `color`\nalone. The projector stands where its own scene places it, whatever places the objects, at the\nframe being drawn, so a moving camera moves the projection: a plate projected onto geometry\nwants a still `camera_3d` of its own, apart from the camera the scene is drawn from. A\n`projector` without a `texture` fails the render.\n\n`alpha_mode` `mask` draws a cut-out card, such as a `text` raster on an `image_plane_3d` whose\nmaterial is unlit and double-sided, with the opaque objects so it orders correctly where cards\ncross. As a glTF `MASK` material does, it shows only the texels that reach `alpha_cutoff`.",
     category: "scene",
     inputs: [
       { name: "texture", kind: "raster", optional: true, variadic: false },
+      { name: "projector", kind: "scene", optional: true, variadic: false },
     ],
     outputs: [
       { name: "output", kind: "material" },
@@ -604,6 +605,7 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { id: "emissive", name: "Emissive", kind: "float", description: "Light the surface gives off on its own, as a multiple of its base colour.", defaultValue: 0, constraints: { min: 0, step: 0.1 } },
       { id: "metallic", name: "Metallic", kind: "float", description: "0 is a dielectric such as plastic, 1 a bare metal.", defaultValue: 0, constraints: { min: 0, max: 1, step: 0.05 } },
       { id: "opacity", name: "Opacity", kind: "float", description: "Opacity multiplier. With `alpha_mode` `blend`, anything below 1 is drawn blended, after\nopaque objects.", defaultValue: 1, constraints: { min: 0, max: 1, step: 0.01 } },
+      { id: "projector_occlusion", name: "Projector Occlusion", kind: "bool", description: "With a `projector` wired, surfaces the projector can't see, behind surfaces that cast\nshadows, show the colour alone.", defaultValue: true },
       { id: "receive_shadows", name: "Receive Shadows", kind: "bool", description: "Darkens where shadows fall on it. An unlit surface shows them as `unlit_shadows` says.", defaultValue: true },
       { id: "roughness", name: "Roughness", kind: "float", description: "0 is a mirror finish, 1 fully diffuse.", defaultValue: 0.5, constraints: { min: 0, max: 1, step: 0.05 } },
       { id: "sampling", name: "Sampling", kind: "enum", description: "How a shape reads its `texture`, as `sampling` on `image_plane_3d`: `nearest` gives each\npixel the one texel under it at any size, for pixel art.", defaultValue: "linear", enumOptions: [{ name: "nearest", label: "Nearest", value: 0 }, { name: "linear", label: "Linear", value: 1 }] },
@@ -611,7 +613,7 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { id: "unlit", name: "Unlit", kind: "bool", description: "Shows the base colour as is, ignoring lights.", defaultValue: false },
       { id: "unlit_shadows", name: "Unlit Shadows", kind: "float", description: "How much an unlit surface darkens where shadows fall on it, from 0, which shows none, to\n1, where a fully shadowed point is black. Lit surfaces ignore it, as do surfaces that\ndon't receive shadows.", defaultValue: 0, constraints: { min: 0, max: 1, step: 0.05 } },
     ],
-    defaultParams: { alpha_cutoff: 0.5, alpha_mode: "blend", cast_shadows: true, color: [255, 255, 255, 255], double_sided: false, emissive: 0, metallic: 0, opacity: 1, receive_shadows: true, roughness: 0.5, sampling: "linear", shadow_catcher: false, unlit: false, unlit_shadows: 0 },
+    defaultParams: { alpha_cutoff: 0.5, alpha_mode: "blend", cast_shadows: true, color: [255, 255, 255, 255], double_sided: false, emissive: 0, metallic: 0, opacity: 1, projector_occlusion: true, receive_shadows: true, roughness: 0.5, sampling: "linear", shadow_catcher: false, unlit: false, unlit_shadows: 0 },
   },
   {
     kind: "media_in",
@@ -710,10 +712,11 @@ export const nodeSpecs: readonly NodeSpec[] = [
   {
     kind: "model_3d",
     name: "Model 3D",
-    description: "A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex\ncolours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets\nand animation clips. A raster wired into `texture` shows on the surfaces of the material\n`texture_material` names, such as a screen. The model's own lights and a camera are added with\n`lights` and `camera`. Points, lines, and triangle strips and fans aren't drawn, with a\n`scene.model_primitives_skipped` warning.",
+    description: "A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex\ncolours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets\nand animation clips. A raster wired into `texture` shows on the surfaces of the material\n`texture_material` names, such as a screen. With a scene wired into `projector` as well, the\ntexture is projected onto those surfaces from the scene's camera instead, as a `material_3d`'s\n`projector` projects its texture, where faces turned away and points out of view show white;\nnaming the model's only material projects a plate onto all of it. The model's own lights and a\ncamera are added with `lights` and `camera`. Points, lines, and triangle strips and fans aren't\ndrawn, with a `scene.model_primitives_skipped` warning.",
     category: "scene",
     inputs: [
       { name: "texture", kind: "raster", optional: true, variadic: false },
+      { name: "projector", kind: "scene", optional: true, variadic: false },
     ],
     outputs: [
       { name: "output", kind: "scene" },
@@ -728,13 +731,14 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { id: "lights", name: "Lights", kind: "bool", description: "Adds the model's own `KHR_lights_punctual` lights to the scene, where its nodes place\nthem, as `light_3d` nodes there would light it: a directional light's intensity, in lux, and\na point or spot light's, in candela, are `light_3d` intensities as they are, so a point\nlight of intensity `I` lights a surface `d` metres away as a directional one of `I / d²`\ndoes. A spot light's cone fades from its inner angle out to its outer one. They cast no\nshadows, and a scene they light gets no default lights.", defaultValue: false },
       { id: "matte", name: "Matte", kind: "string", description: "The matte its visible coverage goes to, by a name `render_3d`'s `mattes` lists, for that\nrender's `matte` output. Empty takes the matte of the nearest `merge_3d`, `instance_3d` or\n`particles_3d` holding it that names one, or none.", defaultValue: "" },
       { id: "position", name: "Position", kind: "vec3", description: "Position in world units along X, Y and Z, in the parent's space.", defaultValue: [0, 0, 0], constraints: { step: 0.1 } },
+      { id: "projector_occlusion", name: "Projector Occlusion", kind: "bool", description: "With a `projector` wired, the surfaces showing `texture` that the projector can't see,\nbehind surfaces that cast shadows, show white.", defaultValue: true },
       { id: "receive_shadows", name: "Receive Shadows", kind: "bool", description: "Darkens where shadows fall on its lit surfaces.", defaultValue: true },
       { id: "rotation", name: "Rotation", kind: "vec3", description: "Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned\nX, then roll about the turned Z.", defaultValue: [0, 0, 0], constraints: { step: 1 } },
       { id: "scale", name: "Scale", kind: "vec3", description: "Scale multiplier along X, Y and Z, applied before the rotation.", defaultValue: [1, 1, 1], constraints: { step: 0.1 } },
       { id: "source", name: "Source", kind: "string", description: "A binary glTF (`.glb`) file with its buffers and images inside it: a path or `media`\nalias, or `asset:<id>` for a model asset of the host's.", defaultValue: "", constraints: { role: "source_id" } },
       { id: "texture_material", name: "Texture Material", kind: "string", description: "The material, by name, whose surfaces show the `texture` input instead, unlit. A model's\nmaterials are listed in the `materials` of its upload's `metadata` on a host that takes\nuploads, and by `modelInfo` in the browser bindings.", defaultValue: "" },
     ],
-    defaultParams: { animation: "", animation_loop: true, animation_offset: 0, animation_speed: 1, camera: "", cast_shadows: true, lights: false, matte: "", position: [0, 0, 0], receive_shadows: true, rotation: [0, 0, 0], scale: [1, 1, 1], source: "", texture_material: "" },
+    defaultParams: { animation: "", animation_loop: true, animation_offset: 0, animation_speed: 1, camera: "", cast_shadows: true, lights: false, matte: "", position: [0, 0, 0], projector_occlusion: true, receive_shadows: true, rotation: [0, 0, 0], scale: [1, 1, 1], source: "", texture_material: "" },
   },
   {
     kind: "motion_blur",
