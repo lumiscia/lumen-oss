@@ -21,6 +21,7 @@ pub mod opacity;
 pub mod ordered_dither;
 pub mod resize;
 pub mod shadow;
+pub mod sharpen;
 pub mod time_remap;
 pub mod transform;
 pub mod wgsl_shader;

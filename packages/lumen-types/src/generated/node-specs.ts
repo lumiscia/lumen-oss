@@ -1013,6 +1013,24 @@ export const nodeSpecs: readonly NodeSpec[] = [
     defaultParams: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], shape: "box", size: [1, 1, 1] },
   },
   {
+    kind: "sharpen",
+    name: "Sharpen",
+    description: "Sharpens a raster with an unsharp mask: detail is the difference between a pixel's luminance\nand that of a blurred copy, and sharpening adds `amount` times it back.\n\nIt works on straight colour, with luminance (Rec. 709) on the sRGB-encoded values. The detail\nis `luminance - blurred luminance`, reduced towards 0 by `threshold`, and the sharpened\nluminance is `luminance + amount * detail`. That is held between the darkest and brightest\nluminance in the 3×3 pixels around it, so hard edges get no light or dark halo. The change is\nadded equally to red, green and blue, which keeps the hue and adds no colour fringes; colour\nbrighter than white stays unclipped. Alpha is unchanged and the output covers the source's\narea. For example, `amount` 1.5 with `radius` 2 and `threshold` 0.02 firms up edges and fine\ntexture while leaving faint grain alone.",
+    category: "processing",
+    inputs: [
+      { name: "source", kind: "raster", optional: false, variadic: false },
+    ],
+    outputs: [
+      { name: "output", kind: "raster" },
+    ],
+    params: [
+      { id: "amount", name: "Amount", kind: "float", description: "Strength of the sharpening. 0 leaves the raster as it is; 1 adds the detail back once.", defaultValue: 1, constraints: { min: 0, step: 0.05 } },
+      { id: "radius", name: "Radius", kind: "float", description: "Blur radius in pixels of the soft copy the detail is measured against, as on `blur`. Small\nradii sharpen fine texture, large ones broad edges. 0 leaves the raster as it is.", defaultValue: 1.5, constraints: { min: 0, step: 0.1 } },
+      { id: "threshold", name: "Threshold", kind: "float", description: "The smallest local contrast that is sharpened, from 0 to 1, in sRGB-encoded luminance. Finer\ndetail, such as noise, is left alone, and stronger detail is sharpened by what exceeds it.", defaultValue: 0, constraints: { min: 0, max: 1, step: 0.005 } },
+    ],
+    defaultParams: { amount: 1, radius: 1.5, threshold: 0 },
+  },
+  {
     kind: "stroke_2d",
     name: "Stroke 2D",
     description: "Strokes its geometry's outline with a paint, as a drawing of one drawable. Caps and joins are\nround. Trim and dash apply to paths; a shape's stroke is always whole.",

@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "clip" | "color_correct" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -3198,6 +3198,36 @@ export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
 }
 
 /**
+ * Sharpens a raster with an unsharp mask: detail is the difference between a pixel's luminance
+ * and that of a blurred copy, and sharpening adds `amount` times it back.
+ * 
+ * It works on straight colour, with luminance (Rec. 709) on the sRGB-encoded values. The detail
+ * is `luminance - blurred luminance`, reduced towards 0 by `threshold`, and the sharpened
+ * luminance is `luminance + amount * detail`. That is held between the darkest and brightest
+ * luminance in the 3×3 pixels around it, so hard edges get no light or dark halo. The change is
+ * added equally to red, green and blue, which keeps the hue and adds no colour fringes; colour
+ * brighter than white stays unclipped. Alpha is unchanged and the output covers the source's
+ * area. For example, `amount` 1.5 with `radius` 2 and `threshold` 0.02 firms up edges and fine
+ * texture while leaving faint grain alone.
+ */
+export interface SharpenNode extends CompositionNodeBase<"sharpen"> {
+  readonly params?: {
+    /** Strength of the sharpening. 0 leaves the raster as it is; 1 adds the detail back once. */
+    readonly amount?: ExpressionValue<number>;
+    /**
+     * Blur radius in pixels of the soft copy the detail is measured against, as on `blur`. Small
+     * radii sharpen fine texture, large ones broad edges. 0 leaves the raster as it is.
+     */
+    readonly radius?: ExpressionValue<number>;
+    /**
+     * The smallest local contrast that is sharpened, from 0 to 1, in sRGB-encoded luminance. Finer
+     * detail, such as noise, is left alone, and stronger detail is sharpened by what exceeds it.
+     */
+    readonly threshold?: ExpressionValue<number>;
+  };
+}
+
+/**
  * Strokes its geometry's outline with a paint, as a drawing of one drawable. Caps and joins are
  * round. Trim and dash apply to paths; a shape's stroke is always whole.
  */
@@ -3588,6 +3618,7 @@ export interface CompositionNodeByKind {
   readonly "shape": ShapeNode;
   readonly "shape_2d": Shape2dNode;
   readonly "shape_3d": Shape3dNode;
+  readonly "sharpen": SharpenNode;
   readonly "stroke_2d": Stroke2dNode;
   readonly "switch": SwitchNode;
   readonly "text": TextNode;
@@ -3743,6 +3774,9 @@ export interface CompositionNodeInputByKind {
   readonly "shape_3d": Omit<Shape3dNode, "id"> & {
     readonly id?: number;
   };
+  readonly "sharpen": Omit<SharpenNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "stroke_2d": Omit<Stroke2dNode, "id"> & {
     readonly id?: number;
   };
@@ -3818,6 +3852,7 @@ export interface NodeInputPortNameByKind {
   readonly "shape": never;
   readonly "shape_2d": never;
   readonly "shape_3d": "back_material" | "bottom_material" | "front_material" | "left_material" | "material" | "right_material" | "top_material";
+  readonly "sharpen": "source";
   readonly "stroke_2d": "geometry";
   readonly "switch": "layers";
   readonly "text": never;
@@ -3877,6 +3912,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "shape": never;
   readonly "shape_2d": never;
   readonly "shape_3d": never;
+  readonly "sharpen": never;
   readonly "stroke_2d": never;
   readonly "switch": "layers";
   readonly "text": never;
@@ -3936,6 +3972,7 @@ export interface NodeOutputKindByKind {
   readonly "shape": "raster";
   readonly "shape_2d": "geometry";
   readonly "shape_3d": "scene";
+  readonly "sharpen": "raster";
   readonly "stroke_2d": "drawing";
   readonly "switch": "raster";
   readonly "text": "raster";
@@ -3995,6 +4032,7 @@ export interface NodeInputPortKindByKind {
   readonly "shape": {};
   readonly "shape_2d": {};
   readonly "shape_3d": { readonly "material": "material"; readonly "top_material": "material"; readonly "bottom_material": "material"; readonly "left_material": "material"; readonly "right_material": "material"; readonly "front_material": "material"; readonly "back_material": "material" };
+  readonly "sharpen": { readonly "source": "raster" };
   readonly "stroke_2d": { readonly "geometry": "geometry" };
   readonly "switch": { readonly "layers": "raster" };
   readonly "text": {};
@@ -4405,6 +4443,20 @@ export const nodeInputPorts = {
    */
   "shape_3d": { "material": { kind: "material", variadic: false }, "top_material": { kind: "material", variadic: false }, "bottom_material": { kind: "material", variadic: false }, "left_material": { kind: "material", variadic: false }, "right_material": { kind: "material", variadic: false }, "front_material": { kind: "material", variadic: false }, "back_material": { kind: "material", variadic: false } },
   /**
+   * Sharpens a raster with an unsharp mask: detail is the difference between a pixel's luminance
+   * and that of a blurred copy, and sharpening adds `amount` times it back.
+   * 
+   * It works on straight colour, with luminance (Rec. 709) on the sRGB-encoded values. The detail
+   * is `luminance - blurred luminance`, reduced towards 0 by `threshold`, and the sharpened
+   * luminance is `luminance + amount * detail`. That is held between the darkest and brightest
+   * luminance in the 3×3 pixels around it, so hard edges get no light or dark halo. The change is
+   * added equally to red, green and blue, which keeps the hue and adds no colour fringes; colour
+   * brighter than white stays unclipped. Alpha is unchanged and the output covers the source's
+   * area. For example, `amount` 1.5 with `radius` 2 and `threshold` 0.02 firms up edges and fine
+   * texture while leaving faint grain alone.
+   */
+  "sharpen": { "source": { kind: "raster", variadic: false } },
+  /**
    * Strokes its geometry's outline with a paint, as a drawing of one drawable. Caps and joins are
    * round. Trim and dash apply to paths; a shape's stroke is always whole.
    */
@@ -4504,6 +4556,7 @@ export const nodeMediaSources = {
   "shape": {},
   "shape_2d": {},
   "shape_3d": {},
+  "sharpen": {},
   "stroke_2d": {},
   "switch": {},
   "text": {},

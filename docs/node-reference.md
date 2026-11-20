@@ -626,6 +626,24 @@ Params:
 - **`opacity`** (number, 0 to 1; default `0.5`) Shadow opacity.
 - **`radius`** (number, at least 0; default `8`) Shadow blur radius in pixels. Fractional radii blend smoothly. Radii above about 588 look the same.
 
+## `sharpen`
+
+Sharpens a raster with an unsharp mask: detail is the difference between a pixel's luminance and that of a blurred copy, and sharpening adds `amount` times it back.
+
+It works on straight colour, with luminance (Rec. 709) on the sRGB-encoded values. The detail is `luminance - blurred luminance`, reduced towards 0 by `threshold`, and the sharpened luminance is `luminance + amount * detail`. That is held between the darkest and brightest luminance in the 3×3 pixels around it, so hard edges get no light or dark halo. The change is added equally to red, green and blue, which keeps the hue and adds no colour fringes; colour brighter than white stays unclipped. Alpha is unchanged and the output covers the source's area. For example, `amount` 1.5 with `radius` 2 and `threshold` 0.02 firms up edges and fine texture while leaving faint grain alone.
+
+Category: processing. Output: raster.
+
+Inputs:
+
+- `source`: raster, required
+
+Params:
+
+- **`amount`** (number, at least 0; default `1`) Strength of the sharpening. 0 leaves the raster as it is; 1 adds the detail back once.
+- **`radius`** (number, at least 0; default `1.5`) Blur radius in pixels of the soft copy the detail is measured against, as on `blur`. Small radii sharpen fine texture, large ones broad edges. 0 leaves the raster as it is.
+- **`threshold`** (number, 0 to 1; default `0`) The smallest local contrast that is sharpened, from 0 to 1, in sRGB-encoded luminance. Finer detail, such as noise, is left alone, and stronger detail is sharpened by what exceeds it.
+
 ## `time_remap`
 
 Evaluates a raster input at another frame.
