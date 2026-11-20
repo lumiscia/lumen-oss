@@ -144,29 +144,6 @@ pub(crate) struct Raster {
     pub(crate) reduced: Option<Size>,
 }
 
-/// The outputs one recording of a node drew, by canonical port.
-pub(crate) enum Recorded {
-    One([(OutputPort, Raster); 1]),
-    Many(Vec<(OutputPort, Raster)>),
-}
-
-impl Recorded {
-    pub(crate) fn as_slice(&self) -> &[(OutputPort, Raster)] {
-        match self {
-            Self::One(one) => one,
-            Self::Many(many) => many,
-        }
-    }
-
-    /// The raster drawn for `port`, which a node asked for it must have drawn.
-    pub(crate) fn get(&self, port: OutputPort) -> crate::Result<Raster> {
-        self.as_slice()
-            .iter()
-            .find_map(|&(drawn, raster)| (drawn == port).then_some(raster))
-            .ok_or_else(|| internal("a node didn't record an output it was asked for"))
-    }
-}
-
 impl Raster {
     pub(crate) fn origin(&self) -> [i32; 2] {
         [self.domain.data_rect.x, self.domain.data_rect.y]
@@ -215,15 +192,11 @@ pub(crate) trait RecordNode {
         port
     }
 
-    /// Records every output in `ports`, each canonical, in one recording of the node. Only a node
-    /// kind that names outputs needs more than its default output.
-    fn record_outputs(
-        &self,
-        cx: &mut FrameCx<'_>,
-        ports: OutputSet,
-    ) -> crate::Result<Vec<(OutputPort, Raster)>> {
-        debug_assert_eq!(ports, OutputSet::from_iter([OutputPort::DEFAULT]));
-        Ok(vec![(OutputPort::DEFAULT, self.record(cx)?)])
+    /// Records the canonical output `port`. Only a node kind that names outputs records more than
+    /// its default output.
+    fn record_output(&self, cx: &mut FrameCx<'_>, port: OutputPort) -> crate::Result<Raster> {
+        debug_assert_eq!(port, OutputPort::DEFAULT);
+        self.record(cx)
     }
 
     /// Builds every program this node may record with, whatever its params are at a frame.
@@ -926,9 +899,9 @@ impl FrameGraph {
     }
 }
 
-/// The outputs of `node` that `graph` reads, each canonical; its default output when nothing in
-/// the graph reads it, as when it is reached some other way.
-fn reads_of(graph: &crate::graph::Graph, node: &NodeKind) -> OutputSet {
+/// The outputs of `node` that `graph`'s input fields read, each canonical; its default output when
+/// nothing in the graph reads it, as when it is reached some other way.
+fn reads_of<N: Node + RecordNode + ?Sized>(graph: &crate::graph::Graph, node: &N) -> OutputSet {
     let reads = graph.reads(node.id());
     if reads == OutputSet::default() {
         return OutputSet::from_iter([node.canonical_port(OutputPort::DEFAULT)]);
@@ -1081,6 +1054,13 @@ impl<'a> FrameCx<'a> {
         self.st
             .diagnostics
             .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
+    }
+
+    /// The outputs of `node`, in the graph being recorded, that its input fields read, each
+    /// canonical.
+    #[cfg(feature = "3d")]
+    pub(crate) fn outputs_read<N: Node + RecordNode>(&self, node: &N) -> OutputSet {
+        reads_of(&self.scope.scene.graph, node)
     }
 
     /// Counts a walk a `render_3d` makes of its scene.
@@ -1570,26 +1550,20 @@ pub(crate) fn ensure_texture_fits(
     .into())
 }
 
-/// Records `node`'s canonical output `port`, with every other output of it its graph reads, or
-/// fails when the textures it acquires itself are larger than the device allows. The textures its
-/// inputs acquire are theirs to check. A failure names the template `node` is in.
-fn record_node(node: &NodeKind, port: OutputPort, cx: &mut FrameCx<'_>) -> crate::Result<Recorded> {
+/// Records `node`'s canonical output `port`, or fails when the textures it acquires itself are
+/// larger than the device allows. The textures its inputs acquire are theirs to check. A failure
+/// names the template `node` is in.
+fn record_node(node: &NodeKind, port: OutputPort, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
     let outer = cx.rec.replace_largest_acquired_texture(Size::new(0, 0));
-    let recorded = if node.output_port_defs().is_empty() {
-        node.record(cx)
-            .map(|raster| Recorded::One([(port, raster)]))
-    } else {
-        let mut ports = reads_of(&cx.scope.scene.graph, node);
-        ports.insert(port);
-        node.record_outputs(cx, ports).map(Recorded::Many)
-    };
-    let recorded = recorded.map_err(|error| locate_media_failure(node, &cx.scope, error));
+    let raster = node
+        .record_output(cx, port)
+        .map_err(|error| locate_media_failure(node, &cx.scope, error));
     let largest = cx.rec.replace_largest_acquired_texture(outer);
-    let recorded = recorded.and_then(|recorded| {
+    let raster = raster.and_then(|raster| {
         let max = cx.rec.device().limits().max_texture_dimension_2d;
-        ensure_texture_fits(node, largest, cx.canvas_size(), max).map(|()| recorded)
+        ensure_texture_fits(node, largest, cx.canvas_size(), max).map(|()| raster)
     });
-    recorded.map_err(|error| in_scene(error, cx.scope.template_name()))
+    raster.map_err(|error| in_scene(error, cx.scope.template_name()))
 }
 
 /// `error` placed in `template`, or left in the root for `None`.

@@ -172,7 +172,7 @@ pub(super) struct Retained {
     pub(super) static_models: Vec<String>,
     /// What each output that is static while its models hold a pose or its params' values hold
     /// found out when it was recorded this frame, for the outputs reading it again.
-    pub(super) held_memo: HashMap<MemoKey, HoldTrack>,
+    pub(super) held_memo: HashMap<(MemoKey, crate::node::OutputPort), HoldTrack>,
     /// Passes reads of retained outputs skipped.
     pub(super) skipped_passes: u64,
 }
@@ -465,6 +465,9 @@ pub(super) struct SceneState {
     pub(super) buffers: HashMap<CopyListKey, KeptBuffer>,
     /// What `particles_3d` nodes sample their surfaces from and place their particles into.
     pub(super) particles: crate::node::scene::collect::ParticleCache,
+    /// The scenes walked this frame for nodes recording more than one output from a walk, with
+    /// what each walk found out for retention.
+    pub(super) walks: HashMap<MemoKey, (Arc<crate::node::scene::collect::Collected>, HoldTrack)>,
 }
 
 /// An `instance_3d` in a graph, and which of the lists of copies it draws from.
@@ -506,6 +509,7 @@ pub(super) struct KeptBuffer {
 impl SceneState {
     /// Drops the placements that neither this frame nor the last one read.
     fn begin_frame(&mut self, tick: u64) {
+        self.walks.clear();
         self.placements
             .retain(|_, kept| kept.last_used.saturating_add(1) >= tick);
         self.flattened
@@ -525,6 +529,7 @@ impl SceneState {
     }
 
     fn reset(&mut self, recorder: &mut Recorder) {
+        self.walks.clear();
         self.placements.clear();
         self.flattened.clear();
         for (_, kept) in self.buffers.drain() {

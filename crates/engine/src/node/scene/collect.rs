@@ -843,6 +843,7 @@ enum Extent {
 /// A skin posed in the scene: where its joint matrices start in the scene's joints, the model
 /// matrix they are placed by, its joints' bounds before posing, and the largest size of the
 /// weights morphing the primitives it moves.
+#[derive(Clone)]
 struct PosedSkin {
     first_joint: usize,
     root: Mat4,
@@ -852,7 +853,8 @@ struct PosedSkin {
 }
 
 /// The scene a `render_3d` draws, as far as its nodes have been walked.
-pub(super) struct Collected {
+#[derive(Clone)]
+pub(crate) struct Collected {
     pub(super) scene: Scene<GpuMesh, TexRef>,
     /// The node of each of the scene's lights.
     pub(super) light_nodes: Vec<NodeId>,

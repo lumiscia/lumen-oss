@@ -308,6 +308,10 @@ impl CompositionBuilder {
             }
         };
         let (shaders, shader_sources) = shaders;
+        self.scene.graph.index_reads();
+        for template in self.compositions.values_mut() {
+            template.scene.graph.index_reads();
+        }
         Ok(Composition {
             shaders,
             shader_sources,

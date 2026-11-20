@@ -750,11 +750,14 @@ impl Render3dOutput {
         crate::node::OutputPort::named(index.expect("every output has a port"))
     }
 
+    /// The output a port `render_3d` names reads; `None` for its default `output`.
+    pub(super) fn of_port(port: crate::node::OutputPort) -> Option<Self> {
+        Self::PORTS.get(port.index()?).copied()
+    }
+
     /// The outputs `ports`, ports `render_3d` names, read.
     pub(super) fn of_ports(ports: crate::node::OutputSet) -> impl Iterator<Item = Self> {
-        ports
-            .iter()
-            .filter_map(|port| Self::PORTS.get(port.index()?).copied())
+        ports.iter().filter_map(Self::of_port)
     }
 }
 

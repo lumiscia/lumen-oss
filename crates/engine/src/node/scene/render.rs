@@ -19,8 +19,9 @@ use crate::error::{LumenError, RenderError};
 use crate::gpu::frame_graph::{
     ComputeProgram, FrameCx, Programs, Raster, RecordNode, RenderProgram,
 };
+use crate::node::OutputPort;
 use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, required_input};
-use crate::node::{OutputPort, OutputSet};
+use std::borrow::Cow;
 
 pub(crate) const SHADER: &str = include_str!("scene.wgsl");
 const RESOLVE_SHADER: &str = include_str!("resolve.wgsl");
@@ -896,18 +897,11 @@ impl RecordNode for Render3d {
     }
 
     fn record(&self, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
-        let port = self.default_output().port();
-        let recorded = self.record_outputs(cx, OutputSet::from_iter([port]))?;
-        Ok(recorded[0].1)
+        self.record_output(cx, OutputPort::DEFAULT)
     }
 
-    /// Walks the scene once, then draws each output in `ports`: depth and normals first, as the
-    /// colour render then mipmaps the rasters the scene shows.
-    fn record_outputs(
-        &self,
-        cx: &mut FrameCx<'_>,
-        ports: OutputSet,
-    ) -> crate::Result<Vec<(OutputPort, Raster)>> {
+    /// Draws `port`, from a walk of the scene the other outputs the graph reads share.
+    fn record_output(&self, cx: &mut FrameCx<'_>, port: OutputPort) -> crate::Result<Raster> {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
@@ -932,27 +926,30 @@ impl RecordNode for Render3d {
                 ),
             ));
         }
-        let mut collected = Collected::new(self.id);
-        collected.add(cx, required_input(self.id, "scene", self.scene)?.node)?;
-        #[cfg(feature = "test-hooks")]
-        cx.count_scene_walk();
-        let mut recorded = Vec::new();
-        let mut color = false;
-        for output in Render3dOutput::of_ports(ports) {
-            match data_program(output) {
-                Some(program) => {
-                    let raster =
-                        self.record_data(cx, &params, &collected, size, output, program)?;
-                    recorded.push((output.port(), raster));
-                }
-                None => color = true,
-            }
+        let scene = required_input(self.id, "scene", self.scene)?.node;
+        let walk = |cx: &mut FrameCx<'_>| {
+            let mut collected = Collected::new(self.id);
+            collected.add(cx, scene)?;
+            #[cfg(feature = "test-hooks")]
+            cx.count_scene_walk();
+            Ok(collected)
+        };
+        // Outputs the graph reads more than one of share a walk of the scene.
+        let shared;
+        let collected = if Render3dOutput::of_ports(cx.outputs_read(self))
+            .nth(1)
+            .is_some()
+        {
+            shared = cx.shared_scene_walk(self.id, walk)?;
+            Cow::Borrowed(&*shared)
+        } else {
+            Cow::Owned(walk(cx)?)
+        };
+        let output = Render3dOutput::of_port(port).unwrap_or(self.default_output());
+        match data_program(output) {
+            Some(program) => self.record_data(cx, &params, &collected, size, output, program),
+            None => self.record_color(cx, &params, collected.into_owned(), size),
         }
-        if color {
-            let raster = self.record_color(cx, &params, collected, size)?;
-            recorded.push((Render3dOutput::Color.port(), raster));
-        }
-        Ok(recorded)
     }
 }
 

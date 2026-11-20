@@ -8,7 +8,7 @@ use foldhash::HashSet;
 use lumen_gpu::TextureDomain;
 
 use super::{
-    FrameCx, MemoKey, Raster, RecordNode, Recorded, SlotKey, Staticness,
+    FrameCx, MemoKey, Raster, RecordNode, SlotKey, Staticness,
     state::{Retained, Slot},
 };
 use crate::{
@@ -126,15 +126,6 @@ impl Retention {
             track.narrow(frames);
         }
     }
-}
-
-/// Which node a recording kept is of, the output of it that was read, and the passes the
-/// recording took.
-#[derive(Debug, Clone, Copy)]
-struct Held {
-    node: NodeId,
-    read: OutputPort,
-    passes: u64,
 }
 
 /// Whether `a` and `b` are the same values to every param, by [`same_value`].
@@ -312,7 +303,7 @@ impl FrameCx<'_> {
 
     /// Records output `port` of `node`, the node `node_id`, looking for what is kept of it first.
     /// Everything the node costs on the way, from checking the frame values it reads to keeping
-    /// its outputs, is its own time.
+    /// the output, is its own time.
     fn input_node(
         &mut self,
         node_id: NodeId,
@@ -354,7 +345,7 @@ impl FrameCx<'_> {
         let raster = match self.st.memo.get(&(key, port)) {
             Some(raster) => {
                 let raster = *raster;
-                if let Some(read) = self.st.retained.held_memo.get(&key) {
+                if let Some(read) = self.st.retained.held_memo.get(&(key, port)) {
                     self.retention.absorb(read);
                 }
                 raster
@@ -366,59 +357,24 @@ impl FrameCx<'_> {
                 let passes = self.rec.pass_count();
                 self.retention.enter(is_static, tracked);
                 self.depth += 1;
-                let recorded = super::record_node(node, port, self);
+                let raster = super::record_node(node, port, self);
                 self.depth -= 1;
                 let track = self.retention.leave(is_static, tracked);
-                let recorded = recorded?;
-                for &(port, raster) in recorded.as_slice() {
-                    self.st.memo.insert((key, port), raster);
-                }
+                let raster = raster?;
+                self.st.memo.insert((key, port), raster);
                 let passes = (self.rec.pass_count() - passes) as u64;
-                let held = Held {
-                    node: node_id,
-                    read: port,
-                    passes,
-                };
                 if is_static && self.retention.at_root() {
                     let frames = (f64::NEG_INFINITY, f64::INFINITY);
                     let models = std::mem::take(&mut self.st.retained.static_models);
-                    self.retain_outputs(held, &recorded, frames, models, Vec::new());
+                    self.retain(slot_key, raster, passes, frames, models, Vec::new());
                 }
                 if let Some(track) = track {
-                    self.finish_hold(key, held, &recorded, track, values);
+                    self.finish_hold(key, slot_key, raster, passes, track, values);
                 }
-                recorded.get(port)?
+                raster
             }
         };
         Ok(raster)
-    }
-
-    /// Keeps each output one recording of `held.node` drew, as [`Self::retain`] does, the one read
-    /// with the passes the recording took. Of several, one a reader already read this frame from
-    /// where it is kept stays as it is.
-    fn retain_outputs(
-        &mut self,
-        held: Held,
-        recorded: &Recorded,
-        frames: (f64, f64),
-        models: Vec<String>,
-        values: Vec<ExpressionValue>,
-    ) {
-        let outputs = recorded.as_slice();
-        let tick = self.st.tick;
-        for (index, &(port, raster)) in outputs.iter().enumerate() {
-            let key = (self.scope.id, OutputRef::new(held.node, port));
-            let read = self.st.retained.slots.get(&key);
-            if outputs.len() > 1 && read.is_some_and(|slot| slot.last_used == tick) {
-                continue;
-            }
-            let passes = if port == held.read { held.passes } else { 0 };
-            if index + 1 == outputs.len() {
-                self.retain(key, raster, passes, frames, models, values);
-                return;
-            }
-            self.retain(key, raster, passes, frames, models.clone(), values.clone());
-        }
     }
 
     /// Keeps `raster`, the output `key` names, for the `frames` it stays correct on while the
@@ -455,20 +411,25 @@ impl FrameCx<'_> {
         self.st.retained.pending.push(key);
     }
 
-    /// Keeps the outputs of `held.node` just recorded with the params reading the frame at
-    /// `values`, if they stay correct on this frame and on one either side of it too, and tells
-    /// the output being recorded around them what it found.
+    /// Keeps `raster`, the output `slot_key` names just recorded with the params reading the frame
+    /// at `values`, if it stays correct on this frame and on one either side of it too, and tells
+    /// the output being recorded around it what it found.
     fn finish_hold(
         &mut self,
         key: MemoKey,
-        held: Held,
-        recorded: &Recorded,
+        slot_key: SlotKey,
+        raster: Raster,
+        passes: u64,
         track: HoldTrack,
         values: Vec<ExpressionValue>,
     ) {
-        let node = held.node;
+        let node = slot_key.1.node;
         self.retention.absorb(&track);
-        self.st.retained.held_memo.insert(key, track.clone());
+        let port = slot_key.1.port;
+        self.st
+            .retained
+            .held_memo
+            .insert((key, port), track.clone());
         let frame = self.frame.value();
         let at_root = self.retention.at_root();
         let kept = track.keeps(frame, at_root, |other| {
@@ -476,8 +437,43 @@ impl FrameCx<'_> {
                 .is_some_and(|elsewhere| same_values(&elsewhere, &values))
         });
         if kept {
-            self.retain_outputs(held, recorded, track.frames, track.models, values);
+            self.retain(slot_key, raster, passes, track.frames, track.models, values);
         }
+    }
+
+    /// The scene `walk` collects for `node_id`, walked once per path and sample of a frame for all
+    /// the outputs of the node recorded from it. A recording after the first notes what the walk
+    /// read, as the one that walked did.
+    #[cfg(feature = "3d")]
+    pub(crate) fn shared_scene_walk(
+        &mut self,
+        node_id: NodeId,
+        walk: impl FnOnce(&mut Self) -> crate::Result<crate::node::scene::collect::Collected>,
+    ) -> crate::Result<std::sync::Arc<crate::node::scene::collect::Collected>> {
+        let key = ((self.scope.id, self.path, node_id), self.sample);
+        if let Some((collected, track)) = self.st.scene.walks.get(&key) {
+            let collected = collected.clone();
+            self.retention.absorb(track);
+            if !self.retention.at_root() {
+                let models = track.models.iter().cloned();
+                self.st.retained.static_models.extend(models);
+            }
+            return Ok(collected);
+        }
+        // What is read while nothing kept records needs no note.
+        let keeping = self.retention.keeping();
+        if keeping {
+            self.retention.holds.push(HoldTrack::new());
+        }
+        let collected = walk(self);
+        let track = match keeping {
+            true => self.retention.holds.pop().unwrap_or_else(HoldTrack::new),
+            false => HoldTrack::new(),
+        };
+        self.retention.absorb(&track);
+        let collected = std::sync::Arc::new(collected?);
+        self.st.scene.walks.insert(key, (collected.clone(), track));
+        Ok(collected)
     }
 
     /// The values that the params reading the frame take at `frame`: those of `node` and of each

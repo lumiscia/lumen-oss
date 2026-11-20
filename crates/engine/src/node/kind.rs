@@ -136,13 +136,13 @@ macro_rules! node_kinds {
                 }
             }
 
-            fn record_outputs(
+            fn record_output(
                 &self,
                 cx: &mut FrameCx<'_>,
-                ports: super::OutputSet,
-            ) -> crate::Result<Vec<(super::OutputPort, Raster)>> {
+                port: super::OutputPort,
+            ) -> crate::Result<Raster> {
                 match self {
-                    $(Self::$variant(node) => node.record_outputs(cx, ports),)+
+                    $(Self::$variant(node) => node.record_output(cx, port),)+
                 }
             }
 

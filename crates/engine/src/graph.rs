@@ -27,8 +27,8 @@ pub struct Graph {
     pub nodes: HashMap<NodeId, NodeKind>,
     /// Each node's index in the document's `nodes`, for a graph read from JSON.
     pub(crate) positions: HashMap<NodeId, usize>,
-    /// The outputs connections read of each node whose kind names outputs, which it records
-    /// together. It follows from the input fields.
+    /// The outputs the input fields read of each node whose kind names outputs, which
+    /// [`Graph::index_reads`] notes as a composition is built.
     #[structural_hash(skip)]
     reads: HashMap<NodeId, OutputSet>,
 }
@@ -43,10 +43,26 @@ impl Graph {
         self.positions.get(&id).copied()
     }
 
-    /// The outputs of node `id` that connections read, when its kind names outputs; none
+    /// The outputs of node `id` that the input fields read, when its kind names outputs; none
     /// otherwise.
     pub(crate) fn reads(&self, id: NodeId) -> OutputSet {
         self.reads.get(&id).copied().unwrap_or_default()
+    }
+
+    /// Notes the outputs the input fields read of each node whose kind names outputs.
+    pub(crate) fn index_reads(&mut self) {
+        self.reads.clear();
+        for node in self.nodes.values() {
+            for read in node.input_ports().into_iter().flatten() {
+                let names_outputs = self
+                    .nodes
+                    .get(&read.node)
+                    .is_some_and(|source| !source.output_port_defs().is_empty());
+                if names_outputs {
+                    self.reads.entry(read.node).or_default().insert(read.port);
+                }
+            }
+        }
     }
 
     /// Wires output `from_port` of `from_node` into the named input of `to_node`. A variadic
@@ -58,24 +74,19 @@ impl Graph {
             to_node,
             to_port,
         } = connection;
-        let Some(source) = self.nodes.get(&from_node) else {
+        if !self.nodes.contains_key(&from_node) {
             return Err(GraphValidationError::MissingSourceNode {
                 at: At::node(from_node),
             }
             .into());
-        };
-        let names_outputs = !source.output_port_defs().is_empty();
+        }
         let target =
             self.nodes
                 .get_mut(&to_node)
                 .ok_or(GraphValidationError::MissingTargetNode {
                     at: At::node(to_node),
                 })?;
-        target.set_input(&to_port, OutputRef::new(from_node, from_port))?;
-        if names_outputs {
-            self.reads.entry(from_node).or_default().insert(from_port);
-        }
-        Ok(())
+        Ok(target.set_input(&to_port, OutputRef::new(from_node, from_port))?)
     }
 
     /// The `media_output` node of a graph that passed [`Graph::validate`].
