@@ -176,6 +176,8 @@ pub struct GpuCompositionRenderer {
     max_text_glyphs: usize,
     max_image_side: u32,
     profile_nodes: bool,
+    capture_scenes: bool,
+    camera_override: Option<super::SceneCamera>,
     /// What [`Self::set_render_scale`] set, and the device pixels per canvas pixel it stands for.
     render_scale: (f32, f64),
     cache_budgets: super::CacheBudgets,
@@ -225,6 +227,8 @@ impl GpuCompositionRenderer {
             max_text_glyphs: DEFAULT_MAX_TEXT_GLYPHS,
             max_image_side: u32::MAX,
             profile_nodes: false,
+            capture_scenes: false,
+            camera_override: None,
             render_scale: (1.0, 1.0),
             cache_budgets: super::CacheBudgets::default(),
             media_texture_cache: MediaTextureCache::new(),
@@ -252,6 +256,29 @@ impl GpuCompositionRenderer {
     /// is on.
     pub fn take_node_timing(&mut self) -> Vec<super::NodeTiming> {
         self.graph.take_node_timing()
+    }
+
+    /// Reports what each `render_3d` places on the frames recorded from now on, which
+    /// [`take_scene_captures`](Self::take_scene_captures) returns. Off by default. While it is
+    /// on, no output is kept from earlier frames, so every frame places its scenes again.
+    pub fn set_scene_capture(&mut self, capture: bool) {
+        self.capture_scenes = capture;
+    }
+
+    /// The scenes `render_3d` nodes have placed since the last call, in the order frames recorded
+    /// them: one capture for each `render_3d` and template instance of a frame, however many of
+    /// its outputs the frame reads. Empty unless [`set_scene_capture`](Self::set_scene_capture)
+    /// is on. Captures pile up until taken.
+    pub fn take_scene_captures(&mut self) -> Vec<super::SceneCapture> {
+        self.graph.take_scene_captures()
+    }
+
+    /// Draws every `render_3d` through `camera` instead of its scene's own, with the aspect of the
+    /// `render_3d`'s output, until it is cleared with `None`. Needs no recompile, and
+    /// [`take_scene_captures`](Self::take_scene_captures) still reports the scenes' own cameras.
+    /// While it is set, no output is kept from earlier frames.
+    pub fn set_camera_override(&mut self, camera: Option<super::SceneCamera>) {
+        self.camera_override = camera;
     }
 
     /// Sets the longest side an image is decoded at where its uses let it be reduced (only
@@ -597,11 +624,15 @@ impl GpuCompositionRenderer {
                 output_encoding: self.output_encoding,
                 full_frame_sources: self.full_frame_sources,
                 single_tile_repeats: self.single_tile_repeats,
-                retain_static: self.reuse_static_output,
+                retain_static: self.reuse_static_output
+                    && !self.capture_scenes
+                    && self.camera_override.is_none(),
                 max_rebinds: max_font_rebinds(composition),
                 max_text_glyphs: self.max_text_glyphs,
                 max_image_side: self.max_image_side,
                 profile_nodes: self.profile_nodes,
+                capture_scenes: self.capture_scenes,
+                camera_override: self.camera_override,
                 render_scale: self.render_scale.1,
             },
             media_cache: &mut self.media_texture_cache,

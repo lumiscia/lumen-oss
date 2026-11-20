@@ -13,7 +13,7 @@ use lumen_3d::{
 use lumen_gpu::TexRef;
 
 use super::{
-    Collected, Extent, GpuMesh, MAX_SCENE_JOINTS, MAX_SCENE_WEIGHTS, PosedSkin, placement,
+    Collected, Extent, GpuMesh, MAX_SCENE_JOINTS, MAX_SCENE_WEIGHTS, Origin, PosedSkin, placement,
     solid_linear,
 };
 use crate::error::{ExpressionError, LumenError, RenderError};
@@ -464,11 +464,13 @@ impl Collected {
             self.scene.lights.push(light.placed(&parent));
             self.light_nodes.push(node);
         }
-        if self.scene.camera.is_none() {
-            self.scene.camera = inner.scene.camera.map(|camera| Camera {
+        for (node, camera) in inner.cameras {
+            let camera = Camera {
                 world: parent * camera.world,
                 ..camera
-            });
+            };
+            self.scene.camera.get_or_insert(camera);
+            self.cameras.push((node, camera));
         }
         Ok(())
     }
@@ -513,7 +515,7 @@ impl Collected {
         // lists, by the input's list and the copies of it drawn, and by what places them.
         let mut own = None;
         let mut made: Vec<(ListSource, u32)> = Vec::new();
-        for (object, extent) in objects.iter().zip(&inner.extents) {
+        for (object, origin) in objects.iter().zip(&inner.origins) {
             if !from_list(object) {
                 continue;
             }
@@ -522,9 +524,12 @@ impl Collected {
             if let Some((_, weight)) = &mut object.morph {
                 *weight += weight_base as u32;
             }
-            let extent = match *extent {
-                Extent::Skin(skin) => Extent::Skin(carried + skin),
-                local @ Extent::Local(_) => local,
+            let origin = Origin {
+                extent: match origin.extent {
+                    Extent::Skin(skin) => Extent::Skin(carried + skin),
+                    local @ Extent::Local(_) => local,
+                },
+                ..*origin
             };
             let (list, parent) = match object.instanced {
                 // One copy places the input's copies as a group would.
@@ -539,7 +544,7 @@ impl Collected {
                         ..copies
                     });
                     self.scene.objects.push(object);
-                    self.extents.push(extent);
+                    self.origins.push(origin);
                     continue;
                 }
                 Some(copies) => {
@@ -579,7 +584,7 @@ impl Collected {
                     orientation,
                 });
                 self.scene.objects.push(object.clone());
-                self.extents.push(extent);
+                self.origins.push(origin);
             }
         }
         let copied: Vec<usize> = (0..objects.len())
@@ -588,7 +593,7 @@ impl Collected {
         if !copied.is_empty() {
             let copies = placements.matrices().len();
             self.scene.objects.reserve(copied.len() * copies);
-            self.extents.reserve(copied.len() * copies);
+            self.origins.reserve(copied.len() * copies);
             self.skins.reserve(inner.skins.len() * copies);
             for (index, local) in placements.matrices().iter().enumerate() {
                 let tint = placements.tint(index);
@@ -656,12 +661,13 @@ impl Collected {
             if let Some((_, weight)) = &mut object.morph {
                 *weight += weight_base as u32;
             }
-            let extent = match inner.extents[index] {
+            let origin = inner.origins[index];
+            let extent = match origin.extent {
                 Extent::Skin(skin) => Extent::Skin(first_skin + skin),
                 local @ Extent::Local(_) => local,
             };
             self.scene.objects.push(object);
-            self.extents.push(extent);
+            self.origins.push(Origin { extent, ..origin });
         }
     }
 }

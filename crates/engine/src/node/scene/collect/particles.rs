@@ -608,7 +608,7 @@ impl Collected {
                 .map(|skin| rebased(skin, Mat4::IDENTITY, joint_base)),
         );
         let parent = parent * pose(&params.pose).matrix();
-        for (object, extent) in inner.scene.objects.into_iter().zip(inner.extents) {
+        for (object, origin) in inner.scene.objects.into_iter().zip(inner.origins) {
             let mut object = object;
             object.first_joint = object.first_joint.map(|joint| joint + joint_base as u32);
             if let Some((_, weight)) = &mut object.morph {
@@ -621,11 +621,11 @@ impl Collected {
                 parent,
                 orientation: Orientation::Upright,
             });
-            let extent = match extent {
+            let extent = match origin.extent {
                 Extent::Skin(skin) => Extent::Skin(carried + skin),
                 local @ Extent::Local(_) => local,
             };
-            self.push(object, extent);
+            self.push(origin.node, object, extent);
         }
         Ok(())
     }

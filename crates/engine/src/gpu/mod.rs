@@ -45,5 +45,8 @@ pub use target::{CudaNvencTarget, CudaNvencTargetPool};
 #[cfg(all(target_os = "macos", feature = "ffmpeg", feature = "metal"))]
 pub use target::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 pub(crate) use types::MediaTextureKey;
-pub use types::{BoundFrame, NodeTiming, RasterHandle, RenderTarget, RenderedFrame};
+pub use types::{
+    BoundFrame, CameraProjection, CapturedCamera, CapturedObject, NodeTiming, RasterHandle,
+    RenderTarget, RenderedFrame, SceneBounds, SceneCamera, SceneCapture,
+};
 pub use yuv::{BitDepth, EncodeYuvFormat, EncodeYuvLayout, YuvConverter};

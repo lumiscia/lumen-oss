@@ -68,6 +68,10 @@ pub(super) struct RecordState {
     pub(super) mips: crate::gpu::mips::MipCache,
     pub(super) drawings: crate::node::vector::drawing::DrawingCache,
     pub(super) profile: super::profile::NodeProfile,
+    /// What `render_3d` nodes placed in the frames recorded and not yet taken.
+    pub(super) captures: Vec<crate::gpu::SceneCapture>,
+    /// What they placed in the frame being recorded, which is kept once it is.
+    pub(super) pending_captures: Vec<crate::gpu::SceneCapture>,
 }
 
 impl RecordState {

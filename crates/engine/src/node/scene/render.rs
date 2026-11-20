@@ -932,6 +932,10 @@ impl RecordNode for Render3d {
             collected.add(cx, scene)?;
             #[cfg(feature = "test-hooks")]
             cx.count_scene_walk();
+            cx.capture_scene(self.id, || collected.captured());
+            if let Some(camera) = cx.camera_override() {
+                collected.scene.camera = Some(super::collect::override_camera(&camera));
+            }
             Ok(collected)
         };
         // Outputs the graph reads more than one of share a walk of the scene.

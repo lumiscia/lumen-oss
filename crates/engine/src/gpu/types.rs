@@ -33,6 +33,82 @@ pub struct NodeTiming {
     pub frames: u32,
 }
 
+/// How a camera projects, as `camera_3d` does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CameraProjection {
+    Perspective {
+        /// The vertical field of view.
+        fov_y_degrees: f32,
+        near: f32,
+        far: f32,
+    },
+    Orthographic {
+        /// How many world units tall the view is.
+        height: f32,
+        near: f32,
+        far: f32,
+    },
+}
+
+/// A viewpoint for [`GpuCompositionRenderer::set_camera_override`](super::GpuCompositionRenderer::set_camera_override),
+/// looking down its own -Z. The aspect is that of the `render_3d` it draws.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneCamera {
+    /// Camera to world, as 16 floats in column-major order.
+    pub world: [f32; 16],
+    pub projection: CameraProjection,
+}
+
+/// A world-space axis-aligned box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneBounds {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+
+/// An object a `render_3d` draws, as [`SceneCapture`] reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CapturedObject {
+    /// The scene node that made the object. A model's primitives are objects of the `model_3d`.
+    pub node: crate::node::NodeId,
+    /// Mesh to world, as 16 floats in column-major order.
+    pub world: [f32; 16],
+    /// What the object covers in world space, at least.
+    pub bounds: SceneBounds,
+}
+
+/// A camera a `render_3d`'s scene holds, as [`SceneCapture`] reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CapturedCamera {
+    /// The `camera_3d`, or the `model_3d` whose camera it is.
+    pub node: crate::node::NodeId,
+    /// Camera to world, as 16 floats in column-major order.
+    pub world: [f32; 16],
+    pub projection: CameraProjection,
+}
+
+/// What one `render_3d` placed on a frame, which
+/// [`GpuCompositionRenderer::take_scene_captures`](super::GpuCompositionRenderer::take_scene_captures)
+/// returns.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneCapture {
+    /// The `render_3d`.
+    pub render: crate::node::NodeId,
+    /// The template the `render_3d` is in, or `None` at the root. Node ids are only unique within
+    /// one.
+    pub template: Option<String>,
+    /// The objects the scene draws, in the order it walks them: one for each of the scene's nodes
+    /// that makes a drawn object, and one for each copy of it that an `instance_3d` places, with
+    /// the copy's own world matrix and bounds. A `particles_3d` makes one object, whose bounds
+    /// cover all its particles and whose world matrix places the particle system. An object
+    /// drawn in several parts, such as a box with a material on each face, is reported once, and
+    /// one with no extent is left out.
+    pub objects: Vec<CapturedObject>,
+    /// Every camera the scene holds, in the order it walks them. The first is the one the render
+    /// draws through unless a camera override is set.
+    pub cameras: Vec<CapturedCamera>,
+}
+
 /// A frame submitted to the GPU.
 #[derive(Debug, Clone)]
 pub struct RenderedFrame {
