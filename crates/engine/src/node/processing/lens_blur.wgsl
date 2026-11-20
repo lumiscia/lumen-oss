@@ -2,7 +2,7 @@
 // confusion (CoC), is set per pixel.
 //
 // `prepare_main` copies the source over the output's region into level 0, with each pixel's CoC
-// and depth. `reduce_main` halves it, level by level: colour and depth averaged, the smallest
+// and depth. A mask scales the CoC by one minus its value there, so every later pass sees it. `reduce_main` halves it, level by level: colour and depth averaged, the smallest
 // CoC of each block kept, so a block across a sharp edge doesn't spread it, and where in the
 // block its light is, so a highlight's bokeh stays where the highlight is at any level. Each
 // level above 0 also keeps a near layer: the blurred pixels in front of the focus, their colour
@@ -40,6 +40,9 @@ struct LensBlurParams {
     origins: vec4<i32>,
     // Canvas pixel of the depth's first texel in `xy`.
     depth: vec4<i32>,
+    // Canvas pixel of the mask's first texel in `xy`, 1 in `z` with a mask input, and the mask
+    // mode in `w`.
+    mask: vec4<i32>,
     // Levels built, and the level a reduction writes in `z`.
     levels: vec4<i32>,
     // Per level: where it starts in its texture in `xy`, its first block on the canvas in `zw`.
@@ -70,6 +73,13 @@ struct LensBlurParams {
 @group(0) @binding(19) var odd_near: texture_2d<f32>;
 @group(0) @binding(20) var even_near_color: texture_2d<f32>;
 @group(0) @binding(21) var even_near: texture_2d<f32>;
+@group(0) @binding(22) var mask_tex: texture_2d<f32>;
+
+const MASK_MODE_LUMA: i32 = 1;
+const MASK_MODE_RED: i32 = 2;
+const MASK_MODE_GREEN: i32 = 3;
+const MASK_MODE_BLUE: i32 = 4;
+const REC709_LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
 const GATHER_TEXELS: f32 = 6.0;
 const BLEND_FROM: f32 = 5.4;
@@ -138,6 +148,32 @@ fn near_of_pixel(texel: Texel) -> Near {
     return Near(vec4<f32>(0.0), 0.0, 0.0, vec2<f32>(0.0));
 }
 
+// How much of the mask covers canvas pixel `pixel`, as `merge` reads its mask: 0 without a mask or
+// past its data.
+fn mask_at(pixel: vec2<i32>) -> f32 {
+    if (params.mask.z == 0) {
+        return 0.0;
+    }
+    let texel = sample_or_transparent(mask_tex, pixel, params.mask.xy);
+    var matte = texel.a;
+    switch (params.mask.w) {
+        case MASK_MODE_LUMA: {
+            matte = dot(texel.rgb, REC709_LUMA);
+        }
+        case MASK_MODE_RED: {
+            matte = texel.r;
+        }
+        case MASK_MODE_GREEN: {
+            matte = texel.g;
+        }
+        case MASK_MODE_BLUE: {
+            matte = texel.b;
+        }
+        default: {}
+    }
+    return clamp(matte, 0.0, 1.0);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn prepare_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = vec2<u32>(params.level_size[0].xy);
@@ -153,6 +189,7 @@ fn prepare_main(@builtin(global_invocation_id) id: vec3<u32>) {
         let away = abs(depth - params.values.y) - params.values.z;
         coc = coc * clamp(params.values.w * away, 0.0, 1.0);
     }
+    coc = coc * (1.0 - mask_at(pixel));
     textureStore(out_color, vec2<i32>(id.xy), color);
     textureStore(out_coc, vec2<i32>(id.xy), vec4<f32>(coc, depth, 0.0, 0.0));
 }

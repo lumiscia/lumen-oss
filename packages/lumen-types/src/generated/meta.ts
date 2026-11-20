@@ -1528,6 +1528,7 @@ export type InstanceCopy = {
   readonly scale?: Vec3;
   readonly tint?: Color;
 };
+export type LensBlurMaskMode = MaskMode;
 export type LensDirection = "distort" | "undistort";
 export type LensDistortionDirection = LensDirection;
 export type LensDistortionEdge = EdgeMode;
@@ -2525,6 +2526,12 @@ export interface Lathe3dNode extends CompositionNodeBase<"lathe_3d"> {
  * where they are sharp, and one further away doesn't spread over nearer, sharper pixels, so a
  * sharp subject keeps its edges in front of a blurred background.
  * 
+ * An optional `mask` keeps pieces sharp: where it is 1 a pixel stays as it is and doesn't spread
+ * over its neighbours, where it is 0 the blur is as above, and in between the blur shrinks by
+ * that share. `mask_mode` picks the channel read, as `merge`'s does, and `mask` reads 0 where it
+ * stores nothing. Pairing a `render_3d`'s `depth` with one of its `matte` channels defocuses a
+ * scene while a piece of it, such as its lyrics, stays crisp.
+ * 
  * The cost stays bounded at any radius: circles of more than 6 pixels are gathered from copies
  * of the source at half, a quarter or less of its resolution, so each pixel reads about 130
  * texels at most, twice that with `depth`. The widest blurs have softer bokeh edges. Blurring
@@ -2560,6 +2567,23 @@ export interface Lathe3dNode extends CompositionNodeBase<"lathe_3d"> {
  * { "id": 2, "type": "background", "params": { "paint": { "type": "linear_gradient", "interpolation": "linear_srgb", "start": [0, 0], "end": [0, 1], "stops": [{ "offset": 0, "color": [255, 255, 255, 255] }, { "offset": 0.5, "color": [0, 0, 0, 255] }, { "offset": 1, "color": [255, 255, 255, 255] }] } } },
  * { "id": 3, "type": "lens_blur", "params": { "radius": 10, "focus": 0, "focus_range": 0.1, "aperture": 1.5 }, "in": { "source": 1, "depth": 2 } }
  * ```
+ * 
+ * The same depth of field, keeping sharp the objects of a `render_3d`'s `mattes: ["lyrics"]`,
+ * which its `matte` output holds in its red channel:
+ * 
+ * ```json
+ * { "id": 10, "type": "lens_blur", "params": { "radius": 16, "focus": 0.2, "mask_mode": "red" } },
+ * { "from_node": 9, "from_port": "color", "to_node": 10, "to_port": "source" },
+ * { "from_node": 9, "from_port": "depth", "to_node": 10, "to_port": "depth" },
+ * { "from_node": 9, "from_port": "matte", "to_node": 10, "to_port": "mask" }
+ * ```
+ * 
+ * ```ts
+ * const color = outputOf(render, "color");
+ * const depth = outputOf(render, "depth");
+ * const mask = outputOf(render, "matte");
+ * n.lens_blur({ source: color, depth, mask, radius: 16, focus: 0.2, mask_mode: "red" });
+ * ```
  */
 export interface LensBlurNode extends CompositionNodeBase<"lens_blur"> {
   readonly params?: {
@@ -2582,6 +2606,8 @@ export interface LensBlurNode extends CompositionNodeBase<"lens_blur"> {
     readonly focus?: ExpressionValue<number>;
     /** How far either side of `focus`, in the same range, depth stays sharp. */
     readonly focus_range?: ExpressionValue<number>;
+    /** Channel of the `mask` input that keeps pixels sharp. */
+    readonly mask_mode?: MaskMode;
     /**
      * Blur radius in pixels: the blur everywhere without `depth`, and the largest blur with it.
      * 0 leaves the source as it is. Radii above 4096 look the same.
@@ -4287,7 +4313,7 @@ export interface NodeInputPortNameByKind {
   readonly "image_plane_3d": "material" | "source";
   readonly "instance_3d": "scene";
   readonly "lathe_3d": "geometry" | "material";
-  readonly "lens_blur": "depth" | "source";
+  readonly "lens_blur": "depth" | "mask" | "source";
   readonly "lens_distortion": "source";
   readonly "levels": "source";
   readonly "light_3d": never;
@@ -4485,7 +4511,7 @@ export interface NodeInputPortKindByKind {
   readonly "image_plane_3d": { readonly "source": "raster"; readonly "material": "material" };
   readonly "instance_3d": { readonly "scene": "scene" };
   readonly "lathe_3d": { readonly "geometry": "geometry"; readonly "material": "material" };
-  readonly "lens_blur": { readonly "source": "raster"; readonly "depth": "raster" };
+  readonly "lens_blur": { readonly "source": "raster"; readonly "depth": "raster"; readonly "mask": "raster" };
   readonly "lens_distortion": { readonly "source": "raster" };
   readonly "levels": { readonly "source": "raster" };
   readonly "light_3d": {};
@@ -4903,6 +4929,12 @@ export const nodeInputPorts = {
    * where they are sharp, and one further away doesn't spread over nearer, sharper pixels, so a
    * sharp subject keeps its edges in front of a blurred background.
    * 
+   * An optional `mask` keeps pieces sharp: where it is 1 a pixel stays as it is and doesn't spread
+   * over its neighbours, where it is 0 the blur is as above, and in between the blur shrinks by
+   * that share. `mask_mode` picks the channel read, as `merge`'s does, and `mask` reads 0 where it
+   * stores nothing. Pairing a `render_3d`'s `depth` with one of its `matte` channels defocuses a
+   * scene while a piece of it, such as its lyrics, stays crisp.
+   * 
    * The cost stays bounded at any radius: circles of more than 6 pixels are gathered from copies
    * of the source at half, a quarter or less of its resolution, so each pixel reads about 130
    * texels at most, twice that with `depth`. The widest blurs have softer bokeh edges. Blurring
@@ -4938,8 +4970,25 @@ export const nodeInputPorts = {
    * { "id": 2, "type": "background", "params": { "paint": { "type": "linear_gradient", "interpolation": "linear_srgb", "start": [0, 0], "end": [0, 1], "stops": [{ "offset": 0, "color": [255, 255, 255, 255] }, { "offset": 0.5, "color": [0, 0, 0, 255] }, { "offset": 1, "color": [255, 255, 255, 255] }] } } },
    * { "id": 3, "type": "lens_blur", "params": { "radius": 10, "focus": 0, "focus_range": 0.1, "aperture": 1.5 }, "in": { "source": 1, "depth": 2 } }
    * ```
+   * 
+   * The same depth of field, keeping sharp the objects of a `render_3d`'s `mattes: ["lyrics"]`,
+   * which its `matte` output holds in its red channel:
+   * 
+   * ```json
+   * { "id": 10, "type": "lens_blur", "params": { "radius": 16, "focus": 0.2, "mask_mode": "red" } },
+   * { "from_node": 9, "from_port": "color", "to_node": 10, "to_port": "source" },
+   * { "from_node": 9, "from_port": "depth", "to_node": 10, "to_port": "depth" },
+   * { "from_node": 9, "from_port": "matte", "to_node": 10, "to_port": "mask" }
+   * ```
+   * 
+   * ```ts
+   * const color = outputOf(render, "color");
+   * const depth = outputOf(render, "depth");
+   * const mask = outputOf(render, "matte");
+   * n.lens_blur({ source: color, depth, mask, radius: 16, focus: 0.2, mask_mode: "red" });
+   * ```
    */
-  "lens_blur": { "source": { kind: "raster", variadic: false }, "depth": { kind: "raster", variadic: false } },
+  "lens_blur": { "source": { kind: "raster", variadic: false }, "depth": { kind: "raster", variadic: false }, "mask": { kind: "raster", variadic: false } },
   /**
    * Bends a raster the way a lens does. With `direction: "distort"`, a pixel at `p` from the optical
    * centre reads the source at `p * (1 + k1 r² + k2 r⁴)`, where `r` is its distance in

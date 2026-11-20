@@ -619,6 +619,8 @@ Blurs a raster as an out-of-focus lens does: every point spreads into an evenly 
 
 Without `depth`, everything blurs by `radius`. With it, each pixel blurs by its depth: sharp within `focus_range` of `focus`, and more so further away, up to `radius`. Depth is the red channel of `depth`, read where each pixel is, and 0 where it stores nothing, so a `render_3d`'s `depth` output gives depth of field and any greyscale raster works, as a gradient that is dark in a band across the frame gives tilt-shift. `focus` is in that 0 to 1 range, not in world units. A blurred pixel nearer than its neighbours spreads over them even where they are sharp, and one further away doesn't spread over nearer, sharper pixels, so a sharp subject keeps its edges in front of a blurred background.
 
+An optional `mask` keeps pieces sharp: where it is 1 a pixel stays as it is and doesn't spread over its neighbours, where it is 0 the blur is as above, and in between the blur shrinks by that share. `mask_mode` picks the channel read, as `merge`'s does, and `mask` reads 0 where it stores nothing. Pairing a `render_3d`'s `depth` with one of its `matte` channels defocuses a scene while a piece of it, such as its lyrics, stays crisp.
+
 The cost stays bounded at any radius: circles of more than 6 pixels are gathered from copies of the source at half, a quarter or less of its resolution, so each pixel reads about 130 texels at most, twice that with `depth`. The widest blurs have softer bokeh edges. Blurring widens the output past the source's area by the radius.
 
 Defocusing a whole frame into hexagonal bokeh:
@@ -651,12 +653,29 @@ Tilt-shift, sharp across the middle of the frame and blurred towards the top and
 { "id": 3, "type": "lens_blur", "params": { "radius": 10, "focus": 0, "focus_range": 0.1, "aperture": 1.5 }, "in": { "source": 1, "depth": 2 } }
 ```
 
+The same depth of field, keeping sharp the objects of a `render_3d`'s `mattes: ["lyrics"]`, which its `matte` output holds in its red channel:
+
+```json
+{ "id": 10, "type": "lens_blur", "params": { "radius": 16, "focus": 0.2, "mask_mode": "red" } },
+{ "from_node": 9, "from_port": "color", "to_node": 10, "to_port": "source" },
+{ "from_node": 9, "from_port": "depth", "to_node": 10, "to_port": "depth" },
+{ "from_node": 9, "from_port": "matte", "to_node": 10, "to_port": "mask" }
+```
+
+```ts
+const color = outputOf(render, "color");
+const depth = outputOf(render, "depth");
+const mask = outputOf(render, "matte");
+n.lens_blur({ source: color, depth, mask, radius: 16, focus: 0.2, mask_mode: "red" });
+```
+
 Category: processing. Output: raster.
 
 Inputs:
 
 - `source`: raster, required
 - `depth`: raster, optional
+- `mask`: raster, optional
 
 Params:
 
@@ -664,6 +683,7 @@ Params:
 - **`blades`** (integer, 0 to 16; default `0`) Blades of the lens's aperture, which shape a blurred highlight: 0 is a circle, and 3 to 16 a polygon with that many sides.
 - **`focus`** (number, 0 to 1; default `0.5`) The depth that stays sharp, in the depth raster's 0 to 1 range. For a `render_3d`'s `depth`, 0 is at its `depth_near` and 1 at its `depth_far`, so a distance in world units is `(distance - depth_near) / (depth_far - depth_near)`. Unused without `depth`.
 - **`focus_range`** (number, 0 to 1; default `0.05`) How far either side of `focus`, in the same range, depth stays sharp.
+- **`mask_mode`** (`"alpha"` | `"luma"` | `"red"` | `"green"` | `"blue"`; default `"alpha"`; literal only) Channel of the `mask` input that keeps pixels sharp.
 - **`radius`** (number, at least 0; default `8`) Blur radius in pixels: the blur everywhere without `depth`, and the largest blur with it. 0 leaves the source as it is. Radii above 4096 look the same.
 - **`rotation`** (number; default `0`) Turn of the polygon in degrees, clockwise. At 0 one corner points up.
 
