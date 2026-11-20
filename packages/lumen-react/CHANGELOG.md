@@ -1,5 +1,343 @@
 # @lumiscia/lumen-react
 
+## 0.6.0
+
+### Minor Changes
+
+- 6528c7b: The browser preview draws `model_3d`. Pass each model's `.glb` file in `media`, under the name its `source` uses, as you would an image:
+
+  ```ts
+  const fox = composition.addNode({
+    type: "model_3d",
+    params: { source: "fox", animation: "Walk", scale: [0.01, 0.01, 0.01] },
+  });
+  // ...wire `fox` into a merge_3d or render_3d as usual.
+
+  mountPreview(host, {
+    preview,
+    composition,
+    media: { fox: "/models/fox.glb" },
+    wasmUrl,
+    workerUrl,
+  });
+  ```
+
+  A name that a `model_3d` uses is read as a model, and so is a blob of type `model/gltf-binary`; a source that only an expression names needs `{ kind: "model", source }` when neither its name nor its blob's type says. An `asset:<id>` source is a `media` name like any other. A `model_3d` or `media_in` inside a `compositions` template now says what its `media` entry holds just as one at the root does, so an image a template reads no longer needs a `kind` either.
+
+  Models load with the composition, as images do: the preview finishes loading, and draws its first frame, once every model has arrived, and until then keeps showing what it showed before. A model that can't be fetched fails the load with `load_failed`, naming the source. A file that isn't a model Lumen can read fails the load with the `media.*` code a render would give, before anything is drawn. A model left out of `media` is released, along with its GPU copy.
+
+  The preview now parses the composition before it fetches any media, so a composition the engine rejects fails at once instead of after its media has loaded. A preview built without 3D support reports `node.unsupported` for a `model_3d` without fetching its file.
+
+- 6487216: `@lumiscia/lumen-preview` exports only what an application embedding a preview needs. The media bridge, the audio engine and the controller plumbing are no longer public, and the bindings contract moves to a new `@lumiscia/lumen-preview/advanced` subpath.
+
+  The root entry now exports:
+
+  - `createLumenPreview`, `LumenPreviewContext`, `mountPreview`, `LumenPreviewSession`
+  - the state and error types: `LumenPreviewState`, `LumenPreviewError`, `LumenPreviewErrorCode`, `LumenPreviewListener`, `LumenPreviewMediaState`, `LumenPreviewPatch`, `LumenPreviewTransport`
+  - the option and input types: `LumenPreviewSessionOptions`, `LumenPreviewSessionInputs`, `LumenPreviewComposition`, `LumenPreviewMedia`, `LumenPreviewMediaEntry`, `LumenPreviewMediaKind`, `LumenPreviewFonts`, `LumenPreviewRange`, `LumenLogLevel`, `LumenAudioEngineOptions`
+  - the callback types: `LumenPreviewStats`, `LumenPreviewStatsCallback`, `LumenPreviewTimeUpdate`, `LumenPreviewTimeUpdateCallback`
+  - `MediaFailure`, the type of `LumenPreviewError.media`, re-exported from `@lumiscia/lumen-types`
+  - the source types a `media` or `fonts` entry takes: `MediaSourceInput`, `BlobMediaSourceInput`, `BufferMediaSourceInput`, `UrlMediaSourceInput`
+
+  `@lumiscia/lumen-preview/advanced` exports only types, the contract of a custom host built on `@lumiscia/lumen-preview/worker-host`: the bindings it supplies (`LumenBindings`, `LumenPreviewBindings`, `LumenPreviewControllerBinding`, `LumenMediaTarget`) and the types the worker's messages carry (`VideoSourceRegistration`, `PreviewClock`). The worker's `load` message carries `[source, entry]` pairs of the page's `media`, and the worker works out what to load. `@lumiscia/lumen-bindings` implements the bindings. Every type that appears in a signature of the root, `/advanced`, `./preview` or `./worker-host` can be imported from the root or `/advanced`, apart from types of `@lumiscia/lumen-types` and `mediabunny`.
+
+  `LumenPreviewMediaEntry` now lists its `fps`, `formats` and `track` fields itself instead of extending `VideoSourceRegistration`; the shape is the same.
+
+  Removed from the root entry:
+
+  | Removed                                                                                                                                                                                                                                                                                                                                               | Where it went                      |
+  | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+  | `LumenAudioEngine`, `defaultAudioWorkerUrl`, `defaultAudioWorkletUrl`, `AudioSourceRegistration`                                                                                                                                                                                                                                                      | Internal                           |
+  | `createLumenPreviewRuntime`, `LumenPreviewRuntime`, `LumenPreviewController`, `resolveLumenPreviewBindings`, `LumenPreviewBindingSource` (and the controller's `registerImageSource`, `registerModelSource`, `registerVideoSource`, `registerVideoSourceBytes`, `loadVideoFrame`, `loadFrameRequirements` and `renderNowAsync`, which nothing called) | Removed                            |
+  | `ImageSourceRegistration`, `VideoFrameMetadata`, `VideoFramePayload`, `VideoFramePixels`, `DecodedImageFrame`, `FrameRequirementsPayload`, `FrameRequirementsVideoPayload`, `LumenMediaBridgeOptions`, `NativeVideoFrameTarget`, `MediaRegistration`, `RegisteredImageSource`, `RegisteredModelSource`, `RegisteredVideoSource`                       | Internal                           |
+  | `VideoSourceRegistration`, `LumenMediaTarget`                                                                                                                                                                                                                                                                                                         | `@lumiscia/lumen-preview/advanced` |
+  | `LumenBindings`, `LumenPreviewBindings`, `LumenPreviewControllerBinding`                                                                                                                                                                                                                                                                              | `@lumiscia/lumen-preview/advanced` |
+
+  The `./audio-engine`, `./media` and `./session` subpaths are removed too, and so is everything they exported (`LumenMediaBridge`, `LumenMediaError`, `toUint8Array`, `createVideoTimeline` and the rest of the media bridge). `./preview` and `./worker-host` stay as they were. `@lumiscia/lumen-react` and `@lumiscia/lumen-svelte` no longer re-export the `MediaRegistration` type.
+
+  Migrating:
+
+  | Before                                                                                 | After                                                                                         |
+  | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+  | `import type { LumenBindings } from "@lumiscia/lumen-preview"`                         | `import type { LumenBindings } from "@lumiscia/lumen-preview/advanced"`                       |
+  | `import { LumenMediaBridge, … } from "@lumiscia/lumen-preview"` or `…/media`           | No replacement. Pass `media` and `fonts` to `mountPreview` or `Player`.                       |
+  | `LumenAudioEngine`, `defaultAudioWorkerUrl()`                                          | No replacement. Pass `audio.workerModuleUrl` to `mountPreview` to serve the worker elsewhere. |
+  | `createLumenPreviewRuntime(bindings)` and the controller types                         | No replacement. Mount with `mountPreview`, or host the worker with `…/worker-host`.           |
+  | `import … from "@lumiscia/lumen-preview/session"`                                      | `import … from "@lumiscia/lumen-preview"`                                                     |
+  | `MediaRegistration` from the root, `@lumiscia/lumen-react` or `@lumiscia/lumen-svelte` | No replacement. Pass the page's `media` entries as they are.                                  |
+
+- d63ba1d: The browser preview loads `.cube` LUTs, and a failed render tells the host the engine's code for it.
+
+  - A `color_grade` with `lut_source` works in the preview. Put the `.cube` file in `media` under the name `lut_source` holds, and it loads like a model or an environment map: `pending`, then `ready` or `failed`, counted in `state.media`, awaited by `whenReady()`, fetched abortably and released when the composition stops naming it. It is read in full when it is registered, so a file that isn't a table the engine can use fails the load with the `media.decode`, `media.unsupported` or `media.too_large` a render would give.
+  - `LumenPreviewMediaKind` gains `"lut"`. An entry whose source is a `File` named `*.cube`, or a string, `URL`, `Request` or `{ kind: "url" }` source whose path ends in `.cube`, is read as a LUT without a `kind`.
+  - The wasm controller gains `setLut`, `hasLut` and `removeLutSource`, and `LumenMediaTarget` gains them as optional members. `setLut` throws, with `media`, on a file it can't read.
+  - **A `render_failed` error now carries the engine's code.** Its `diagnostics` hold one `LumenDiagnostic` with that code (`render.gpu`, `render.limit`, `render.node_evaluation` and the others the engine lists), severity `error`, an empty `path` and the message, so `onError` can tell a composition that needs fixing from a GPU fault. It was always empty for a render failure. A render that failed on a media source keeps `diagnostics` empty and says so in `media`. The `render-failed` worker event gains a required `diagnostics` array.
+
+- 7a87028: The browser preview loads every kind of media one way. What the engine lists the composition reading, joined with the page's `media` and `fonts`, decides what is fetched: images, videos, audio, models, environment maps and fonts each go `pending`, then `ready` or `failed`, and are released when the composition stops naming them.
+
+  - `session.whenReady()` and `preview.whenReady()` resolve once a frame of the current composition is drawn and nothing it needs is pending, with the error that stopped it loading, the `render_failed` error of a first frame that couldn't be drawn, an `audio_failed` error, or `null`. They never reject, so check the value; a composition, `media` or `fonts` change starts them again.
+  - A model or environment map is read in full before it counts as ready, so a file that isn't one fails the load with the `media.*` code a render would give. A video is ready once its stream is opened; its frames decode as playback reaches them.
+  - `state.media` counts the composition's sources as `{ pending, ready, failed }` (the new `LumenPreviewMediaState` type).
+  - While anything is pending the preview holds its last frame, at its size, and playback holds too: the playhead stops and the audio pauses until everything has settled. Playback also waits when the frame it is on has spent 100 ms decoding its video frames, so sound can't run ahead of the picture. A load fails as soon as one source fails, and cancels what was still loading for it.
+  - Environment maps (`render_3d.environment_map`, Radiance `.hdr` or OpenEXR `.exr`) load from `media` like models. `LumenPreviewMediaKind` gains `"environment"`.
+  - Source names follow `lumen-server`'s rules, checked against a fixture both test suites read. The `@lumiscia/lumen-preview` README has the table.
+  - `runtimeUrl` on `mountPreview`, `LumenPreviewSession`, and the React and Svelte `Player` names one directory serving `worker.js`, `lumen_wasm_bg.wasm`, `audio-worker.js` and `audio-worklet.js`, and every runtime URL not passed on its own comes from it, with its query kept on each file. With it, `wasmUrl` and `workerUrl` are optional. Without it nothing changes.
+  - The wasm controller gains `setEnvironment`, `hasEnvironment` and `removeEnvironmentSource`, and `LumenMediaTarget` gains them as optional members. `setModel` and `setEnvironment` throw, with `media`, on a file they can't read.
+
+  Breaking changes, each where the old behaviour differed between kinds:
+
+  | Before                                                                                                                                | After                                                                                                                                                                                   | Migrating                                                                    |
+  | ------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+  | Every `media` entry was fetched, and one whose kind couldn't be told failed the load with "needs a kind".                             | Only the entries the composition reads load. When an expression computes a source, each entry is also read as the kind it reads, unless the entry's `kind` or blob type says otherwise. | Give entries of other kinds a `kind` when an expression computes a source.   |
+  | A `kind` on an entry chose how it was read.                                                                                           | A `kind` the composition doesn't read the source as fails as `media.wrong_kind`.                                                                                                        | Drop the `kind`, or fix it to the kind the node reads.                       |
+  | A source written as a URL (`https://…`), with another `scheme://`, empty or with a `..` part loaded if `media` had an entry under it. | It fails as `media.not_found`, as it does on `lumen-server`.                                                                                                                            | Name the source (`intro.mp4`) and pass the URL in `media` under that name.   |
+  | Images, videos, models and fonts held the last frame while a composition loaded, but playback ran on and audio loaded on its own.     | Every kind holds the frame, and playback pauses while any source, audio included, is pending.                                                                                           | None needed. Await `whenReady()` before `play()` to start without the pause. |
+  | Every `media` and `fonts` entry stayed registered while the page passed it, named by the composition or not.                          | Only what the composition names stays registered; the rest is unregistered and its memory freed. A source the old and new compositions share stays loaded.                              | None needed.                                                                 |
+  | `LumenPreviewTransport` had `pause`, `play` and `seek`.                                                                               | It also has `whenReady(): Promise<LumenPreviewError \| null>`.                                                                                                                          | A custom transport passed to `preview.attach()` implements `whenReady`.      |
+  | `wasmUrl` and `workerUrl` were required on `LumenPreviewSessionOptions`.                                                              | Both are optional when `runtimeUrl` is set; without either, the session fails to start with `worker_failed`.                                                                            | None needed.                                                                 |
+
+- 1badd98: The preview player can loop, change speed, change volume, play a section and tell you when it ended. `mountPreview`, `session.update()` and the React and Svelte `Player` take these, and apply them live without a remount or a restart:
+
+  - `loop`: plays on from the start of the range at its end, with no gap and no repeated or dropped frame, audio included.
+  - `rate`: 0.25 to 4. Audio follows it, with its pitch (it is resampled, not time-stretched). Changing it while playing keeps the current time.
+  - `volume` (0 to 1) and `muted`: applied in a gain node over about 50 ms, so they don't click. Un-muting restores the volume.
+  - `range: { in, out }`: plays frames `in` to `out - 1` (`out` is exclusive). Seeks land inside it, lookahead decoding stays inside it, and `null` restores the whole timeline. An `out` past the end is cut to it with a console warning.
+  - `onEnded`: called once when playback reaches the end of the range without `loop`.
+  - `onTimeUpdate({ frame, timeMs })`: called at most once for each frame shown. It costs nothing while unset and doesn't re-render a React or Svelte component.
+
+  A value that can't be used (a `rate` outside 0.25 to 4, a `volume` outside 0 to 1, a malformed `range`, or a non-finite number) is reported through `onError` and the state's `error` with the new code `"invalid_option"`, and the whole update is rejected: the previous inputs and options stay in effect. `session.loop`, `rate`, `volume`, `muted` and `range` read the options in effect.
+
+  ```tsx
+  <Player
+    preview={preview}
+    composition={composition}
+    range={{ in: 30, out: 90 }}
+    loop
+    rate={1.5}
+    volume={0.8}
+    onEnded={() => setPlaying(false)}
+  />
+  ```
+
+  **Breaking:** playback no longer loops by default. Before, the preview wrapped round the whole composition forever; now it stops on the last frame and calls `onEnded`, and playing again from there starts over. Pass `loop` to keep the old behaviour. `LumenPreviewErrorCode` gains `"invalid_option"`, so an exhaustive `switch` over it needs a new case.
+
+- 7ee7925: The object from `createLumenPreview()` is read-only for an app. It has `subscribe`, `getSnapshot`, `play`, `pause`, `seek` and `whenReady`; `update()`, `attach()` and `detach()` are gone, and `LumenPreviewPatch` and `LumenPreviewTransport` are no longer exported. Only the session mounted with the preview changes its state.
+
+  `getSnapshot()` returns a read-only `LumenPreviewState`: the same object until the state changes, then a new one. Read it, or pass `preview.subscribe` and `preview.getSnapshot` to `useSyncExternalStore`, instead of changing it.
+
+  ```ts
+  // Before
+  preview.update({ isLoaded: true }); // set the state by hand
+
+  // After: the state follows the session
+  const preview = createLumenPreview();
+  mountPreview(host, { preview, composition, runtime });
+  preview.getSnapshot().isLoaded;
+  ```
+
+- 0091154: The browser preview's runtime files (the render worker, the wasm, the audio worker and the audio worklet) now all come from `@lumiscia/lumen-bindings`, which describes each build with one manifest: `runtime` from `@lumiscia/lumen-bindings/urls` and `runtime2d` from `@lumiscia/lumen-bindings/urls-2d`. Each entry is `{ file, url }`: where the file is served by default, and its name in a directory you host yourself.
+
+  `<Player preview={preview} composition={composition} />` in React and Svelte works as before, with no configuration.
+
+  `mountPreview` and `LumenPreviewSession` take the manifest as `runtime`, in place of `wasmUrl` and `workerUrl`:
+
+  ```ts
+  // before
+  import { wasmUrl, workerUrl } from "@lumiscia/lumen-bindings/urls";
+  mountPreview(host, { preview, composition, wasmUrl, workerUrl });
+
+  // after
+  import { runtime } from "@lumiscia/lumen-bindings/urls";
+  mountPreview(host, { preview, composition, runtime });
+  ```
+
+  Self-hosting with `runtimeUrl` now takes every file from one package, and selects the 2D build when given `runtime2d`. Copy the four files the manifest names from `@lumiscia/lumen-bindings` into one directory; `audio-worker.js` and `audio-worklet.js` no longer come from `@lumiscia/lumen-preview`:
+
+  ```ts
+  // before: worker.js and lumen_wasm_bg.wasm from lumen-bindings, the audio files from lumen-preview,
+  // and the 2D build only by passing wasmUrl and workerUrl as well
+  mountPreview(host, { preview, composition, runtimeUrl: "/lumen-runtime/" });
+
+  // after: worker-2d.js, lumen_wasm_2d_bg.wasm, audio-worker.js and audio-worklet.js, all from lumen-bindings
+  import { runtime2d } from "@lumiscia/lumen-bindings/urls-2d";
+  mountPreview(host, { preview, composition, runtime: runtime2d, runtimeUrl: "/lumen-runtime/" });
+  ```
+
+  To serve one file somewhere else, pass a manifest of your own. On `Player`, `runtime` replaces the `wasmUrl` and `workerUrl` props and defaults to the manifest of the entry point it comes from:
+
+  ```tsx
+  // before
+  <Player preview={preview} composition={composition} wasmUrl={wasmUrl} workerUrl={workerUrl} />;
+
+  // after
+  import { runtime } from "@lumiscia/lumen-bindings/urls";
+  <Player
+    preview={preview}
+    composition={composition}
+    runtime={{ ...runtime, wasm: { file: "lumen_wasm_bg.wasm", url: wasmUrl } }}
+  />;
+  ```
+
+  `audio.workerModuleUrl` and `audio.workletModuleUrl` are gone from the session's options (use `runtime.audioWorker` and `runtime.audioWorklet`), and so is `runtimeFileUrl`. The Vite 6 and 7 dev setting now needs only `optimizeDeps: { exclude: ["@lumiscia/lumen-bindings"] }`.
+
+  `@lumiscia/lumen-bindings` has one export path per module or file: `.`, `./node`, `./urls`, `./urls-2d`, `./wasm`, `./wasm-2d`, `./worker`, `./worker-2d`, `./audio-worker` and `./audio-worklet`. Import `@lumiscia/lumen-bindings` instead of `/browser` or `/bundler`, and `@lumiscia/lumen-bindings/worker` instead of `/browser/worker.js`.
+
+  `createLumenBindings(options)` is now `loadLumenBindings(options)`, which returns a promise of the bindings themselves, and the `LumenBindings` type is gone:
+
+  ```ts
+  // before
+  const { check } = await createLumenBindings().preview();
+
+  // after
+  import { loadLumenBindings } from "@lumiscia/lumen-bindings/node";
+  const { check } = await loadLumenBindings();
+  ```
+
+- 58a05d3: `LumenPreviewSession.update()` is now `setInputs()`. It still replaces every input, so one left out returns to its default, and the name says so: `session.setInputs({ muted: true })` clears the composition, which `update` suggested it wouldn't. Unchanged inputs do nothing. It reads the composition again on every call, so one edited in place is picked up, and it costs a serialization: call it when an input may have changed rather than on every frame.
+
+  ```ts
+  // Before
+  session.update({ composition, rate: 2 });
+
+  // After
+  session.setInputs({ composition, rate: 2 });
+  ```
+
+  `Player` in `@lumiscia/lumen-react` and `@lumiscia/lumen-svelte` passes every prop it doesn't use itself on to `setInputs`, so a prop can no longer be missed.
+
+- d3ce7e8: The browser preview ships two builds. The default renders 2D and 3D nodes, and now reads glTF models with Draco meshes and WebP textures as well as meshopt buffers. KTX2 textures stay out of the browser build, because their transcoder would make the wasm about 350 KB larger to download; `lumen` and `lumen-server` still read them.
+
+  A page that only shows 2D compositions can load the 2D-only build instead, which has no 3D and is about a quarter smaller to download (1.23 MB against 1.65 MB, brotli-compressed). It reports each 3D node as a `node.unsupported` error. Import `Player` from the `/2d` entry point:
+
+  ```tsx
+  import { Player, createLumenPreview } from "@lumiscia/lumen-react/2d";
+  // or, in Svelte: import { Player, createLumenPreview } from "@lumiscia/lumen-svelte/2d";
+  ```
+
+  With `mountPreview`, take the 2D manifest from `@lumiscia/lumen-bindings/urls-2d`. The 2D wasm runs only in its own worker, `worker-2d.js`:
+
+  ```ts
+  import { mountPreview } from "@lumiscia/lumen-preview";
+  import { runtime2d } from "@lumiscia/lumen-bindings/urls-2d";
+
+  mountPreview(host, { preview, composition, runtime: runtime2d });
+  ```
+
+  A bundler emits only the build a page imports. With `runtimeUrl`, the `/2d` `Player` loads `worker-2d.js` and `lumen_wasm_2d_bg.wasm` from that directory, and pages that call `mountPreview` themselves pass `runtime: runtime2d` with the same `runtimeUrl`.
+
+### Patch Changes
+
+- Updated dependencies [af53e6b]
+- Updated dependencies [fe4bf15]
+- Updated dependencies [6faf4d9]
+- Updated dependencies [ec34c26]
+- Updated dependencies [d09b553]
+- Updated dependencies [a146bbd]
+- Updated dependencies [4bacce6]
+- Updated dependencies [a822c9b]
+- Updated dependencies [8ef4ee5]
+- Updated dependencies [0b4d4bc]
+- Updated dependencies [06e8c8d]
+- Updated dependencies [7b4ea54]
+- Updated dependencies [eec0701]
+- Updated dependencies [7a3a9e9]
+- Updated dependencies [97c7016]
+- Updated dependencies [659dfe2]
+- Updated dependencies [84d1aa7]
+- Updated dependencies [dea8cf4]
+- Updated dependencies [228aa26]
+- Updated dependencies [c4d3140]
+- Updated dependencies [c657075]
+- Updated dependencies [0ffadaf]
+- Updated dependencies [db60e86]
+- Updated dependencies [57bad86]
+- Updated dependencies [ad144c3]
+- Updated dependencies [cf41f99]
+- Updated dependencies [0b400af]
+- Updated dependencies [9e27b2f]
+- Updated dependencies [bba7e08]
+- Updated dependencies [40e1f4e]
+- Updated dependencies [cab42d2]
+- Updated dependencies [ce70b5c]
+- Updated dependencies [c4d3f90]
+- Updated dependencies [2a1b3bc]
+- Updated dependencies [3c2dc0f]
+- Updated dependencies [dc06fed]
+- Updated dependencies [0085980]
+- Updated dependencies [af40822]
+- Updated dependencies [ceaba3c]
+- Updated dependencies [b577157]
+- Updated dependencies [b1af369]
+- Updated dependencies [d3e4ce9]
+- Updated dependencies [60b7798]
+- Updated dependencies [9cb96fe]
+- Updated dependencies [fe9ddf6]
+- Updated dependencies [716f9d0]
+- Updated dependencies [0aead67]
+- Updated dependencies [89568da]
+- Updated dependencies [b1f3863]
+- Updated dependencies [16aae16]
+- Updated dependencies [6528c7b]
+- Updated dependencies [b9cc4f1]
+- Updated dependencies [a37b057]
+- Updated dependencies [e0e29e1]
+- Updated dependencies [48b2345]
+- Updated dependencies [6487216]
+- Updated dependencies [8035fb4]
+- Updated dependencies [f50053d]
+- Updated dependencies [6b74bfe]
+- Updated dependencies [1879afe]
+- Updated dependencies [c7bec4f]
+- Updated dependencies [2a50568]
+- Updated dependencies [3a7cd1a]
+- Updated dependencies [5ab096d]
+- Updated dependencies [ff3f2bc]
+- Updated dependencies [ef0a093]
+- Updated dependencies [81b6cb4]
+- Updated dependencies [f962b09]
+- Updated dependencies [d247928]
+- Updated dependencies [f6d486e]
+- Updated dependencies [d63ba1d]
+- Updated dependencies [7a87028]
+- Updated dependencies [1badd98]
+- Updated dependencies [d6018ec]
+- Updated dependencies [590016f]
+- Updated dependencies [7ee7925]
+- Updated dependencies [267dca6]
+- Updated dependencies [e6f9ce0]
+- Updated dependencies [74a7d18]
+- Updated dependencies [1274c06]
+- Updated dependencies [c0f96e6]
+- Updated dependencies [ef080a4]
+- Updated dependencies [f9b71d6]
+- Updated dependencies [cfc49e0]
+- Updated dependencies [b3a277d]
+- Updated dependencies [0091154]
+- Updated dependencies [5233133]
+- Updated dependencies [9ac3206]
+- Updated dependencies [fe146b5]
+- Updated dependencies [7573c49]
+- Updated dependencies [79817d9]
+- Updated dependencies [a6503ab]
+- Updated dependencies [bc6b572]
+- Updated dependencies [58a05d3]
+- Updated dependencies [4be16fa]
+- Updated dependencies [0382574]
+- Updated dependencies [cd82e6d]
+- Updated dependencies [d95fccc]
+- Updated dependencies [f045a94]
+- Updated dependencies [ef94bcb]
+- Updated dependencies [91a0446]
+- Updated dependencies [a3287b8]
+- Updated dependencies [49b2878]
+- Updated dependencies [e1d88ad]
+- Updated dependencies [3ab8aa0]
+- Updated dependencies [b9022b7]
+- Updated dependencies [d3ce7e8]
+- Updated dependencies [9e66ebe]
+  - @lumiscia/lumen-bindings@0.6.0
+  - @lumiscia/lumen-preview@0.6.0
+
 ## 0.6.0-beta.5
 
 ### Patch Changes

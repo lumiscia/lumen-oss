@@ -1,5 +1,1834 @@
 # @lumiscia/lumen-bindings
 
+## 0.6.0
+
+### Minor Changes
+
+- af53e6b: Images that only `resize`, `transform` and `image_plane_3d` nodes read are decoded at the size they're shown at, and fit the texture limit instead of failing.
+
+  Previously only an image whose every use was a literal `resize` could be reduced, and only to an exact multiple of its aspect ratio. Now these three nodes read a reduced image at its density, so it keeps its size and placement on the canvas, and its reduction is per axis. A 1000×9 strip can be reduced too.
+
+  - **Shown smaller:** a `transform` with a literal scale bounds the size it shows its source at, as a literal `resize` does. A photo shown at a quarter by `scale_x: 0.25, scale_y: 0.25` is uploaded at half its size. Rotation doesn't matter.
+  - **Past the limit:** an image larger on a side than the device's texture limit, or `GpuCompositionRenderer::set_max_image_side`, now renders from a reduced copy with a `media.image_reduced` warning when only these nodes read it. That includes a `transform` whose scale is an expression and an `image_plane_3d`. Any other reader, such as a blur, a merge, a shader or the graph's output, keeps the image at its own size, and past the device's limit it still fails as `media.too_large`.
+
+  **Breaking, for Rust hosts:** an image that a `transform` or `image_plane_3d` reads, past the texture limit, now renders reduced with a warning instead of failing. Past `set_max_image_side`, it is now reduced instead of kept at its own size.
+
+- fe4bf15: Render at a fraction of the composition's size. A render scale above 0 (1 by default, and above 1 too) makes frames `ceil(width * scale)` by `ceil(height * scale)` and look like the full render scaled, with every raster along the way that much smaller, so a preview or a draft render costs less. Lengths in params stay in composition pixels and expressions still see the composition's size: blurs scale their spread, text keeps its line breaks, images are reduced to the scale on load, `render_3d` sizes scale with `supersample` on top, and 3D world units don't change. A `wgsl_shader` sees the scaled size in `lumen.resolution` and the scale in the new `lumen.render_scale`.
+
+  ```sh
+  lumen render film.json -o draft.mp4 --scale 0.5
+  ```
+
+  In the preview, `renderScale` is a session input and `setRenderScale` changes it without reloading the composition. The canvas follows the scaled size, and the scale is kept across loads. The renderer's `outputWidth` and `outputHeight` give the size of rendered frames.
+
+  ```ts
+  session.setRenderScale(0.5);
+  ```
+
+- ec34c26: Small 3D API cleanups.
+
+  `image_plane_3d`'s default `width` is 1. Every other 3D primitive defaults to one world unit (a `shape_3d` has `size` `[1, 1, 1]`), so a plane with no params is as wide as a default box beside it. For a 16:9 source about a unit tall, set `"width": 1.6`.
+
+  `image_plane_3d` takes `opaque` (default false). A plane drawn blended, as every plane is by default, is ordered by its centre among the blended objects and doesn't write depth, so it can show in the wrong order against other blended objects it crosses. With `opaque` on, the plane is drawn with the opaque objects and writes depth, so it is ordered by depth against anything it intersects. Use it for a source with no transparent pixels. Alpha is ignored then, the colour's alpha, `opacity` and the source's: a transparent pixel shows its colour at full opacity, which is black for a fully transparent one, and a half-transparent one shows its colour undimmed. `opaque` casts a shadow over the whole rectangle, and has no effect on a `shadow_catcher`, which is always drawn as one.
+
+  ```json
+  {
+    "id": 2,
+    "type": "image_plane_3d",
+    "params": { "width": 2, "rotation": [0, 45, 0], "opaque": true }
+  }
+  ```
+
+  A gradient given as a 3D colour, `color` on `shape_3d`, `image_plane_3d`, `text_3d` or `light_3d`, or `fog_color` on `render_3d`, fails `check` with `node.invalid_param` at that param's path, such as `/nodes/3/params/color`, instead of failing the render. These params' schema type is a color rather than a paint, so `NodeParamKind` has a `"color"` member and the generated TypeScript types of these params don't accept a gradient. No expression can produce a gradient, so nothing but a composition built in Rust rather than parsed from JSON can still reach the render-time "3D colours must be solid" error.
+
+- a146bbd: 3D performance: mipmapped raster sources, and static models once their clip ends.
+
+  An `image_plane_3d` source shown smaller than its pixels, and any `model_3d` texture input larger than 64 pixels a side, is now filtered with mipmaps, trilinearly and anisotropically, instead of being sampled at full size. The mip chains are made on the GPU in the source's own format, averaging each level's texels by area in linear light, and are made once for a source that doesn't change. A source shown at its own size or larger gets none. Minified rasters look smoother, and a render with `supersample` of 1 differs slightly from before where it showed one. A chain adds a third to the raster's memory and a copy of its first level.
+
+  A `model_3d` whose animation doesn't loop is drawn once for every frame after the clip's last key (or before its first, when it holds the first pose), as it is for a model with no animation, so those frames record no 3D passes. This holds for every kind of channel, morph weights and the model's own lights and camera included. A model kept as a static frame is also drawn again when its file changes, as the media resolver reports through the model's id.
+
+- 4bacce6: **Video output with an alpha channel.** Two new output formats hold alpha: `mov`, ProRes 4444 from `prores_ks` (`yuva444p10le`) with AAC audio, and `webm`, VP9 from `libvpx-vp9` (`yuva420p`, tagged `alpha_mode=1`) with Opus audio from `libopus`. A render asks for alpha with the request's `alpha`, `lumen --alpha` or the SDK's `render(..., { alpha: true })`, which win over `render_settings.alpha`, as `codec` does. The default stays opaque, and an `mp4` is unchanged.
+
+  ```json
+  { "render_settings": { "width": 1920, "height": 1080, "alpha": true } }
+  ```
+
+  ```json
+  { "composition": { "...": "..." }, "alpha": true, "output": { "format": "webm" } }
+  ```
+
+  The colour is straight, as a PNG of the frame holds it: the premultiplied linear colour is unpremultiplied in linear light, sRGB-encoded and converted to BT.709 limited range once, from float, with the same ordered dither as opaque output. Alpha is full range and never dithered, and a fully transparent pixel is black with neutral chroma. VP9's 4:2:0 chroma is the alpha-weighted average of each 2x2 block, `Σ aᵢ·cᵢ / Σ aᵢ`, so transparent pixels don't darken edges.
+
+  `codec` takes `prores` and `vp9` alongside `h264`, `hevc` and `av1`. A `mov` or `webm` without a codec gets its own; `mp4` holds `h264`, `hevc` and `av1`, `mov` holds `prores` and `webm` holds `vp9`, and anything else is refused with `invalid_output`. ProRes is always 10-bit, VP9 with alpha 8-bit, and either also encodes opaque video. Every built-in preset but `lossless` has `prores_ks` settings (quantiser 8, 4 and 2), and every one has `libvpx-vp9` settings (constant quality, `cpu-used` 0 to 5 as its speed). No hardware encoder writes alpha: auto selection goes straight to the software encoder, and a pinned hardware encoder is refused with `invalid_quality`. Alpha in an `mp4`, or with `h264`, `hevc` or `av1`, is an error, never an opaque video, as is a `prores_ks` option that leaves a profile other than 4444 or, with alpha, an `alpha_bits` other than 16, either of which drops the alpha plane. A composition with audio is refused with `invalid_output` when the render is requested if this FFmpeg has no encoder for the container's audio (`libopus` for WebM, AAC otherwise).
+
+  **Breaking, Rust API:** `lumen_server::render::resolve_encoder` takes the `OutputFormat` after the composition and returns a `ServerRenderError` (`invalid_output` or `invalid_quality`) rather than an `anyhow::Error`. `OutputFormat` has `Mov` and `Webm`, `OutputCodec` and `EncodeCodec` have `ProRes` and `Vp9` (so `EncodeCodec::ALL` has five), and `OutputSettings` has `alpha`. In `lumen-ffmpeg`, `VideoEncoderConfig::alpha`, `VideoEncoderChoice::with_alpha`, `QualityRequest::alpha`, `check_alpha` and `check_audio_encoder` are new, `EncoderFamily` has `Vpx` and `ProRes`, `PixelFormat` has `Yuva420p`, `Yuv444p10` and `Yuva444p10`, and `check_bit_depth` refuses 8-bit ProRes. `lumen_engine::gpu::YuvConverter` also converts to `Yuva420p`, `Yuv444p10` and `Yuva444p10`. Code matching these enums exhaustively needs the new arms.
+
+  An audio encoder now writes the codec it was opened with, where it was always tagged AAC.
+
+- a822c9b: `lumen-server`'s HTTP API has one definition: the new `lumen-server-api` crate holds its request, response, socket-event and error types, the server (de)serialises with them, and `definitions/openapi.json` is generated from them for other implementations of the API. `@lumiscia/lumen-types` exports the generated types (`RenderRequest`, `Render`, `RenderEvent`, `ErrorBody`, `ErrorCode`, `Media`, …), with `errorCodes` (each code and what it means) and `outputFiles` (each output format's content type and extension). `VideoCodec` and `VideoBitDepth` keep their names and now come from that schema.
+
+  Every object on the wire is camelCase. The composition inside a request keeps its own format.
+
+  | Before                                      | Now                                                |
+  | ------------------------------------------- | -------------------------------------------------- |
+  | `bit_depth` (render request)                | `bitDepth`                                         |
+  | `output.jpeg_quality` (render request)      | `output.jpegQuality`                               |
+  | `render.outputUrl`                          | `render.url`                                       |
+  | `progress.artifactUrl`                      | `render.url`                                       |
+  | `progress.renderId`                         | `render.id`                                        |
+  | `progress.state`                            | `render.status`                                    |
+  | `progress.progress`                         | `render.progress`                                  |
+  | `progress.error`                            | `render.error.message`                             |
+  | `progress.errorCode`                        | `render.error.code`                                |
+  | `progress.retryable`                        | `render.error.retryable`                           |
+  | `progress.durationMs`                       | `render.durationMs`                                |
+  | `progress.outputBytes`                      | `render.outputBytes`                               |
+  | `progress.stage`, `progress.organizationId` | removed (`render.status`, `render.organizationId`) |
+
+  A render has one shape. `POST /renders`, `GET /renders/:id`, `POST /renders/:id/cancel` and `GET /renders/:id/progress` all return it as `render`, and `/progress` no longer adds a second `progress` object:
+
+  ```json
+  {
+    "render": {
+      "id": "r_…",
+      "status": "succeeded",
+      "progress": 1,
+      "url": "/renders/r_…/artifact",
+      "createdAt": "2026-11-14T00:00:00Z",
+      "inputHash": "…",
+      "organizationId": "self-hosted",
+      "costMicros": 0,
+      "outputBytes": 48213,
+      "durationMs": 912
+    }
+  }
+  ```
+
+  When a render fails on a media source, its `error` (and the body of a `409` from its artifact) carries `media`, the engine's `MediaFailure` from `definitions/runtime.schema.json`:
+
+  ```json
+  {
+    "code": "media.decode",
+    "message": "…",
+    "retryable": false,
+    "media": { "code": "media.decode", "source": "hero.png", "wanted": ["image"], "details": "…" }
+  }
+  ```
+
+  A `codec` or `bitDepth` that isn't one of the API's values is now refused with `422` and `invalid_request_body` instead of `invalid_quality`. Socket events keep their shape.
+
+  The SDK sends and reads the new names; its public types are unchanged.
+
+- 8ef4ee5: Audio clips fade, volumes animate, and templates carry their own sound.
+
+  - A track's or clip's `volume` takes an `=expression` as well as a number, evaluated in the time of the composition the audio is in: `frame`, `time`, `fps`, `width`, `height` and, inside a template, props. Gains are evaluated every 512 samples and move linearly in between, so they never step. A volume expression that reads a node, a glyph or text, or a prop the template doesn't declare, fails the check with `audio.invalid`; a value below 0 plays as silence.
+  - Clips take `fade_in_ms` and `fade_out_ms`, which fade from and to silence at the clip's start and end on an equal-power curve. Fades longer than a short clip multiply where they overlap.
+  - A template in `compositions` can have its own `audio`. It plays wherever a `clip` that reaches the output plays the template, at the clip's start, duration, offset, speed and end, as its frames do, through nested clips. Speed resamples, so pitch follows it; past a `hold` window the audio is silent. A `switch` plays only its selected layer's audio, and a `time_remap` plays its source's audio at the remapped time, silent where that time holds or runs backwards.
+  - Audio planning is bounded. The root and each template may hold at most 512 audio tracks and 8192 audio clips, and clips that play templates with sound more than 4096 times in all, counting the clips inside the templates they play, fail the check with `audio.invalid`; planning an interval only looks at the clips that overlap it. While rendering or previewing, a 512-sample interval may be inside at most 1024 clips and time remaps (a loop may restart at most 32 times in it) and sound at most 1024 clips, one planning call (the server mixes 30 s at a time) returns at most 500,000 segments, and the preview's plan of the whole timeline covers at most about 3 hours and 200,000 segments; past a limit the render or the preview load fails with the new `audio.limit` code.
+  - A prop a clip sets by expression moves a gain smoothly, as the gain's own expression does. Nested audio keeps sounding after a parent loop restarts, including under a `switch` or another loop, and a looping `time_remap` no longer silences the 512 samples around its wrap, whatever its loop bounds.
+  - The builder's `addAudio` takes `fadeIn` and `fadeOut` in seconds and `gain` as a number or an `Expr<number>`, `addAudioTrack` takes an `Expr<number>` gain, and `defineComposition` keeps the audio its `build` adds.
+
+  ```json
+  {
+    "compositions": {
+      "whoosh": {
+        "timeline": { "fps": 30, "duration_frames": 30 },
+        "props": { "level": { "type": "number", "default": 1 } },
+        "audio": {
+          "tracks": [{ "id": "main" }],
+          "clips": [
+            {
+              "id": "a",
+              "source_id": "whoosh.wav",
+              "track_id": "main",
+              "start_ms": 0,
+              "duration_ms": 500,
+              "fade_out_ms": 100,
+              "volume": "=prop('level')"
+            }
+          ]
+        },
+        "nodes": [
+          { "id": 1, "type": "background" },
+          { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+      }
+    },
+    "audio": {
+      "tracks": [{ "id": "music", "volume": "=if(time >= 2 && time < 6, 0.25, 1)" }],
+      "clips": [
+        {
+          "id": "bed",
+          "source_id": "music.mp3",
+          "track_id": "music",
+          "start_ms": 0,
+          "duration_ms": 10000,
+          "fade_in_ms": 1000,
+          "fade_out_ms": 1000
+        }
+      ]
+    }
+  }
+  ```
+
+  The browser preview plays the same mix: the engine plans it and the preview's audio worker plays the plan.
+
+  Breaking changes:
+
+  - `audioTimeline()` on the preview's wasm controller (`LumenPreviewControllerBinding` in `@lumiscia/lumen-preview/advanced`) returns the engine's audio plan, `{ voices, segments, durationFrames, fps }`, instead of the parsed tracks and clips. The preview's audio engine is internal and takes the plan itself; only a custom host that reads `audioTimeline()` is affected.
+  - The generated `AudioClip` and `AudioTrack` types have `volume: ExpressionValue<number>`, and the root `audio` is the new `AudioTimeline` type.
+  - In Rust, `AudioMixer::new` takes the `Composition` instead of its timeline, and `mix_range` takes `&mut self` and fails with a `LumenError`. `AudioTrack::volume` and `AudioClip::volume` are an `AudioGain`, and `CompositionTemplate` has an `audio` field. Use `Composition::has_audio` to ask whether a render has sound.
+
+- 0b4d4bc: **An audio track's or clip's level is `gain` in the document, as it is in the builder.** The JSON key was `volume` while `addAudio({ gain })` wrote it, so a hand-written `"gain"` was ignored and the clip played at full level. Audio tracks, clips and the `audio` object now reject keys they do not list, like the rest of the document, so a leftover `volume` (or any other stray key) is an error naming its path, such as `audio.clips[0].volume: unknown field`. `name` stays accepted on tracks and clips. Error messages and JSON pointers say `gain` too: `audio.tracks[0].gain: must be at least 0`.
+
+  Before:
+
+  ```json
+  {
+    "audio": {
+      "tracks": [{ "id": "music", "volume": 0.5 }],
+      "clips": [
+        {
+          "id": "a",
+          "source_id": "music.mp3",
+          "track_id": "music",
+          "start_ms": 0,
+          "duration_ms": 4000,
+          "volume": "=tween(0, 1, 60, 15)"
+        }
+      ]
+    }
+  }
+  ```
+
+  After:
+
+  ```json
+  {
+    "audio": {
+      "tracks": [{ "id": "music", "gain": 0.5 }],
+      "clips": [
+        {
+          "id": "a",
+          "source_id": "music.mp3",
+          "track_id": "music",
+          "start_ms": 0,
+          "duration_ms": 4000,
+          "gain": "=tween(0, 1, 60, 15)"
+        }
+      ]
+    }
+  }
+  ```
+
+  `addAudio` and `addAudioTrack` keep taking `gain`; they now write `gain`. In a connection, `from_port` may be left out: it defaults to `output`, the only output any node has, and the schema no longer lists it as required.
+
+- eec0701: **New: `lumen preview` writes a contact sheet of a composition.** It renders frames sampled evenly across the timeline and tiles them into one `.png` or `.jpg`, so a whole composition can be seen at a glance without rendering a video.
+
+  ```bash
+  lumen preview composition.json -o sheet.png
+  lumen preview composition.json -o sheet.jpg --count 20 --columns 5 --frames 30..300
+  ```
+
+  `--count` (default 12) frames are spread from the first frame of `--frames` (default the whole timeline) to its last, `--columns` (default 4) to a row on a sheet `--width` (default 1920) pixels wide, each cell at the composition's aspect ratio over a dark grey background. It also takes `--media-root`, `--font-dir` and `--max-text-glyphs`, as `lumen render` does.
+
+- 7a3a9e9: `lumen render` and `lumen check` read the composition from stdin when it is `-`, so a script can pipe one in without writing a file:
+
+  ```bash
+  node composition.js | lumen render - -o out.mp4
+  cat composition.json | lumen check - --format json
+  ```
+
+  Messages and the `lumen check` summary call the source `<stdin>`. Media is found under `--media-root`, which defaults to the current directory. Empty input, or stdin that is a terminal, fails with an error instead of waiting. A file named `-` is reached as `./-`.
+
+- 97c7016: **Breaking: `color_grade` has one LUT scale, and its inline LUT is the `lut` param.** `color_grade` also reads 3D `.cube` LUTs from files with the new `lut_source` param.
+
+  - The inline 1D LUT, which was `lut_source`, is now `lut` (`"rgb1d:0,0,0;0.2,0.1,0.3;1,1,1"` or `"identity"`). Rename the param in existing compositions.
+  - Its scale is 0 to 1. The engine no longer guesses per value whether a number above 1 was meant as 0–255. A value outside 0..1 or not finite fails the render, naming `lut` and the value. **Migration:** divide a 0–255 LUT by 255 (`rgb1d: 0,0,0; 255,128,0` becomes `rgb1d: 0,0,0; 1,0.5,0`).
+  - `lut_source` is now a media source, a path, `media` alias or `asset:<id>`, naming an Adobe/Resolve `.cube` file. It reads `TITLE`, `LUT_3D_SIZE`, `DOMAIN_MIN` and `DOMAIN_MAX`, comments and blank lines, and uploads the table as a 3D texture once per media identity. Lookups are trilinear, with the half-texel offset so the end points land on the first and last entries; `interpolation: "nearest"` takes the nearest entry. `strength` blends the graded colour as it does for `lut`. Table values outside 0..1 are kept.
+  - The lookup is in the sRGB-encoded domain on straight colour: the colour is unpremultiplied, encoded, clamped to 0..1, looked up, decoded and premultiplied again, and alpha is untouched.
+  - A file is read as untrusted input: `LUT_3D_SIZE` up to 129, files up to 64 MiB, and a missing or wrong entry count, a non-finite or out-of-range number, a missing size line, and any other keyword (`LUT_1D_SIZE`, `LUT_3D_INPUT_RANGE`, ...) are errors that say which. 1D `.cube` tables are not supported.
+  - Setting both `lut` and `lut_source` is an error. A literal `lut` that is out of range or malformed, both params set, and an inline LUT written in `lut_source` (as old compositions had it) are `node.invalid_param` diagnostics at the param when the composition is checked; an expression-valued param fails at render with the same message.
+
+  **Rust API:** `AssetKind::Lut`, `Asset::Lut`, `MediaResolver::Lut`, the `LutResolver` trait and `MAX_LUT_BYTES` are new, and `#[media(lut)]` declares a param of that kind. A `MediaStore` that matches on `AssetKind` handles the new variant (a store with no LUTs answers `media.not_found`). `lumen_gpu::LayoutKind::Texture3d` binds a filterable 3D texture.
+
+- 659dfe2: In the Rust API, `PropertyKind` keeps one variant per scalar kind (`Float`, `Int`, `Bool`, `String`, `Color`, `Vec2`, `Vec3`, `Enum`). The kinds of compound params, such as text content, paint and region, become `PropertyKind::Custom(&ParamTypeDef)`. A `ParamTypeDef` carries the kind's `name`, which is the published `x-lumen-kind`, and with the `metadata` feature a `schema` function for the JSON schema of a value. The composition schema and the generated types are unchanged.
+
+  ```rust
+  // before
+  match property.expected {
+      PropertyKind::TextContent => /* ... */,
+      _ => /* ... */,
+  }
+
+  // after
+  match property.expected {
+      PropertyKind::Custom(def) if def.name == "text_content" => /* ... */,
+      _ => /* ... */,
+  }
+  ```
+
+  A `Delegate` enum with no `#[delegate(kind = ...)]` implements `NodeParamType` by hand and returns its own `PropertyKind::Custom`.
+
+- dea8cf4: **A composition no longer holds encoding settings.** `codec`, `quality`, `bit_depth` and `alpha` are gone from `render_settings`, and a document that still has them is rejected as an unknown field. How a video is encoded is decided by the render request, then by the codec the output container holds (`prores` in a `.mov`, `vp9` in a `.webm`), then by the host's defaults. Every surface already took these options, so move them there; `lumen render comp.json -o out.mov` with no flags still picks ProRes.
+
+  Before:
+
+  ```json
+  {
+    "render_settings": {
+      "width": 1920,
+      "height": 1080,
+      "codec": "hevc",
+      "quality": "high",
+      "bit_depth": 10
+    }
+  }
+  ```
+
+  After, a composition with only the canvas, and the encoding on the render:
+
+  ```json
+  { "render_settings": { "width": 1920, "height": 1080 } }
+  ```
+
+  ```bash
+  lumen render comp.json -o out.mp4 --codec hevc --quality high --bit-depth 10
+  ```
+
+  ```ts
+  await lumen.render(composition, { codec: "hevc", quality: "high", bitDepth: 10 });
+  await render(composition, { output: "out.mp4", codec: "hevc", quality: "high", bitDepth: 10 });
+  ```
+
+  `new Composition({ renderSettings })` takes only `width` and `height`. `VideoCodec` and `VideoBitDepth` stay exported from `@lumiscia/lumen-types`, which the SDK and the `lumen` wrapper now import them from.
+
+  **Rust API:** `lumen_engine::composition::{OutputCodec, OutputSettings, BitDepth}` and `Composition::output_settings()` are removed; use `lumen_ffmpeg::{EncodeCodec, BitDepth}`. The engine's GPU encode targets take `lumen_engine::gpu::BitDepth`, which converts from `lumen_ffmpeg::BitDepth` with `From`. `lumen_server::render::resolve_encoder` reads only the request, the container and the host's config.
+
+- 228aa26: `lumen-engine`'s renderer has one render call, and the crate's public surface is narrower.
+
+  `GpuCompositionRenderer::render(composition, frame, media, target)` renders and submits a frame. `frame` is any `Into<f64>` in composition frames, so a `u32` frame and a fractional time take the same call. `target` is `RenderTarget::Owned` (a texture of the renderer's) or `RenderTarget::External(ExternalTexture)`. It returns a `RenderedFrame` with the output `raster` (the external texture for an external target) and its `submission`, and `wait(&device)` blocks until the GPU has finished it. Hosts that time the stages apart call `bind_frame`, `upload_frame` and `submit_frame`, which `render` runs in turn. Rendered output, performance and the server's behaviour are unchanged.
+
+  **Breaking, for Rust hosts:**
+
+  | Removed                                                        | Use instead                                                                                                                                            |
+  | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+  | `render_frame(c, frame, m)`, `render_frame_at(c, time, m)`     | `render(c, frame, m, RenderTarget::Owned)?.raster`                                                                                                     |
+  | `render_frame_submitted(c, frame, m)` → `(raster, submission)` | `render(c, frame, m, RenderTarget::Owned)?` → `RenderedFrame { raster, submission }`                                                                   |
+  | `render_frame_into_external(c, frame, m, texture)`             | `render(c, frame, m, RenderTarget::External(texture))?`, a `RenderedFrame` in place of `SubmittedExternalTexture` (`.raster.texture`, `.wait(device)`) |
+  | `bind_frame(c, frame, m)`, `bind_frame_at(c, time, m)`         | `bind_frame(c, frame, m, target)`                                                                                                                      |
+  | `upload_bound_frame(&bound)`                                   | `upload_frame(&bound)`                                                                                                                                 |
+  | `submit_render()`                                              | `submit_frame(&bound)`, which refuses a frame recorded before the latest, as uploading does                                                            |
+  | `submit_bound_frame(&bound)`                                   | `upload_frame(&bound)` then `submit_frame(&bound)`                                                                                                     |
+  - The test-only renderer hooks (`limit_frame_storage`, `recorded_domain`, `recorded_pass_count`, `text_atlas_texture`, `set_full_frame_sources`, `set_single_tile_repeats`, `cached_media_texture_count`, `media_texture_upload_count`) and `BoundFrame`'s `atlas_region_count`, `atlas_region_rects` and `glyph_instances` exist only with the new `test-hooks` cargo feature, which is not a supported host API.
+  - `lumen_engine::scope` is no longer public and `lumen_engine::fingerprint` is hidden from the docs (the derive macros name it); `gpu::MediaTextureKey`, `Clip::window`, `ClipWindow::local_time` and `node::source::media_in::map_to_source_frame` are no longer public either.
+  - The `lumen_engine::ffmpeg` and `lumen_engine::image` aliases and the `media::ffmpeg` and `media::image` modules are gone: `FfmpegVideoResolver`, `FfmpegAudioResolver`, `FfmpegResolverOptions` and `ImageFileResolver` are at `lumen_engine::media::*`, where they already were too.
+
+  Compositions, the TypeScript SDK and the server's HTTP API are unaffected.
+
+- c4d3140: 3D scenes can be lit by an HDR environment map. Set `environment_map` on `render_3d` to an equirectangular Radiance `.hdr` or OpenEXR `.exr` file, by path or as `asset:<id>`, and it replaces the built-in studio: surfaces take their diffuse light and their reflections from it, rough ones blurred as much as their roughness. `environment` stays its brightness and `environment_rotation` turns it about +Y in degrees. A scene lit by a map and no lights gets no default lights. The map's centre is the view along -Z, with +X to its right and +Y at its top.
+
+  `environment_background` shows the map behind the scene, through the exposure and tone mapping, and makes the render opaque; `environment_background_blur` blurs it from 0 (sharp) to 1. Shadow catchers darken the background by the light their shadows take away:
+
+  ```json
+  {
+    "nodes": [
+      {
+        "id": 1,
+        "type": "model_3d",
+        "params": { "source": "asset:fox", "scale": [0.02, 0.02, 0.02] }
+      },
+      {
+        "id": 2,
+        "type": "shape_3d",
+        "params": { "shape": "plane", "size": [10, 1, 10], "shadow_catcher": true }
+      },
+      {
+        "id": 3,
+        "type": "light_3d",
+        "params": {
+          "light": "directional",
+          "intensity": 2,
+          "rotation": [-55, -40, 0],
+          "cast_shadows": true
+        }
+      },
+      {
+        "id": 4,
+        "type": "camera_3d",
+        "params": { "position": [0, 1.4, 4.2], "look_at": true, "target": [0, 0.7, 0] }
+      },
+      { "id": 5, "type": "merge_3d" },
+      {
+        "id": 6,
+        "type": "render_3d",
+        "params": {
+          "environment_map": "asset:studio",
+          "environment_rotation": 90,
+          "environment_background": true,
+          "environment_background_blur": 0.3
+        }
+      },
+      { "id": 7, "type": "media_output" }
+    ],
+    "connections": [
+      { "from_node": 1, "to_node": 5, "to_port": "objects" },
+      { "from_node": 2, "to_node": 5, "to_port": "objects" },
+      { "from_node": 3, "to_node": 5, "to_port": "objects" },
+      { "from_node": 4, "to_node": 5, "to_port": "objects" },
+      { "from_node": 5, "to_node": 6, "to_port": "scene" },
+      { "from_node": 6, "to_node": 7, "to_port": "source" }
+    ]
+  }
+  ```
+
+  Each map is read and prefiltered once and kept while renders use it; turning it or changing its brightness doesn't read it again. Files over 256 MiB, maps over 8192 pixels a side or 8192 × 4096 in all, and multi-part, deep or mip-mapped EXR files are refused before they are decoded, and larger maps are shrunk to 4096 × 2048 as they are read. Non-finite and negative pixels read as black, and a map that isn't 2:1 is stretched over the whole sphere. The server accepts `.hdr` and `.exr` uploads as `environment` media with their `width` and `height`.
+
+  Limitations: a map is decoded and prefiltered on the render thread the first time a render uses it, so that frame takes about 0.35 s longer for a 2K or 4K map and about 0.5 s for an 8K one. The server's upload check decodes the whole map too, taking up to about half a second of CPU and 130 MiB at peak for an 8192 × 4096 file.
+
+- c657075: Expressions can write numbers as text with a fixed number of decimals and padding, and join text from parts, so a frame counter, timecode or coordinate readout follows the frame.
+
+  `format(value, decimals?, width?, fill?)` gives `decimals` digits after the point (default 0), then pads on the left with the one-character `fill` (default a space) to `width` characters (default 0). Halves round away from zero on the number as written, so `format(2.5)` is `"3"`, `format(-2.5)` is `"-3"`, `format(0.125, 2)` is `"0.13"` and `format(1.005, 2)` is `"1.01"`; a result that rounds to zero never prints a minus. With a `"0"` fill the sign stays first: `format(-5, 0, 4, "0")` is `"-005"`. `value` must be finite, `decimals` a whole number from 0 to 20 and `width` one from 0 to 64. `concat(a, b, ...)` joins strings and numbers, with numbers shown as a text param shows them (`concat("f ", frame / 7)` reads like `=frame / 7`); vec2, vec3 and colour parts are errors. `+` stays numeric.
+
+  ```json
+  {
+    "type": "text",
+    "params": { "content": "=concat('frame ', format(frame, 0, 4, '0'), ' / 1200')" }
+  }
+  ```
+
+  ```ts
+  c.addNode({
+    type: "text",
+    params: { content: concat("frame ", format(frame, 0, 4, "0"), " / 1200") },
+  });
+  ```
+
+  In the TypeScript builder, `format` and `concat` are `Expr<string>`, and a text node's `content` and a span's `text` take `Expr<number>` as well, so `content: round(frame.mul(3.7))` type-checks.
+
+  `format` and `concat` are now reserved names: a composition function or parameter called either needs another name.
+
+- db60e86: `lumen_ffmpeg::FfmpegError` now carries a `kind: FfmpegErrorKind` (`Output`, `NoStream`, `Unsupported` or `Other`), set where the error is raised, and `is_output_failure`, `lacks_stream` and `is_unsupported` read it instead of matching `operation` and message text. `operation` is a label for messages only. Code that builds `FfmpegError` with a struct literal adds `kind`, or uses `FfmpegError::new(..).with_kind(..)`.
+- cf41f99: **Expression helpers show their documentation and argument names on hover.** `abs`, `clamp`, `tween`, `keyframes` and the rest are now generated as one documented function per builtin from the engine's table, instead of being derived from it with conditional types. Hovering a helper shows the table's description and its real parameter names; before, an editor showed `args_0`.
+
+  Before, hovering `smoothstep` showed `(args_0: Num, args_1: Num, args_2: Num) => Expr<number>` and no description. After:
+
+  ```ts
+  /** Hermite smoothing of `x` between two edges. */
+  function smoothstep(edge0: Num, edge1: Num, x: Num): Expr<number>;
+  ```
+
+  Every call that type-checked before still does, with the same result type, with one loss: an optional argument can be skipped with an explicit `undefined` before a later one, as in `spring(0, undefined, 20)`, without a type error. It still throws at run time, as it did.
+
+  The helper types `Builtins`, `CamelCase`, `Interpolate`, `Tween`, `MakeKey` and `Keyframes` are no longer exported; their overloads are part of the functions. `expressionBuiltins` in `@lumiscia/lumen-types` says `"same"` instead of `"any"` for the arguments of `lerp`, `tween` and `key` that must share one type, and for the return of `lerp` and `tween`. The engine accepts and evaluates the same expressions.
+
+- 0b400af: `model_3d` reads compressed glTF models: Draco meshes (`KHR_draco_mesh_compression`), meshopt buffers (`EXT_meshopt_compression`, with its filters and `KHR_mesh_quantization`), and KTX2 textures of Basis Universal ETC1S or UASTC texels (`KHR_texture_basisu`) and WebP textures (`EXT_texture_webp`), which are used in place of a texture's PNG or JPEG fallback when it has one. Files from gltfpack and glTF-Transform load as they are. KTX2 textures are transcoded to RGBA8 on the CPU, using the mip levels they hold. Each kind of compressed data has its own limit on how far a file of its size may expand, and a file past it is rejected before it is decoded. Animated WebP textures are rejected. The Lumen server and `lumen` read all four; the WebAssembly bindings' default build reads meshopt only.
+- bba7e08: Images follow their embedded ICC profile, and 16-bit images keep their depth. Until now every image was read as 8-bit sRGB, so a Display P3 photo (as iPhones take) looked dull, an Adobe RGB one washed out, and a 16-bit PNG or TIFF was cut to 8 bits before the float pipeline. Nothing changes in compositions: a tagged or deep image just renders right.
+
+  - **Profiles:** the embedded profile of PNG (`iCCP`), JPEG (`APP2`), WebP, TIFF and GIF is read with `moxcms`. Matrix/TRC RGB profiles (sRGB, Display P3, Adobe RGB, ProPhoto, Rec. 2020 and the like) and grey profiles convert to the working space's linear BT.709, colour outside BT.709 clipped at zero and kept above 1, as video is. An image without a profile is sRGB, as before; PNG `sRGB`, `gAMA` and `cHRM` chunks are not read.
+  - **sRGB stays exact:** an 8-bit image with no profile, or one whose profile matches sRGB, decodes and uploads exactly as before, so it still passes through bit for bit.
+  - **Wide gamut on the GPU:** an 8-bit image whose profile has the sRGB curve in other primaries, such as Display P3, keeps its 8-bit texture and converts in linear light on the GPU, at no extra memory or time.
+  - **Deeper images:** 16-bit PNG and TIFF, float TIFF, and 8-bit images with another curve, such as Adobe RGB, are converted on the CPU to linear half floats, 8 bytes a pixel in the image texture cache (`image_textures` counts them so). A reduced copy is filtered at that precision. Float samples are read as encoded with the image's curve, as `image` reads them; values above 1 keep their light, negative ones clip at zero and ones that aren't numbers are black. The 512 MiB decode limit counts the conversion too, so an image whose half floats don't fit beside its samples fails with `media.too_large` (an 8-bit image still counts only its decoded samples, as before).
+  - **Profiles that can't be honoured** (any with A2B lookup tables, even beside a matrix and curves, since a CMM prefers the tables; CMYK; a grey profile on a colour image or the reverse; primaries whose matrix to BT.709 has an element past 8; past 1 MiB; or malformed) read as sRGB, and the render warns once per composition, `media_in` node and source with `media.color_unsupported`, the code untagged video colour already uses, naming why. A profile never fails a render.
+
+  **Breaking, for Rust hosts:**
+
+  - `MediaFrame` has two more variants, `WideRgba { frame, gamut }` and `LinearRgba(Arc<LinearMediaFrame>)`, which `ImageFileResolver` returns for wide-gamut and deep images. A `match` on `MediaFrame` needs arms for them.
+  - The warning for colour that can't be honoured is `Warning::UnsupportedColor { kind, media, .. }`, with `kind` `AssetKind::Video` or `AssetKind::Image`, and one code, `media.color_unsupported`, for both.
+  - `ImageResolver` has `color_warning()`, `None` by default. A resolver that wraps another should forward it, or the wrapped image's warning is lost.
+
+- 40e1f4e: Images are decoded no larger than they are shown.
+
+  Nodes read an image's texels as its pixels, so an image is reduced only where every use of it is a `resize` with a literal `width`, `height` and `mode`, in the root composition, and only to a size with its aspect ratio exactly, so the resize draws the same picture. Such an image, larger on a side than the device's texture limit, now renders from a reduced copy with a `media.image_reduced` warning (for the first 32 sources per composition) instead of failing as `media.too_large`. `GpuCompositionRenderer::set_max_image_side` sets a lower limit of the host's own. An image used any other way keeps its own size: past `set_max_image_side` it is shown unreduced, and past the device's limit it still fails as `media.too_large`.
+
+  When those resizes show the image at under half its size, it is decoded at twice the size it is shown: a 6000×4000 photo resized to 600×400 is uploaded at 1200×800. What follows the resize may only keep pixels as they are (merges, colour and alpha nodes, crops, blurs, glows, shadows) or scale by a literal `transform` scale. The reduced copy is averaged over each pixel's footprint in linear light, on the CPU, before upload. Image textures are cached by identity and decoded size, so a composition that shows an image larger decodes it again.
+
+  `ImageFileResolver` decodes a file at its full size first, so a file whose decode needs more than the 512 MiB the decoder allows one image still fails as `media.too_large` before any reduction.
+
+  **Breaking, for Rust hosts:** a host that relied on an image past the texture limit failing gets a reduced render and a warning instead, where the image's uses let it be reduced.
+
+- c4d3f90: `image_plane_3d` shows a raster on a flat rectangle in a 3D scene, so text, video, an image or any other 2D node can sit in depth under a real camera. Its `source` input takes the raster, and it outputs a scene like `shape_3d`, with the same `position`, `rotation`, `scale` and material params. A video or image works the same way: wire a `media_in`, or a `resize` of one, into `source`. `width` is in world units and the height follows the source's aspect ratio, taken from its full display size; a `clip` keeps the canvas its content declares, padding or cropping the content to it, rather than the composition's.
+
+  A plane is `unlit` and `double_sided` by default, so one that faces the camera shows its source's colours as in 2D, to within rounding, whatever `render_3d`'s `exposure` and `tone_mapping`. Set `unlit` to false to light it, with the raster as its base colour; `color` multiplies the raster, and `emissive` scales with it. A plane is drawn blended unless `opaque` is on, back to front with other blended objects, so its transparent texels show what is behind it and never hide it, and `opacity` multiplies the source's alpha. Seen from behind, the raster is mirrored. Planes are ordered by their centres, so planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers separated in depth, and opaque shapes in front of or behind planes, are ordered correctly. A source keeps its detail when it is shown at its own size or larger, where `render_3d`'s `supersample` only antialiases the plane's edges; shown smaller, it is filtered with mipmaps before `supersample` averages it.
+
+  ```json
+  {
+    "nodes": [
+      {
+        "id": 1,
+        "type": "text",
+        "params": {
+          "content": "Lumen",
+          "font_family": "Inter",
+          "font_size": 160,
+          "position": [420, 280]
+        }
+      },
+      {
+        "id": 2,
+        "type": "image_plane_3d",
+        "params": { "width": 4, "position": [0, 0, -1], "rotation": [0, 25, 0] }
+      },
+      { "id": 3, "type": "render_3d" },
+      { "id": 4, "type": "media_output" }
+    ],
+    "connections": [
+      { "from_node": 1, "to_node": 2, "to_port": "source" },
+      { "from_node": 2, "to_node": 3, "to_port": "scene" },
+      { "from_node": 3, "to_node": 4, "to_port": "source" }
+    ]
+  }
+  ```
+
+  Wiring a raster into a scene input now fails `connection.wrong_kind` with a message that names `image_plane_3d`.
+
+- dc06fed: `instance_3d` draws its input scene `count` times, from 0 to 100000, sharing the input's meshes, textures, materials and skinned models' joint matrices on the GPU instead of repeating a node for each copy. Each copy is placed by `position`, `rotation` and `scale`, which are evaluated once per copy, and two new expression globals say which copy that is: `instance` is its index from 0 and `instance_count` is `count`, so one node lays out a grid, a ring or a path (`path_point(d, instance / instance_count)`) without separate layout modes. They are only readable in this node's `position`, `rotation` and `scale`, and reading them elsewhere fails like `glyph` does outside a text node's `glyph_*` params. In the TypeScript SDK they are `instance` and `instanceCount`, exported with `frame` and `time`.
+
+  Only the input's objects are copied. Its lights and camera appear once, placed as without the node. Every copy of a skinned model plays the same clip at the same time, and shadows, fog and the environment treat copies like any other object. An `instance_3d` may hold another, up to 8 deep, with their counts multiplied. A scene draws at most 100000 objects in all, counting every copy's objects, and one that would draw more, or more vertices than fit one draw, fails the render naming the node before anything is copied. `count` 0 leaves the scene out entirely. A node whose params don't read `frame` or `time`, or another node, stays static when its input is, so its `render_3d` is kept across frames. The names `instance` and `instance_count` are now reserved, so a composition function can't use them as parameter names.
+
+  ```json
+  {
+    "nodes": [
+      {
+        "id": 1,
+        "type": "shape_3d",
+        "params": { "size": [0.6, 0.6, 0.6], "position": [0, 0.3, 0] }
+      },
+      {
+        "id": 2,
+        "type": "instance_3d",
+        "params": {
+          "count": 100,
+          "position": "=vec3(instance % 10 * 1.5 - 6.75, 0, floor(instance / 10) * 1.5 - 6.75)"
+        }
+      },
+      { "id": 3, "type": "render_3d" },
+      { "id": 4, "type": "media_output" }
+    ],
+    "connections": [
+      { "from_node": 1, "to_node": 2, "to_port": "scene" },
+      { "from_node": 2, "to_node": 3, "to_port": "scene" },
+      { "from_node": 3, "to_node": 4, "to_port": "source" }
+    ]
+  }
+  ```
+
+- b577157: **Breaking for hosts that match on `render.gpu`.** The code now means a GPU fault only: the device, its queue or a driver failed, which no composition causes and trying again may fix. It used to cover everything the render raised that no other code fit, so a composition the author had to fix looked like an infrastructure alarm.
+
+  Two new codes take those cases:
+
+  | Code              | Means                                                                                                                                                                                                                            | Was `render.gpu` for                                                                                                                                                                                                                                                                                                                                                            |
+  | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `render.limit`    | The composition needs more than the device or engine allows. The author fixes it: less text, smaller media.                                                                                                                      | A frame whose uniform or storage data doesn't fit the device's buffers (for example text with a very large glyph limit), and a CPU video frame larger than the device's texture limit.                                                                                                                                                                                          |
+  | `render.internal` | The engine, or a host's resolver or render target, broke a contract the render relies on. A bug to report, not a composition to fix. Trying again helps only for fonts that kept loading, which stay loaded for the next render. | A poisoned text, atlas or font-cache lock, a stale or missing recorded frame passed to `upload_frame` or `submit_frame`, an image resolver returning a video frame, a malformed YUV frame, an external texture of the wrong size, format or usage, fonts that never stopped loading, recorder misuse, and a CUDA or VideoToolbox target asked of a renderer on another backend. |
+
+  A `wgsl_shader` whose source the device refuses (a syntax error, a binding it can't use) is now `render.node_evaluation` at that node, since the source is the composition's.
+
+  The WASM renderer's errors now carry the diagnostic code as `code` for every render failure, not only media ones.
+
+  A video frame that can't be imported on the GPU and then also fails to decode on the CPU now has the media code of the CPU failure (`media.decode`, `media.not_found`, ...) with the same message, instead of `render.gpu`.
+
+  `render.gpu` remains for creating the device and for submitting, validating and reading back work on it. `lumen-server` still treats exactly `render.gpu` (and transient media failures) as retryable, so `render.limit` and `render.internal` are not retried.
+
+  Migration: a host that retried or alerted on `render.gpu` keeps doing so for real GPU faults; one that showed `render.gpu` to authors as "your composition is wrong" should show `render.limit` that way and report `render.internal` as an engine bug. Hosts must already tolerate codes they don't know. The `lumen_gpu::Recorder` now returns a `FrameError` (`TooLarge` or `Misuse`) inside its `anyhow::Error` for these cases.
+
+- d3e4ce9: **Breaking: the compositor works in linear light.** Every raster is now `Rgba16Float`, linear with BT.709 primaries and premultiplied alpha, with 1.0 as SDR white and room above it. JSON colours, images and video are sRGB-encoded and decode on the way in; `media_output` composites over black for opaque targets, encodes back to sRGB and quantises once. An 8-bit image passed straight through comes out byte for byte, and JSON colours render as the codes they name.
+
+  **Pixel output changes** wherever colours mix:
+
+  - Fades, normal merges, masks, blurs, glow, shadows, motion blur, transform and resize sampling, and antialiased edges of shapes and text mix light, not sRGB codes. 50% white over black is code 188, not 128, and a blurred black-white edge is brighter. Small dark text on a light background looks lighter, and light text on dark looks bolder.
+  - A luma matte is the linear BT.709 luminance of the mask.
+  - `render_3d`'s depth and normal output keeps its values in the working space, so a node reading it reads the value itself, while an 8-bit output encodes them as light: a depth of 0.5 is code 188, not 128.
+  - Non-normal blend modes (`multiply`, `screen`, `overlay`, ...), `levels`, `hue_saturation`, the `color_grade` LUT, `exposure`'s contrast and offset, `displacement_map` and `fractal_noise` still work on sRGB-encoded values, so mid grey stays 128 and they look as they did, but what they composite onto is now linear. `exposure` multiplies linear light by 2^stops.
+  - 8-bit output is ordered-dithered across the whole code step, so a flat area keeps its value as its mean and smooth gradients lose their banding, except within a tenth of a code of a code, where the output is that code exactly. That keeps 8-bit content and JSON colours bit-exact, dither on or off; a gradient that slow is flat for a tenth of a code at each end of each step. The YUV every video encoder takes is dithered in its final format; `GpuCompositionRenderer::set_output_dither(false)` turns it off.
+  - Quantised colour never exceeds quantised alpha, and a pixel whose alpha rounds to 0 is transparent black.
+  - Opaque outputs, video and JPEG, composite over black in linear light: half-covered red is code 188, not 128. PNG stills keep straight alpha, quantised from the straight colour.
+  - Straight-alpha images are premultiplied on the GPU in linear light, so translucent PNG edges no longer darken. Premultiplied YUV video keeps colour brighter than its alpha.
+  - Motion blur sums its samples in 32-bit float and divides once, so a still source comes through unchanged at any sample count. Glow keeps its light above 1 with alpha at most 1. Every raster holds finite values: `exposure`, `levels`, `hue_saturation`, the `color_grade` LUT, merges, glow and shadow clamp light to the largest half float (65504) and make NaN 0, and a `wgsl_shader`'s output has the same done to it, with its alpha clamped to `0..=1`.
+
+  **Migrating a `wgsl_shader`:** inputs are linear and premultiplied, and values above 1 are kept. The output, and any storage texture you declare, must be `texture_storage_2d<rgba16float, write>`; a shader declaring `rgba8unorm` fails with a message saying so. Colour uniforms arrive decoded to linear and premultiplied; numbers and vectors arrive as written. The prelude has `lumen_srgb_to_linear` and `lumen_linear_to_srgb` for formulas that need encoded values:
+
+  ```wgsl
+  let color = textureLoad(input0, vec2<i32>(id.xy), 0);
+  let encoded = lumen_linear_to_srgb(color.rgb / max(color.a, 1e-6));
+  let curved = encoded * encoded * (3.0 - 2.0 * encoded); // a formula written for sRGB codes
+  textureStore(output, vec2<i32>(id.xy), vec4<f32>(lumen_srgb_to_linear(curved) * color.a, color.a));
+  ```
+
+  **Rust API:** `MediaFrame::RawRgba` holds straight colour, which images now use; `premultiply_rgba_in_place_if_needed` is gone. `VulkanVideoTarget` and `CudaNvencTargetPool` render from `Rgba16Float`. `GpuCompositionRenderer::set_output_alpha` takes an `OutputAlpha`: `Premultiplied` (the default), `Straight`, or `Opaque`, which composites over black for targets without alpha; the server, bench and browser preview set it per output. A float output format takes the working space unchanged, linear and premultiplied.
+
+- 60b7798: **`lumen-local` is now `lumen`, installed from npm.** `npm install -g @lumiscia/lumen-cli` installs a prebuilt `lumen` binary for Linux on x64 and arm64 (glibc 2.28 or later) and for macOS on Apple silicon. FFmpeg 9 is linked into it with `libx264`, `libx265` (8-bit and 10-bit), `libsvtav1`, `libvpx-vp9`, `libopus` and `libdav1d`, plus the Vulkan and NVENC encoders on Linux, where NVENC takes frames through CUDA, and VideoToolbox on macOS, so nothing else needs installing. Those binaries are distributed under GPL-3.0-or-later because of x264 and x265; the source stays Apache-2.0.
+
+  **Breaking:** the crate moves from `crates/local` to `crates/cli` and is named `lumen-cli`, and its binary is `lumen`, so `cargo run -p lumen-local --` becomes `cargo run -p lumen-cli --`. Flags and environment variables are unchanged. Errors now start with `lumen failed`.
+
+  **AV1 uses NVENC on NVIDIA.** On a Linux host with NVIDIA's encode library, `av1` now tries `av1_nvenc`, then `libsvtav1`, instead of `av1_vulkan`, which writes wrong frames on NVIDIA. Other hosts and codecs keep their order.
+
+  **Fixed:** `hevc_nvenc` failed to open with a `crf` or a built-in preset, because `maxrate` was set as an option of the encoder and is one of the codec context. `lumen-engine-ffmpeg` also builds against FFmpeg 9 now, which removed `AVCodec::sample_fmts`.
+
+- 716f9d0: One place to set and read the engine's media cache budgets.
+
+  `GpuCompositionRenderer::set_cache_budgets(CacheBudgets)` sets the byte budget of each cache the renderer keeps media and derived GPU data in: image textures (256 MiB), pooled textures (384 MiB), retained outputs (1 GiB), `.cube` LUTs (128 MiB), mip chains (256 MiB), 3D models (256 MiB), environment maps (256 MiB) and `text_3d` meshes (64 MiB). The defaults are unchanged. `cache_budgets()` reads them back, and `cache_stats()` returns a `CacheStats` with the bytes each cache holds now, plus the glyph atlas. What a frame uses, and what a kept output was drawn from, is never freed for a budget. Only the image texture budget counts just idle textures. The others count each cache's total, so entries in use can push a cache past its budget and free all its idle ones. The `models` figure includes the CPU bounds kept beside each model's GPU buffers and textures, and the pool frees its spares by size bucket rather than strictly least recently used first.
+
+  **Breaking, for Rust hosts:** `set_media_texture_cache_budget(bytes)` and `DEFAULT_MEDIA_TEXTURE_CACHE_BUDGET_BYTES` are removed, along with the hidden `set_frame_graph_pool_budget` and `set_frame_graph_retained_budget`. Replace `renderer.set_media_texture_cache_budget(bytes)` with `renderer.set_cache_budgets(CacheBudgets { image_textures: bytes, ..renderer.cache_budgets() })`, and the others with the `pooled_textures` and `retained_outputs` fields in the same way. Compositions, the server and the TypeScript SDK are unaffected.
+
+- 0aead67: **Breaking (Rust API): a host supplies every kind of media through one `MediaStore::resolve`, and every resolved source carries a `MediaIdentity`.** Compositions, renders and the browser bindings' JavaScript API are unchanged; this breaks every Rust embedder that implements or calls `MediaStore`.
+
+  `MediaStore` has one required method, `resolve(&self, source: &str, kind: AssetKind) -> Result<ResolvedMedia, MediaError>`, plus `text_session` as before. `ResolvedMedia { identity, resolver }` holds a `MediaResolver`, an enum with one variant per kind wrapping that kind's existing resolver trait object. `media::resolve_as::<dyn ImageResolver>(store, source)` resolves and returns `(MediaIdentity, Box<dyn ImageResolver>)`; a store that serves another kind than asked fails there as `media.wrong_kind` with `wanted` and `found` set, so a store that holds one kind per name can return whatever it has.
+
+  `MediaIdentity` replaces each resolver's `id()`, with one rule: the engine treats equal identities, from any store in the process, as the same bytes, so a host gives a source a new one when its bytes change. Every cache that outlives a frame keys on it: image textures and their mip chains, outputs kept across frames (checked against the identity of every image, model, environment map and font family they read before reuse), loaded fonts, GPU model buffers, environment maps and the audio mixer's decoded blocks. Build one with `MediaIdentity::of_key(key)` for a content hash, version counter or immutable upload's id, `unique()` for bytes handed over in memory, taken again on each set, or `of_file(path)` / `of_files(paths)`, a heuristic from the file's metadata (canonical path, length, modification time and, on Unix, device and inode) that misses a same-length write in place within the modification time's resolution; hosts that know better should use `of_key`. `ImageFileResolver` and `FfmpegVideoResolver` named themselves by their path, so a renderer kept across stores could draw a replaced image's old pixels; lumen-server now names files under the media root with `of_file` for every kind, and `asset:` sources by their asset id, as an asset's content never changes under its id.
+
+  A font family the store doesn't have is now `Err(media.not_found)` rather than `Ok(None)`; the engine falls back to other fonts for it unless the family is an `asset:` reference, which fails as before. Video decode options stay on the store, as `LocalMediaStore` already kept them.
+
+  | Before                                                                                                            | After                                                                                  |
+  | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+  | `fn get_image_resolver(&self, source)`                                                                            | `fn resolve(&self, source, AssetKind::Image)` returning `MediaResolver::Image`         |
+  | `fn get_video_resolver(&self, stream_id)`                                                                         | `resolve(source, AssetKind::Video)` returning `MediaResolver::Video`                   |
+  | `fn get_audio_resolver(&self, source)`                                                                            | `resolve(source, AssetKind::Audio)` returning `MediaResolver::Audio`                   |
+  | `fn get_model_resolver(&self, source)`                                                                            | `resolve(source, AssetKind::Model)` returning `MediaResolver::Model`                   |
+  | `fn get_environment_resolver(&self, source)`                                                                      | `resolve(source, AssetKind::Environment)` returning `MediaResolver::Environment`       |
+  | `fn get_font_resolver(&self, family) -> Ok(Some(..))`                                                             | `resolve(family, AssetKind::Font)` returning `MediaResolver::Font`                     |
+  | `fn get_font_resolver(&self, family) -> Ok(None)`                                                                 | `Err(MediaError::source_not_found(family, ..))`                                        |
+  | `fn font_resolver_id(&self, family)`                                                                              | `resolve(family, AssetKind::Font)?.identity`, so fonts need their bytes read lazily    |
+  | `ImageResolver::id`, `VideoFrameResolver::id`, `FontResolver::id`, `ModelResolver::id`, `EnvironmentResolver::id` | removed; return the identity in `ResolvedMedia`                                        |
+  | calling `store.get_image_resolver(source)`                                                                        | `media::resolve_as::<dyn ImageResolver>(store, source)`, likewise for each kind        |
+  | a server or file id string such as `format!("{path}:{len}:{mtime:?}")`                                            | `MediaIdentity::of_file(path)`, a metadata heuristic, or `of_key` when bytes are known |
+  | a version counter per registration                                                                                | `MediaIdentity::unique()` on each set                                                  |
+
+- 89568da: A node param is declared as a media source in one place, and a composition can list what it needs before it renders.
+
+  A param struct marks a `String` param with `#[media(image, video)]`, `#[media(model)]` or `#[media(environment)]`, and `by = kind` names the enum param that picks among several kinds. `media_in.source`, `model_3d.source`, `render_3d.environment_map` and an audio clip's `source_id` are declared this way. Asset validation, the schema and the browser preview now read the declaration instead of each knowing which nodes take sources.
+
+  `Composition::media_dependencies()` returns the distinct sources a composition's nodes and audio clips name as written, with the kinds each use reads and where it is used (node and param, or audio clip, inside a template too). A source an expression computes is listed as dynamic, and the font families text uses are listed apart from media. The browser bindings expose it as `mediaDependencies(compositionJson)`, typed as `MediaInventory` in `@lumiscia/lumen-types`.
+
+  The generated schema gives each such param `x-lumen-media` (`{ "kinds": ["image", "video"], "selectedBy": "kind" }`), and `@lumiscia/lumen-types` exports the generated `nodeMediaSources` table (node kind → param → kinds) with `MediaSourceParam` and `MediaSourceKind`. The preview reads it to tell what a `media` entry holds.
+
+  **Breaking for Rust:** `PropertyDef` has a `media` field, and the `Node` and `NodeParams` traits have a required `for_each_media_source`; hand-written implementations must add it (the `Node` and `Delegate` derives do). `lumen_engine::media::resolve_asset_of` accepts any of several kinds. `LumenPreviewBindings` has a required `mediaDependencies`, so a bindings object built by hand must add it. Compositions change in one way only: a name in `compositions` may be at most 256 bytes long; a longer one fails with `document.invalid`.
+
+- b1f3863: `transform` and `resize` filter a source they show smaller than its size, so a 4K image or video shrunk to a thumbnail, or a zoom-out animation, no longer aliases and shimmers. Each output pixel averages the premultiplied linear light of the source texels it covers, weighted by area, along each of the source's axes, so shrinking one axis leaves the other as sharp as it was. The filter is bilinear at a scale of 1 and widens smoothly from there, and it takes the box on the source itself down to a quarter of its size, and past that on its mip levels, blending the two around the one the scale asks for, so an animated zoom changes smoothly. A source shown between a quarter and its full size builds no mip chain. The mip chain is built once for a source that stays the same from frame to frame and each frame for one that changes, and a source that several nodes shrink shares one. Each tap of a motion-blurred `transform` is filtered for its own scale. `sampling: "linear"` does this; `nearest` takes the nearest texel as before. Magnification and scales of 1 or more are unchanged pixel for pixel, rotation at a scale of 1 included. The mip chains the engine keeps, which 3D scenes also use, have a byte budget, `CacheBudgets::mip_chains` (256 MiB), and `CacheStats::mip_chains` reports what they hold. There is no new param.
+- 16aae16: `model_3d` draws more of glTF:
+
+  - **Vertex colours** (`COLOR_0`, RGB or RGBA, float or normalised 8- or 16-bit) multiply the base colour in linear light, as its factor and texture do, lit or unlit, and their alpha blends or masks with it.
+  - **A second set of texture coordinates** (`TEXCOORD_1`): each map reads the set its `texCoord` names. A map naming a third set is left out.
+  - **`KHR_texture_transform`** on every map: offset, rotation and scale, and its own `texCoord`, which overrides the map's. Rotation turns as the Khronos sample renderer and three.js do.
+  - **Morph targets**: position and normal displacements, blended on the GPU by the mesh's or node's default weights and by clips animating `weights`, before skinning. Tangent displacements are ignored. A mesh may have up to 256 targets, and a model up to 4,000,000 displacements (one for each vertex of each target) and 1,048,576 weights; a scene draws up to 1,048,576 weights in a frame. A weight may be at most 10,000 either way (a clip sample overshooting it is held to it), and a vertex its targets would move past what a float holds at that weight is rejected. Shadows hold a morphed mesh at whatever weights it is drawn with. Morphed normals are unit length before skinning, falling back to the unmorphed normal where targets cancel it, and every vertex normal is normalised before it is interpolated. Draco-compressed primitives with morph targets are rejected. A model with still weights is kept across frames like any still model, and only the weights are uploaded each frame while a clip plays them. A clip's `duration` counts its weight channels.
+  - **The model's own lights and cameras**, opt-in. `lights: true` adds its `KHR_lights_punctual` lights where its nodes place them. Their units are `light_3d`'s: a directional light's lux and a point or spot light's candela are used as they are, so a point light of intensity `I` lights a surface `d` metres away as a directional light of `I / d²` does, and a spot light fades from its inner cone to its outer one. A light whose colour times intensity overflows is rejected. They cast no shadows. `camera` views the scene from one of the model's cameras, by name or else index, placed by the first node that places it without that node's scale; it counts as a `camera_3d` at the model, so the first camera in the scene still wins, and the output's aspect ratio is used. `modelInfo` and an uploaded model's `metadata` list the cameras (`index`, and `name` when named).
+
+  Points, lines, and triangle strips and fans are still not drawn, and now raise a `scene.model_primitives_skipped` warning naming the model and how many were left out.
+
+  Nothing in a composition breaks, but models now look as their files describe: vertex colours tint them, maps naming `TEXCOORD_1` read it instead of the first set, and morph targets move them. Files requiring `KHR_texture_transform` or `KHR_lights_punctual` are no longer rejected. `LumenModelInfo` gains `cameras`, and the Rust `ModelInfo` a `cameras` field.
+
+  ```json
+  {
+    "id": 1,
+    "type": "model_3d",
+    "params": { "source": "asset:robot", "animation": "Talk", "lights": true, "camera": "Closeup" }
+  }
+  ```
+
+  ```ts
+  import { createLumenBindings } from "@lumiscia/lumen-bindings";
+  import { nodes } from "@lumiscia/lumen-shared";
+
+  const robot = nodes.model_3d({
+    source: "asset:robot",
+    animation: "Talk",
+    lights: true,
+    camera: "Closeup",
+  });
+  const { modelInfo } = await createLumenBindings().preview();
+  const { cameras } = modelInfo(bytes); // [{ index: 0, name: "Closeup" }]
+  ```
+
+- 6528c7b: The browser preview draws `model_3d`. Pass each model's `.glb` file in `media`, under the name its `source` uses, as you would an image:
+
+  ```ts
+  const fox = composition.addNode({
+    type: "model_3d",
+    params: { source: "fox", animation: "Walk", scale: [0.01, 0.01, 0.01] },
+  });
+  // ...wire `fox` into a merge_3d or render_3d as usual.
+
+  mountPreview(host, {
+    preview,
+    composition,
+    media: { fox: "/models/fox.glb" },
+    wasmUrl,
+    workerUrl,
+  });
+  ```
+
+  A name that a `model_3d` uses is read as a model, and so is a blob of type `model/gltf-binary`; a source that only an expression names needs `{ kind: "model", source }` when neither its name nor its blob's type says. An `asset:<id>` source is a `media` name like any other. A `model_3d` or `media_in` inside a `compositions` template now says what its `media` entry holds just as one at the root does, so an image a template reads no longer needs a `kind` either.
+
+  Models load with the composition, as images do: the preview finishes loading, and draws its first frame, once every model has arrived, and until then keeps showing what it showed before. A model that can't be fetched fails the load with `load_failed`, naming the source. A file that isn't a model Lumen can read fails the load with the `media.*` code a render would give, before anything is drawn. A model left out of `media` is released, along with its GPU copy.
+
+  The preview now parses the composition before it fetches any media, so a composition the engine rejects fails at once instead of after its media has loaded. A preview built without 3D support reports `node.unsupported` for a `model_3d` without fetching its file.
+
+- b9cc4f1: `model_3d` puts a glTF model in a 3D scene. Its `source` is a binary glTF (`.glb`) file, a path or `asset:<id>`, with its buffers and images packed inside it. It draws the model's default scene with its materials, and plays one of its animation clips: `animation` names the clip, by its name or its index, and empty plays none. `animation_speed` multiplies the clip's speed, `animation_offset` starts it that many seconds in, and `animation_loop`, on by default, plays it again from its start once it ends; off, the model holds the clip's last pose. `position`, `rotation` and `scale` place the model like any other scene node. A clip or material the model lacks fails the render with a message listing the ones it has. A model that plays no clip, or plays one at speed 0, is drawn once and kept across frames, like a still shape.
+
+  ```json
+  {
+    "nodes": [
+      {
+        "id": 1,
+        "type": "model_3d",
+        "params": {
+          "source": "asset:fox",
+          "animation": "Walk",
+          "scale": [0.02, 0.02, 0.02],
+          "rotation": [0, 90, 0]
+        }
+      },
+      { "id": 2, "type": "render_3d" },
+      { "id": 3, "type": "media_output" }
+    ],
+    "connections": [
+      { "from_node": 1, "to_node": 2, "to_port": "scene" },
+      { "from_node": 2, "to_node": 3, "to_port": "source" }
+    ]
+  }
+  ```
+
+  A raster wired into `texture` replaces the material `texture_material` names, shown unlit with its colours as in 2D and sampled as `image_plane_3d` samples it. That puts a video on a television's screen:
+
+  ```json
+  {
+    "nodes": [
+      { "id": 1, "type": "media_in", "params": { "kind": "video", "source": "asset:trailer" } },
+      {
+        "id": 2,
+        "type": "model_3d",
+        "params": { "source": "asset:television", "texture_material": "screen" }
+      },
+      { "id": 3, "type": "render_3d" },
+      { "id": 4, "type": "media_output" }
+    ],
+    "connections": [
+      { "from_node": 1, "to_node": 2, "to_port": "texture" },
+      { "from_node": 2, "to_node": 3, "to_port": "scene" },
+      { "from_node": 3, "to_node": 4, "to_port": "source" }
+    ]
+  }
+  ```
+
+  What is read from the model:
+
+  - The default scene's node hierarchy, with each node's matrix or translation, rotation and scale.
+  - Triangle meshes: positions, normals (faces without them are lit flat), the first set of texture coordinates, and indices. Quantized attributes (`KHR_mesh_quantization`) are read too.
+  - Metallic-roughness materials: base colour, metallic-roughness, normal, emissive and occlusion textures, with the normal scale and occlusion strength; opaque, mask and blend alpha modes; double-sided materials; `KHR_materials_unlit` and `KHR_materials_emissive_strength`.
+  - PNG and JPEG textures, with their samplers' wrap and filter modes.
+  - Skins, and animation clips of node translation, rotation and scale with step, linear and cubic-spline interpolation.
+
+  What isn't:
+
+  - Files outside the `.glb`: a model that refers to one is rejected.
+  - glTF extensions this release doesn't read, such as `KHR_materials_clearcoat`. A model that requires one is rejected naming it; one that only uses it optionally loads without it.
+  - Points, lines, and triangle strips and fans. A model with them loads and draws without them, with a `scene.model_primitives_skipped` warning.
+
+  The Lumen server takes `.glb` uploads as `model` assets, checking each by reading it as renders do.
+
+- a37b057: A model's animation clips and materials can be listed, so `animation` and `texture_material` no longer have to be guessed from an error.
+
+  An uploaded model's media object has `kind: "model"` and a `metadata` listing them, read once when the upload completes and returned by `GET /media/:id`:
+
+  ```json
+  {
+    "kind": "model",
+    "metadata": {
+      "animations": [
+        { "index": 0, "name": "Walk", "duration": 0.7 },
+        { "index": 1, "duration": 2 }
+      ],
+      "materials": [{ "index": 0, "name": "screen", "hasBaseColorTexture": false }],
+      "cameras": []
+    }
+  }
+  ```
+
+  In the browser, `modelInfo` on the bindings reads a `.glb` and returns the same lists, throwing on a file a render could not read:
+
+  ```ts
+  const { modelInfo } = await createLumenBindings().preview();
+  const { animations, materials } = modelInfo(new Uint8Array(await file.arrayBuffer()));
+  ```
+
+  `TemporaryMedia` has `kind` and `metadata` (`MediaKind`, `MediaMetadata`), `@lumiscia/lumen-types` has `LumenModelInfo`, and `uploadMedia` knows `.glb` file names. The error for an `animation` or `texture_material` the model lacks now lists at most 20 names, then how many more there are.
+
+- 6487216: `@lumiscia/lumen-preview` exports only what an application embedding a preview needs. The media bridge, the audio engine and the controller plumbing are no longer public, and the bindings contract moves to a new `@lumiscia/lumen-preview/advanced` subpath.
+
+  The root entry now exports:
+
+  - `createLumenPreview`, `LumenPreviewContext`, `mountPreview`, `LumenPreviewSession`
+  - the state and error types: `LumenPreviewState`, `LumenPreviewError`, `LumenPreviewErrorCode`, `LumenPreviewListener`, `LumenPreviewMediaState`, `LumenPreviewPatch`, `LumenPreviewTransport`
+  - the option and input types: `LumenPreviewSessionOptions`, `LumenPreviewSessionInputs`, `LumenPreviewComposition`, `LumenPreviewMedia`, `LumenPreviewMediaEntry`, `LumenPreviewMediaKind`, `LumenPreviewFonts`, `LumenPreviewRange`, `LumenLogLevel`, `LumenAudioEngineOptions`
+  - the callback types: `LumenPreviewStats`, `LumenPreviewStatsCallback`, `LumenPreviewTimeUpdate`, `LumenPreviewTimeUpdateCallback`
+  - `MediaFailure`, the type of `LumenPreviewError.media`, re-exported from `@lumiscia/lumen-types`
+  - the source types a `media` or `fonts` entry takes: `MediaSourceInput`, `BlobMediaSourceInput`, `BufferMediaSourceInput`, `UrlMediaSourceInput`
+
+  `@lumiscia/lumen-preview/advanced` exports only types, the contract of a custom host built on `@lumiscia/lumen-preview/worker-host`: the bindings it supplies (`LumenBindings`, `LumenPreviewBindings`, `LumenPreviewControllerBinding`, `LumenMediaTarget`) and the types the worker's messages carry (`VideoSourceRegistration`, `PreviewClock`). The worker's `load` message carries `[source, entry]` pairs of the page's `media`, and the worker works out what to load. `@lumiscia/lumen-bindings` implements the bindings. Every type that appears in a signature of the root, `/advanced`, `./preview` or `./worker-host` can be imported from the root or `/advanced`, apart from types of `@lumiscia/lumen-types` and `mediabunny`.
+
+  `LumenPreviewMediaEntry` now lists its `fps`, `formats` and `track` fields itself instead of extending `VideoSourceRegistration`; the shape is the same.
+
+  Removed from the root entry:
+
+  | Removed                                                                                                                                                                                                                                                                                                                                               | Where it went                      |
+  | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+  | `LumenAudioEngine`, `defaultAudioWorkerUrl`, `defaultAudioWorkletUrl`, `AudioSourceRegistration`                                                                                                                                                                                                                                                      | Internal                           |
+  | `createLumenPreviewRuntime`, `LumenPreviewRuntime`, `LumenPreviewController`, `resolveLumenPreviewBindings`, `LumenPreviewBindingSource` (and the controller's `registerImageSource`, `registerModelSource`, `registerVideoSource`, `registerVideoSourceBytes`, `loadVideoFrame`, `loadFrameRequirements` and `renderNowAsync`, which nothing called) | Removed                            |
+  | `ImageSourceRegistration`, `VideoFrameMetadata`, `VideoFramePayload`, `VideoFramePixels`, `DecodedImageFrame`, `FrameRequirementsPayload`, `FrameRequirementsVideoPayload`, `LumenMediaBridgeOptions`, `NativeVideoFrameTarget`, `MediaRegistration`, `RegisteredImageSource`, `RegisteredModelSource`, `RegisteredVideoSource`                       | Internal                           |
+  | `VideoSourceRegistration`, `LumenMediaTarget`                                                                                                                                                                                                                                                                                                         | `@lumiscia/lumen-preview/advanced` |
+  | `LumenBindings`, `LumenPreviewBindings`, `LumenPreviewControllerBinding`                                                                                                                                                                                                                                                                              | `@lumiscia/lumen-preview/advanced` |
+
+  The `./audio-engine`, `./media` and `./session` subpaths are removed too, and so is everything they exported (`LumenMediaBridge`, `LumenMediaError`, `toUint8Array`, `createVideoTimeline` and the rest of the media bridge). `./preview` and `./worker-host` stay as they were. `@lumiscia/lumen-react` and `@lumiscia/lumen-svelte` no longer re-export the `MediaRegistration` type.
+
+  Migrating:
+
+  | Before                                                                                 | After                                                                                         |
+  | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+  | `import type { LumenBindings } from "@lumiscia/lumen-preview"`                         | `import type { LumenBindings } from "@lumiscia/lumen-preview/advanced"`                       |
+  | `import { LumenMediaBridge, … } from "@lumiscia/lumen-preview"` or `…/media`           | No replacement. Pass `media` and `fonts` to `mountPreview` or `Player`.                       |
+  | `LumenAudioEngine`, `defaultAudioWorkerUrl()`                                          | No replacement. Pass `audio.workerModuleUrl` to `mountPreview` to serve the worker elsewhere. |
+  | `createLumenPreviewRuntime(bindings)` and the controller types                         | No replacement. Mount with `mountPreview`, or host the worker with `…/worker-host`.           |
+  | `import … from "@lumiscia/lumen-preview/session"`                                      | `import … from "@lumiscia/lumen-preview"`                                                     |
+  | `MediaRegistration` from the root, `@lumiscia/lumen-react` or `@lumiscia/lumen-svelte` | No replacement. Pass the page's `media` entries as they are.                                  |
+
+- 8035fb4: The preview controller takes models, environment maps and LUTs through one set of methods that name the kind, instead of three of each. `setFile`, `removeFile` and `hasFile` replace `setModel`, `setEnvironment`, `setLut`, `removeModelSource`, `removeEnvironmentSource`, `removeLutSource`, `hasModel`, `hasEnvironment` and `hasLut`. The kind is `"model"`, `"environment"` or `"lut"`, and any other kind throws.
+
+  ```ts
+  // Before
+  controller.setModel("fox", bytes);
+  controller.removeModelSource("fox");
+
+  // After
+  controller.setFile("model", "fox", bytes);
+  controller.removeFile("model", "fox");
+  controller.hasFile("model", "fox"); // true or false
+  ```
+
+  In `@lumiscia/lumen-preview/advanced`, `LumenMediaTarget` has the same three methods, and all of its members are required. `LumenMediaBridge` registers these files with `registerFile(kind, id, source)` in place of `registerModelSource`, `registerEnvironmentSource` and `registerLutSource`, and `registerVideoSource` takes its options as an object, no longer a bare fps number. `registerVideoSourceBytes` is removed; pass the bytes to `registerVideoSource`.
+
+- 6b74bfe: Errors and warnings say where they happen in one way. Diagnostic codes and the shape of a diagnostic are unchanged.
+
+  - A warning a render raises, such as `font.fallback` or `media.image_reduced`, now has its node's pointer as its `path`, such as `/nodes/3` or `/compositions/card/nodes/0`. It used to have only the root's or the template's. A render raises at most 32 warnings per composition, and `media.image_reduced` warns once for each node that shows the image, where it used to warn once per image.
+  - Evaluation errors spell the node's kind as the document's `type` does: `render_3d node 4 evaluation failed: …`, `model_3d node 1 …`, `clip node 2 …`, where some read `Render3d node 4`.
+  - Some messages put the place first: ``node 1: unknown param `paintt` ``, `node 3: duplicate node id`, ``node 2 `color`: invalid type: expected a solid color, got a gradient``, ``node 4: input `source` takes a raster, but node 1 outputs a scene: …``. A media failure reads ``image `big.png` (composition `card`: node 3 `source`) is too large``, with a colon where it had a comma.
+
+  For Rust embedders, `lumen_engine::error::At { template, node, param }` is the one location type. The variants that held `node_id` or `template` fields hold `at: At`, `GraphValidationError::InTemplate` is gone (the template is in `at`), and `Warning` is a struct with `at` and `kind: WarningKind`:
+
+  ```rust
+  // Before
+  Warning::FontFallback { template: None, node_id: NodeId::new(3), family: "Brand".into() }
+  // After
+  Warning {
+      at: At::node(NodeId::new(3)),
+      kind: WarningKind::FontFallback { family: "Brand".into() },
+  }
+  ```
+
+- 1879afe: Every media source that can't be used fails the same way, for images, videos, audio, fonts, models and environment maps, in the engine, `check`, `lumen-server`, `lumen` and the preview.
+
+  A failure names the source as the composition wrote it, the kinds the place using it reads, the kind it is when that is established (a container such as MP4 or WebM can't be told as video or audio from its header, so it has no `found` until it is opened), where it is used (node and param, audio clip, template), and why, with one of five public codes:
+
+  | Code                | Means                                                                                                                                       |
+  | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `media.not_found`   | Nothing is at the source: no file, no URL answer, no asset with that id                                                                     |
+  | `media.wrong_kind`  | The source is another kind of media than the use reads, such as a video in an `image` node or a font that is a PNG                          |
+  | `media.unsupported` | The engine identifies the data (a container, codec, glTF extension, `.gltf` JSON, WOFF) and doesn't read it                                 |
+  | `media.too_large`   | Over a limit (file bytes, pixels, the device's texture size, a model's counts), with the `limit` and the `actual` value when they are known |
+  | `media.decode`      | The data is corrupt, truncated, contradicts itself, or is in no format the engine identifies                                                |
+
+  `media.decode` and `media.frame_out_of_range` keep their codes. `check` reports missing and wrong-kind `asset:` references with these codes and the JSON pointer of the param or audio clip, also inside templates. `lumen-server` carries the engine's code through unchanged, and marks a render retryable only for a shortage that can pass (out of memory or file descriptors, `EAGAIN`, a busy device), in the engine's reads, in FFmpeg's open and decode, and while resolving a path. Failures after a source opened name it as the composition wrote it, and the HTTP error message never shows a path on the server. A `.gltf` JSON file is `media.unsupported` in renders and in the upload probe; other text that starts with `{` is `media.decode`. The upload probe's rejection reasons end with the code, such as `(media.too_large)`. `lumen` prints `lumen failed (media.not_found): ...`.
+
+  The thrown error of the WASM bindings carries `code` (the dotted code for a media failure) and `media` (the structured fields). `LumenPreviewError` has a new `media` field with them, typed as `MediaFailure` in `@lumiscia/lumen-types`, and it is `null` for other failures. The preview's own reasons agree with the engine's: an audio-only file registered as video is `media.wrong_kind` (found `audio`), a video the browser can't decode is `media.unsupported`, and a file it can't open or identify is `media.decode`.
+
+  Migrating:
+
+  | Before                                                                         | After                                                                                           |
+  | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+  | `asset.not_found` (check, render)                                              | `media.not_found`, with the source `asset:<id>`                                                 |
+  | `asset.wrong_kind` (check, render)                                             | `media.wrong_kind`                                                                              |
+  | `media.not_found` for a missing file, URL, font or model                       | `media.not_found` (unchanged), now with the kinds wanted and where it is used                   |
+  | `media.decode` for a file of another kind, an unsupported codec or a size cap  | `media.wrong_kind`, `media.unsupported` or `media.too_large`; corrupt data stays `media.decode` |
+  | Rust `MediaError::{SourceNotFound, Decode, AssetNotFound, AssetWrongKind}`     | `MediaError::Failed(MediaFailure)`; build one with `MediaError::source_not_found` or `decode`   |
+  | The 3D crate's `ModelError::TooLarge(String)` and `EnvironmentError::TooLarge` | `TooLarge { details, limit, actual }`                                                           |
+  | Messages such as ``failed to decode image `a.png`: ...``                       | ``image `a.png` (node 3 `source`) failed to decode: ...``; match the `code`, not the message    |
+  | An upload probe's rejection reason                                             | The same reason followed by its code, such as `... (media.decode)`                              |
+
+  ```json
+  {
+    "severity": "error",
+    "code": "media.wrong_kind",
+    "path": "/nodes/4/params/source",
+    "node": 5,
+    "message": "`asset:clip` (node 5 `source`) is a video, not an image"
+  }
+  ```
+
+- 2a50568: **A template's `render_settings` has the same type as the root's.** `TemplateRenderSettings` is gone from `@lumiscia/lumen-types`; use `RenderSettings`.
+
+  ```ts
+  // Before
+  import type { TemplateRenderSettings } from "@lumiscia/lumen-types";
+
+  // After
+  import type { RenderSettings } from "@lumiscia/lumen-types";
+  ```
+
+  A document that still carries the long-retired `background_color` in `render_settings`, or `start_frame`, `duration_frames` or `source_start_seconds` on an audio clip, now fails with the ordinary unknown-field error (`render_settings.background_color: unknown field`) instead of a message that says what to use instead. Remove the key; colour the canvas with a `background` node, and give audio clips `start_ms`, `duration_ms` and `source_start_ms`.
+
+- 3a7cd1a: The HTTP API is described by an OpenAPI 3.1 document, `definitions/openapi.json`, which replaces `definitions/api.schema.json`. It has what the schema had (the request, response, event and error types, now under `components/schemas`) and what it lacked: every route with its method, path and parameters, the body each takes, the status and body of each answer, and the error codes each status carries (`x-lumen-codes`). `@lumiscia/lumen-types` ships it with the two schemas it refers to:
+
+  ```ts
+  import openapi from "@lumiscia/lumen-types/openapi.json" with { type: "json" };
+  import { apiOperations, apiVersion, type ApiOperationTypes } from "@lumiscia/lumen-types";
+
+  apiOperations.getRender; // { method: "GET", path: "/renders/{id}", request: "none", response: "json" }
+  type Created = ApiOperationTypes["createRender"]["response"]; // CreateRenderResponse
+  ```
+
+  `lumen-server` builds its router from the same table of routes, so it serves the document's routes and no others, and `GET /health` answers `version`, the `info.version` of the document the server implements (`"0.6"`). The descriptions in `errorCodes` no longer start with a status: the document says which statuses carry which code.
+
+  A host of the API can be checked against the document with the SDK's suite, `LUMEN_API_URL=... LUMEN_API_TOKEN=... pnpm test:conformance` in this repository, with a profile file for what it does differently on purpose (`definitions/README.md`).
+
+  **Render webhooks** follow the Standard Webhooks payload as well as its signature. `verifyWebhook` returns the event with the render inside it, the same `Render` that `getRender` returns:
+
+  ```ts
+  // Before
+  const event = await verifyWebhook({ body, headers, secret });
+  event.event; // "render.succeeded"
+  event.id;
+  event.artifactUrl;
+  event.error; // string
+
+  // Now
+  const event = await verifyWebhook({ body, headers, secret });
+  event.type; // "render.succeeded" | "render.failed"
+  event.timestamp;
+  event.data.id;
+  if (event.type === "render.succeeded") event.data.url;
+  if (event.type === "render.failed") event.data.error.message;
+  ```
+
+  A host that sends webhooks posts `{ "type", "timestamp", "data": <render> }`; the flat body with `event`, `artifactUrl` and a string `error` is no longer accepted. `lumen-server` still delivers none.
+
+- 5ab096d: Frame ranges, stills and image sequences, with one output description shared by `lumen`, the `lumen-server` library and its HTTP API.
+
+  **Breaking (Rust, `lumen-server` library):** `render_project_mp4` is now `render_project`, which returns a `RenderedOutput { bytes, format }` instead of the MP4 bytes, and `Mp4Render::open` takes a `&RenderOutput` after the output path. `RenderOptions` gains `output` (a `RenderOutput`) and `sequence_limits`; the defaults, an MP4 of the whole timeline, render as before. Migrate with `render_project(..)?.bytes`, and pass `&RenderOutput::default()` to `Mp4Render::open`. The new `ImageRender` renders stills and sequences, and `ErrorCode` has `InvalidOutput` (`invalid_output`) and `OutputTooLarge` (`output_too_large`).
+
+  ```rust
+  let options = RenderOptions {
+      output: RenderOutput {
+          format: OutputFormat::PngSequence, // Mp4, Mov, Webm, Png, Jpeg, PngSequence or JpegSequence
+          frames: FrameRange { start: Some(30), end: Some(60) }, // end not included
+          ..RenderOutput::default()
+      },
+      ..RenderOptions::default()
+  };
+  ```
+
+  `lumen` takes `--frames START..END`, `.jpg` outputs with `--jpeg-quality`, and an output name with `%d` (`frames/shot_%d.png`) for an image per frame. An MP4 of a range starts at time 0 with its audio cut to the same span.
+
+  `POST /renders` takes an optional `output`: `{ "format": "png_sequence", "frames": { "start": 0, "end": 120 } }`. `format` is `mp4` (the default), `mov`, `webm`, `png`, `jpeg`, `png_sequence` or `jpeg_sequence`; `jpeg_quality` is 1 to 100. The artifact has the format's `Content-Type` and filename (`.mp4`, `.mov`, `.webm`, `.png`, `.jpg`, or a stored `.zip` of `frame_0000.png` files), and `quality`, `codec`, `bit_depth` and `alpha` apply to the video formats (`mp4`, `mov`, `webm`) only. Sequences are bounded by the new `--max-sequence-frames` (3600) and `--max-sequence-bytes` (512 MiB). Requests without `output` behave as before. The SDK's `render` takes `output` and exports `outputFile(output)`.
+
+- ff3f2bc: `lumen_ffmpeg::Encoder` is an encoder name parsed once into its `EncoderFamily` and the codec its spelling says, and the rules that depend on which encoder it is read those instead of matching the name again. `EncoderCandidate::encoder` and `VideoEncoderConfig::encoder` are an `Encoder` (`name()` is the FFmpeg name), `encoder_info`, `check_bit_depth` and `check_alpha` take `&Encoder`, `VideoEncoderConfig::cpu_rgba` and `VideoEncoderChoice::single` still take a name, and `EncoderFamily::of` is `Encoder::parse(name).family()`. `EncoderFamily` has a `Vaapi` variant, so code matching it exhaustively needs the new arm.
+- d247928: The preview converts colour as a render does. Images are decoded with their embedded colour profile honoured and converted to sRGB explicitly (`createImageBitmap` with `colorSpaceConversion: "default"`, read back through an sRGB 2D canvas), whatever the display, so a Display P3 photo looks as it does in a render within 8-bit rounding. Video frames handed to the engine as YUV planes now carry the source's tagged primaries and transfer, so BT.2020 and Display P3 video is converted to BT.709 and PQ and HLG video is tone-mapped to SDR as a render does, instead of being read as SDR BT.709. A YUV tag the engine doesn't convert, such as a `linear` transfer or unknown primaries, warns once per source with `media.color_unsupported`, as a render does. Video frames the browser hands over as RGB in other primaries or another transfer are drawn on an sRGB canvas, which converts them; sRGB, BT.709 and BT.601 ones are copied as they are.
+
+  The preview is still not pixel-identical to a render. 16-bit images arrive in the browser at 8 bits, and colour outside sRGB is clipped there. Images pass through an 8-bit canvas that stores colour premultiplied, so straight colour at very low alpha is coarsely rounded, as before. Browsers' decoders and colour management differ, by a code or so.
+
+  `setVideoFrameYuv` on the preview's wasm controller takes two more optional arguments at the end, `primaries` and `transfer`, the source's WebCodecs tags; a host calling it directly that leaves them out gets BT.709 SDR as before.
+
+- d63ba1d: The browser preview loads `.cube` LUTs, and a failed render tells the host the engine's code for it.
+
+  - A `color_grade` with `lut_source` works in the preview. Put the `.cube` file in `media` under the name `lut_source` holds, and it loads like a model or an environment map: `pending`, then `ready` or `failed`, counted in `state.media`, awaited by `whenReady()`, fetched abortably and released when the composition stops naming it. It is read in full when it is registered, so a file that isn't a table the engine can use fails the load with the `media.decode`, `media.unsupported` or `media.too_large` a render would give.
+  - `LumenPreviewMediaKind` gains `"lut"`. An entry whose source is a `File` named `*.cube`, or a string, `URL`, `Request` or `{ kind: "url" }` source whose path ends in `.cube`, is read as a LUT without a `kind`.
+  - The wasm controller gains `setLut`, `hasLut` and `removeLutSource`, and `LumenMediaTarget` gains them as optional members. `setLut` throws, with `media`, on a file it can't read.
+  - **A `render_failed` error now carries the engine's code.** Its `diagnostics` hold one `LumenDiagnostic` with that code (`render.gpu`, `render.limit`, `render.node_evaluation` and the others the engine lists), severity `error`, an empty `path` and the message, so `onError` can tell a composition that needs fixing from a GPU fault. It was always empty for a render failure. A render that failed on a media source keeps `diagnostics` empty and says so in `media`. The `render-failed` worker event gains a required `diagnostics` array.
+
+- 7a87028: The browser preview loads every kind of media one way. What the engine lists the composition reading, joined with the page's `media` and `fonts`, decides what is fetched: images, videos, audio, models, environment maps and fonts each go `pending`, then `ready` or `failed`, and are released when the composition stops naming them.
+
+  - `session.whenReady()` and `preview.whenReady()` resolve once a frame of the current composition is drawn and nothing it needs is pending, with the error that stopped it loading, the `render_failed` error of a first frame that couldn't be drawn, an `audio_failed` error, or `null`. They never reject, so check the value; a composition, `media` or `fonts` change starts them again.
+  - A model or environment map is read in full before it counts as ready, so a file that isn't one fails the load with the `media.*` code a render would give. A video is ready once its stream is opened; its frames decode as playback reaches them.
+  - `state.media` counts the composition's sources as `{ pending, ready, failed }` (the new `LumenPreviewMediaState` type).
+  - While anything is pending the preview holds its last frame, at its size, and playback holds too: the playhead stops and the audio pauses until everything has settled. Playback also waits when the frame it is on has spent 100 ms decoding its video frames, so sound can't run ahead of the picture. A load fails as soon as one source fails, and cancels what was still loading for it.
+  - Environment maps (`render_3d.environment_map`, Radiance `.hdr` or OpenEXR `.exr`) load from `media` like models. `LumenPreviewMediaKind` gains `"environment"`.
+  - Source names follow `lumen-server`'s rules, checked against a fixture both test suites read. The `@lumiscia/lumen-preview` README has the table.
+  - `runtimeUrl` on `mountPreview`, `LumenPreviewSession`, and the React and Svelte `Player` names one directory serving `worker.js`, `lumen_wasm_bg.wasm`, `audio-worker.js` and `audio-worklet.js`, and every runtime URL not passed on its own comes from it, with its query kept on each file. With it, `wasmUrl` and `workerUrl` are optional. Without it nothing changes.
+  - The wasm controller gains `setEnvironment`, `hasEnvironment` and `removeEnvironmentSource`, and `LumenMediaTarget` gains them as optional members. `setModel` and `setEnvironment` throw, with `media`, on a file they can't read.
+
+  Breaking changes, each where the old behaviour differed between kinds:
+
+  | Before                                                                                                                                | After                                                                                                                                                                                   | Migrating                                                                    |
+  | ------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+  | Every `media` entry was fetched, and one whose kind couldn't be told failed the load with "needs a kind".                             | Only the entries the composition reads load. When an expression computes a source, each entry is also read as the kind it reads, unless the entry's `kind` or blob type says otherwise. | Give entries of other kinds a `kind` when an expression computes a source.   |
+  | A `kind` on an entry chose how it was read.                                                                                           | A `kind` the composition doesn't read the source as fails as `media.wrong_kind`.                                                                                                        | Drop the `kind`, or fix it to the kind the node reads.                       |
+  | A source written as a URL (`https://…`), with another `scheme://`, empty or with a `..` part loaded if `media` had an entry under it. | It fails as `media.not_found`, as it does on `lumen-server`.                                                                                                                            | Name the source (`intro.mp4`) and pass the URL in `media` under that name.   |
+  | Images, videos, models and fonts held the last frame while a composition loaded, but playback ran on and audio loaded on its own.     | Every kind holds the frame, and playback pauses while any source, audio included, is pending.                                                                                           | None needed. Await `whenReady()` before `play()` to start without the pause. |
+  | Every `media` and `fonts` entry stayed registered while the page passed it, named by the composition or not.                          | Only what the composition names stays registered; the rest is unregistered and its memory freed. A source the old and new compositions share stays loaded.                              | None needed.                                                                 |
+  | `LumenPreviewTransport` had `pause`, `play` and `seek`.                                                                               | It also has `whenReady(): Promise<LumenPreviewError \| null>`.                                                                                                                          | A custom transport passed to `preview.attach()` implements `whenReady`.      |
+  | `wasmUrl` and `workerUrl` were required on `LumenPreviewSessionOptions`.                                                              | Both are optional when `runtimeUrl` is set; without either, the session fails to start with `worker_failed`.                                                                            | None needed.                                                                 |
+
+- e6f9ce0: Remove unused Rust items from the media crates: `CudaVideoFrame::from_device_ptr` (build CUDA frames with `CudaDeviceAllocation::as_video_frame`), `MetalPixelBufferFrame::retain_pixel_buffer`, `VulkanVideoFrame::nv12_pitch`, `nv12_chroma_offset` and `nv12_size` (use `VulkanFrameLayout::nv12`), `CudaDriver::driver_version` and the engine's `duration_samples`.
+- 74a7d18: The preview controller no longer has five operations that nothing used: `validateComposition`, `clearMedia`, `clearVideos`, `clearVideoSource` and `hasFont`.
+
+  To check a composition without loading it, use `check` on the preview bindings, which returns diagnostics instead of throwing:
+
+  ```ts
+  const { check } = await loadLumenBindings();
+  const diagnostics = check(compositionJson);
+  ```
+
+  To drop media, remove the sources one at a time with `removeImageSource`, `removeVideoSource`, `removeFontFamily` and the other `remove…` methods, or call `clear()` to drop everything with the composition.
+
+- 1274c06: Rename the encode-side `lumen_engine::gpu::YuvFormat` and `YuvLayout` to `EncodeYuvFormat` and `EncodeYuvLayout`, so they no longer share names with the decoded-frame types in `lumen_engine::media`.
+- c0f96e6: `render_3d` can output its scene's depth or view-space normals as a raster for 2D effects such as fog, depth of field or relighting. Its new `output` param is `"color"` (the default, which renders as before), `"depth"` or `"normal"`. A node still has one output: a composition that wants colour and depth wires the same scene into two `render_3d` nodes, and the second shares the models, meshes and image-plane sources the first loaded.
+
+  - `depth` is the distance along the camera's view, mapped from 0 at `depth_near` to 1 at `depth_far` (each 0 by default, which uses the camera's `near` or `far`), as opaque grey, and 1 where nothing is drawn. Rasters hold half floats, finest near 0, so set the range around the part of the scene the effect needs.
+  - `normal` is the shaded normal (after normal maps, morph targets and skinning, reversed on the back of a double-sided surface) in the camera's space, +X right, +Y up, +Z towards the camera, stored as `n * 0.5 + 0.5`, opaque, and transparent where nothing is drawn.
+
+  Both are stored as data, with no transfer function (an 8-bit output encodes them as it does light, so a depth of 0.5 is code 188), skip lighting, shadows and the environment, and ignore `supersample`: each pixel is the nearest surface at its centre. Opaque surfaces write them, masked ones where they reach their cutoff, and blended ones, such as image planes, where their alpha reaches half.
+
+  Fog with existing nodes, `merge` with a luma mask: the scene is drawn twice, the colour render is the merge's `base`, a background is its `overlay`, and the depth render is its `mask`.
+
+  ```json
+  {
+    "nodes": [
+      { "id": 1, "type": "shape_3d" },
+      { "id": 10, "type": "render_3d" },
+      {
+        "id": 11,
+        "type": "render_3d",
+        "params": { "output": "depth", "depth_near": 3, "depth_far": 14 }
+      },
+      { "id": 12, "type": "background", "params": { "paint": [205, 215, 228, 255] } },
+      { "id": 13, "type": "merge", "params": { "mask_mode": "luma" } },
+      { "id": 14, "type": "media_output" }
+    ],
+    "connections": [
+      { "from_node": 1, "to_node": 10, "to_port": "scene" },
+      { "from_node": 1, "to_node": 11, "to_port": "scene" },
+      { "from_node": 10, "to_node": 13, "to_port": "base" },
+      { "from_node": 12, "to_node": 13, "to_port": "overlay" },
+      { "from_node": 11, "to_node": 13, "to_port": "mask" },
+      { "from_node": 13, "to_node": 14, "to_port": "source" }
+    ]
+  }
+  ```
+
+- f9b71d6: The render library is now `lumen_engine::render`, behind the engine's new `render` feature: compositions to MP4, MOV, WebM, stills and image sequences on a GPU with FFmpeg, with the disk media store (`LocalMediaStore`) and the font catalog (`FontCatalog`). `lumen-server` is only the HTTP server: a binary with no library and no `cli` feature, so `cargo run -p lumen-server` builds it as it is.
+
+  An embedder depends on the engine instead of the server:
+
+  ```toml
+  # Before
+  lumen-server = { version = "0.6", features = ["vulkan"] }
+  # Now
+  lumen-engine = { version = "0.6", features = ["render", "vulkan"] }
+  ```
+
+  ```rust
+  // Before
+  use lumen_server::render::{RenderOptions, ServerRenderError, render_project};
+  // Now
+  use lumen_engine::render::{self, RenderOptions, render_project};
+  fn failed(error: &render::Error) { /* … */ }
+  ```
+
+  The `render` feature turns on `ffmpeg`, `image` and `3d`; the compressed 3D formats (`3d-draco`, `3d-ktx2`, `3d-meshopt`, `3d-webp`) and `vulkan`, `metal` and `cuda` stay opt-in. Every item keeps its name except:
+
+  | Before                                            | Now                                           |
+  | ------------------------------------------------- | --------------------------------------------- |
+  | `lumen_server::render::*`                         | `lumen_engine::render::*`                     |
+  | `ServerRenderError`                               | `render::Error`                               |
+  | `From<ErrorCode> for lumen_server_api::ErrorCode` | removed; `lumen-server` maps the codes itself |
+  | `cargo run -p lumen-server --features cli`        | `cargo run -p lumen-server`                   |
+
+  `lumen_engine::render::OutputFormat` and `FrameRange` are the engine's own types now, with the same JSON as the `lumen-server-api` types of the same names, which stay as they are. The engine's `OutputFormat` is not `#[non_exhaustive]`.
+
+  The render library logs under `lumen_engine::render`, so `RUST_LOG=lumen_server=debug` becomes `RUST_LOG=lumen_server=debug,lumen_engine::render=debug` to see a render's own logs. `lumen-server` still logs them at `info` by default.
+
+- 0091154: The browser preview's runtime files (the render worker, the wasm, the audio worker and the audio worklet) now all come from `@lumiscia/lumen-bindings`, which describes each build with one manifest: `runtime` from `@lumiscia/lumen-bindings/urls` and `runtime2d` from `@lumiscia/lumen-bindings/urls-2d`. Each entry is `{ file, url }`: where the file is served by default, and its name in a directory you host yourself.
+
+  `<Player preview={preview} composition={composition} />` in React and Svelte works as before, with no configuration.
+
+  `mountPreview` and `LumenPreviewSession` take the manifest as `runtime`, in place of `wasmUrl` and `workerUrl`:
+
+  ```ts
+  // before
+  import { wasmUrl, workerUrl } from "@lumiscia/lumen-bindings/urls";
+  mountPreview(host, { preview, composition, wasmUrl, workerUrl });
+
+  // after
+  import { runtime } from "@lumiscia/lumen-bindings/urls";
+  mountPreview(host, { preview, composition, runtime });
+  ```
+
+  Self-hosting with `runtimeUrl` now takes every file from one package, and selects the 2D build when given `runtime2d`. Copy the four files the manifest names from `@lumiscia/lumen-bindings` into one directory; `audio-worker.js` and `audio-worklet.js` no longer come from `@lumiscia/lumen-preview`:
+
+  ```ts
+  // before: worker.js and lumen_wasm_bg.wasm from lumen-bindings, the audio files from lumen-preview,
+  // and the 2D build only by passing wasmUrl and workerUrl as well
+  mountPreview(host, { preview, composition, runtimeUrl: "/lumen-runtime/" });
+
+  // after: worker-2d.js, lumen_wasm_2d_bg.wasm, audio-worker.js and audio-worklet.js, all from lumen-bindings
+  import { runtime2d } from "@lumiscia/lumen-bindings/urls-2d";
+  mountPreview(host, { preview, composition, runtime: runtime2d, runtimeUrl: "/lumen-runtime/" });
+  ```
+
+  To serve one file somewhere else, pass a manifest of your own. On `Player`, `runtime` replaces the `wasmUrl` and `workerUrl` props and defaults to the manifest of the entry point it comes from:
+
+  ```tsx
+  // before
+  <Player preview={preview} composition={composition} wasmUrl={wasmUrl} workerUrl={workerUrl} />;
+
+  // after
+  import { runtime } from "@lumiscia/lumen-bindings/urls";
+  <Player
+    preview={preview}
+    composition={composition}
+    runtime={{ ...runtime, wasm: { file: "lumen_wasm_bg.wasm", url: wasmUrl } }}
+  />;
+  ```
+
+  `audio.workerModuleUrl` and `audio.workletModuleUrl` are gone from the session's options (use `runtime.audioWorker` and `runtime.audioWorklet`), and so is `runtimeFileUrl`. The Vite 6 and 7 dev setting now needs only `optimizeDeps: { exclude: ["@lumiscia/lumen-bindings"] }`.
+
+  `@lumiscia/lumen-bindings` has one export path per module or file: `.`, `./node`, `./urls`, `./urls-2d`, `./wasm`, `./wasm-2d`, `./worker`, `./worker-2d`, `./audio-worker` and `./audio-worklet`. Import `@lumiscia/lumen-bindings` instead of `/browser` or `/bundler`, and `@lumiscia/lumen-bindings/worker` instead of `/browser/worker.js`.
+
+  `createLumenBindings(options)` is now `loadLumenBindings(options)`, which returns a promise of the bindings themselves, and the `LumenBindings` type is gone:
+
+  ```ts
+  // before
+  const { check } = await createLumenBindings().preview();
+
+  // after
+  import { loadLumenBindings } from "@lumiscia/lumen-bindings/node";
+  const { check } = await loadLumenBindings();
+  ```
+
+- 5233133: 3D scenes, in a new `scene` node category. `shape_3d` makes a box, sphere, plane, cylinder, torus or cone; `camera_3d` is a perspective or orthographic viewpoint that can aim at a `target`; `light_3d` is a directional, point, spot or ambient light; and `merge_3d` groups any of them under one transform. Each outputs a scene, which only scene inputs take. `render_3d` draws the scene wired to its `scene` input into a raster with a transparent background, so it composites like any other layer: metallic-roughness lighting from the scene's lights and a built-in studio environment whose brightness is `environment`, opaque objects hiding what is behind them and blended ones (`opacity` below 1) drawn over them from back to front, with `exposure`, `tone_mapping` (`none`, `aces` or `agx`), fog, and `supersample` for antialiasing. A scene without lights gets a default key light and ambient fill, and one without a camera is seen from 5 units along +Z.
+
+  World units are metres, Y is up and cameras look down -Z. `position`, `rotation` and `scale` are `[x, y, z]` values, so one expression can move all three axes, and a shape's `size` is its width, height and depth. `rotation` is in degrees, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z. A light's `intensity` is a unitless multiplier.
+
+  ```json
+  {
+    "nodes": [
+      {
+        "id": 1,
+        "type": "shape_3d",
+        "params": {
+          "shape": "torus",
+          "rotation": "=vec3(70, frame * 3, 0)",
+          "color": "#e6b45a",
+          "metallic": 1,
+          "roughness": 0.25
+        }
+      },
+      { "id": 2, "type": "camera_3d", "params": { "position": [0, 1.5, 4], "look_at": true } },
+      { "id": 3, "type": "merge_3d" },
+      { "id": 4, "type": "render_3d", "params": { "tone_mapping": "agx" } },
+      { "id": 5, "type": "media_output" }
+    ],
+    "connections": [
+      { "from_node": 1, "to_node": 3, "to_port": "objects" },
+      { "from_node": 2, "to_node": 3, "to_port": "objects" },
+      { "from_node": 3, "to_node": 4, "to_port": "scene" },
+      { "from_node": 4, "to_node": 5, "to_port": "source" }
+    ]
+  }
+  ```
+
+  A `render_3d` whose scene has no expressions is kept across frames like any other still layer. Wiring a scene into a raster input fails `connection.wrong_kind`, whose message says to draw it through a `render_3d`. Rust embedders get the rendering behind the engine's new `3d` feature, which `lumen-server` and the WebAssembly bindings turn on; without it, a composition with any scene node fails `check` with the new `node.unsupported` code. The maths and meshes that need no GPU are in the new `lumen-engine-3d` crate.
+
+- fe146b5: **Breaking:** `lumenSchemaVersion` is now the Lumen `major.minor` a composition was written for, `"0.6"` for the 0.6 line, instead of the frozen `"0.1.0"`. An engine reads only its own line: it accepts its `major.minor` or a full `major.minor.patch` of that line (`"0.6.3"`), and rejects everything else, including today's `"0.1.0"`, with `document.schema_version`:
+
+  ```
+  this composition declares schema version 0.1.0; this engine reads 0.6, so it was written for a different Lumen version
+  ```
+
+  Every stored composition that declares `"lumenSchemaVersion": "0.1.0"` must change it to `"0.6"`. A composition that leaves the field out is still read as the engine's own version. 0.x minor releases are breaking, so there is no migration between lines.
+
+  `Composition.toJSON()` in the SDK always writes the current version, so compositions built with the SDK need no change, and the `lumenSchemaVersion` option of `Composition` is removed. `@lumiscia/lumen-types` exports `lumenSchemaVersion` (`"0.6"`), `lumen_engine::SCHEMA_VERSION` is the Rust side, and the JSON schema constrains the property to `^0\.6(\.[0-9]+)?$`. `just set-schema-version <major.minor>` moves the engine constant, the tracked fixtures and docs, and the generated output together.
+
+- 7573c49: The SDK's API types are the generated ones from `@lumiscia/lumen-types`, and the client gains the three routes it lacked.
+
+  `Render` is a union on `status`. `waitForRender` returns a `SucceededRender`, so its `url` is a `string`, and a `failed` or `cancelled` render has `error`. A render's `progress` is a number, 0 when the API sends none, and `durationMs` and `outputBytes` are new:
+
+  ```ts
+  // Before
+  const done = await lumen.waitForRender(render);
+  await fetch(done.url!);
+
+  // Now
+  const done = await lumen.waitForRender(render); // SucceededRender
+  await fetch(done.url);
+  if (render.status === "failed") console.error(render.error.code); // FailedRender
+  ```
+
+  `TemporaryMedia` is now `Media`, and `parseMedia` rejects a body that lacks one of its fields with `invalid_response`. `RenderFailure.retryable` is always set. `MediaKind`, `MediaMetadata`, `MediaStatus`, `MediaSource`, `OutputFormat`, `FrameRange` and `RenderOutput` are the generated types, re-exported. A media source that fails a render or a request is on `LumenError.media`.
+
+  `check`, `getMedia` and `deleteMedia` are new:
+
+  ```ts
+  const report = await lumen.check(composition, { media }); // CheckReport: { ok, diagnostics }
+  const upload = await lumen.getMedia("asset:m_…"); // the id may carry `asset:`
+  await lumen.deleteMedia(upload);
+  ```
+
+  `render` and `check` accept a `CompositionSource`: a `LumenComposition`, or any object with `toJSON()`. A `Composition` from another copy of the package works too. `CompositionSource` is exported from `@lumiscia/lumen-types`.
+
+  `CheckResponse` is now `CheckReport`, in the `lumen-server-api` crate and the generated types. `@lumiscia/lumen-cli` exports the generated `CheckReport`, `CompositionSource` and `FrameRange` instead of its own copies.
+
+- 79817d9: **Breaking (HTTP, `lumen-server`):** renders can be cancelled, the queue is bounded, and a render can end as `cancelled`.
+
+  `POST /renders/:id/cancel` cancels a queued or running render. A queued render ends as `cancelled`, gives its queue place back and never starts (`200`); a running one answers `202` and stops at its next frame boundary (or at once while it waits for GPU device room, and during the audio and encoder finish after the last frame), closing its encoder, deleting its temporary output, releasing its media and freeing its slot. A render that has ended is returned unchanged with `200`, so the request is idempotent, and an unknown id is `404`. A cancelled render has `status: "cancelled"` and the code `render_cancelled` (not retryable) in `error`, `progress.errorCode` and `retryable`; `GET /renders/:id/artifact` answers `409` with that code, and its socket sends `render.cancelled` and closes.
+
+  At most `--max-queued-renders` renders (`LUMEN_SERVER_MAX_QUEUED_RENDERS`, default 32) wait for a slot. Past that, `POST /renders` answers `503` with `render_queue_full` at once and keeps nothing; `0` refuses every render that can't start immediately. Before, any number queued.
+
+  **Migrate:** clients that polled until `succeeded` or `failed` must also stop on `cancelled`. Clients that submit more than 32 renders ahead of the running ones must retry on `503` or raise `--max-queued-renders`. `Mp4Render::open` takes a `CancelToken` as a new last argument (`CancelToken::new()` for none), and `Mp4Render::set_cancel` is gone.
+
+  TypeScript SDK: `RenderStatus` gains `"cancelled"`, and `lumen.cancelRender(id)` calls the route. `waitForRender` and `download` throw a `LumenError` with the non-retryable code `render_cancelled` for a cancelled render, where before a `cancelled` status was rejected as `invalid_response`.
+
+  ```ts
+  import { LumenError } from "@lumiscia/lumen-sdk";
+
+  const render = await lumen.render(composition);
+  await lumen.cancelRender(render.id);
+  await lumen.waitForRender(render).catch((error) => {
+    if (!(error instanceof LumenError && error.code === "render_cancelled")) throw error;
+  });
+  ```
+
+  ```sh
+  curl -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/renders/r_123/cancel
+  ```
+
+  The `lumen_server::render` library gets the same hook: `RenderOptions::cancel` takes a `CancelToken`, and `Mp4Render::open` takes one for a render opened by hand. A render checks it while waiting for GPU device room, before each frame and while finishing, and ends with the new `ErrorCode::Cancelled` (`render_cancelled`). `RenderOptions` has a new field, so code that builds it without `..RenderOptions::default()` must add `cancel`.
+
+  ```rust
+  let cancel = CancelToken::new();
+  let options = RenderOptions { cancel: cancel.clone(), ..RenderOptions::default() };
+  // elsewhere: cancel.cancel();
+  ```
+
+  The CPU upload encode path reads frames back through a ring of three buffers while the next frame renders, instead of waiting for each readback. Output is byte-identical; memory is bounded by the ring.
+
+- a6503ab: `lumen-server` is no longer published to crates.io, so `cargo install lumen-server` stops at 0.5. Build it from the repository (`cargo run -p lumen-server --release`); container images for self-hosting will follow. The crate that holds its HTTP API types, `lumen-server-api`, is not published either: other implementations of the API use `definitions/openapi.json` or the generated types in `@lumiscia/lumen-types`.
+- bc6b572: **Breaking (Rust, `lumen-server` library):** `lumen_server::render` reads no environment variables, and its error has a code to match on.
+
+  A `RenderConfig` holds what renders take from the host: `font_dir`, `hardware_decode`, `gpu`, a `GpuSettings` (backends, power preference, fallback adapter), and `temp_dir`, where a render keeps its output while encoding (unset, the system temporary directory). Its default has no font directory, decodes video on the CPU and picks the high-performance adapter on any backend. The `lumen-server` and `lumen` binaries build it from `LUMEN_FONT_DIR`, `LUMEN_HARDWARE_DECODE` and `GpuSettings::from_env()` (`WGPU_BACKEND`, `WGPU_POWER_PREF`, `LUMEN_GPU_FORCE_FALLBACK_ADAPTER`, ...) as before, so they behave the same; `lumen-server` also takes `--font-dir`. `lumen-gpu` and `lumen-engine` gain `GpuSettings` and `new_with_settings` constructors that read nothing; `Renderer::new()` and `GpuCompositionRenderer::new()` still read the environment through `GpuSettings::from_env()`.
+
+  `QualityConfig::resolve` in `lumen-ffmpeg` no longer reads `LUMEN_VIDEO_ENCODER`. A request pins the encoder it names, and a binary that wants the variable calls `QualityRequest::with_env_encoder()` first, which keeps the request's own encoder ahead of the variable and ignores an empty one. `lumen-server` and `lumen` do, so they behave the same; a render without `RenderOptions::encoder` uses the built-in presets. `LUMEN_MEDIA_ROOT` is gone: `RenderOptions::media_root` defaults to the current directory. `font_dir_from_env` is removed.
+
+  Before:
+
+  ```rust
+  // LUMEN_FONT_DIR, LUMEN_HARDWARE_DECODE and LUMEN_MEDIA_ROOT were read from the process.
+  let options = RenderOptions { media_root: Some(dir), ..RenderOptions::default() };
+  let store = LocalMediaStore::new(root, font_dir.as_deref());
+  let diagnostics = check_composition(&payload, &staged, &assets);
+  match render_project_mp4(&composition, &options, &mut |_| {}) {
+      Err(RenderError { code: "render_failed", message, retryable, .. }) => { /* any failure while rendering */ }
+      ...
+  }
+  ```
+
+  After:
+
+  ```rust
+  use lumen_server::render::{ErrorCode, RenderConfig, RenderOptions, render_project};
+
+  let config = RenderConfig { font_dir: Some("/srv/fonts".into()), hardware_decode: true, ..RenderConfig::default() };
+  let options = RenderOptions { config: config.clone(), media_root: Some(dir), ..RenderOptions::default() };
+  let store = LocalMediaStore::new(root, &config);
+  let diagnostics = check_composition(&payload, &staged, &assets, &config);
+  match render_project(&composition, &options, &mut |_| {}) {
+      Err(error) if error.code() == ErrorCode::Engine("media.not_found") => { /* error.engine_error() */ }
+      Err(error) if error.code() == ErrorCode::EncodeFailed && error.retryable() => { /* retry */ }
+      Err(error) => eprintln!("{}: {error}", error.code().as_str()),
+      Ok(rendered) => { /* rendered.bytes */ }
+  }
+  ```
+
+  `RenderError` is renamed `ServerRenderError`, so it no longer shares a name with `lumen_engine::RenderError`. Its fields are private: `code()` returns an `ErrorCode`, `retryable()` says whether to try again, `Display` is the message, and `source()` is the cause. An engine failure keeps the engine error as its source and has its diagnostic code, such as `media.not_found`, `media.decode` or `render.gpu`; of those `render.gpu` is retryable, and a media failure only when it is a shortage that can pass, such as running out of file descriptors. The library's own codes are `invalid_project_payload`, `invalid_quality`, `invalid_render_profile`, `invalid_config`, `render_failed`, `encode_failed`, `output_io`, `invalid_output`, `output_too_large` and `render_cancelled`. `audio_render_failed` is now the engine's code when mixing the audio failed and `encode_failed` when encoding it did, `invalid_fps` is `invalid_render_profile`, and `media_root_error` and `font_dir_error` are `invalid_config`. An encoder that fails to start keeps the FFmpeg error as its source: failing on the output is `output_io`, running out of memory, file descriptors or hardware encoder sessions is retryable, and an invalid option or unsupported encoder is not.
+
+  The HTTP server's failed renders carry these codes in `render.error.code`, `progress.errorCode` and the `render.failed` event, so a render failing on a missing or corrupt source reports `media.not_found` or `media.decode`, not `render_failed`, and is no longer marked retryable.
+
+- 0382574: 3D lights can cast shadows. Turn on `cast_shadows` on a directional, spot or point `light_3d`, and objects between it and others block its light. `shadow_softness`, 0.02 by default, is how wide in world units shadow edges blur. A directional light's shadows cover what the camera sees of the scene out to `shadow_distance`, 50 by default, measured from the camera along its view, and fade out over its last tenth. Its shadow map spreads over that much of what the camera sees, so a larger distance trades sharpness for reach, while a scene the camera sees nearer keeps its full sharpness. A spot light's shadows cover its cone, up to 170° across, and a point light's reach every direction. A `render_3d` draws shadows for the first 8 lights casting them in its scene, and the rest light the scene without shadows, named in a `scene.shadow_limit` warning. A scene with no light casting shadows renders exactly as before.
+
+  `shape_3d`, `image_plane_3d` and `model_3d` take `cast_shadows` and `receive_shadows`, both on by default. Unlit and glowing surfaces cast shadows too, so a shape standing in for a light, such as a bulb around a point light, needs `cast_shadows` off. Masked surfaces cast shadows only where they aren't cut away, blended ones where their alpha is at least 0.5, a model's in the shape of its current pose, and an image plane's in the shape of its raster's alpha.
+
+  On `shape_3d` and `image_plane_3d`, `shadow_catcher` shows nothing but the shadows falling on the surface: transparent black that darkens what the render is composited over by as much light as the shadows take away, times the colour's alpha, `opacity` and an image plane's raster's alpha, whether or not it is `unlit`. It shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no shadows. That grounds a model on 2D footage or a flat background:
+
+  ```json
+  {
+    "nodes": [
+      { "id": 1, "type": "background", "params": { "paint": [70, 130, 160, 255] } },
+      {
+        "id": 2,
+        "type": "model_3d",
+        "params": { "source": "asset:fox", "animation": "Walk", "scale": [0.02, 0.02, 0.02] }
+      },
+      {
+        "id": 3,
+        "type": "shape_3d",
+        "params": { "shape": "plane", "size": [10, 1, 10], "shadow_catcher": true }
+      },
+      {
+        "id": 4,
+        "type": "light_3d",
+        "params": {
+          "light": "directional",
+          "intensity": 3,
+          "rotation": [-55, -40, 0],
+          "cast_shadows": true,
+          "shadow_softness": 0.04
+        }
+      },
+      { "id": 5, "type": "light_3d", "params": { "light": "ambient", "intensity": 0.4 } },
+      {
+        "id": 6,
+        "type": "camera_3d",
+        "params": { "position": [0, 1.4, 4.2], "look_at": true, "target": [0, 0.7, 0] }
+      },
+      { "id": 7, "type": "merge_3d" },
+      { "id": 8, "type": "render_3d" },
+      { "id": 9, "type": "merge" },
+      { "id": 10, "type": "media_output" }
+    ],
+    "connections": [
+      { "from_node": 2, "to_node": 7, "to_port": "objects" },
+      { "from_node": 3, "to_node": 7, "to_port": "objects" },
+      { "from_node": 4, "to_node": 7, "to_port": "objects" },
+      { "from_node": 5, "to_node": 7, "to_port": "objects" },
+      { "from_node": 6, "to_node": 7, "to_port": "objects" },
+      { "from_node": 7, "to_node": 8, "to_port": "scene" },
+      { "from_node": 1, "to_node": 9, "to_port": "base" },
+      { "from_node": 8, "to_node": 9, "to_port": "overlay" },
+      { "from_node": 9, "to_node": 10, "to_port": "source" }
+    ]
+  }
+  ```
+
+  The GPU recorder can draw into a depth target alone and sample it with a comparison sampler.
+
+- f045a94: **Opt-in 10-bit video output.** A render can ask for 10 bits per sample with `hevc` or `av1`: the request's `bit_depth`, `lumen --bit-depth 10` or the SDK's `render(..., { bitDepth: 10 })`, which win over `render_settings.bit_depth`, which wins over a custom preset's `bit_depth` in the quality config, as `codec` does. The default stays 8 everywhere.
+
+  ```json
+  { "render_settings": { "width": 1920, "height": 1080, "codec": "hevc", "bit_depth": 10 } }
+  ```
+
+  The renderer quantises its float working space straight to 10-bit BT.709 limited range (Y 64 to 940, C 64 to 960), with the same ordered dither as 8-bit. `libx265` and `libsvtav1` encode `yuv420p10le` (HEVC Main 10, AV1 Main); `hevc_vulkan`, `av1_vulkan` and NVENC take P010 where the device supports it. H.264 is always 8-bit and VideoToolbox has no 10-bit path, so asking either for 10 bits is an error. An encoder that can't write 10 bits is skipped like one that won't open, and a pinned one fails the render: a 10-bit request never comes out at 8.
+
+  **CPU encoders now get dithered YUV from the GPU.** Every encoder that takes CPU frames, at either depth, receives YUV 4:2:0 converted on the GPU from float colour and quantised once, so 8-bit CPU output is dithered in its final domain too and no longer passes through swscale. Its chroma is the 2x2 average of encoded colour, as the Vulkan and NVENC paths already were, so 8-bit `libx264`, `libx265` and `libsvtav1` output changes slightly.
+
+  **Rust API:** `VulkanVideoTarget::nv12(renderer, size)` is `VulkanVideoTarget::new(renderer, size, BitDepth, dither)`, and `CudaNvencTargetPool::rgba8(renderer, size)` is `CudaNvencTargetPool::new(renderer, size, BitDepth, dither)`. `VulkanVideoFrame::new` takes a `VulkanFrameLayout` (`nv12` or `p010`) in place of a width and height. `lumen_engine::gpu::YuvConverter` converts a frame to `Nv12`, `P010`, `Yuv420p` or `Yuv420p10`. In `lumen-ffmpeg`, `VideoEncoderConfig::bit_depth`, `VideoEncoderChoice::with_bit_depth`, `QualityRequest::bit_depth`, `check_bit_depth` and `MuxedEncoder::cpu_input_format` are new, `PixelFormat` has `Yuv420p` and `Yuv420p10`, and `write_video_frame` takes YUV frames in the encoder's own format as well as RGBA8, which a 10-bit encoder refuses.
+
+  Output streams are now tagged with centred chroma (`chroma_location=center`), which is where the 2x2 average puts it. An encoder option that would change the pixel format, and with it the bit depth, is an error when the encoder opens.
+
+- ef94bcb: `text_3d` extrudes text into a solid in a 3D scene. It shapes `content` as a `text` node with the same font and layout would, with its kerning, ligatures, font fallback and wrapping, then extrudes each glyph's outline `depth` deep along Z, centred on `position`, with front and back caps that keep counters open. `bevel_size` and `bevel_segments` round the edges off in a quarter-round profile, or a flat 45° chamfer at 1 segment; a glyph whose strokes are too thin for the bevel gets the widest one that fits it. It takes the `position`, `rotation`, `scale` and material params of a `shape_3d`.
+
+  `font_size` is in world units, the height of the em square, so at the default of 1 a word stands about as tall as a default `shape_3d` box is wide. `max_width`, `letter_spacing` and `line_height` are in world units too. `alignment_horizontal` and `alignment_vertical` align lines as in 2D and choose which point of the text's box sits at `position`, its centre by default.
+
+  Geometry is built in ems and kept per glyph, so repeated glyphs share one mesh and animating `font_size`, or `depth` of text without a bevel, builds nothing again; animating a bevelled text's `depth`, `bevel_size` or `font_size` builds its glyphs again. Glyph meshes are kept up to 64 MiB, least recently used first. Animating a `text_3d`'s transform or material costs no more than a `shape_3d`'s.
+
+  Text is bounded while it is built. A node draws at most as many glyphs as the host's text glyph limit allows a `text` node, and at most 4000000 vertices and 12000000 indices, which the build counts glyph by glyph and stops at the first to pass; more is a render error. One glyph's outline may have 4096 commands, 64 contours and 8192 flattened points, and its mesh 262144 vertices and 786432 indices, and 3072 points where it is bevelled; a font with a glyph past one of these fails the render naming the limit, rather than the glyph being left out. A node's distinct glyphs together are bounded too, by the squares of their flattened points adding up to at most four glyphs at the point limit; every glyph of Roboto's Latin and symbol blocks takes under 1% of that. Real glyphs are far below them: the most complex Latin glyph of Roboto or Inter has 82 commands, 10 contours and 199 points, and 13924 vertices at 16 bevel segments.
+
+  `font_size`, `max_width`, `line_height`, `depth` and `bevel_size` may not be negative, and none of these or `letter_spacing` may exceed 1000000 world units or, apart from `font_size`, 100000 times `font_size`; `font_weight` is 1 to 1000. `check` reports a literal outside them as `node.invalid_param`, and an expression that evaluates outside them is a render error naming the param. A `font_size` under 0.000001 draws nothing. Glyphs drawn from colour or bitmap tables, such as emoji, have no outline, so they are left out with a new `font.no_outlines` warning; a font that mixes colour glyphs with ordinary letters still outlines the letters. `check` reports a family no font answers to as `font.fallback`, as for `text`. Rich text spans, decorations, strokes and the `glyph_*` params of `text` have no counterpart.
+
+  ```json
+  {
+    "nodes": [
+      {
+        "id": 1,
+        "type": "text_3d",
+        "params": {
+          "content": "Lumen",
+          "depth": 0.3,
+          "bevel_size": 0.02,
+          "rotation": [-20, 0, 0],
+          "color": [232, 176, 96, 255]
+        }
+      },
+      { "id": 2, "type": "light_3d" },
+      { "id": 3, "type": "merge_3d" },
+      { "id": 4, "type": "render_3d" },
+      { "id": 5, "type": "media_output" }
+    ],
+    "connections": [
+      { "from_node": 1, "to_node": 3, "to_port": "objects" },
+      { "from_node": 2, "to_node": 3, "to_port": "objects" },
+      { "from_node": 3, "to_node": 4, "to_port": "scene" },
+      { "from_node": 4, "to_node": 5, "to_port": "source" }
+    ]
+  }
+  ```
+
+- 91a0446: A text node draws up to 16384 glyphs, strokes and decorations by default instead of 2048, so a full 1920 × 1080 frame of 16 px monospace text (200 × 68 glyphs) is one node. The limit is a host setting: `--max-text-glyphs` (`LUMEN_MAX_TEXT_GLYPHS`) of `lumen`, `--max-text-glyphs` (`LUMEN_SERVER_MAX_TEXT_GLYPHS`) of `lumen-server`, and `GpuCompositionRenderer::set_max_text_glyphs` in `lumen-engine`, up to 1048576. A text over the limit is still a render error before its glyphs are drawn, and the error now names the limit and how a host raises it. Compositions that split text into nodes of under 2048 glyphs render as before.
+- a3287b8: The `lumen_gpu::Recorder` methods a frame calls (`resolve`, `compute_program`, `dynamic_compute_program`, `render_program`, `upload` and `submit`) return `Result<_, FrameError>` instead of `anyhow::Result`, and `FrameError` has a `Device(String)` variant for what the device refuses, such as a failed validation. Match on the variant where you downcast `anyhow::Error` to `FrameError` before; `FrameError` still implements `std::error::Error`, so `?` into `anyhow` keeps working. `lumen_gpu::Renderer` is unchanged.
+- 49b2878: Node inputs and outputs have a kind, `raster` or `scene`, so a scene can't be wired where a raster goes or the reverse. A connection joining a node's output to an input of another kind fails validation with `connection.wrong_kind`, naming both nodes, the input and the two kinds, and its diagnostic points at the connection. The generated definitions give each port's and output's kind as `raster` or `scene`, where they said `raster_frame`, and list the kinds as `x-lumen-portKinds`; `NodePortKind` is `"raster" | "scene"`, and `NodeOutputKind` and `NodeInputPortKind` give a node kind's output and an input's kind. In the SDK, `addNode` inputs and `connect` only take nodes whose `type` outputs what the port takes. `NodeReference<"scene">` or `NodeReference<"raster">` is a node for a port of that kind, and a plain `NodeReference` is any node; a bare id isn't checked.
+- 3ab8aa0: Params can now hold three numbers, written `[x, y, z]` in JSON or as an expression, ready for the 3D nodes' `position`, `rotation` and `scale`. Expressions gain `vec3(x, y, z)`, and vec3 values work like vec2 values: they add and subtract with each other, multiply and divide componentwise or by a number on either side, negate, and interpolate in `lerp`, `tween` and `keyframes`, e.g. `"=tween(vec3(0, 0, -400), vec3(0, 0, 0), 0, 24, 'out_expo') + vec3(0, 10 * sin(time), 0)"`. Mixing a vec3 with a vec2 is an error. Template props can be declared `"type": "vec3"`, and a `wgsl_shader` vec3 uniform takes a vec3 expression. In `@lumiscia/lumen-shared` the helper is `vec3`, which returns an `Expr<Vec3Value>` that TypeScript keeps apart from colour expressions, so a vec3 can't reach a colour param or share a `lerp` or keyframe track with a colour. `prop.vec3(..)` declares a prop, and params and prop defaults take a plain `Vec3` tuple `[x, y, z]`. A three-number tuple passed to a helper still means `rgb(..)`, so write `vec3(x, y, z)` there. `vec3` is now a reserved name, so composition functions and their parameters can't use it.
+- b9022b7: Video follows its primaries and transfer tags, and HDR video is tone-mapped to SDR. Until now every video was read as SDR BT.709 whatever it was tagged, so PQ and HLG footage, such as iPhone HDR clips, looked dark and flat, and BT.2020 or P3 footage looked dull. No params change: a tagged source just renders right.
+
+  - **Primaries:** BT.2020, Display P3 (SMPTE 432) and DCI-P3 (SMPTE 431, adapted to D65 with the Bradford transform) convert to the working space's BT.709 in linear light. Colour outside BT.709 is clipped at zero as it comes in. BT.709, BT.601 and untagged primaries are unchanged.
+  - **Transfer:** BT.709, BT.601, BT.2020 SDR and sRGB tags decode with the sRGB curve, as before, so SDR video renders exactly as it did. PQ (SMPTE ST 2084) decodes to nits; HLG (ARIB STD-B67) decodes to scene light and goes through its OOTF for a 1000-nit display with system gamma 1.2.
+  - **Tone map**, applied only to PQ and HLG sources, as their frames come in. With `L` the display light in nits, after the primaries conversion and clipping:
+    1. `m = max(R, G, B)`, and `E = PQ⁻¹(m) / PQ⁻¹(1000)`, capped at 1.
+    2. The ITU-R BT.2390 EETF for a 1000-nit source on a 203-nit display: `maxLum = PQ⁻¹(203) / PQ⁻¹(1000) ≈ 0.772`, knee `KS = 1.5 · maxLum − 0.5 ≈ 0.659` (about 88 nits). Below the knee `E' = E`; above it, with `T = (E − KS) / (1 − KS)`, `E' = (2T³ − 3T² + 1)·KS + (T³ − 2T² + T)·(1 − KS) + (−2T³ + 3T²)·maxLum`.
+    3. `m' = PQ(E' · PQ⁻¹(1000))`, and the output is `L · (m' / m) / 203`, so 203 nits is SDR white (1.0) before the shoulder and every channel takes the same gain, which keeps hue.
+
+    Mid grey (26 nits) shows at 0.128, as plain scaling gives; 100 nits at 0.49; HDR reference white (203 nits, HLG 75%) at 0.78, sRGB code 229; 500 nits at 0.98; 1000 nits and brighter at 1.0. The curve is static: no per-frame adaptation and no mastering metadata.
+
+  - **Matrix:** BT.2020 constant-luminance video fails with `media.unsupported` (re-encode with `-colorspace bt2020nc`) instead of decoding wrong.
+  - **New warning `media.color_unsupported`:** a video tagged with another transfer (such as `log100` or `gamma22`) or primaries (such as `film`) renders as SDR BT.709 and says so once per composition, `media_in` node and source.
+  - 10-bit and 12-bit samples keep their precision into the working space on every decode path.
+
+  These conversions apply to CPU decode and both hardware decode paths, Vulkan Video and VideoToolbox, which share one shader.
+
+  **Rust API:** `lumen_ffmpeg::ColorTags` gains `primaries`, `transfer` and `chroma_location`, with `ColorPrimaries`, `ColorTransfer` and `ChromaLocation`, and `ColorTags::new(matrix, full_range)`; `VideoStreamInfo` has the stream's `color`. `lumen_engine::media::YuvColor` gains `primaries: ColorPrimaries` and `transfer: TransferFunction`, and `YuvColor::sdr(matrix, full_range)` builds the SDR BT.709 case. `VideoFrameResolver::color_warning` (default `None`) reports tags a resolver reads without. Code that builds these structs by their fields needs the new fields.
+
+  RGB and grey video (FFV1 `gbrp`, for example) decodes to 8-bit RGBA read as sRGB, so its primaries and transfer are not converted; an HDR or wide-gamut stream of that kind gets the same `media.color_unsupported` warning. The warning is decided from the stream's tags when it opens: a frame whose own tags differ from the stream's is converted by its own tags but does not change the warning.
+
+- d3ce7e8: The browser preview ships two builds. The default renders 2D and 3D nodes, and now reads glTF models with Draco meshes and WebP textures as well as meshopt buffers. KTX2 textures stay out of the browser build, because their transcoder would make the wasm about 350 KB larger to download; `lumen` and `lumen-server` still read them.
+
+  A page that only shows 2D compositions can load the 2D-only build instead, which has no 3D and is about a quarter smaller to download (1.23 MB against 1.65 MB, brotli-compressed). It reports each 3D node as a `node.unsupported` error. Import `Player` from the `/2d` entry point:
+
+  ```tsx
+  import { Player, createLumenPreview } from "@lumiscia/lumen-react/2d";
+  // or, in Svelte: import { Player, createLumenPreview } from "@lumiscia/lumen-svelte/2d";
+  ```
+
+  With `mountPreview`, take the 2D manifest from `@lumiscia/lumen-bindings/urls-2d`. The 2D wasm runs only in its own worker, `worker-2d.js`:
+
+  ```ts
+  import { mountPreview } from "@lumiscia/lumen-preview";
+  import { runtime2d } from "@lumiscia/lumen-bindings/urls-2d";
+
+  mountPreview(host, { preview, composition, runtime: runtime2d });
+  ```
+
+  A bundler emits only the build a page imports. With `runtimeUrl`, the `/2d` `Player` loads `worker-2d.js` and `lumen_wasm_2d_bg.wasm` from that directory, and pages that call `mountPreview` themselves pass `runtime: runtime2d` with the same `runtimeUrl`.
+
+- 9e66ebe: Every engine failure that leaves the WASM bindings is now an `Error` with the same fields, and a failure of `audioTimeline` or `frameRequirements` is no longer a string. An error carries `code`, the engine's diagnostic code; `media` when a file is the cause; `diagnostics` when a composition doesn't parse; and `frameNotLoaded: true` for a video frame that isn't loaded yet, which now keeps its real code, `media.frame_out_of_range`, instead of `code: "media_frame_out_of_range"`. Failures from a caller's mistake, such as a buffer of the wrong length, and from the GPU stay plain strings.
+
+  `frameRequirements` and `audioTimeline` return the JSON of the engine's `FrameRequirements` and `AudioPlan`, as typed in `@lumiscia/lumen-types`. `frameRequirements` is unchanged. `audioTimeline` no longer has `durationFrames` and `fps`: read them from `durationFrames()` and `fps()` of the controller.
+
+  ```ts
+  // Before
+  try {
+    controller.audioTimeline();
+  } catch (error) {
+    console.error(error); // a string, with no code
+  }
+  // A frame that isn't loaded yet
+  if (error.code === "media_frame_out_of_range") {
+    /* load it and render again */
+  }
+
+  // After
+  try {
+    controller.audioTimeline();
+  } catch (error) {
+    console.error((error as Error).message, (error as { code?: string }).code);
+  }
+  if ((error as { frameNotLoaded?: boolean }).frameNotLoaded) {
+    /* load it and render again */
+  }
+  ```
+
+### Patch Changes
+
+- 6faf4d9: A `transform` rotated by many whole turns renders the same as its rotation within one turn on every GPU. Metal's fast sine and cosine returned 0 for angles past about ten million radians, so such a transform drew nothing; its angle is now wrapped to a turn before the shader sees it, which also lets these transforms keep tight bounds.
+- d09b553: Documentation for 3D. The `lumen-sdk`, `lumen-shared` and `lumen-preview` READMEs link to the new 3D guide, and `lumen-shared`'s shows a scene. The descriptions of a 3D material's `color` and `shadow_catcher` params, which `lumen-types` carries as doc comments and `lumen-bindings` as node metadata, now say that only an image plane has a raster to multiply by `color` or to count in `shadow_catcher`. Nothing about how a composition renders changes.
+- 06e8c8d: Add `evaluate` to the bindings, which gives the value of one param of a root node at a frame without rendering. It evaluates the param as a render does, at the frame of its own time that the composition frame maps to through any `clip` or `time_remap` before it, and with the expressions nested in `uniforms`, a `clip`'s `props` and text spans evaluated too, so an easing curve, a timing or a `table()` lookup can be checked without reading pixels, and it runs wherever `check` does: no GPU and no media. It returns the value as the JSON that sets the param, and a flattened param such as `position` is addressed by its own name. For an `instance_3d`, `instance` picks the copy whose `position`, `rotation` or `scale` is evaluated.
+
+  It throws, with `diagnostics`, on a composition `check` reports errors for, a node or param that doesn't exist, a node inside a template (`render.template_node`, which is new), a node no clip or switch shows at that frame (`render.node_not_evaluated`), a node evaluated at several frames of its own through different clips (`render.ambiguous_node_frame`) and an expression that fails, such as one that needs media. `EvaluateRequest` is exported from `@lumiscia/lumen-types`.
+
+  ```ts
+  const { evaluate } = await loadLumenBindings();
+
+  evaluate(composition, { node: 12, param: "position", frame: 90 });
+  // [1.5, 0, -3]
+
+  evaluate(composition, { node: 4, param: "position", frame: 0, instance: 3 });
+  ```
+
+- 7b4ea54: `lumen render --frame` takes a comma-separated list of frames for an output with `%d`, and writes one still per frame from a single load of the composition, fonts and media. Frames render in the order given, each file is named by its own frame number padded as the largest frame is, and a frame listed twice fails. A single value, and an output without `%d`, behave as before.
+
+  ```sh
+  lumen render film.json -o shots/frame-%d.png --frame 0,120,348,610
+  ```
+
+- 84d1aa7: New 2D vector nodes draw any number of paths and shapes in one GPU pass. They use two new port kinds: `geometry`, an outline, and `drawing`, styled outlines.
+
+  - `path_2d` and `shape_2d` make geometry, and `offset_2d` grows or shrinks it.
+  - `fill_2d` and `stroke_2d` turn geometry into a drawing.
+  - `shadow_2d` puts soft shadows under a whole drawing, and `merge_2d` stacks drawings and places them.
+  - `render_2d` turns a drawing into a raster.
+
+  The `path`, `shape` and `raster_multimerge` nodes are unchanged.
+
+  A stroked, filled path with a shadow:
+
+  ```json
+  {
+    "nodes": [
+      { "id": 1, "type": "path_2d", "params": { "data": "M 0 0 L 120 20 L 40 100 Z" } },
+      { "id": 2, "type": "fill_2d", "params": { "paint": [255, 120, 0, 255] } },
+      { "id": 3, "type": "stroke_2d", "params": { "paint": [0, 0, 0, 255], "width": 4 } },
+      { "id": 4, "type": "merge_2d", "params": { "position": [200, 120] } },
+      {
+        "id": 5,
+        "type": "shadow_2d",
+        "params": { "shadows": [{ "offset": [6, 10], "radius": 12, "opacity": 0.4 }] }
+      },
+      { "id": 6, "type": "render_2d" }
+    ],
+    "connections": [
+      { "from_node": 1, "to_node": 2, "to_port": "geometry" },
+      { "from_node": 1, "to_node": 3, "to_port": "geometry" },
+      { "from_node": 2, "to_node": 4, "to_port": "drawings" },
+      { "from_node": 3, "to_node": 4, "to_port": "drawings" },
+      { "from_node": 4, "to_node": 5, "to_port": "drawing" },
+      { "from_node": 5, "to_node": 6, "to_port": "drawing" }
+    ]
+  }
+  ```
+
+- 0ffadaf: Add `extrude_3d` and `lathe_3d`, which turn a 2D `geometry` outline, a `path_2d` or `shape_2d`, into a solid. `extrude_3d` gives the outline `depth` along Z, with an optional bevel as on `text_3d`; `lathe_3d` spins it around the world Y axis in `segments` steps over a `sweep` of up to 360 degrees. Both take a `material_3d` through `material` and the `position`, `rotation` and `scale` of a `shape_3d`.
+
+  The geometry's pixel coordinates, after its own transform, become world units at `units_per_pixel` each (0.01 by default), with Y flipped, so pixel (0, 0) is the origin the node places the solid about. A `lathe_3d` profile's X is its distance from the axis and its Y its height. A closed contour makes a ring solid and an open one a surface; a point on the axis is a pole with no degenerate triangles. An `offset_2d` in the geometry is not supported yet and fails the render, naming the node. Meshes are built once and kept while their outline and params stay the same, and share the `text_meshes` cache budget.
+
+  ```json
+  {
+    "nodes": [
+      {
+        "id": 0,
+        "type": "path_2d",
+        "params": {
+          "data": "M 50 0 L 61 35 L 98 35 L 68 57 L 79 91 L 50 70 L 21 91 L 32 57 L 2 35 L 39 35 Z",
+          "position": [-50, -45]
+        }
+      },
+      {
+        "id": 1,
+        "type": "material_3d",
+        "params": { "color": [232, 176, 96, 255], "metallic": 0.8 }
+      },
+      {
+        "id": 2,
+        "type": "extrude_3d",
+        "params": { "units_per_pixel": 0.02, "depth": 0.2, "bevel_size": 0.03 }
+      },
+      {
+        "id": 3,
+        "type": "path_2d",
+        "params": {
+          "data": "M 0 0 L 60 0 C 105 -40 105 -100 55 -150 L 45 -195 L 38 -195 L 46 -150 C 90 -100 90 -45 50 -10 L 0 -10 Z"
+        }
+      },
+      { "id": 4, "type": "lathe_3d", "params": { "segments": 64, "position": [2, 0, 0] } }
+    ],
+    "connections": [
+      { "from_node": 0, "to_node": 2, "to_port": "geometry" },
+      { "from_node": 1, "to_node": 2, "to_port": "material" },
+      { "from_node": 3, "to_node": 4, "to_port": "geometry" }
+    ]
+  }
+  ```
+
+- 57bad86: Expressions evaluate faster because constant subexpressions are folded once and string values are shared instead of copied.
+- ad144c3: The engine's frame graph dispatches to each node through one `RecordNode` implementation that the node list generates, and keeps what recording holds across frames in separate parts for retained outputs, text, media, runtime shaders and 3D. Nothing renders differently, and performance is unchanged.
+- 9e27b2f: Animated params are evaluated again only on frames where their value can change, so compositions whose animations rest between moves render faster.
+- cab42d2: `image_plane_3d` takes `sampling`, `"linear"` by default as before, or `"nearest"` to show pixel art in a 3D scene unfiltered. A nearest plane gives each pixel the one texel under it: magnified, texels stay hard-edged squares, and shown smaller, a pixel picks a texel instead of averaging the ones it covers, so it aliases where `linear` is smooth. A raster shown only by nearest planes gets no mip chain.
+
+  ```json
+  {
+    "id": 4,
+    "type": "image_plane_3d",
+    "params": { "width": 4, "sampling": "nearest" },
+    "in": { "source": 3 }
+  }
+  ```
+
+- ce70b5c: `image_plane_3d` takes `region`, `[x, y, width, height]` in its source's pixels, to show only that part of a raster on a rectangle that covers just that part.
+
+  A plane with a region is where it would be and as big as it would be with the whole source on it, so it looks as a plane showing a `crop` of that region does and the two can be swapped. `width` is still the width of the whole source, and `position`, `rotation` and `scale` pivot about the whole source's centre. A region is cut off at the source's edges as `crop`'s is. Each number takes an integer or an expression; the whole `region` cannot be an expression. Unset shows the whole source, as before.
+
+  Planes with regions of one source share its texture and its mip levels and draw together, so a region costs nothing beyond the plane, even one that changes every frame. A `crop` before each plane makes a raster the size of the source and a draw for every piece, on every frame it changes. Cutting a 1080p raster into 63 planes at 120 frames takes 0.6 s, holds 204 MB and submits 2 passes a frame, where 63 crops took 7.2 s, held 1.2 GB and submitted 64.
+
+  ```json
+  {
+    "id": 4,
+    "type": "image_plane_3d",
+    "params": { "width": 16, "region": [320, 180, 640, 360], "position": [0, 0, -2] }
+  }
+  ```
+
+  Sampling is kept inside the region, so what is outside it isn't meant to show, however small the plane is drawn. The price is under strong minification: the band along each edge of the region that is inside the source, and all of a narrow region, is sampled from a sharper mip level than its footprint, because a texel of a shared level can hold pixels from both sides of the edge. That band can alias or shimmer where a `crop` would be smooth.
+
+- 2a1b3bc: An `instance_3d` evaluates its per-copy params faster. `position`, `rotation` and `scale` are evaluated as one plan, so a pure term two of them share is evaluated once per copy, and a pure part that reads neither `instance` nor `instance_count`, such as a `keyframes` track every copy follows, is evaluated once for all copies. `&&`, `||` and `if` stay lazy, so a part in a branch no copy takes still never runs, and a failure still names the copy it happened in. Expressions also allocate less while they evaluate. A part that reads another node, measures text or reads a template prop is evaluated for each expression as it would be alone. Nothing renders differently.
+- 3c2dc0f: An `instance_3d` whose params don't read the frame places its copies once and keeps their matrices, so a later frame only places them under what holds the node: a still field of copies under a moving camera, light or parent no longer evaluates `position`, `rotation` and `scale` for every copy on every frame. The kept matrices are dropped when the composition changes, or after a frame that doesn't draw the node. Nothing renders differently.
+- 0085980: `instance_3d` draws the copies of opaque surfaces at once from an instance buffer on the GPU, instead of one object per copy. 100,000 boxes under a moving camera took 24.5 ms a frame to prepare and now take 0.6 ms, and the whole frame went from 37 ms to 14 ms. Copies that move each frame only have their placements written: a ripple over the same boxes went from 72 to 50 ms. Pixels are unchanged. Blended surfaces, and those showing a raster, are still copied one by one so that they sort and mip as before.
+- af40822: Add a `copies` param to `instance_3d`: a literal list of `{ position, rotation, scale, tint }` objects that places hand-set copies without an expression per param per copy. A field left out takes the default of the param of that name. The list and its numbers can't be expressions and it holds at most 100000 copies. It is used in place of `count`, `position`, `rotation`, `scale` and `tint`, and `check` fails, naming the node and the params, if any of them is set beside a list that has copies. The list is placed once and kept on the GPU like static expression placements, so a moving camera or parent costs nothing per copy, and `lumen-types` gains `InstanceCopies` and `InstanceCopy`.
+
+  ```json
+  {
+    "id": 4,
+    "type": "instance_3d",
+    "in": { "scene": 3 },
+    "params": {
+      "copies": [
+        { "position": [0, 0, 0], "scale": [1, 2, 1], "tint": "#ff8040" },
+        { "position": [2, 0, 1], "rotation": [0, 45, 0] }
+      ]
+    }
+  }
+  ```
+
+- ceaba3c: Add a `tint` param to `instance_3d`: a solid colour that multiplies the base colour of every object in a copy, texture or base colour map included, and the light the object gives off. It is white by default, and like `position`, `rotation` and `scale` it can be an expression evaluated for each copy, reading `instance` and `instance_count`. The tint's alpha is ignored, so a copy stays opaque or blended as its material makes it, and the tints of nested `instance_3d` nodes multiply. A still field with a literal or static tint keeps its tints on the GPU like its placements, and a tint that reads the frame is evaluated every frame.
+
+  ```json
+  {
+    "nodes": [
+      { "id": 1, "type": "shape_3d", "params": { "size": [0.6, 0.6, 0.6] } },
+      {
+        "id": 2,
+        "type": "instance_3d",
+        "params": {
+          "count": 10,
+          "position": "=vec3(instance * 1.2 - 5.4, 0, 0)",
+          "tint": "=rgb(instance / instance_count * 255, 140, 255 - instance / instance_count * 255)"
+        }
+      }
+    ],
+    "connections": [{ "from_node": 1, "to_node": 2, "to_port": "scene" }]
+  }
+  ```
+
+- b1af369: `keyframes` keys can hold text. A key whose value is a string that isn't path data is accepted wherever its segment eases with `hold`, either the key's own easing or the `keyframes` default when the key has none, so a readout can step between values:
+
+  ```
+  =keyframes(frame, 'hold', key(0, 'ten'), key(30, 'hundred'), key(60, '1,024'))
+  ```
+
+  Text can't interpolate, so any other easing out of a text key fails with an error that names the key and says text keys need `hold`. Path data keys interpolate as before.
+
+- 9cb96fe: Move the material params off `shape_3d`, `text_3d` and `image_plane_3d` onto a new `material_3d` node, which an object takes through a `material` input. `color`, `metallic`, `roughness`, `emissive`, `opacity`, `unlit`, `double_sided`, `cast_shadows`, `receive_shadows` and `shadow_catcher` are now params of `material_3d`, and those nodes no longer accept them. One `material_3d` can be wired into any number of objects, which then share its params, and every param still takes an expression. This breaks compositions that set those params on an object.
+
+  An object with no `material_3d` wired in renders as before: `shape_3d` and `text_3d` are lit, single-sided and white, and `image_plane_3d` is unlit and double-sided. A wired `material_3d` applies exactly as it is set, so a default `material_3d` makes an `image_plane_3d` lit and single-sided; set `unlit` and `double_sided` to keep it as it was. `model_3d` keeps the materials of its glTF file.
+
+  Before:
+
+  ```json
+  {
+    "nodes": [
+      {
+        "id": 1,
+        "type": "shape_3d",
+        "params": { "color": "#e6b45a", "metallic": 1, "roughness": 0.2 }
+      },
+      {
+        "id": 2,
+        "type": "shape_3d",
+        "params": { "color": "#e6b45a", "metallic": 1, "roughness": 0.2, "position": [2, 0, 0] }
+      }
+    ]
+  }
+  ```
+
+  After:
+
+  ```json
+  {
+    "nodes": [
+      {
+        "id": 0,
+        "type": "material_3d",
+        "params": { "color": "#e6b45a", "metallic": 1, "roughness": 0.2 }
+      },
+      { "id": 1, "type": "shape_3d" },
+      { "id": 2, "type": "shape_3d", "params": { "position": [2, 0, 0] } }
+    ],
+    "connections": [
+      { "from_node": 0, "to_node": 1, "to_port": "material" },
+      { "from_node": 0, "to_node": 2, "to_port": "material" }
+    ]
+  }
+  ```
+
+  The TypeScript SDK takes the material as a nested node: `n.shape_3d({ material: n.material_3d({ color: "#e6b45a" }) })`.
+
+- fe9ddf6: Add a `texture` input to `material_3d`, so a `shape_3d` can show a raster with real depth, fog and shadows, such as a pixel-art planet. The texture multiplies `color` and is lit like the rest of the surface. `sampling` reads it as `image_plane_3d` reads its source: `linear` by default, or `nearest` for pixel art. Primitives now have texture coordinates. A sphere is wrapped equirectangularly from −Z, so a camera on +Z sees the texture's middle. A box shows the whole texture on each face, and a plane shows it seen from above. A cylinder, cone or torus is wrapped around Y. The `shape_3d` docs give the exact layout. A textured material wired into `text_3d`, `extrude_3d`, `lathe_3d` or `image_plane_3d` fails the render, naming the node.
+
+  ```json
+  {
+    "nodes": [
+      { "id": 0, "type": "media_in", "params": { "kind": "image", "source": "planet.png" } },
+      { "id": 1, "type": "material_3d", "params": { "sampling": "nearest" } },
+      { "id": 2, "type": "shape_3d", "params": { "shape": "sphere", "size": [2, 2, 2] } },
+      { "id": 3, "type": "render_3d" }
+    ],
+    "connections": [
+      { "from_node": 0, "to_node": 1, "to_port": "texture" },
+      { "from_node": 1, "to_node": 2, "to_port": "material" },
+      { "from_node": 2, "to_node": 3, "to_port": "scene" }
+    ]
+  }
+  ```
+
+- e0e29e1: `raster_multimerge` composites up to eight overlapping layers in one pass instead of one pass per layer, so a stack of large layers costs about a third of the GPU time it did.
+- 48b2345: An upload in parts survives a dropped connection. `uploadMedia` sends a part up to three times when the connection fails, the response drops while it is read, the server answers with an error status of 500 or more, or the API rate limits it. It waits the `Retry-After` the response gives, or else 0.5 s and then 1 s, each lengthened by up to 25%. Another status, and a response that is not JSON, still fails the upload at once.
+
+  `lumen-server` accepts a part again at full size, so a retry of the last part no longer fails with `media_too_large`. A part's etag is now a hash of its bytes, so the same bytes keep the etag a lost response never delivered. One request at a time sends a part number: another gets `409` with the new code `upload_part_in_progress`, which `uploadMedia` also retries.
+
+- f50053d: The engine now recognises BMP and ICO files from their first bytes, so a BMP given where a video is wanted is reported as "an image" instead of unreadable. `lumen-server`'s upload check decides what a file is with the same recogniser as renders, so a format added to one is no longer missing from the other. Uploads are accepted and rejected as before.
+- c7bec4f: `lumen` and `lumen-server` check a render request in one place, `lumen_engine::render::plan`, so asking for video settings on an image output fails with the same message from both. The code is unchanged (`invalid_output` on the server).
+
+  | Where           | Before                                                                                                                                                     | Now                                                                                                      |
+  | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+  | `lumen render`  | `--encoder, --quality, --codec, --bit-depth, --alpha, --bitrate, --crf, --qp and --preset are only supported when output is a video (.mp4, .mov or .webm)` | `quality, codec, bit depth, alpha, rate control and encoder only apply to the mp4, mov and webm formats` |
+  | `POST /renders` | `quality, codec, bitDepth and alpha only apply to the mp4, mov and webm formats`                                                                           | the same as `lumen render`                                                                               |
+
+  `lumen render` now reports these flags after it has read the composition, so a composition that fails to load is reported first. For embedders, `lumen_engine::render` adds `RenderRequest`, `RenderPlan`, `plan` and `CheckReport` (which `check_composition` now returns), and `QualityRequest::with_encoder_fallback` in `lumen-engine-ffmpeg` is public.
+
+- ef0a093: Add a `particles_3d` node that draws up to 100,000 copies of its `object` scene as particles placed on the GPU. With the defaults it scatters them once over its `surface` scene, as likely anywhere as anywhere else of the same area, which suits grass or rocks; a `rate`, `lifetime`, `speed`, `spread` and `gravity` make it an emitter. Particles are stateless, so any frame renders alone and the same, and a frame's CPU work doesn't grow with `count`.
+
+  ```json
+  {
+    "nodes": [
+      { "id": 1, "type": "shape_3d", "params": { "shape": "plane", "size": [10, 1, 10] } },
+      { "id": 2, "type": "shape_3d", "params": { "shape": "cylinder", "size": [0.03, 0.4, 0.03] } },
+      {
+        "id": 3,
+        "type": "particles_3d",
+        "params": { "count": 20000, "seed": 7, "align_to_normal": true, "scale": [0.6, 1.4] }
+      }
+    ],
+    "connections": [
+      { "from_node": 1, "to_node": 3, "to_port": "surface" },
+      { "from_node": 2, "to_node": 3, "to_port": "object" }
+    ]
+  }
+  ```
+
+- 81b6cb4: Paths with a large fill offset or feather render several times faster: each pixel now measures only the segments that can decide its coverage, and skips that work entirely where the fill is known to cover all or none of it. Rendered output is unchanged.
+- f962b09: A `shape_3d` box takes a material for each face, through `top_material`, `bottom_material`, `left_material`, `right_material`, `front_material` and `back_material`, and `text_3d` and `extrude_3d` take a `side_material` for their walls and bevel, leaving the caps to `material`. A face or side with no material wired uses `material`. They draw from the one mesh as an object for each run of faces sharing a material, so a voxel-style scene needs a shape per voxel instead of one per face, and under `instance_3d` every run is drawn from the same instance buffer. Face materials on a shape other than a box fail the render, naming the node and the input.
+
+  ```ts
+  n.shape_3d({
+    material: n.material_3d({ color: "#8a5a35" }),
+    top_material: n.material_3d({ color: "#5fa04e" }),
+  });
+  ```
+
+- f6d486e: The WebGPU preview no longer freezes for seconds on compositions whose frames the GPU can't finish in a frame's time, or that use many intermediate textures.
+
+  - `renderNow`, and so a playing preview, resolves once the GPU has finished the frame instead of as soon as it is submitted. Playback follows the GPU's pace and skips frames when it falls behind, where before the browser queued the work and then blocked. `renderMs` in `onStats` now includes the GPU's time.
+  - Intermediate textures are render attachments, so a browser zeroes a new one on the GPU instead of uploading a buffer of zeros for it.
+  - The `pooled_textures` budget of `CacheBudgets` counts only the textures the latest frame left unused. It used to count retained outputs and the frame's own textures too, so a composition holding more than the budget in those kept no spares and created its intermediate textures again every frame. The renderer can now hold up to that budget more than before.
+
+- d6018ec: Fixes three preview problems. A composition under 1 fps now plays for its real length instead of being timed as if it ran at 1 fps. A `requestInit.signal` on a whole-file media source now aborts the load, together with the preview's own signal. Render failures no longer print to the browser console when logging is off; set a log level with `setLogLevel` to see them.
+- 590016f: `lumen render --profile-nodes` prints which nodes take the bind (CPU) time. After the summary line it lists the ten slowest nodes by their own time per frame, averaged over the frames rendered, then what all nodes took against the frame's `bind_ms`, so the time outside nodes is visible. A node's own time leaves out the nodes it takes as input, and a node inside a template names the template. Nothing is timed without the flag. It works for videos, images and sequences. In the engine, `Mp4Render` and `ImageRender` take `set_profile_nodes(true)` and report `RenderReport::node_timing`.
+
+  ```sh
+  lumen render film.json -o out.mp4 --profile-nodes
+  ```
+
+  ```text
+  bind by node (ms per frame, top 10)
+    12  instance_3d  3.81
+     7  text         1.20
+     3  path_2d      0.44
+    all nodes 5.45 of bind_ms 6.10
+  ```
+
+- 267dca6: The GPU recorder can draw with a depth attachment and back-face culling, bind long-lived storage buffers and unfilterable float textures, and encodes consecutive draws onto the same attachments in one render pass. Nothing renders differently; this is groundwork for 3D.
+- ef080a4: **A node that fails while rendering inside a template is located in that template.** Before, the diagnostic pointed at the root node that happened to share the failing node's id. For a `motion_blur` with `"samples": "=0 * frame"` as node 2 of the template `card`:
+
+  Before:
+
+  ```json
+  {
+    "code": "render.node_evaluation",
+    "path": "/nodes/0",
+    "message": "motion_blur node 2 evaluation failed: `samples` is 0; it must be from 1 to 64"
+  }
+  ```
+
+  After:
+
+  ```json
+  {
+    "code": "render.node_evaluation",
+    "path": "/compositions/card/nodes/1",
+    "message": "composition `card`: motion_blur node 2 evaluation failed: `samples` is 0; it must be from 1 to 64"
+  }
+  ```
+
+  A font a `text_3d` names that fails to load now points at that node's `font_family` (`/nodes/0/params/font_family`), instead of at the `environment_map` of the `render_3d` that draws it.
+
+- cfc49e0: Reports the time a render waits for the GPU as `gpu_ms` in the `lumen` summary line, instead of counting it under `readback_ms`. `readback_ms` is now only the copy of finished frames to the CPU, and `flush_ms` only the collection of finished work, which no longer includes the waits that `gpu_ms` holds. The server's `RenderTiming` gains a matching `gpu` field.
+- b3a277d: A node whose params read the frame is kept across frames while their values hold. Each frame its expressions are evaluated, along with those of the nodes it reads, and its output from an earlier frame is reused when they give the values it was drawn with. A key track that holds, a `switch` whose `selected_layer` changes once, or an `opacity` that steps from 0 to 1 now redraws only on the frames where a value changes, and so does everything downstream of it. A camera that sits still for 40 frames, moves for 9 and sits still again pays for the 9.
+
+  A shape, path, text or `transform` that blurs its own motion compares its values at either end of its shutter too, and a `motion_blur` over such a node is drawn on every frame, while the samples it takes of its source are reused when their values match. A text node whose `glyph_*` params read the frame, an `instance_3d` whose placement does, video, a `wgsl_shader` and a model playing a clip are drawn on every frame as before.
+
+- 9ac3206: Parsing a composition again no longer discards what the renderer cached for it. Scenes were
+  identified by where the parsed graph sat in memory, so a second parse of the same document
+  rendered from a cold cache; they are now identified by an id taken from the graph itself.
+- 4be16fa: `wgsl_shader` takes an optional `camera` scene input, so a shader can line up with a 3D scene without rebuilding the camera from uniforms. The shader reads the scene's camera, chosen as `render_3d` chooses it, as `lumen.view` (world to view), `lumen.projection` (view to clip, for the shader's output aspect ratio) and `lumen.camera_position` (world space). A scene without a camera gives `render_3d`'s default camera, and a shader without a `camera` input sees the matrices as the identity and the position as zero, so existing shaders keep working. Scene inputs need the `3d` feature.
+
+  ```json
+  [
+    { "id": 5, "type": "camera_3d", "params": { "position": [0, 2, 8], "look_at": true } },
+    {
+      "id": 6,
+      "type": "wgsl_shader",
+      "params": { "shader": "…uses lumen.projection * lumen.view…" },
+      "in": { "source": [4], "camera": 5 }
+    }
+  ]
+  ```
+
+- cd82e6d: A node whose expressions can't change from frame to frame is kept across frames like one with literal params. `"=vec3(0, 0, 520)"` or `"=max(0.9, 0.5)"` no longer redraws its node, and everything downstream, on every frame. An expression counts as changing when it reads `frame` or `time`, calls `progress` or `tween`, or reads another node, a template prop or measured text, as an `instance_3d` already counted.
+
+  `vec2(..)` and `vec3(..)` of plain numbers are written to a node's params as the literal `[x, y]` or `[x, y, z]`. They are still expressions, so `vec2(1, 2).add(..)` works and `String(vec2(1, 2))` is `"=vec2(1, 2)"`.
+
+  A number written in a composition's JSON is now read exactly, so `[0.9999999999999999, 0]` compares equal to `vec2(0.9999999999999999, 0)` as it does when the vector is written as an expression.
+
+- d95fccc: Wide radial blurs about the canvas centre and long directional blurs render about ten times faster: a 1080p spin of several hundred degrees, or a line blur thousands of pixels long, now takes around 10 ms on an integrated GPU instead of 130–180 ms. Output stays the same, apart from up to a pixel of softening on the edges of shapes that the spin leaves in place, such as circles about its centre.
+- e1d88ad: Add `unlit_shadows` to `material_3d`, so an unlit surface can darken where shadows fall on it. An unlit surface shows its base colour as is, multiplied by `1 - unlit_shadows × shadow`, where `shadow` is the fraction of the lights' light that shadows take away at that point, as a `shadow_catcher` measures it. It is 0 by default, which changes nothing, and at 1 a fully shadowed point is black. It reads the shadow maps lit surfaces already use, applies to the shadows of lights with `cast_shadows` on, and does nothing on lit surfaces or with `receive_shadows` off.
+
+  ```json
+  {
+    "id": 1,
+    "type": "material_3d",
+    "params": { "color": "#e0c080", "unlit": true, "unlit_shadows": 0.45 }
+  }
+  ```
+
+- Updated dependencies [fe4bf15]
+- Updated dependencies [d09b553]
+- Updated dependencies [8ef4ee5]
+- Updated dependencies [97c7016]
+- Updated dependencies [89568da]
+- Updated dependencies [6528c7b]
+- Updated dependencies [a37b057]
+- Updated dependencies [6487216]
+- Updated dependencies [8035fb4]
+- Updated dependencies [1879afe]
+- Updated dependencies [d247928]
+- Updated dependencies [f6d486e]
+- Updated dependencies [d63ba1d]
+- Updated dependencies [7a87028]
+- Updated dependencies [1badd98]
+- Updated dependencies [d6018ec]
+- Updated dependencies [7ee7925]
+- Updated dependencies [74a7d18]
+- Updated dependencies [0091154]
+- Updated dependencies [58a05d3]
+- Updated dependencies [d3ce7e8]
+- Updated dependencies [9e66ebe]
+  - @lumiscia/lumen-preview@0.6.0
+
 ## 0.6.0-beta.5
 
 ### Patch Changes
