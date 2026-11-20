@@ -8,7 +8,7 @@ use crate::{
     node::{
         ClipPropValue, Node, NodeId, NodeKind,
         compositing::clip::Clip,
-        processing::wgsl_shader::{ShaderTable, SharedShader, resolve_shaders},
+        processing::wgsl_shader::{ShaderSources, ShaderTable, SharedShader, resolve_shaders},
     },
 };
 
@@ -38,6 +38,8 @@ pub struct Composition {
     templates: Vec<(String, NodeId)>,
     /// The parsed `shaders`, by name.
     shaders: ShaderTable,
+    /// The same shaders and the literal inline ones, by source.
+    shader_sources: ShaderSources,
 }
 
 /// Which scene of a composition a graph belongs to: the root, or one of its templates. The same
@@ -267,6 +269,11 @@ impl Composition {
     pub(crate) fn shader(&self, name: &str) -> Option<&Arc<SharedShader>> {
         self.shaders.get(name)
     }
+
+    /// The checked shader whose source is exactly `source`.
+    pub(crate) fn shader_with_source(&self, source: &str) -> Option<&Arc<SharedShader>> {
+        self.shader_sources.get(source)
+    }
 }
 
 impl CompositionBuilder {
@@ -300,8 +307,10 @@ impl CompositionBuilder {
                     .collect());
             }
         };
+        let (shaders, shader_sources) = shaders;
         Ok(Composition {
             shaders,
+            shader_sources,
             fingerprint: fingerprint(&self),
             output: self.scene.graph.output(),
             templates: self

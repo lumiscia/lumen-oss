@@ -398,6 +398,29 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     assert_eq!(renderer.shader_source_lookups() - before, 1);
 }
 
+#[test]
+fn an_expression_picking_an_interned_source_uses_its_handle() {
+    let source = fill_shader("vec4<f32>(1.0, 0.0, 0.0, 1.0)");
+    let composition = Composition::from(with_shaders(
+        shader_scene(
+            &format!("=if(frame < 100, '{source}', 'shader:red')"),
+            json!({}),
+            &[BLACK],
+        )
+        .frames(3),
+        json!({ "red": source }),
+    ));
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let media = TestMedia::default();
+    let before = renderer.shader_source_lookups();
+    for frame in 0..3 {
+        let rendered = render(&mut renderer, &composition, f64::from(frame), &media);
+        assert_eq!(rendered.rgba[..4], [255, 0, 0, 255]);
+    }
+    assert_eq!(renderer.shader_source_lookups() - before, 1);
+}
+
 /// How far, times 1000, a colour uniform's decoded value is from the prelude decoding `ENCODED`.
 const PARITY_SHADER: &str = "
 @compute @workgroup_size(8, 8, 1)

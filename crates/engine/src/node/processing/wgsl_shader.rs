@@ -186,12 +186,15 @@ impl SharedShader {
 /// The composition's `shaders` by name.
 pub(crate) type ShaderTable = BTreeMap<String, Arc<SharedShader>>;
 
+/// The composition's checked shaders by their exact source.
+pub(crate) type ShaderSources = HashMap<Arc<str>, Arc<SharedShader>>;
+
 /// Checks the composition's `shaders` and every distinct literal `shader` source once each, and
 /// gives each `wgsl_shader` with a literal `shader` the shader it stands for. A broken shader is
 /// one error, which lists the nodes using it.
 pub(crate) fn resolve_shaders(
     parts: &mut CompositionBuilder,
-) -> Result<ShaderTable, Vec<LumenError>> {
+) -> Result<(ShaderTable, ShaderSources), Vec<LumenError>> {
     let CompositionBuilder {
         scene,
         compositions,
@@ -309,7 +312,18 @@ pub(crate) fn resolve_shaders(
         );
     }
     if errors.is_empty() {
-        Ok(table)
+        let mut sources = ShaderSources::new();
+        for shared in table.values() {
+            sources
+                .entry(shared.source.clone())
+                .or_insert_with(|| shared.clone());
+        }
+        for (source, shared) in inline {
+            if let Ok(shared) = shared {
+                sources.entry(source).or_insert(shared);
+            }
+        }
+        Ok((table, sources))
     } else {
         Err(errors)
     }
@@ -934,7 +948,15 @@ impl WgslShader {
         }
         .eval_field("shader", &self.params.shader)?;
         let Some(name) = source.strip_prefix(SHADER_PREFIX) else {
-            return Ok(Picked::Source(source));
+            let key = if source.trim().is_empty() {
+                DEFAULT_SHADER
+            } else {
+                source.as_str()
+            };
+            return Ok(match cx.composition().shader_with_source(key) {
+                Some(shared) => Picked::Shared(shared.clone()),
+                None => Picked::Source(source),
+            });
         };
         cx.composition()
             .shader(name)
