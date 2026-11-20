@@ -1,8 +1,9 @@
 //! What a scene reports of itself to a host that asks for captures, and the camera a host may
 //! draw it through instead.
 
-use std::collections::HashSet;
+use std::collections::hash_map::Entry;
 
+use foldhash::HashMap;
 use lumen_3d::glam::Mat4;
 use lumen_3d::{Bounds, Camera, Projection};
 
@@ -66,60 +67,56 @@ impl Collected {
     pub(crate) fn captured(&mut self) -> (Vec<CapturedObject>, Vec<CapturedCamera>) {
         self.place_bounds();
         let singles = self.single_bounds();
-        let mut objects = Vec::new();
-        // A box with a material on each face is drawn in a part for each, which all say the same.
-        let mut seen = HashSet::new();
-        let mut report = |node: crate::node::NodeId, world: Mat4, bounds: Bounds| {
-            if bounds.is_empty() || !world.is_finite() {
-                return;
-            }
-            let world = world.to_cols_array();
-            let key = (
-                node,
-                world.map(f32::to_bits),
-                [
-                    bounds.min.x.to_bits(),
-                    bounds.min.y.to_bits(),
-                    bounds.min.z.to_bits(),
-                    bounds.max.x.to_bits(),
-                    bounds.max.y.to_bits(),
-                    bounds.max.z.to_bits(),
-                ],
-            );
-            if seen.insert(key) {
-                objects.push(CapturedObject {
-                    node,
-                    world,
-                    bounds: SceneBounds {
-                        min: bounds.min.to_array(),
-                        max: bounds.max.to_array(),
-                    },
-                });
-            }
-        };
+        let mut found: Vec<(crate::node::NodeId, Mat4, Bounds)> = Vec::new();
+        // Where in `found` each particle system's entry is, by the list that places its particles.
+        let mut systems: HashMap<u32, usize> = HashMap::default();
         for (index, (object, origin)) in self.scene.objects.iter().zip(&self.origins).enumerate() {
+            // The other parts of an object a node draws in several say what the first does.
+            if origin.extra_part {
+                continue;
+            }
             let Some(copies) = object.instanced else {
-                report(origin.node, object.world, object.bounds);
+                found.push((origin.node, object.world, object.bounds));
                 continue;
             };
-            match &self.lists[copies.list as usize].source {
+            let list = &self.lists[copies.list as usize];
+            match &list.source {
                 CopySource::Placements(placements) => {
                     let first = copies.first as usize;
                     let placed = &placements.matrices()[first..first + copies.count as usize];
                     for placement in placed {
                         let placement = copies.parent * *placement;
-                        report(
+                        found.push((
                             origin.node,
                             placement * object.world,
                             singles[index].transformed(&placement),
-                        );
+                        ));
                     }
                 }
-                CopySource::Particles(_) => {
-                    report(origin.node, copies.parent * object.world, object.bounds);
-                }
+                CopySource::Particles(_) => match systems.entry(copies.list) {
+                    Entry::Occupied(system) => {
+                        let (_, _, bounds) = &mut found[*system.get()];
+                        *bounds = bounds.union(object.bounds);
+                    }
+                    Entry::Vacant(system) => {
+                        system.insert(found.len());
+                        found.push((list.key.0, copies.parent, object.bounds));
+                    }
+                },
             }
         }
+        let objects = found
+            .into_iter()
+            .filter(|(_, world, bounds)| !bounds.is_empty() && world.is_finite())
+            .map(|(node, world, bounds)| CapturedObject {
+                node,
+                world: world.to_cols_array(),
+                bounds: SceneBounds {
+                    min: bounds.min.to_array(),
+                    max: bounds.max.to_array(),
+                },
+            })
+            .collect();
         let cameras = self
             .cameras
             .iter()

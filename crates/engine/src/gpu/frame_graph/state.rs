@@ -72,6 +72,8 @@ pub(super) struct RecordState {
     pub(super) captures: Vec<crate::gpu::SceneCapture>,
     /// What they placed in the frame being recorded, which is kept once it is.
     pub(super) pending_captures: Vec<crate::gpu::SceneCapture>,
+    /// The `render_3d`s, by node and the path that reached them, that `pending_captures` holds.
+    pub(super) pending_capture_renders: HashSet<(PathId, NodeId)>,
 }
 
 impl RecordState {

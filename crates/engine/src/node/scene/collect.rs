@@ -847,6 +847,9 @@ enum Extent {
 struct Origin {
     node: NodeId,
     extent: Extent,
+    /// Whether the object is a part after the first of one its node draws in several, such as
+    /// the face of a box that has its own material.
+    extra_part: bool,
 }
 
 /// A skin posed in the scene: where its joint matrices start in the scene's joints, the model
@@ -918,7 +921,11 @@ impl Collected {
         self.indices += u64::from(object.index_count);
         self.drawn += 1;
         self.scene.objects.push(object);
-        self.origins.push(Origin { node, extent });
+        self.origins.push(Origin {
+            node,
+            extent,
+            extra_part: false,
+        });
     }
 
     /// Adds the object that draws `solid`, placed by `world`.
@@ -943,7 +950,7 @@ impl Collected {
         extent: Extent,
         runs: Vec<Face>,
     ) -> crate::Result<()> {
-        for (indices, material) in runs {
+        for (part, (indices, material)) in runs.into_iter().enumerate() {
             let surface =
                 material_surface::<N>(cx, node_id, material, Material3dParams::default())?;
             self.push(
@@ -956,6 +963,7 @@ impl Collected {
                 },
                 extent,
             );
+            self.origins.last_mut().expect("just pushed").extra_part = part > 0;
         }
         Ok(())
     }
@@ -1102,7 +1110,7 @@ impl Collected {
                 match faces {
                     None => self.push(node_id, object, Extent::Local(UNIT_BOUNDS)),
                     Some(faces) => {
-                        for (indices, material) in runs(faces) {
+                        for (part, (indices, material)) in runs(faces).into_iter().enumerate() {
                             let surface = self.shape_surface(cx, node_id, material)?;
                             self.push(
                                 node_id,
@@ -1114,6 +1122,7 @@ impl Collected {
                                 },
                                 Extent::Local(UNIT_BOUNDS),
                             );
+                            self.origins.last_mut().expect("just pushed").extra_part = part > 0;
                         }
                     }
                 }

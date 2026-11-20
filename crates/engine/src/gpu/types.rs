@@ -99,10 +99,11 @@ pub struct SceneCapture {
     pub template: Option<String>,
     /// The objects the scene draws, in the order it walks them: one for each of the scene's nodes
     /// that makes a drawn object, and one for each copy of it that an `instance_3d` places, with
-    /// the copy's own world matrix and bounds. A `particles_3d` makes one object, whose bounds
-    /// cover all its particles and whose world matrix places the particle system. An object
-    /// drawn in several parts, such as a box with a material on each face, is reported once, and
-    /// one with no extent is left out.
+    /// the copy's own world matrix and bounds, even where copies are placed alike. A
+    /// `particles_3d` makes one object, whose bounds cover all its particles and whose world
+    /// matrix places the particle system, whatever the objects it scatters are. An object drawn
+    /// in several parts, such as a box with a material on each face, is reported once, and one
+    /// with no extent is left out.
     pub objects: Vec<CapturedObject>,
     /// Every camera the scene holds, in the order it walks them. The first is the one the render
     /// draws through unless a camera override is set.

@@ -512,6 +512,7 @@ impl FrameGraph {
         let mut rebinds = 0;
         loop {
             self.state.pending_captures.clear();
+            self.state.pending_capture_renders.clear();
             self.drop_pending();
             let generation = font_generation(media);
             if self.state.font_generation != generation
@@ -1089,8 +1090,9 @@ impl<'a> FrameCx<'a> {
         self.settings.camera_override
     }
 
-    /// Records what the `render_3d` `render` placed, if captures are on and the walk isn't one of
-    /// the samples of a `motion_blur` after the first, which would report the frame again.
+    /// Records what the `render_3d` `render` placed, if captures are on and the frame hasn't yet
+    /// captured it on this path. A `motion_blur` that samples walks its source again for each
+    /// sample, and a `render_3d` that only some samples reach is captured at the first.
     #[cfg(feature = "3d")]
     pub(crate) fn capture_scene(
         &mut self,
@@ -1100,7 +1102,9 @@ impl<'a> FrameCx<'a> {
             Vec<crate::gpu::CapturedCamera>,
         ),
     ) {
-        if !self.settings.capture_scenes || self.sample != 0 {
+        if !self.settings.capture_scenes
+            || !self.st.pending_capture_renders.insert((self.path, render))
+        {
             return;
         }
         let (objects, cameras) = capture();

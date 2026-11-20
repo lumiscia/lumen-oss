@@ -179,6 +179,93 @@ fn an_instance_3d_reports_each_copy_of_its_objects() {
     );
 }
 
+#[test]
+fn identical_copies_and_the_parts_of_a_box_are_each_reported_as_what_they_are() {
+    // Three copies placed alike, of a box that draws in a part for each of two materials.
+    let composition: Composition = scene(
+        SIZE,
+        json!([
+            { "id": 5, "type": "material_3d", "params": { "color": RED } },
+            { "id": 1, "type": "shape_3d", "in": { "top_material": 5 } },
+            { "id": 2, "type": "instance_3d", "params": { "count": 3 }, "in": { "scene": 1 } },
+            { "id": 100, "type": "render_3d", "in": { "scene": 2 } },
+        ]),
+    )
+    .into();
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    renderer.set_scene_capture(true);
+    draw(&mut renderer, &composition, 0.0);
+
+    let [capture] = renderer
+        .take_scene_captures()
+        .try_into()
+        .expect("one capture");
+    let nodes: Vec<_> = capture.objects.iter().map(|object| object.node).collect();
+    assert_eq!(nodes, [NodeId::new(1); 3]);
+}
+
+#[test]
+fn a_particles_3d_is_one_object_covering_all_its_particles() {
+    let composition: Composition = scene(
+        SIZE,
+        json!([
+            { "id": 1, "type": "shape_3d", "params": { "position": [-1, 0, 0] } },
+            { "id": 2, "type": "shape_3d", "params": { "position": [1, 0, 0] } },
+            merge(3, &[1, 2], json!({})),
+            { "id": 4, "type": "particles_3d", "params": { "count": 4, "speed": 0 },
+              "in": { "object": 3 } },
+            { "id": 100, "type": "render_3d", "in": { "scene": 4 } },
+        ]),
+    )
+    .frames(30)
+    .into();
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    renderer.set_scene_capture(true);
+    draw(&mut renderer, &composition, 0.0);
+
+    let [capture] = renderer
+        .take_scene_captures()
+        .try_into()
+        .expect("one capture");
+    let [system] = capture.objects.as_slice() else {
+        panic!("one object, got {:?}", capture.objects);
+    };
+    assert_eq!(system.node, NodeId::new(4));
+    assert!(system.bounds.min[0] <= -1.5 && system.bounds.max[0] >= 1.5);
+}
+
+#[test]
+fn a_render_only_a_later_motion_blur_sample_reaches_is_captured_once() {
+    // The switch shows the background at the first sample and the render at the second.
+    let composition: Composition = scene(
+        SIZE,
+        json!([
+            { "id": 1, "type": "background", "params": { "paint": [200, 210, 220, 255] } },
+            { "id": 2, "type": "shape_3d" },
+            { "id": 3, "type": "render_3d", "in": { "scene": 2 } },
+            { "id": 4, "type": "switch", "params": { "selected_layer": "=if(frame < 0.9, 0, 1)" },
+              "in": { "layers": [1, 3] } },
+            { "id": 5, "type": "motion_blur", "params": { "samples": 2, "shutter": 180.0 },
+              "in": { "source": 4 } },
+        ]),
+    )
+    .frames(4)
+    .into();
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    renderer.set_scene_capture(true);
+    draw(&mut renderer, &composition, 1.0);
+
+    let renders: Vec<_> = renderer
+        .take_scene_captures()
+        .iter()
+        .map(|capture| capture.render)
+        .collect();
+    assert_eq!(renders, [NodeId::new(3)]);
+}
+
 /// `two_shapes`, drawn through a camera at `eye` looking at the origin, as the scene's own.
 fn viewed_from(eye: [f64; 3]) -> Scene {
     two_shapes(&[camera(3, json!({ "position": eye, "look_at": true }))])
