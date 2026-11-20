@@ -1,10 +1,12 @@
 //! Evaluates a scene's nodes at a frame into what `render_3d` draws.
 
 mod camera;
+mod capture;
 mod instance;
 mod particles;
 
 pub(crate) use camera::find_camera;
+pub(crate) use capture::override_camera;
 pub(crate) use instance::Placements;
 pub(super) use instance::{CopyList, CopySource};
 pub(super) use particles::instance_buffer as particle_buffer;
@@ -19,8 +21,8 @@ use lumen_3d::model::{
     Material, Model, ModelError, ModelScene, Playback, Reach, SkinBounds, Texture,
 };
 use lumen_3d::{
-    Blending, Bounds, BoxFace, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive, Scene,
-    Shadow, Surface, Transform,
+    Blending, Bounds, BoxFace, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive,
+    Scene, Shadow, Surface, Transform,
 };
 use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
@@ -840,6 +842,16 @@ enum Extent {
     Skin(usize),
 }
 
+/// The node that made an object, and what the object covers.
+#[derive(Clone, Copy)]
+struct Origin {
+    node: NodeId,
+    extent: Extent,
+    /// Whether the object is a part after the first of one its node draws in several, such as
+    /// the face of a box that has its own material.
+    extra_part: bool,
+}
+
 /// A skin posed in the scene: where its joint matrices start in the scene's joints, the model
 /// matrix they are placed by, its joints' bounds before posing, and the largest size of the
 /// weights morphing the primitives it moves.
@@ -863,7 +875,10 @@ pub(crate) struct Collected {
     /// Objects the scene draws, counting each copy.
     drawn: usize,
     /// One per object, from which [`Self::place_bounds`] works out its bounds.
-    extents: Vec<Extent>,
+    origins: Vec<Origin>,
+    /// Every camera the scene holds, in the order they are reached, with the node of each. The
+    /// first is the scene's camera.
+    pub(super) cameras: Vec<(NodeId, Camera)>,
     skins: Vec<PosedSkin>,
     render_id: NodeId,
     /// Scene nodes walked, counting a node each time it is reached.
@@ -888,7 +903,8 @@ impl Collected {
             light_nodes: Vec::new(),
             lists: Vec::new(),
             drawn: 0,
-            extents: Vec::new(),
+            origins: Vec::new(),
+            cameras: Vec::new(),
             skins: Vec::new(),
             render_id,
             reached: 0,
@@ -900,22 +916,28 @@ impl Collected {
         }
     }
 
-    fn push(&mut self, object: Object<GpuMesh, TexRef>, extent: Extent) {
+    /// Adds `object`, which `node` made.
+    fn push(&mut self, node: NodeId, object: Object<GpuMesh, TexRef>, extent: Extent) {
         self.indices += u64::from(object.index_count);
         self.drawn += 1;
         self.scene.objects.push(object);
-        self.extents.push(extent);
+        self.origins.push(Origin {
+            node,
+            extent,
+            extra_part: false,
+        });
     }
 
     /// Adds the object that draws `solid`, placed by `world`.
     fn push_solid(
         &mut self,
+        node: NodeId,
         world: Mat4,
         surface: Surface<TexRef>,
         solid: super::solid_mesh::SolidMesh,
     ) {
         let (object, extent) = solid_object(world, surface, solid);
-        self.push(object, extent);
+        self.push(node, object, extent);
     }
 
     /// Adds `object` once for each of `runs`, drawing the indices the run covers with the run's
@@ -928,10 +950,11 @@ impl Collected {
         extent: Extent,
         runs: Vec<Face>,
     ) -> crate::Result<()> {
-        for (indices, material) in runs {
+        for (part, (indices, material)) in runs.into_iter().enumerate() {
             let surface =
                 material_surface::<N>(cx, node_id, material, Material3dParams::default())?;
             self.push(
+                node_id,
                 Object {
                     first_index: indices.start,
                     index_count: indices.len() as u32,
@@ -940,6 +963,7 @@ impl Collected {
                 },
                 extent,
             );
+            self.origins.last_mut().expect("just pushed").extra_part = part > 0;
         }
         Ok(())
     }
@@ -948,6 +972,20 @@ impl Collected {
     /// joints that move its vertices, once for every object it moves, and an instanced object's
     /// around all its copies.
     pub(super) fn place_bounds(&mut self) {
+        let singles = self.single_bounds();
+        for (object, bounds) in self.scene.objects.iter_mut().zip(singles) {
+            object.bounds = match object.instanced {
+                None => bounds,
+                Some(copies) => self.lists[copies.list as usize]
+                    .source
+                    .bounds(bounds, (copies.first, copies.count))
+                    .transformed(&copies.parent),
+            };
+        }
+    }
+
+    /// What each object covers in the world, an instanced object's before its copies place it.
+    pub(super) fn single_bounds(&self) -> Vec<Bounds> {
         let joints = &self.scene.joints;
         let skins: Vec<Bounds> = self
             .skins
@@ -970,19 +1008,15 @@ impl Collected {
                     )
             })
             .collect();
-        for (object, extent) in self.scene.objects.iter_mut().zip(&self.extents) {
-            let bounds = match *extent {
+        self.scene
+            .objects
+            .iter()
+            .zip(&self.origins)
+            .map(|(object, origin)| match origin.extent {
                 Extent::Local(bounds) => bounds.transformed(&object.world),
                 Extent::Skin(skin) => skins[skin],
-            };
-            object.bounds = match object.instanced {
-                None => bounds,
-                Some(copies) => self.lists[copies.list as usize]
-                    .source
-                    .bounds(bounds, (copies.first, copies.count))
-                    .transformed(&copies.parent),
-            };
-        }
+            })
+            .collect()
     }
 
     /// Adds the scene `node_id` outputs, walking its nodes depth first in input order. A scene
@@ -1074,11 +1108,12 @@ impl Collected {
                     instanced: None,
                 };
                 match faces {
-                    None => self.push(object, Extent::Local(UNIT_BOUNDS)),
+                    None => self.push(node_id, object, Extent::Local(UNIT_BOUNDS)),
                     Some(faces) => {
-                        for (indices, material) in runs(faces) {
+                        for (part, (indices, material)) in runs(faces).into_iter().enumerate() {
                             let surface = self.shape_surface(cx, node_id, material)?;
                             self.push(
+                                node_id,
                                 Object {
                                     first_index: indices.start,
                                     index_count: indices.len() as u32,
@@ -1087,6 +1122,7 @@ impl Collected {
                                 },
                                 Extent::Local(UNIT_BOUNDS),
                             );
+                            self.origins.last_mut().expect("just pushed").extra_part = part > 0;
                         }
                     }
                 }
@@ -1123,7 +1159,7 @@ impl Collected {
                         instanced: None,
                     };
                     match text.side_material {
-                        None => self.push(object, Extent::Local(local)),
+                        None => self.push(node_id, object, Extent::Local(local)),
                         Some(_) => self.push_runs::<super::Text3d>(
                             cx,
                             node_id,
@@ -1157,7 +1193,7 @@ impl Collected {
                 {
                     let world = world * Mat4::from_scale(Vec3::new(1.0, 1.0, depth));
                     match extrude.side_material {
-                        None => self.push_solid(world, surface, solid),
+                        None => self.push_solid(node_id, world, surface, solid),
                         Some(_) => {
                             let (object, extent) = solid_object(world, surface, solid);
                             self.push_runs::<super::Extrude3d>(
@@ -1189,7 +1225,7 @@ impl Collected {
                 if let Some(solid) =
                     super::solid_mesh::lathe_mesh(cx, node_id, geometry.node, &params)?
                 {
-                    self.push_solid(world, surface, solid);
+                    self.push_solid(node_id, world, surface, solid);
                 }
             }
             NodeKind::ImagePlane3d(plane) => {
@@ -1240,6 +1276,7 @@ impl Collected {
                     max: Vec3::new(right - 0.5, 0.5 - top, 0.0),
                 };
                 self.push(
+                    node_id,
                     Object {
                         world,
                         mesh,
@@ -1262,9 +1299,9 @@ impl Collected {
             }
             NodeKind::Camera3d(camera) => {
                 let params = camera.params.eval(&ctx)?;
-                self.scene
-                    .camera
-                    .get_or_insert_with(|| camera::camera_3d(&params, parent));
+                let camera = camera::camera_3d(&params, parent);
+                self.scene.camera.get_or_insert(camera);
+                self.cameras.push((node_id, camera));
             }
             NodeKind::Light3d(light) => {
                 let params = light.params.eval(&ctx)?;
@@ -1420,6 +1457,7 @@ impl Collected {
             && let Some(camera) = camera::model_camera(scene, &pose, camera, root)
         {
             self.scene.camera.get_or_insert(camera);
+            self.cameras.push((node.id, camera));
         }
         // Each skin's joint matrices start, in the pose, at the first joint of the primitives it
         // moves, and later skins' start later.
@@ -1479,6 +1517,7 @@ impl Collected {
                 None => Extent::Local(local),
             };
             self.push(
+                node.id,
                 Object {
                     world,
                     mesh: model.mesh,

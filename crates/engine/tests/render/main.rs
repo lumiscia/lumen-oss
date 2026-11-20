@@ -46,6 +46,8 @@ mod repeat;
 #[cfg(feature = "3d")]
 mod scene;
 #[cfg(feature = "3d")]
+mod scene_capture;
+#[cfg(feature = "3d")]
 mod scene_environment;
 #[cfg(feature = "3d")]
 mod scene_mips;

@@ -448,6 +448,12 @@ pub(crate) struct RecordSettings {
     pub(crate) max_image_side: u32,
     /// Whether to time each node's own recording, which `take_node_timing` returns.
     pub(crate) profile_nodes: bool,
+    /// Whether each `render_3d` reports what it places, which `take_scene_captures` returns.
+    #[cfg_attr(not(feature = "3d"), expect(dead_code))]
+    pub(crate) capture_scenes: bool,
+    /// The camera every `render_3d` draws through in place of its scene's own.
+    #[cfg_attr(not(feature = "3d"), expect(dead_code))]
+    pub(crate) camera_override: Option<crate::gpu::SceneCamera>,
     /// Device pixels per canvas pixel, which every raster is recorded at.
     pub(crate) render_scale: f64,
 }
@@ -505,6 +511,8 @@ impl FrameGraph {
         }
         let mut rebinds = 0;
         loop {
+            self.state.pending_captures.clear();
+            self.state.pending_capture_renders.clear();
             self.drop_pending();
             let generation = font_generation(media);
             if self.state.font_generation != generation
@@ -553,6 +561,8 @@ impl FrameGraph {
                     self.drop_pending();
                 }
                 self.resolve(raster)?;
+                let captured = std::mem::take(&mut self.state.pending_captures);
+                self.state.captures.extend(captured);
                 self.state.trim(&mut self.recorder, &self.budgets);
                 return Ok(bound);
             }
@@ -861,6 +871,11 @@ impl FrameGraph {
         self.state.profile.take()
     }
 
+    /// The scenes `render_3d` nodes have placed in the frames recorded since the last call.
+    pub(crate) fn take_scene_captures(&mut self) -> Vec<crate::gpu::SceneCapture> {
+        std::mem::take(&mut self.state.captures)
+    }
+
     /// Sets what each cache recording fills keeps, which takes effect as frames trim them.
     pub(crate) fn set_budgets(&mut self, budgets: super::CacheBudgets) {
         self.budgets = budgets;
@@ -1067,6 +1082,38 @@ impl<'a> FrameCx<'a> {
     #[cfg(all(feature = "3d", feature = "test-hooks"))]
     pub(crate) fn count_scene_walk(&mut self) {
         self.st.scene_walks += 1;
+    }
+
+    /// The camera `render_3d` nodes draw through in place of their scenes' own, if one is set.
+    #[cfg(feature = "3d")]
+    pub(crate) fn camera_override(&self) -> Option<crate::gpu::SceneCamera> {
+        self.settings.camera_override
+    }
+
+    /// Records what the `render_3d` `render` placed, if captures are on and the frame hasn't yet
+    /// captured it on this path. A `motion_blur` that samples walks its source again for each
+    /// sample, and a `render_3d` that only some samples reach is captured at the first.
+    #[cfg(feature = "3d")]
+    pub(crate) fn capture_scene(
+        &mut self,
+        render: NodeId,
+        capture: impl FnOnce() -> (
+            Vec<crate::gpu::CapturedObject>,
+            Vec<crate::gpu::CapturedCamera>,
+        ),
+    ) {
+        if !self.settings.capture_scenes
+            || !self.st.pending_capture_renders.insert((self.path, render))
+        {
+            return;
+        }
+        let (objects, cameras) = capture();
+        self.st.pending_captures.push(crate::gpu::SceneCapture {
+            render,
+            template: self.scope.template_name().map(str::to_string),
+            objects,
+            cameras,
+        });
     }
 
     /// The most glyphs a text node may draw.
