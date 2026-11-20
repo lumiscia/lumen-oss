@@ -4350,9 +4350,11 @@ export interface NodeOutputPortKindByKind {
   readonly "clip": { readonly "output": "raster" };
   readonly "color_correct": { readonly "output": "raster" };
   readonly "color_grade": { readonly "output": "raster" };
+  readonly "corner_pin": { readonly "output": "raster" };
   readonly "crop": { readonly "output": "raster" };
   readonly "directional_blur": { readonly "output": "raster" };
   readonly "displacement_map": { readonly "output": "raster" };
+  readonly "erode_dilate": { readonly "output": "raster" };
   readonly "exposure": { readonly "output": "raster" };
   readonly "extrude_3d": { readonly "output": "scene" };
   readonly "fill_2d": { readonly "output": "drawing" };
@@ -4364,6 +4366,7 @@ export interface NodeOutputPortKindByKind {
   readonly "image_plane_3d": { readonly "output": "scene" };
   readonly "instance_3d": { readonly "output": "scene" };
   readonly "lathe_3d": { readonly "output": "scene" };
+  readonly "lens_distortion": { readonly "output": "raster" };
   readonly "levels": { readonly "output": "raster" };
   readonly "light_3d": { readonly "output": "scene" };
   readonly "material_3d": { readonly "output": "material" };
@@ -4394,6 +4397,7 @@ export interface NodeOutputPortKindByKind {
   readonly "stroke_2d": { readonly "output": "drawing" };
   readonly "switch": { readonly "output": "raster" };
   readonly "text": { readonly "output": "raster" };
+  readonly "text_2d": { readonly "output": "geometry" };
   readonly "text_3d": { readonly "output": "scene" };
   readonly "time_remap": { readonly "output": "raster" };
   readonly "transform": { readonly "output": "raster" };
