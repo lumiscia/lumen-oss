@@ -1231,7 +1231,10 @@ impl Collected {
         let ctx = DelegateEvalContext::new(node_id, &expr);
         match node {
             NodeKind::Merge3d(merge) => {
-                let world = parent * placement(&merge.params.eval(&ctx)?.placement).matrix();
+                if !merge.visible(&expr)? {
+                    return Ok(None);
+                }
+                let world = parent * placement(&merge.params.placement.eval(&ctx)?).matrix();
                 return Ok(Some(
                     merge
                         .objects

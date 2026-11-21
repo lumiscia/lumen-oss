@@ -7043,6 +7043,20 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "vec3"
+                  },
+                  "visible": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Whether the merge and everything wired into it is in the scene. While false, nothing\nreached only through it is evaluated, drawn or decoded: objects, lights and cameras\nalike.",
+                    "title": "Visible",
+                    "x-lumen-kind": "bool"
                   }
                 },
                 "type": "object"

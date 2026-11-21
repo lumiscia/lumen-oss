@@ -1,7 +1,9 @@
 //! `render_3d`: where the camera puts objects, what hides what, and when its output is kept.
 
 use lumen_3d::glam::Vec3;
-use lumen_engine::{composition::Composition, gpu::RenderTarget};
+use lumen_engine::{
+    composition::Composition, gpu::RenderTarget, media::collect_frame_requirements,
+};
 use serde_json::{Value, json};
 
 use crate::support::scene::{
@@ -365,6 +367,77 @@ fn a_merge_3d_transform_places_its_children() {
             .into(),
         ),
     )]);
+}
+
+#[test]
+fn a_merge_3d_that_is_not_visible_leaves_the_scene_with_its_camera() {
+    let green = || {
+        flat(
+            2,
+            12,
+            json!({ "position": [1, 0, 0] }),
+            json!({ "color": GREEN }),
+        )
+    };
+    // A red box and a camera above the scene, in a merge beside the green box.
+    let scene = |visible: Value| {
+        let red = flat(
+            1,
+            11,
+            json!({ "position": [-1, 0, 0] }),
+            json!({ "color": RED }),
+        );
+        let camera = json!({ "id": 3, "type": "camera_3d",
+            "params": { "position": [0, 3, 5], "look_at": true } });
+        let mut nodes = listed(&[red, green()], camera);
+        nodes.push(merge(4, &[1, 3], json!({ "visible": visible })));
+        nodes.push(merge(5, &[4, 2], json!({})));
+        render_3d(nodes).frames(2)
+    };
+    let green_alone = || Expect::Matches(render_3d(green().to_vec()).frames(2).into());
+    check(vec![
+        Case::new("hidden", scene(json!(false)), green_alone()),
+        Case::new(
+            "hidden from frame 1",
+            scene(json!("=frame < 1")),
+            Expect::PerFrame(vec![
+                Expect::Matches(scene(json!(true)).into()),
+                green_alone(),
+            ]),
+        )
+        .frames([0.0, 1.0]),
+    ]);
+}
+
+#[test]
+fn a_merge_3d_that_is_not_visible_reads_nothing_wired_into_it() {
+    // A plane showing an image, in a merge that is hidden on frame 0.
+    let mut nodes = vec![plate(10)];
+    nodes.extend(framed(10));
+    nodes.push(merge(4, &[3], json!({ "visible": "=frame >= 1" })));
+    let composition: Composition = render_3d(nodes).frames(2).into();
+
+    let media = solid_plate(TestMedia::default(), "red", RED);
+    let images = |frame| {
+        collect_frame_requirements(&composition, &media, frame)
+            .unwrap()
+            .images
+    };
+    assert!(images(0).is_empty(), "nothing is decoded while hidden");
+    assert_eq!(images(1), ["plate"]);
+
+    // Without the image, only the frame that reaches the plane fails.
+    let render = |frame| {
+        let rendered = gpu().renderer().render(
+            &composition,
+            frame,
+            &TestMedia::default(),
+            RenderTarget::Owned,
+        );
+        rendered.map(|_| ()).map_err(|error| error.to_string())
+    };
+    assert_eq!(render(0.0), Ok(()));
+    assert!(render(1.0).is_err(), "the shown plane reads its image");
 }
 
 #[test]
