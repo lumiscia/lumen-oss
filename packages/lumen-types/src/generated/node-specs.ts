@@ -730,8 +730,9 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { id: "position", name: "Position", kind: "vec3", description: "Position in world units along X, Y and Z, in the parent's space.", defaultValue: [0, 0, 0], constraints: { step: 0.1 } },
       { id: "rotation", name: "Rotation", kind: "vec3", description: "Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned\nX, then roll about the turned Z.", defaultValue: [0, 0, 0], constraints: { step: 1 } },
       { id: "scale", name: "Scale", kind: "vec3", description: "Scale multiplier along X, Y and Z, applied before the rotation.", defaultValue: [1, 1, 1], constraints: { step: 0.1 } },
+      { id: "visible", name: "Visible", kind: "bool", description: "Whether the merge and everything wired into it is in the scene. While false, nothing\nreached only through it is evaluated, drawn or decoded: objects, lights and cameras\nalike.", defaultValue: true },
     ],
-    defaultParams: { matte: "", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+    defaultParams: { matte: "", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], visible: true },
   },
   {
     kind: "model_3d",

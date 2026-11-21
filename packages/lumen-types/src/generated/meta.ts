@@ -2907,6 +2907,12 @@ export interface Merge3dNode extends CompositionNodeBase<"merge_3d"> {
     readonly rotation?: ExpressionValue<Vec3>;
     /** Scale multiplier along X, Y and Z, applied before the rotation. */
     readonly scale?: ExpressionValue<Vec3>;
+    /**
+     * Whether the merge and everything wired into it is in the scene. While false, nothing
+     * reached only through it is evaluated, drawn or decoded: objects, lights and cameras
+     * alike.
+     */
+    readonly visible?: ExpressionValue<boolean>;
   };
 }
 

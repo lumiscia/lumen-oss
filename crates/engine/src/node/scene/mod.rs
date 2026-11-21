@@ -729,8 +729,13 @@ pub struct Light3d {
     pub params: Light3dParamsDelegate,
 }
 
-#[derive(Debug, Clone, Default, lumen_macros::Delegate)]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Merge3dParams {
+    /// Whether the merge and everything wired into it is in the scene. While false, nothing
+    /// reached only through it is evaluated, drawn or decoded: objects, lights and cameras
+    /// alike.
+    #[meta()]
+    pub visible: bool,
     /// The matte, by a name `render_3d`'s `mattes` lists, of every object inside it that names
     /// none of its own, for that render's `matte` output. Empty passes on the matte of the
     /// nearest `merge_3d`, `instance_3d` or `particles_3d` holding it that names one, or none.
@@ -738,6 +743,16 @@ pub struct Merge3dParams {
     pub matte: String,
     #[meta(flatten)]
     pub placement: Placement3d,
+}
+
+impl Default for Merge3dParams {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            matte: String::new(),
+            placement: Placement3d::default(),
+        }
+    }
 }
 
 /// Groups scenes into one, placed together by its transform.
@@ -755,6 +770,14 @@ pub struct Merge3d {
 
     #[input(scene, optional, variadic)]
     pub objects: Vec<OutputRef>,
+}
+
+impl Merge3d {
+    /// Whether the merge is in the scene at `ctx`'s frame.
+    pub(crate) fn visible(&self, ctx: &crate::expr::ExpressionContext<'_>) -> crate::Result<bool> {
+        crate::node::DelegateEvalContext::new(self.id, ctx)
+            .eval_field("visible", &self.params.visible)
+    }
 }
 
 #[derive(
