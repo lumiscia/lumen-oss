@@ -12,7 +12,7 @@ use serde_json::Value;
 use crate::{
     error::{
         At, DocumentError, ExpressionError, GraphValidationError, LumenError, MediaError,
-        MediaReason, PropertyError, RenderError, Warning, WarningKind,
+        MediaReason, PropertyError, RenderError, Warning, WarningKind, WrongInputKind,
     },
     media::MediaLocation,
     node::NodeId,
@@ -590,12 +590,13 @@ fn locate(error: &LumenError, document: &Value) -> (String, Option<NodeId>) {
                 ),
                 None => at(place, "/nodes"),
             },
-            GraphValidationError::WrongInputKind {
-                at: place,
-                port,
-                source_node,
-                ..
-            } => {
+            GraphValidationError::WrongInputKind(wrong) => {
+                let WrongInputKind {
+                    at: place,
+                    port,
+                    source_node,
+                    ..
+                } = &**wrong;
                 let scene = template_scene(document, place.template.as_deref());
                 match place
                     .node
@@ -742,15 +743,17 @@ mod tests {
             { "from_node": 1, "to_node": 3, "to_port": "source" },
             { "from_node": 2, "to_node": 3, "to_port": "source" },
         ] });
-        let error = LumenError::from(GraphValidationError::WrongInputKind {
-            at: At::node(NodeId::new(3)),
-            port: "source",
-            source_node: NodeId::new(2),
-            source_output: None,
-            source_template: None,
-            expected: crate::node::PortKind::Scene,
-            actual: crate::node::PortKind::Raster,
-        });
+        let error = LumenError::from(GraphValidationError::WrongInputKind(Box::new(
+            crate::error::WrongInputKind {
+                at: At::node(NodeId::new(3)),
+                port: "source",
+                source_node: NodeId::new(2),
+                source_output: None,
+                source_template: None,
+                expected: crate::node::PortKind::Scene,
+                actual: crate::node::PortKind::Raster,
+            },
+        )));
         let diagnostic = Diagnostic::from_error(&error, &document);
         assert_eq!(diagnostic.path, "/connections/1");
         assert_eq!(diagnostic.node, Some(NodeId::new(3)));

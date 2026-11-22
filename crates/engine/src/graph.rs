@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
-    error::{At, DocumentError, GraphValidationError, LumenError},
+    error::{At, DocumentError, GraphValidationError, LumenError, WrongInputKind},
     gpu::frame_graph::RecordNode,
     node::{
         InputPortDef, Node, NodeId, NodeKind, OutputPort, OutputPortDef, OutputRef, OutputSet,
@@ -279,7 +279,7 @@ fn check_inputs<'g>(
                 && !takes(input, source.kind)
             {
                 errors.push(
-                    GraphValidationError::WrongInputKind {
+                    GraphValidationError::WrongInputKind(Box::new(WrongInputKind {
                         at: At::node(node.id()),
                         port: input.name,
                         source_node: read.node,
@@ -287,7 +287,7 @@ fn check_inputs<'g>(
                         source_template: source.template.map(Box::from),
                         expected: input.kind,
                         actual: source.kind,
-                    }
+                    }))
                     .into(),
                 );
             }
