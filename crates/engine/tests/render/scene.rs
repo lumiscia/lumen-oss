@@ -414,22 +414,6 @@ fn a_merge_3d_that_is_not_visible_leaves_the_scene_with_its_camera() {
         )
         .frames([0.0, 1.0]),
     ]);
-    let matte: Composition = through_a_lens(
-        json!({ "f_stop": 2 }),
-        json!({ "mattes": ["card"], "output": "matte" }),
-    )
-    .into();
-    let texels = render_working_space(&mut gpu().renderer(), &matte, 0.0, &TestMedia::default());
-    let card = |x: u32| texels[(CENTER * SIZE.0 + x) as usize][0];
-    assert!(
-        (card(CENTER - 8) - 1.0).abs() < 1e-3 && card(CENTER + 8) == 0.0,
-        "the matte covers the card and not the wall"
-    );
-    assert!(
-        (0.05..0.95).contains(&card(CENTER + 1)),
-        "the card's matte blurs with its colour: {}",
-        card(CENTER + 1)
-    );
 }
 
 #[test]

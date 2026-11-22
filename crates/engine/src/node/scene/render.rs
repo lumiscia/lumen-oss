@@ -1383,8 +1383,10 @@ impl Render3d {
             runs,
         } = tables;
 
-        let mut lit_draws = Vec::with_capacity(draws.runs.len());
-        for (run, &(rows, instances)) in draws.runs.iter().zip(&runs) {
+        let lens = lens_samples(&camera, params.dof_samples);
+        // A pinhole records each run as it is built; a lens keeps them to record once per view.
+        let mut lit_draws = Vec::with_capacity(if lens.is_empty() { 0 } else { draws.runs.len() });
+        for (drawn, (run, &(rows, instances))) in draws.runs.iter().zip(&runs).enumerate() {
             let depth_test = if run.key.blend {
                 DepthTest::Read
             } else {
@@ -1465,23 +1467,20 @@ impl Render3d {
                 bindings.push((10 + slot, Res::Tex(texture)));
                 bindings.push((15 + slot, Res::Sampler(sampler)));
             }
-            lit_draws.push(LitDraw {
+            let draw = LitDraw {
                 program,
                 bindings,
                 vertices: run.vertices,
                 instances: run.instances,
-            });
+            };
+            if lens.is_empty() {
+                record_lit(cx, &draw, drawn, &targets, depth);
+            } else {
+                lit_draws.push(draw);
+            }
         }
         let background = environment.as_ref().filter(|_| background);
-        let lens = lens_samples(&camera, params.dof_samples);
         if lens.is_empty() {
-            draw_lit(
-                cx,
-                &mut lit_draws,
-                (globals, environment_uniform),
-                &targets,
-                depth,
-            );
             if let Some(loaded) = background {
                 background_pass(cx, loaded, globals, &environment_bindings, color, &draws)?;
             }
@@ -1555,22 +1554,34 @@ fn draw_lit(
                 _ => {}
             }
         }
-        let load = if drawn == 0 {
-            TargetLoad::Clear
-        } else {
-            TargetLoad::Load
-        };
-        cx.rec.draw_targets_with_depth(
-            draw.program,
-            &draw.bindings,
-            targets,
-            load,
-            depth,
-            load,
-            draw.vertices,
-            draw.instances,
-        );
+        record_lit(cx, draw, drawn, targets, depth);
     }
+}
+
+/// Records the run `draw`, the one numbered `drawn` of the scene, which clears the targets and
+/// depth when it is the first.
+fn record_lit(
+    cx: &mut FrameCx<'_>,
+    draw: &LitDraw,
+    drawn: usize,
+    targets: &[TexRef],
+    depth: TexRef,
+) {
+    let load = if drawn == 0 {
+        TargetLoad::Clear
+    } else {
+        TargetLoad::Load
+    };
+    cx.rec.draw_targets_with_depth(
+        draw.program,
+        &draw.bindings,
+        targets,
+        load,
+        depth,
+        load,
+        draw.vertices,
+        draw.instances,
+    );
 }
 
 /// The places on `camera`'s lens that `render_3d` draws `samples` views from for its depth of

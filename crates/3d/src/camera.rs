@@ -130,12 +130,17 @@ impl Camera {
 
     /// World to clip space from the place `offset` along the camera's X and Y on its lens, in world
     /// units, with the view sheared off its axis so that the plane at the lens's focus distance
-    /// lands where it does from the centre.
+    /// lands where it does from the centre. Scale inherited by the camera does not change the
+    /// lens's size or focus in the world.
     pub fn lens_view_projection(&self, aspect: f32, offset: Vec2) -> Mat4 {
         let projection = self.projection_matrix(aspect);
+        let scale = self.scale();
+        // The view measures along the camera's scaled axes.
+        let offset = offset / scale.truncate();
+        let focus = self.lens.focus_distance / scale.z;
         // Clip space keeps the distance along the view in w, so moving x and y by a multiple of w
         // moves each depth by the same amount on screen.
-        let slope = offset / self.lens.focus_distance;
+        let slope = offset / focus;
         let shear = Mat4::from_cols(
             glam::Vec4::X,
             glam::Vec4::Y,
@@ -153,7 +158,20 @@ impl Camera {
     /// Where the place `offset` on the lens is in world space, as [`Self::lens_view_projection`]
     /// takes it.
     pub fn lens_position(&self, offset: Vec2) -> Vec3 {
-        self.world.transform_point3(offset.extend(0.0))
+        let axis = |axis: glam::Vec4, fallback: Vec3| axis.truncate().normalize_or(fallback);
+        self.position()
+            + axis(self.world.x_axis, Vec3::X) * offset.x
+            + axis(self.world.y_axis, Vec3::Y) * offset.y
+    }
+
+    /// How far each of the camera's axes stretches a world unit.
+    fn scale(&self) -> Vec3 {
+        Vec3::new(
+            self.world.x_axis.truncate().length(),
+            self.world.y_axis.truncate().length(),
+            self.world.z_axis.truncate().length(),
+        )
+        .max(Vec3::splat(1e-6))
     }
 
     pub fn position(&self) -> Vec3 {
@@ -236,5 +254,46 @@ mod tests {
         }
         assert!(spread > 0.05, "{spread}");
         assert_eq!(camera.lens.samples(1), vec![Vec2::ZERO]);
+    }
+
+    #[test]
+    fn a_scaled_parent_leaves_the_lens_the_same_size_and_focus_in_the_world() {
+        let lens = Lens {
+            aperture: 0.4,
+            focus_distance: 4.0,
+            ..Lens::PINHOLE
+        };
+        let plain = Camera {
+            world: crate::look_at(Vec3::new(1.0, 2.0, 6.0), Vec3::ZERO),
+            lens,
+            ..Camera::default()
+        };
+        let scaled = Camera {
+            world: Mat4::from_scale(Vec3::splat(2.0))
+                * crate::look_at(Vec3::new(0.5, 1.0, 3.0), Vec3::ZERO),
+            ..plain
+        };
+        let focused = plain.world.transform_point3(Vec3::new(0.7, 0.35, -4.0));
+        for offset in [Vec2::new(0.2, 0.0), Vec2::new(-0.1, 0.15)] {
+            assert!(
+                plain
+                    .lens_position(offset)
+                    .distance(scaled.lens_position(offset))
+                    < 1e-5
+            );
+            let a = plain
+                .lens_view_projection(2.0, offset)
+                .project_point3(focused);
+            let b = scaled
+                .lens_view_projection(2.0, offset)
+                .project_point3(focused);
+            assert!((a - b).truncate().abs().max_element() < 1e-5, "{a} {b}");
+            let near = plain.world.transform_point3(Vec3::new(0.1, 0.05, -1.0));
+            let a = plain.lens_view_projection(2.0, offset).project_point3(near);
+            let b = scaled
+                .lens_view_projection(2.0, offset)
+                .project_point3(near);
+            assert!((a - b).truncate().abs().max_element() < 1e-5, "{a} {b}");
+        }
     }
 }

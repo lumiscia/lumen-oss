@@ -55,11 +55,19 @@ pub(super) fn camera_3d(
         far: (params.far as f32).max(near + 1e-3),
         lens: Lens {
             aperture: if aperture.is_finite() { aperture } else { 0.0 },
-            focus_distance: (params.focus_distance as f32).max(1e-3),
+            focus_distance: finite_or(params.focus_distance, Lens::PINHOLE.focus_distance as f64)
+                .max(1e-3) as f32,
             blades: params.aperture_blades as u32,
-            rotation: (params.aperture_rotation as f32).to_radians(),
+            rotation: finite_or(params.aperture_rotation, 0.0)
+                .rem_euclid(360.0)
+                .to_radians() as f32,
         },
     })
+}
+
+/// `value`, or `fallback` when it is NaN or infinite.
+fn finite_or(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() { value } else { fallback }
 }
 
 /// The camera at index `camera` of a model in `pose`, for a model placed by `root`, if the pose
