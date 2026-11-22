@@ -494,7 +494,8 @@ impl FrameCx<'_> {
     }
 
     /// The values that the params reading the frame take at `frame`: those of `node` and of each
-    /// node it reads that is kept while they hold, in the same order on every frame. A node that
+    /// node it reads that is kept while they hold, in the same order on every frame. A hidden
+    /// `merge_3d` gives only that it is hidden, and its inputs give none. A node that
     /// blurs its own motion adds their values at either end of its shutter, where it evaluates
     /// them too. `None` when one fails to evaluate.
     fn frame_values(&mut self, node: NodeId, frame: FrameTime) -> Option<Vec<ExpressionValue>> {
@@ -504,6 +505,17 @@ impl FrameCx<'_> {
         let mut seen = HashSet::default();
         while let Some(id) = pending.pop() {
             if !seen.insert(id) {
+                continue;
+            }
+            let node = self.scope.node(id)?;
+            let hidden = match node {
+                NodeKind::Merge3d(merge) => !merge.visible(&self.expr_at(frame)).ok()?,
+                _ => false,
+            };
+            if hidden {
+                // A merge that isn't visible reads nothing wired into it, and its own other params
+                // aren't evaluated.
+                values.push(ExpressionValue::Boolean(false));
                 continue;
             }
             self.own_values(id, frame, &mut values)?;
