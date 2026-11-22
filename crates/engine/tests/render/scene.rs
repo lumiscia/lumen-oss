@@ -435,7 +435,7 @@ fn a_hidden_merge_3d_does_not_stop_a_static_render_being_kept() {
         .concat();
         nodes.push(merge(3, &[2], json!({ "visible": visible })));
         nodes.push(merge(4, &[1, 3], json!({})));
-        render_3d(nodes).frames(4).into()
+        render_3d(nodes).frames(6).into()
     };
     let skipped = |composition: &Composition, frames: &[f64]| {
         let mut renderer = gpu.renderer();
@@ -453,23 +453,19 @@ fn a_hidden_merge_3d_does_not_stop_a_static_render_being_kept() {
         "the animation of a hidden merge doesn't redraw the render"
     );
 
-    // Hidden on frame 0 and shown from frame 1, where its box moves into view.
-    let (toggled, _) = skipped(&scene(json!("=frame >= 1")), &[0.0, 1.0, 2.0]);
-    let reference = |frame| {
-        render(
-            &mut gpu.reference(),
-            &scene(json!("=frame >= 1")),
-            frame,
-            &media,
-        )
-        .rgba
-    };
-    assert!(toggled[0] == hidden[0], "hidden on frame 0");
-    for (frame, rendered) in toggled.iter().enumerate().skip(1) {
-        assert!(
-            *rendered == reference(frame as f64),
-            "frame {frame} shows the merge"
-        );
+    // Hidden on frames 0 and 1, which keeps the render, shown on 2 and 3, then hidden again.
+    let shown = json!("=frame >= 2 && frame < 4");
+    let frames = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+    let (toggled, skipped_toggled) = skipped(&scene(shown.clone()), &frames);
+    assert!(skipped_toggled > 0, "frame 1 keeps frame 0's render");
+    assert!(toggled[2] != hidden[0], "the shown box is in view");
+    let mut reference = gpu.reference();
+    for (frame, rendered) in toggled.iter().enumerate() {
+        let expected = render(&mut reference, &scene(shown.clone()), frame as f64, &media).rgba;
+        assert!(*rendered == expected, "frame {frame} matches the reference");
+        if !(2..4).contains(&frame) {
+            assert!(*rendered == hidden[0], "frame {frame} hides the merge");
+        }
     }
 }
 
