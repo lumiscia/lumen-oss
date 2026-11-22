@@ -30,8 +30,7 @@ fn camera_of(position: [f32; 3], target: [f32; 3], fov: f32) -> Camera {
         projection: Projection::Perspective {
             fov_y: fov.to_radians(),
         },
-        near: 0.05,
-        far: 1000.0,
+        ..Camera::default()
     }
 }
 

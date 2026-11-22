@@ -4,7 +4,7 @@
 
 use lumen_3d::glam::Mat4;
 use lumen_3d::model::{ModelScene, Pose};
-use lumen_3d::{Camera, MAX_SCENE_NODES, Projection};
+use lumen_3d::{Camera, Lens, MAX_SCENE_NODES, Projection};
 
 use super::instance::MAX_NESTING;
 use super::{
@@ -12,32 +12,54 @@ use super::{
 };
 use crate::error::{At, RenderError};
 use crate::gpu::frame_graph::FrameCx;
-use crate::node::scene::{Camera3dParams, Model3d, Model3dParams, Projection3d};
+use crate::node::scene::{
+    Camera3d, Camera3dParams, Model3d, Model3dParams, Projection3d, aperture_blades_error,
+};
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeKind, required_input,
 };
 
-/// The camera a `camera_3d` with `params` gives, placed by `parent`.
-pub(super) fn camera_3d(params: &Camera3dParams, parent: Mat4) -> Camera {
+/// The camera the `camera_3d` `node` with `params` gives, placed by `parent`.
+pub(super) fn camera_3d(
+    node: NodeId,
+    params: &Camera3dParams,
+    parent: Mat4,
+) -> crate::Result<Camera> {
+    if let Some(details) = aperture_blades_error(params.aperture_blades) {
+        return Err(RenderError::evaluating::<Camera3d>(node, details).into());
+    }
     let local = if params.look_at {
         lumen_3d::look_at(vec3(params.pose.position), vec3(params.target))
     } else {
         pose(&params.pose).matrix()
     };
     let near = (params.near as f32).max(1e-4);
-    Camera {
-        world: parent * local,
-        projection: match params.projection {
-            Projection3d::Perspective => Projection::Perspective {
-                fov_y: (params.fov.clamp(1.0, 179.0) as f32).to_radians(),
-            },
-            Projection3d::Orthographic => Projection::Orthographic {
-                height: (params.ortho_height as f32).max(1e-4),
-            },
+    let projection = match params.projection {
+        Projection3d::Perspective => Projection::Perspective {
+            fov_y: (params.fov.clamp(1.0, 179.0) as f32).to_radians(),
         },
+        Projection3d::Orthographic => Projection::Orthographic {
+            height: (params.ortho_height as f32).max(1e-4),
+        },
+    };
+    let aperture = match projection {
+        Projection::Perspective { fov_y } if params.f_stop > 0.0 => {
+            lumen_3d::focal_length(fov_y) / params.f_stop as f32
+        }
+        _ => 0.0,
+    };
+    Ok(Camera {
+        world: parent * local,
+        projection,
         near,
         far: (params.far as f32).max(near + 1e-3),
-    }
+        lens: Lens {
+            aperture: if aperture.is_finite() { aperture } else { 0.0 },
+            focus_distance: (params.focus_distance as f32).max(1e-3),
+            blades: params.aperture_blades as u32,
+            rotation: (params.aperture_rotation as f32).to_radians(),
+        },
+    })
 }
 
 /// The camera at index `camera` of a model in `pose`, for a model placed by `root`, if the pose
@@ -58,6 +80,7 @@ pub(super) fn model_camera(
         projection: model_camera.projection,
         near: model_camera.near,
         far: model_camera.far,
+        lens: Lens::PINHOLE,
     })
 }
 
@@ -112,7 +135,11 @@ impl<N: JsonNode> Search<N> {
             let ctx = DelegateEvalContext::new(node_id, &expr);
             match node {
                 NodeKind::Camera3d(camera) => {
-                    return Ok(Some(camera_3d(&camera.params.eval(&ctx)?, parent)));
+                    return Ok(Some(camera_3d(
+                        node_id,
+                        &camera.params.eval(&ctx)?,
+                        parent,
+                    )?));
                 }
                 NodeKind::Merge3d(merge) => {
                     if !merge.visible(&expr)? {

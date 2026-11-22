@@ -1906,6 +1906,60 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "aperture_blades": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0,
+                    "description": "Blades of the aperture, which shape a blurred highlight: 0 is a circle, and 3 to 16 a\npolygon with that many sides.",
+                    "title": "Aperture Blades",
+                    "x-lumen-constraints": {
+                      "max": 16.0,
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "aperture_rotation": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Turn of the aperture polygon in degrees, clockwise. At 0 one corner points up.",
+                    "title": "Aperture Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "f_stop": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Aperture of the lens as an f-number, which blurs what is nearer or farther than\n`focus_distance` as a camera does: lower is blurrier. The aperture is the focal length over\nthis, for a full-frame (36 × 24 mm) camera with this `fov` and world units in metres. 0 is\na pinhole, which keeps everything sharp. `render_3d`'s `dof_samples` sets how smooth the\nblur is. An orthographic projection ignores it.",
+                    "title": "F Stop",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
                   "far": {
                     "anyOf": [
                       {
@@ -1921,6 +1975,24 @@
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "focus_distance": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 5.0,
+                    "description": "Distance from the camera along its view, in world units, that stays sharp while `f_stop`\nis above 0.",
+                    "title": "Focus Distance",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.1
                     },
                     "x-lumen-kind": "float"
                   },
@@ -9078,6 +9150,26 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "float"
+                  },
+                  "dof_samples": {
+                    "anyOf": [
+                      {
+                        "minimum": 1.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 16,
+                    "description": "Views through the camera's lens averaged for its depth of field, each a draw of the scene\nat the supersampled size: more is a smoother blur. Does nothing while the camera's `f_stop`\nis 0 or its projection is orthographic, and at 1. The `depth` and `normal` outputs are\ndrawn from the centre of the lens, sharp.",
+                    "title": "Dof Samples",
+                    "x-lumen-constraints": {
+                      "max": 64.0,
+                      "min": 1.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
                   },
                   "environment": {
                     "anyOf": [

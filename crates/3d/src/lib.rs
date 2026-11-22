@@ -20,7 +20,7 @@ pub mod test_support;
 mod transform;
 
 pub use bounds::Bounds;
-pub use camera::{Camera, Projection};
+pub use camera::{Camera, Lens, Projection, SENSOR_HEIGHT, focal_length};
 pub use color::srgb_to_linear;
 pub use draws::{DrawError, DrawKey, Draws, Row, Run};
 pub use extrude::{ExtrudeLimit, ExtrudeLimits, Extruded, Extrusion, LimitExceeded, extrude};

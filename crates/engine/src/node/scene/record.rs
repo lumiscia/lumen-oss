@@ -7,7 +7,7 @@ use super::Render3d;
 #[cfg(feature = "3d")]
 use super::collect::particles_programs;
 #[cfg(feature = "3d")]
-use super::render::{catcher_programs, light_programs};
+use super::render::{catcher_programs, lens_programs, light_programs};
 use super::text_3d::{check_length, check_weight};
 use super::{
     Camera3d, Extrude3d, ImagePlane3d, Instance3d, Lathe3d, Light3d, Material3d, Merge3d, Model3d,
@@ -30,6 +30,12 @@ fn not_a_raster<N: crate::node::JsonNode>(node_id: NodeId) -> LumenError {
 /// Without the `3d` feature nothing draws a scene, so no light builds programs.
 #[cfg(not(feature = "3d"))]
 fn light_programs(_: &Light3d, _: &mut Programs<'_>) -> crate::Result<()> {
+    Ok(())
+}
+
+/// Without the `3d` feature nothing draws a scene, so no camera builds programs.
+#[cfg(not(feature = "3d"))]
+fn lens_programs(_: &Camera3d, _: &mut Programs<'_>) -> crate::Result<()> {
     Ok(())
 }
 
@@ -206,12 +212,22 @@ impl RecordNode for Model3d {
 }
 
 impl RecordNode for Camera3d {
-    fn programs(&self, _: &mut Programs<'_>) -> crate::Result<()> {
-        Ok(())
+    fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
+        lens_programs(self, programs)
     }
 
     fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
         Err(not_a_raster::<Camera3d>(self.id))
+    }
+
+    fn literal_param_errors(&self) -> Vec<(&'static str, String)> {
+        match self.params.aperture_blades {
+            Deferred::Value(blades) => super::aperture_blades_error(blades)
+                .map(|details| ("aperture_blades", details))
+                .into_iter()
+                .collect(),
+            Deferred::Expr(_) => Vec::new(),
+        }
     }
 }
 
