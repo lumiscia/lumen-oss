@@ -128,50 +128,45 @@ impl Camera {
         }
     }
 
-    /// World to clip space from the place `offset` along the camera's X and Y on its lens, in world
-    /// units, with the view sheared off its axis so that the plane at the lens's focus distance
-    /// lands where it does from the centre. Scale inherited by the camera does not change the
-    /// lens's size or focus in the world.
+    /// World to clip space from the place `offset` along the camera's right and up on its lens, in
+    /// world units. The view is the centre's, sheared by [`Self::lens_shear`], so the plane at the
+    /// lens's focus distance, square-on to the view, lands where it does from the centre.
     pub fn lens_view_projection(&self, aspect: f32, offset: Vec2) -> Mat4 {
-        let projection = self.projection_matrix(aspect);
-        let scale = self.scale();
-        // The view measures along the camera's scaled axes.
-        let offset = offset / scale.truncate();
-        let focus = self.lens.focus_distance / scale.z;
-        // Clip space keeps the distance along the view in w, so moving x and y by a multiple of w
-        // moves each depth by the same amount on screen.
-        let slope = offset / focus;
-        let shear = Mat4::from_cols(
-            glam::Vec4::X,
-            glam::Vec4::Y,
-            glam::Vec4::Z,
-            glam::Vec4::new(
-                projection.x_axis.x * slope.x,
-                projection.y_axis.y * slope.y,
-                0.0,
-                1.0,
-            ),
-        );
-        shear * projection * Mat4::from_translation(-offset.extend(0.0)) * self.view()
+        self.projection_matrix(aspect) * self.view() * self.lens_shear(offset)
     }
 
     /// Where the place `offset` on the lens is in world space, as [`Self::lens_view_projection`]
     /// takes it.
     pub fn lens_position(&self, offset: Vec2) -> Vec3 {
-        let axis = |axis: glam::Vec4, fallback: Vec3| axis.truncate().normalize_or(fallback);
-        self.position()
-            + axis(self.world.x_axis, Vec3::X) * offset.x
-            + axis(self.world.y_axis, Vec3::Y) * offset.y
+        let (right, up, _) = self.lens_axes();
+        self.position() + right * offset.x + up * offset.y
     }
 
-    /// How far each of the camera's axes stretches a world unit.
-    fn scale(&self) -> Vec3 {
-        Vec3::new(
-            self.world.x_axis.truncate().length(),
-            self.world.y_axis.truncate().length(),
-            self.world.z_axis.truncate().length(),
+    /// The world map that takes the lens point at `offset` to the camera's position and keeps
+    /// every point on the focus plane where it is.
+    fn lens_shear(&self, offset: Vec2) -> Mat4 {
+        let (right, up, forward) = self.lens_axes();
+        let shift = right * offset.x + up * offset.y;
+        let along = shift / self.lens.focus_distance;
+        let linear = |axis: Vec3| (axis + along * forward.dot(axis)).extend(0.0);
+        Mat4::from_cols(
+            linear(Vec3::X),
+            linear(Vec3::Y),
+            linear(Vec3::Z),
+            (-shift * (1.0 + forward.dot(self.position()) / self.lens.focus_distance)).extend(1.0),
         )
-        .max(Vec3::splat(1e-6))
+    }
+
+    /// The world directions of the view's right, up and forward, orthonormal even when the
+    /// camera's world matrix shears.
+    fn lens_axes(&self) -> (Vec3, Vec3, Vec3) {
+        let forward = self
+            .world
+            .transform_vector3(-Vec3::Z)
+            .normalize_or(-Vec3::Z);
+        let up = self.world.transform_vector3(Vec3::Y);
+        let up = (up - forward * forward.dot(up)).normalize_or(Vec3::Y);
+        (forward.cross(up), up, forward)
     }
 
     pub fn position(&self) -> Vec3 {
@@ -257,43 +252,70 @@ mod tests {
     }
 
     #[test]
-    fn a_scaled_parent_leaves_the_lens_the_same_size_and_focus_in_the_world() {
+    fn a_sheared_camera_keeps_a_circular_lens_and_a_square_on_focus_plane() {
         let lens = Lens {
             aperture: 0.4,
             focus_distance: 4.0,
             ..Lens::PINHOLE
         };
-        let plain = Camera {
-            world: crate::look_at(Vec3::new(1.0, 2.0, 6.0), Vec3::ZERO),
-            lens,
-            ..Camera::default()
-        };
-        let scaled = Camera {
-            world: Mat4::from_scale(Vec3::splat(2.0))
-                * crate::look_at(Vec3::new(0.5, 1.0, 3.0), Vec3::ZERO),
-            ..plain
-        };
-        let focused = plain.world.transform_point3(Vec3::new(0.7, 0.35, -4.0));
-        for offset in [Vec2::new(0.2, 0.0), Vec2::new(-0.1, 0.15)] {
-            assert!(
-                plain
-                    .lens_position(offset)
-                    .distance(scaled.lens_position(offset))
-                    < 1e-5
+        let parent = Mat4::from_scale(Vec3::new(2.0, 1.0, 1.0));
+        let local = Mat4::from_translation(Vec3::new(0.5, 1.0, 3.0));
+        for (name, rotation) in [
+            ("roll", Mat4::from_rotation_z(std::f32::consts::FRAC_PI_4)),
+            ("yaw", Mat4::from_rotation_y(std::f32::consts::FRAC_PI_4)),
+        ] {
+            let camera = Camera {
+                world: parent * local * rotation,
+                lens,
+                ..Camera::default()
+            };
+            let centre = camera.projection_matrix(2.0) * camera.view();
+            assert_eq!(
+                camera.lens_view_projection(2.0, Vec2::ZERO),
+                centre,
+                "{name}"
             );
-            let a = plain
-                .lens_view_projection(2.0, offset)
-                .project_point3(focused);
-            let b = scaled
-                .lens_view_projection(2.0, offset)
-                .project_point3(focused);
-            assert!((a - b).truncate().abs().max_element() < 1e-5, "{a} {b}");
-            let near = plain.world.transform_point3(Vec3::new(0.1, 0.05, -1.0));
-            let a = plain.lens_view_projection(2.0, offset).project_point3(near);
-            let b = scaled
-                .lens_view_projection(2.0, offset)
-                .project_point3(near);
-            assert!((a - b).truncate().abs().max_element() < 1e-5, "{a} {b}");
+
+            let (right, up, forward) = camera.lens_axes();
+            let eye = camera.position();
+            // Screen right is the camera's +X.
+            assert!(
+                right.dot(camera.world.transform_vector3(Vec3::X)) > 0.0,
+                "{name}"
+            );
+            let on_focus = |side: f32, rise: f32| eye + forward * 4.0 + right * side + up * rise;
+            let near = eye + forward * 1.0 + right * 0.1;
+
+            let mut reach = Vec2::ZERO;
+            let mut spread = 0.0f32;
+            for offset in [
+                Vec2::new(0.2, 0.0),
+                Vec2::new(-0.2, 0.0),
+                Vec2::new(0.0, 0.2),
+                Vec2::new(0.0, -0.2),
+                Vec2::new(0.1, -0.15),
+            ] {
+                let lens_offset = camera.lens_position(offset) - eye;
+                assert!(lens_offset.length() <= 0.2 + 1e-5, "{name} {lens_offset}");
+                reach = reach.max(Vec2::new(lens_offset.dot(right), lens_offset.dot(up)).abs());
+
+                let through = camera.lens_view_projection(2.0, offset);
+                for (side, rise) in [(0.0, 0.0), (1.0, 0.0), (-2.0, 1.5), (1.5, -1.0)] {
+                    let point = on_focus(side, rise);
+                    let moved = through.project_point3(point) - centre.project_point3(point);
+                    assert!(
+                        moved.truncate().abs().max_element() < 1e-5,
+                        "{name} {moved}"
+                    );
+                }
+                let moved = through.project_point3(near) - centre.project_point3(near);
+                spread = spread.max(moved.truncate().length());
+            }
+            assert!(
+                (reach.x - 0.2).abs() < 1e-5 && (reach.y - 0.2).abs() < 1e-5,
+                "{name} {reach}"
+            );
+            assert!(spread > 0.02, "{name} {spread}");
         }
     }
 }
