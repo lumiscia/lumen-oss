@@ -166,7 +166,14 @@ impl Camera {
             .normalize_or(-Vec3::Z);
         let up = self.world.transform_vector3(Vec3::Y);
         let up = (up - forward * forward.dot(up)).normalize_or(Vec3::Y);
-        (forward.cross(up), up, forward)
+        // A mirroring parent flips the camera's +X, which screen right follows.
+        let right = forward.cross(up);
+        let right = if right.dot(self.world.transform_vector3(Vec3::X)) < 0.0 {
+            -right
+        } else {
+            right
+        };
+        (right, up, forward)
     }
 
     pub fn position(&self) -> Vec3 {
@@ -258,11 +265,25 @@ mod tests {
             focus_distance: 4.0,
             ..Lens::PINHOLE
         };
-        let parent = Mat4::from_scale(Vec3::new(2.0, 1.0, 1.0));
+        let stretched = Mat4::from_scale(Vec3::new(2.0, 1.0, 1.0));
+        let mirrored = Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0));
         let local = Mat4::from_translation(Vec3::new(0.5, 1.0, 3.0));
-        for (name, rotation) in [
-            ("roll", Mat4::from_rotation_z(std::f32::consts::FRAC_PI_4)),
-            ("yaw", Mat4::from_rotation_y(std::f32::consts::FRAC_PI_4)),
+        for (name, parent, rotation) in [
+            (
+                "roll",
+                stretched,
+                Mat4::from_rotation_z(std::f32::consts::FRAC_PI_4),
+            ),
+            (
+                "yaw",
+                stretched,
+                Mat4::from_rotation_y(std::f32::consts::FRAC_PI_4),
+            ),
+            (
+                "mirrored",
+                mirrored,
+                Mat4::from_rotation_z(std::f32::consts::FRAC_PI_4),
+            ),
         ] {
             let camera = Camera {
                 world: parent * local * rotation,
