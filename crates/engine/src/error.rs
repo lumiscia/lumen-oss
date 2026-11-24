@@ -343,24 +343,11 @@ pub enum GraphValidationError {
     #[code("connection.input_already_connected")]
     #[error("input `{port}` of {at} is already connected")]
     InputAlreadyConnected { at: At, port: String },
-    /// A connection whose source outputs another kind than the input takes.
+    /// A connection whose source outputs another kind than the input takes. Boxed to keep
+    /// [`LumenError`] small.
     #[code("connection.wrong_kind")]
-    #[error(
-        "{at}: input `{port}` takes {expected}, but {} {actual}: {}",
-        wrong_kind_source(*.source_node, *.source_output, .source_template.as_deref()),
-        wrong_kind_hint(*.expected, *.actual)
-    )]
-    WrongInputKind {
-        at: At,
-        port: &'static str,
-        source_node: NodeId,
-        /// The output of `source_node` read, unless it is the default `output`.
-        source_output: Option<&'static OutputPortDef>,
-        /// The template `source_node` plays, when it is a clip that plays one.
-        source_template: Option<Box<str>>,
-        expected: PortKind,
-        actual: PortKind,
-    },
+    #[error(transparent)]
+    WrongInputKind(Box<WrongInputKind>),
     /// A 3D node, in a build of the engine without the `3d` feature.
     #[code("node.unsupported")]
     #[error("{at} (`{kind}`): {NO_3D_SUPPORT}")]
@@ -415,7 +402,6 @@ impl GraphValidationError {
             | Self::MissingSourceNode { at }
             | Self::MissingTargetPort { at, .. }
             | Self::InputAlreadyConnected { at, .. }
-            | Self::WrongInputKind { at, .. }
             | Self::No3dSupport { at, .. }
             | Self::MissingRequiredInput { at, .. }
             | Self::MissingMediaOutput { at }
@@ -424,6 +410,7 @@ impl GraphValidationError {
             | Self::InvalidPropRead { at, .. }
             | Self::InvalidSettings { at, .. }
             | Self::InvalidAudio { at, .. } => Some(at),
+            Self::WrongInputKind(wrong) => Some(&mut wrong.at),
             Self::TemplateCycle { .. } => None,
         }
     }
@@ -444,6 +431,25 @@ fn outputs_are(named: &[OutputPortDef]) -> String {
         }
         _ => "its only output is `output`".to_string(),
     }
+}
+
+/// A connection whose source outputs another kind than the input takes.
+#[derive(Debug, Error, Clone)]
+#[error(
+    "{at}: input `{port}` takes {expected}, but {} {actual}: {}",
+    wrong_kind_source(self.source_node, self.source_output, self.source_template.as_deref()),
+    wrong_kind_hint(self.expected, self.actual)
+)]
+pub struct WrongInputKind {
+    pub at: At,
+    pub port: &'static str,
+    pub source_node: NodeId,
+    /// The output of `source_node` read, unless it is the default `output`.
+    pub source_output: Option<&'static OutputPortDef>,
+    /// The template `source_node` plays, when it is a clip that plays one.
+    pub source_template: Option<Box<str>>,
+    pub expected: PortKind,
+    pub actual: PortKind,
 }
 
 /// What a wrong-kind connection reads, followed by the kind it is.
