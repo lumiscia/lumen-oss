@@ -188,7 +188,8 @@ impl<'a> Routed<'a> {
 
 /// The inputs `node` of `scope` reads at `frame`: a time remap's source at the remapped frame,
 /// a switch's selected layer, a clip's content in its own time while it shows, a `motion_blur`'s
-/// source at each frame it samples, and every other node's inputs as they are. A `motion_blur`
+/// source at each frame it samples, nothing of a `merge_3d` that isn't visible, and every other
+/// node's inputs as they are. A `motion_blur`
 /// inside one that samples renders its source once, which `sampling` says.
 pub fn route<'a>(
     scope: &Scope<'a>,
@@ -208,6 +209,7 @@ pub fn route<'a>(
                 .unwrap_or_default()
         }
         NodeKind::Clip(node) => node.route(scope, frame, media)?.into_iter().collect(),
+        NodeKind::Merge3d(node) if !node.visible(&scope.expr_context(frame, media))? => Vec::new(),
         _ => node
             .input_ports()
             .into_iter()

@@ -115,7 +115,10 @@ impl<N: JsonNode> Search<N> {
                     return Ok(Some(camera_3d(&camera.params.eval(&ctx)?, parent)));
                 }
                 NodeKind::Merge3d(merge) => {
-                    let world = parent * placement(&merge.params.eval(&ctx)?.placement).matrix();
+                    if !merge.visible(&expr)? {
+                        continue;
+                    }
+                    let world = parent * placement(&merge.params.placement.eval(&ctx)?).matrix();
                     let objects = merge.objects.iter().rev();
                     pending.extend(objects.map(|object| (object.node, world)));
                 }

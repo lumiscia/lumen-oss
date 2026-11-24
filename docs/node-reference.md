@@ -1228,6 +1228,7 @@ Params:
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z, applied before the rotation.
+- **`visible`** (boolean; default `true`) Whether the merge and everything wired into it is in the scene. While false, nothing reached only through it is evaluated, drawn or decoded: objects, lights and cameras alike.
 
 ## `model_3d`
 

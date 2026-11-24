@@ -1172,6 +1172,11 @@ impl Collected {
             let node = cx.node(node_id).ok_or(RenderError::MissingNode {
                 at: crate::error::At::node(node_id),
             })?;
+            if let NodeKind::Merge3d(merge) = node
+                && !merge.visible(&cx.expr())?
+            {
+                continue;
+            }
             let matte = self.matte_of(cx, node)?.unwrap_or(inherited);
             let first = self.scene.objects.len();
             let children = cx.time_node(node, |cx| self.add_node(cx, node, parent, matte));
@@ -1231,7 +1236,7 @@ impl Collected {
         let ctx = DelegateEvalContext::new(node_id, &expr);
         match node {
             NodeKind::Merge3d(merge) => {
-                let world = parent * placement(&merge.params.eval(&ctx)?.placement).matrix();
+                let world = parent * placement(&merge.params.placement.eval(&ctx)?).matrix();
                 return Ok(Some(
                     merge
                         .objects
