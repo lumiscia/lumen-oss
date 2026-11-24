@@ -27,7 +27,12 @@ pub(crate) const SHADER: &str = include_str!("scene.wgsl");
 const RESOLVE_SHADER: &str = include_str!("resolve.wgsl");
 const DATA_SHADER: &str = include_str!("data.wgsl");
 const MATTE_SHADER: &str = include_str!("matte.wgsl");
+const LENS_SHADER: &str = include_str!("lens.wgsl");
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// What the views through the lens are summed in, so that adding many loses no precision.
+const SUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+/// The most views `render_3d` draws through a lens.
+const MAX_DOF_SAMPLES: u32 = 64;
 
 const VERTEX_FRAGMENT: wgpu::ShaderStages =
     wgpu::ShaderStages::VERTEX.union(wgpu::ShaderStages::FRAGMENT);
@@ -99,6 +104,27 @@ const MATTE_LAYOUT: &[LayoutEntry] = &[
         LayoutKind::StorageTexture(crate::gpu::WORKING_COLOR_FORMAT),
     ),
     LayoutEntry::compute(3, LayoutKind::Texture),
+];
+/// What adding a view through the lens to the sums binds: the view's colour or first matte target,
+/// the params, its second matte target, the sum before it and the sum written.
+const LENS_ADD_LAYOUT: &[LayoutEntry] = &[
+    LayoutEntry::compute(0, LayoutKind::Texture),
+    LayoutEntry::compute(1, LayoutKind::Uniform),
+    LayoutEntry::compute(3, LayoutKind::Texture),
+    LayoutEntry::compute(4, LayoutKind::UnfilterableTexture),
+    LayoutEntry::compute(5, LayoutKind::StorageTexture(SUM_FORMAT)),
+];
+/// What adding the last view binds: the add's bindings, but for the output in place of the sum
+/// written.
+const LENS_LAST_LAYOUT: &[LayoutEntry] = &[
+    LayoutEntry::compute(0, LayoutKind::Texture),
+    LayoutEntry::compute(1, LayoutKind::Uniform),
+    LayoutEntry::compute(
+        2,
+        LayoutKind::StorageTexture(crate::gpu::WORKING_COLOR_FORMAT),
+    ),
+    LayoutEntry::compute(3, LayoutKind::Texture),
+    LayoutEntry::compute(4, LayoutKind::UnfilterableTexture),
 ];
 /// What drawing the environment behind the scene binds.
 const BACKGROUND_LAYOUT: &[LayoutEntry] = &[
@@ -198,6 +224,34 @@ const SCENE_3D_MATTE_RESOLVE: ComputeProgram = ComputeProgram {
     entry: "cs_main",
     layout: MATTE_LAYOUT,
 };
+/// Adding a view through the lens to the sums, and adding the last into the output, for colour and
+/// for mattes.
+const LENS_COLOR: [ComputeProgram; 2] = [
+    ComputeProgram {
+        label: "scene-3d-lens-color-add",
+        shader: LENS_SHADER,
+        entry: "cs_color_add",
+        layout: LENS_ADD_LAYOUT,
+    },
+    ComputeProgram {
+        label: "scene-3d-lens-color-last",
+        shader: LENS_SHADER,
+        entry: "cs_color_last",
+        layout: LENS_LAST_LAYOUT,
+    },
+];
+const LENS_MATTE: [ComputeProgram; 2] = [
+    ComputeProgram {
+        label: "scene-3d-lens-matte-add",
+        entry: "cs_matte_add",
+        ..LENS_COLOR[0]
+    },
+    ComputeProgram {
+        label: "scene-3d-lens-matte-last",
+        entry: "cs_matte_last",
+        ..LENS_COLOR[1]
+    },
+];
 
 const CLAMP_SAMPLER: u64 = 0x3d00_0001;
 const NEAREST_SAMPLER: u64 = 0x3d00_0006;
@@ -434,6 +488,17 @@ struct MatteParams {
     supersample: u32,
     second: u32,
     _pad: [u32; 2],
+}
+
+/// Keep in sync with `Params` in `lens.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "Params", source = LENS_SHADER)]
+struct LensParams {
+    supersample: u32,
+    second: u32,
+    first: u32,
+    weight: f32,
 }
 
 /// Keep in sync with `Params` in `data.wgsl`.
@@ -812,6 +877,19 @@ pub(crate) fn light_programs(light: &Light3d, programs: &mut Programs<'_>) -> cr
             RenderTargetSpec::depth_only(DepthTest::Write, None),
             0,
         )?;
+    }
+    Ok(())
+}
+
+/// Builds the programs summing the views through `camera`'s lens, when its `f_stop` may be above 0.
+pub(crate) fn lens_programs(
+    camera: &super::Camera3d,
+    programs: &mut Programs<'_>,
+) -> crate::Result<()> {
+    if !matches!(camera.params.f_stop, Deferred::Value(f_stop) if f_stop <= 0.0) {
+        for program in LENS_COLOR.iter().chain(&LENS_MATTE) {
+            programs.compute(program)?;
+        }
     }
     Ok(())
 }
@@ -1233,7 +1311,7 @@ impl Render3d {
         if lights.is_empty() {
             lights.push(GpuLight::zeroed());
         }
-        let globals = cx.rec.uniform(&globals(
+        let centre = globals(
             &camera,
             aspect,
             light_count,
@@ -1241,7 +1319,8 @@ impl Render3d {
             params,
             fog,
             supersample,
-        ));
+        );
+        let globals = cx.rec.uniform(&centre);
         let lights = cx.rec.storage_parts(&[bytemuck::cast_slice(&lights)]);
         let views = atlas.as_ref().map_or(1, |atlas| atlas.views.len() as u32);
         let tables = Tables::new(cx, &collected, &draws, views, (&projectors, atlas.as_ref()))?;
@@ -1281,7 +1360,11 @@ impl Render3d {
         let environment_bindings = bind_environment(
             cx,
             environment.as_ref(),
-            &gpu_environment(environment.as_ref(), &camera, aspect, params),
+            &gpu_environment(
+                environment.as_ref(),
+                camera.projection_matrix(aspect) * camera.view(),
+                params,
+            ),
             unread,
             lights,
         );
@@ -1300,6 +1383,9 @@ impl Render3d {
             runs,
         } = tables;
 
+        let lens = lens_samples(&camera, params.dof_samples);
+        // A pinhole records each run as it is built; a lens keeps them to record once per view.
+        let mut lit_draws = Vec::with_capacity(if lens.is_empty() { 0 } else { draws.runs.len() });
         for (drawn, (run, &(rows, instances))) in draws.runs.iter().zip(&runs).enumerate() {
             let depth_test = if run.key.blend {
                 DepthTest::Read
@@ -1381,35 +1467,244 @@ impl Render3d {
                 bindings.push((10 + slot, Res::Tex(texture)));
                 bindings.push((15 + slot, Res::Sampler(sampler)));
             }
-            let load = if drawn == 0 {
-                TargetLoad::Clear
-            } else {
-                TargetLoad::Load
-            };
-            cx.rec.draw_targets_with_depth(
+            let draw = LitDraw {
                 program,
-                &bindings,
-                &targets,
-                load,
-                depth,
-                load,
-                run.vertices,
-                run.instances,
-            );
-        }
-
-        if let Some(loaded) = environment.filter(|_| background) {
-            background_pass(cx, &loaded, globals, &environment_bindings, color, &draws)?;
-        }
-
-        let color = resolve(cx, color, supersample, size)?;
-        let matte = match targets[1..] {
-            [first, ref second @ ..] if !draws.runs.is_empty() => {
-                resolve_mattes(cx, first, second.first().copied(), supersample, size)?
+                bindings,
+                vertices: run.vertices,
+                instances: run.instances,
+            };
+            if lens.is_empty() {
+                record_lit(cx, &draw, drawn, &targets, depth);
+            } else {
+                lit_draws.push(draw);
             }
-            _ => cx.transparent(size),
+        }
+        let background = environment.as_ref().filter(|_| background);
+        if lens.is_empty() {
+            if let Some(loaded) = background {
+                background_pass(cx, loaded, globals, &environment_bindings, color, &draws)?;
+            }
+            let color = resolve(cx, color, supersample, size)?;
+            let matte = match targets[1..] {
+                [first, ref second @ ..] if !draws.runs.is_empty() => {
+                    resolve_mattes(cx, first, second.first().copied(), supersample, size)?
+                }
+                _ => cx.transparent(size),
+            };
+            return Ok((color, matte));
+        }
+
+        // Each view through the lens is drawn into the same targets and added to the sums.
+        let drawn_mattes = !draws.runs.is_empty() && targets.len() > 1;
+        let sums = LensSums::new(cx, size, drawn_mattes);
+        let mut outputs = None;
+        for (index, &offset) in lens.iter().enumerate() {
+            let view_proj = camera.lens_view_projection(aspect, offset);
+            let globals = cx.rec.uniform(&GpuGlobals {
+                view_proj: view_proj.to_cols_array_2d(),
+                camera_position: camera.lens_position(offset).into(),
+                ..centre
+            });
+            let environment_uniform =
+                cx.rec
+                    .uniform(&gpu_environment(environment.as_ref(), view_proj, params));
+            draw_lit(
+                cx,
+                &mut lit_draws,
+                (globals, environment_uniform),
+                &targets,
+                depth,
+            );
+            if let Some(loaded) = background {
+                let environment = EnvironmentBindings {
+                    uniform: environment_uniform,
+                    ..environment_bindings
+                };
+                background_pass(cx, loaded, globals, &environment, color, &draws)?;
+            }
+            outputs = sums.add(cx, &targets, supersample, (index, lens.len()))?;
+        }
+        Ok(outputs.unwrap_or_else(|| (cx.transparent(size), cx.transparent(size))))
+    }
+}
+
+/// A run of the lit scene ready to draw, but for the globals and environment uniforms each view
+/// binds.
+struct LitDraw {
+    program: lumen_gpu::ProgramRef,
+    bindings: Vec<(u32, Res)>,
+    vertices: u32,
+    instances: u32,
+}
+
+/// Draws `lit_draws` with `globals` and `environment` uniforms into `targets`, depth tested
+/// against `depth`, clearing both first.
+fn draw_lit(
+    cx: &mut FrameCx<'_>,
+    lit_draws: &mut [LitDraw],
+    (globals, environment): (Res, Res),
+    targets: &[TexRef],
+    depth: TexRef,
+) {
+    for (drawn, draw) in lit_draws.iter_mut().enumerate() {
+        for (slot, res) in &mut draw.bindings {
+            match slot {
+                0 => *res = globals,
+                23 => *res = environment,
+                _ => {}
+            }
+        }
+        record_lit(cx, draw, drawn, targets, depth);
+    }
+}
+
+/// Records the run `draw`, the one numbered `drawn` of the scene, which clears the targets and
+/// depth when it is the first.
+fn record_lit(
+    cx: &mut FrameCx<'_>,
+    draw: &LitDraw,
+    drawn: usize,
+    targets: &[TexRef],
+    depth: TexRef,
+) {
+    let load = if drawn == 0 {
+        TargetLoad::Clear
+    } else {
+        TargetLoad::Load
+    };
+    cx.rec.draw_targets_with_depth(
+        draw.program,
+        &draw.bindings,
+        targets,
+        load,
+        depth,
+        load,
+        draw.vertices,
+        draw.instances,
+    );
+}
+
+/// The places on `camera`'s lens that `render_3d` draws `samples` views from for its depth of
+/// field, or none when it draws one view, through a pinhole.
+fn lens_samples(camera: &Camera, samples: u32) -> Vec<lumen_3d::glam::Vec2> {
+    let lensed = camera.lens.aperture > 0.0
+        && matches!(camera.projection, Projection::Perspective { .. })
+        && samples > 1;
+    match lensed {
+        true => camera.lens.samples(samples.min(MAX_DOF_SAMPLES)),
+        false => Vec::new(),
+    }
+}
+
+/// The sums of the views through the lens drawn so far, averaged down to the output: the colour's,
+/// and the mattes' when they are drawn. Each pair takes turns holding the sum read and the sum
+/// written.
+struct LensSums {
+    size: Size,
+    color: [TexRef; 2],
+    mattes: Option<[TexRef; 2]>,
+}
+
+impl LensSums {
+    fn new(cx: &mut FrameCx<'_>, size: Size, mattes: bool) -> Self {
+        let mut pair = || {
+            [(); 2].map(|_| {
+                cx.rec.acquire(
+                    size,
+                    SUM_FORMAT,
+                    lumen_gpu::TextureDesc::storage(size, SUM_FORMAT).usage,
+                )
+            })
         };
-        Ok((color, matte))
+        let color = pair();
+        let mattes = mattes.then(pair);
+        Self {
+            size,
+            color,
+            mattes,
+        }
+    }
+
+    /// Adds the view numbered `index` of `count`, drawn into `targets`, colour first and then the
+    /// matte targets. The last view returns the colour and matte outputs.
+    fn add(
+        &self,
+        cx: &mut FrameCx<'_>,
+        targets: &[TexRef],
+        supersample: u32,
+        (index, count): (usize, usize),
+    ) -> crate::Result<Option<(Raster, Raster)>> {
+        let view = SummedView {
+            params: cx.rec.uniform(&LensParams {
+                supersample,
+                second: u32::from(targets.len() > 2),
+                first: u32::from(index == 0),
+                weight: 1.0 / count as f32,
+            }),
+            index,
+            last: index + 1 == count,
+            size: self.size,
+        };
+        let color = view.add(cx, &LENS_COLOR, self.color, (targets[0], targets[0]))?;
+        let matte = match (self.mattes, &targets[1..]) {
+            (Some(sums), &[first, ref second @ ..]) => {
+                let second = second.first().copied().unwrap_or(first);
+                view.add(cx, &LENS_MATTE, sums, (first, second))?
+            }
+            _ => None,
+        };
+        Ok(color.map(|color| {
+            let matte = matte.unwrap_or_else(|| cx.transparent(self.size));
+            (color, matte)
+        }))
+    }
+}
+
+/// One view through the lens being added to the sums.
+struct SummedView {
+    params: Res,
+    index: usize,
+    last: bool,
+    size: Size,
+}
+
+impl SummedView {
+    /// Adds the view, drawn into `sample` and the `second` matte target, to `sums` with the add
+    /// and last of `programs`, and returns the output on the last view.
+    fn add(
+        &self,
+        cx: &mut FrameCx<'_>,
+        programs: &[ComputeProgram; 2],
+        sums: [TexRef; 2],
+        (sample, second): (TexRef, TexRef),
+    ) -> crate::Result<Option<Raster>> {
+        // The first view reads no sum, so it binds the sample in its place.
+        let previous = match self.index {
+            0 => sample,
+            index => sums[(index + 1) % 2],
+        };
+        let (program, store, target) = match self.last {
+            true => (&programs[1], 2, cx.storage_target(self.size)),
+            false => (&programs[0], 5, sums[self.index % 2]),
+        };
+        let program = cx.program(program)?;
+        cx.dispatch(
+            program,
+            &[
+                (0, Res::Tex(sample)),
+                (1, self.params),
+                (3, Res::Tex(second)),
+                (4, Res::Tex(previous)),
+                (store, Res::Tex(target)),
+            ],
+            crate::gpu::frame_graph::dispatch_for(self.size),
+        );
+        Ok(self.last.then(|| Raster {
+            tex: target,
+            domain: TextureDomain::full_frame(self.size),
+            bounds: None,
+            reduced: None,
+        }))
     }
 }
 
@@ -1932,14 +2227,13 @@ fn mip_rasters(
     Ok(made.into_values().collect())
 }
 
-/// The environment `loaded` lights the scene with, if any, seen from `camera`.
+/// The environment `loaded` lights the scene with, if any, seen through `view_proj`, world to
+/// clip space.
 fn gpu_environment(
     loaded: Option<&super::environment::LoadedEnvironment>,
-    camera: &Camera,
-    aspect: f32,
+    view_proj: lumen_3d::glam::Mat4,
     params: &super::Render3dParams,
 ) -> GpuEnvironment {
-    let view_proj = camera.projection_matrix(aspect) * camera.view();
     let (sin, cos) = (params.environment_rotation as f32).to_radians().sin_cos();
     GpuEnvironment {
         irradiance: loaded.map_or([[0.0; 4]; 9], |loaded| loaded.irradiance),

@@ -1776,8 +1776,28 @@ export interface BooleanNode extends CompositionNodeBase<"boolean"> {
  */
 export interface Camera3dNode extends CompositionNodeBase<"camera_3d"> {
   readonly params?: {
+    /**
+     * Blades of the aperture, which shape a blurred highlight: 0 is a circle, and 3 to 16 a
+     * polygon with that many sides.
+     */
+    readonly aperture_blades?: ExpressionValue<number>;
+    /** Turn of the aperture polygon in degrees, clockwise. At 0 one corner points up. */
+    readonly aperture_rotation?: ExpressionValue<number>;
+    /**
+     * Aperture of the lens as an f-number, which blurs what is nearer or farther than
+     * `focus_distance` as a camera does: lower is blurrier. The aperture is the focal length over
+     * this, for a full-frame (36 × 24 mm) camera with this `fov` and world units in metres. 0 is
+     * a pinhole, which keeps everything sharp. `render_3d`'s `dof_samples` sets how smooth the
+     * blur is. An orthographic projection ignores it.
+     */
+    readonly f_stop?: ExpressionValue<number>;
     /** Farthest distance drawn, in world units. */
     readonly far?: ExpressionValue<number>;
+    /**
+     * Distance from the camera along its view, in world units, that stays sharp while `f_stop`
+     * is above 0.
+     */
+    readonly focus_distance?: ExpressionValue<number>;
     /** Vertical field of view in degrees, with a perspective projection. */
     readonly fov?: ExpressionValue<number>;
     /** Aims the camera at `target`, ignoring its rotation. */
@@ -3412,6 +3432,13 @@ export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
      * camera's `near`.
      */
     readonly depth_near?: ExpressionValue<number>;
+    /**
+     * Views through the camera's lens averaged for its depth of field, each a draw of the scene
+     * at the supersampled size: more is a smoother blur. Does nothing while the camera's `f_stop`
+     * is 0 or its projection is orthographic, and at 1. The `depth` and `normal` outputs are
+     * drawn from the centre of the lens, sharp.
+     */
+    readonly dof_samples?: ExpressionValue<number>;
     /**
      * Brightness of the light from all around that surfaces reflect and are lit by: the
      * `environment_map` when one is set, and otherwise a built-in studio of softboxes. 0 turns it

@@ -67,7 +67,11 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { name: "output", kind: "scene" },
     ],
     params: [
+      { id: "aperture_blades", name: "Aperture Blades", kind: "int", description: "Blades of the aperture, which shape a blurred highlight: 0 is a circle, and 3 to 16 a\npolygon with that many sides.", defaultValue: 0, constraints: { min: 0, max: 16, step: 1 } },
+      { id: "aperture_rotation", name: "Aperture Rotation", kind: "float", description: "Turn of the aperture polygon in degrees, clockwise. At 0 one corner points up.", defaultValue: 0, constraints: { step: 1 } },
+      { id: "f_stop", name: "F Stop", kind: "float", description: "Aperture of the lens as an f-number, which blurs what is nearer or farther than\n`focus_distance` as a camera does: lower is blurrier. The aperture is the focal length over\nthis, for a full-frame (36 × 24 mm) camera with this `fov` and world units in metres. 0 is\na pinhole, which keeps everything sharp. `render_3d`'s `dof_samples` sets how smooth the\nblur is. An orthographic projection ignores it.", defaultValue: 0, constraints: { min: 0, step: 0.1 } },
       { id: "far", name: "Far", kind: "float", description: "Farthest distance drawn, in world units.", defaultValue: 1000, constraints: { min: 0, step: 1 } },
+      { id: "focus_distance", name: "Focus Distance", kind: "float", description: "Distance from the camera along its view, in world units, that stays sharp while `f_stop`\nis above 0.", defaultValue: 5, constraints: { min: 0, step: 0.1 } },
       { id: "fov", name: "Fov", kind: "float", description: "Vertical field of view in degrees, with a perspective projection.", defaultValue: 40, constraints: { min: 1, max: 179, step: 1 } },
       { id: "look_at", name: "Look At", kind: "bool", description: "Aims the camera at `target`, ignoring its rotation.", defaultValue: false },
       { id: "near", name: "Near", kind: "float", description: "Nearest distance drawn, in world units.", defaultValue: 0.05, constraints: { min: 0, step: 0.01 } },
@@ -77,7 +81,7 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { id: "rotation", name: "Rotation", kind: "vec3", description: "Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned\nX, then roll about the turned Z.", defaultValue: [0, 0, 0], constraints: { step: 1 } },
       { id: "target", name: "Target", kind: "vec3", description: "Point along X, Y and Z the camera aims at while `look_at` is on, in its parent's space.", defaultValue: [0, 0, 0], constraints: { step: 0.1 } },
     ],
-    defaultParams: { far: 1000, fov: 40, look_at: false, near: 0.05, ortho_height: 4, position: [0, 0, 5], projection: "perspective", rotation: [0, 0, 0], target: [0, 0, 0] },
+    defaultParams: { aperture_blades: 0, aperture_rotation: 0, f_stop: 0, far: 1000, focus_distance: 5, fov: 40, look_at: false, near: 0.05, ortho_height: 4, position: [0, 0, 5], projection: "perspective", rotation: [0, 0, 0], target: [0, 0, 0] },
   },
   {
     kind: "channels",
@@ -1023,6 +1027,7 @@ export const nodeSpecs: readonly NodeSpec[] = [
     params: [
       { id: "depth_far", name: "Depth Far", kind: "float", description: "Distance from the camera, in world units, that `depth` output maps to 1, and past which it\nstays 1. 0 uses the camera's `far`, which spreads the 0 to 1 range thin over a scene much\nnearer than it.", defaultValue: 0, constraints: { min: 0, step: 1 } },
       { id: "depth_near", name: "Depth Near", kind: "float", description: "Distance from the camera, in world units, that `depth` output maps to 0. 0 uses the\ncamera's `near`.", defaultValue: 0, constraints: { min: 0, step: 0.1 } },
+      { id: "dof_samples", name: "Dof Samples", kind: "int", description: "Views through the camera's lens averaged for its depth of field, each a draw of the scene\nat the supersampled size: more is a smoother blur. Does nothing while the camera's `f_stop`\nis 0 or its projection is orthographic, and at 1. The `depth` and `normal` outputs are\ndrawn from the centre of the lens, sharp.", defaultValue: 16, constraints: { min: 1, max: 64, step: 1 } },
       { id: "environment", name: "Environment", kind: "float", description: "Brightness of the light from all around that surfaces reflect and are lit by: the\n`environment_map` when one is set, and otherwise a built-in studio of softboxes. 0 turns it\noff.", defaultValue: 1, constraints: { min: 0, step: 0.1 } },
       { id: "environment_background", name: "Environment Background", kind: "bool", description: "Shows the environment map behind the scene, through the exposure and tone mapping but not\nthe fog, which makes the output opaque. Shadow catchers darken it.", defaultValue: false },
       { id: "environment_background_blur", name: "Environment Background Blur", kind: "float", description: "How blurred the background is, as a surface of this roughness reflects it: 0 is sharp.", defaultValue: 0, constraints: { min: 0, max: 1, step: 0.05 } },
@@ -1038,7 +1043,7 @@ export const nodeSpecs: readonly NodeSpec[] = [
       { id: "tone_mapping", name: "Tone Mapping", kind: "enum", description: "How light brighter than white is brought into range.", defaultValue: "none", enumOptions: [{ name: "none", label: "None", value: 0 }, { name: "aces", label: "Aces", value: 1 }, { name: "agx", label: "Agx", value: 2 }] },
       { id: "width", name: "Width", kind: "int", description: "Output width in pixels. Use 0 to match the composition width.", defaultValue: 0, constraints: { min: 0, step: 1 } },
     ],
-    defaultParams: { depth_far: 0, depth_near: 0, environment: 1, environment_background: false, environment_background_blur: 0, environment_map: "", environment_rotation: 0, exposure: 0, fog_color: [255, 255, 255, 255], fog_density: 0, height: 0, mattes: [], output: "color", supersample: 2, tone_mapping: "none", width: 0 },
+    defaultParams: { depth_far: 0, depth_near: 0, dof_samples: 16, environment: 1, environment_background: false, environment_background_blur: 0, environment_map: "", environment_rotation: 0, exposure: 0, fog_color: [255, 255, 255, 255], fog_density: 0, height: 0, mattes: [], output: "color", supersample: 2, tone_mapping: "none", width: 0 },
   },
   {
     kind: "resize",

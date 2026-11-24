@@ -596,6 +596,24 @@ pub struct Camera3dParams {
     /// Farthest distance drawn, in world units.
     #[meta(min = 0, step = 1)]
     pub far: f64,
+    /// Aperture of the lens as an f-number, which blurs what is nearer or farther than
+    /// `focus_distance` as a camera does: lower is blurrier. The aperture is the focal length over
+    /// this, for a full-frame (36 × 24 mm) camera with this `fov` and world units in metres. 0 is
+    /// a pinhole, which keeps everything sharp. `render_3d`'s `dof_samples` sets how smooth the
+    /// blur is. An orthographic projection ignores it.
+    #[meta(min = 0, step = 0.1)]
+    pub f_stop: f64,
+    /// Distance from the camera along its view, in world units, that stays sharp while `f_stop`
+    /// is above 0.
+    #[meta(min = 0, step = 0.1)]
+    pub focus_distance: f64,
+    /// Blades of the aperture, which shape a blurred highlight: 0 is a circle, and 3 to 16 a
+    /// polygon with that many sides.
+    #[meta(min = 0, max = 16, step = 1)]
+    pub aperture_blades: i64,
+    /// Turn of the aperture polygon in degrees, clockwise. At 0 one corner points up.
+    #[meta(step = 1)]
+    pub aperture_rotation: f64,
     /// Aims the camera at `target`, ignoring its rotation.
     #[meta()]
     pub look_at: bool,
@@ -614,6 +632,10 @@ impl Default for Camera3dParams {
             ortho_height: 4.0,
             near: 0.05,
             far: 1000.0,
+            f_stop: 0.0,
+            focus_distance: 5.0,
+            aperture_blades: 0,
+            aperture_rotation: 0.0,
             look_at: false,
             target: [0.0; 3],
             pose: Pose3d {
@@ -622,6 +644,19 @@ impl Default for Camera3dParams {
             },
         }
     }
+}
+
+/// Most blades of a camera's aperture.
+const MAX_APERTURE_BLADES: i64 = 16;
+
+/// What is wrong with `blades` as a `camera_3d`'s `aperture_blades`, if anything.
+pub(crate) fn aperture_blades_error(blades: i64) -> Option<String> {
+    (blades != 0 && !(3..=MAX_APERTURE_BLADES).contains(&blades)).then(|| {
+        format!(
+            "`aperture_blades` is {blades}; it must be 0 for a circle or from 3 to \
+             {MAX_APERTURE_BLADES}"
+        )
+    })
 }
 
 /// The viewpoint `render_3d` draws from, looking down its -Z. The first camera in a scene wins;
@@ -885,6 +920,12 @@ pub struct Render3dParams {
     /// Renders this many times wider and taller, then averages down, to antialias edges.
     #[meta(min = 1, max = 4, enforced_min, step = 1)]
     pub supersample: u32,
+    /// Views through the camera's lens averaged for its depth of field, each a draw of the scene
+    /// at the supersampled size: more is a smoother blur. Does nothing while the camera's `f_stop`
+    /// is 0 or its projection is orthographic, and at 1. The `depth` and `normal` outputs are
+    /// drawn from the centre of the lens, sharp.
+    #[meta(min = 1, max = 64, enforced_min, step = 1)]
+    pub dof_samples: u32,
     /// Exposure adjustment in stops before tone mapping.
     #[meta(step = 0.1)]
     pub exposure: f64,
@@ -934,6 +975,7 @@ impl Default for Render3dParams {
             width: 0,
             height: 0,
             supersample: 2,
+            dof_samples: 16,
             exposure: 0.0,
             tone_mapping: ToneMapping::None,
             environment: 1.0,

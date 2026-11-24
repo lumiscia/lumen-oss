@@ -12,7 +12,8 @@ use crate::support::scene::{
     with_material,
 };
 use crate::support::{
-    BLUE, CLEAR, Case, Expect, Frame, GREEN, RED, Scene, TestMedia, check, gpu, render, scene,
+    BLUE, CLEAR, Case, Expect, Frame, GREEN, RED, Scene, TestMedia, check, gpu, render,
+    render_working_space, scene,
 };
 
 /// Asserts that the white box covers `(x, y)` of `frame`, its front lit by the default key light,
@@ -902,5 +903,156 @@ fn a_model_kept_as_a_static_frame_is_drawn_again_when_its_file_changes() {
     assert_eq!(
         center(&render(&mut renderer, &composition, 2.0, &green)),
         GREEN
+    );
+}
+
+/// A camera 5 units along +Z with a narrow 10° view, focused on the origin's plane, and its
+/// `params`: a red wall on that plane with a blue square right of centre, and a green card 1.5
+/// units from the camera hiding the left half of the view, with the matte name `card`. A blue strip on the wall just left of
+/// centre is hidden behind the card's edge from the centre of the lens.
+fn through_a_lens(camera: Value, render: Value) -> Scene {
+    let mut camera_params = json!({ "fov": 10, "position": [0, 0, 5], "focus_distance": 5 });
+    camera_params
+        .as_object_mut()
+        .expect("camera params")
+        .extend(camera.as_object().expect("lens params").clone());
+    let nodes = listed(
+        &[
+            flat(
+                1,
+                11,
+                json!({ "size": [4, 4, 0.01], "position": [0, 0, -0.01] }),
+                json!({ "color": RED }),
+            ),
+            flat(
+                2,
+                12,
+                json!({ "size": [0.2, 0.2, 0.01], "position": [0.25, 0, 0] }),
+                json!({ "color": BLUE }),
+            ),
+            flat(
+                3,
+                13,
+                json!({ "size": [0.08, 2, 0.01], "position": [-0.04, 0, 0] }),
+                json!({ "color": BLUE }),
+            ),
+            flat(
+                4,
+                14,
+                json!({ "size": [1, 2, 0.01], "position": [-0.5, 0, 3.5], "matte": "card" }),
+                json!({ "color": GREEN }),
+            ),
+            [
+                json!({ "id": 5, "type": "camera_3d", "params": camera_params }),
+                merge(6, &[1, 2, 3, 4], json!({})),
+            ],
+        ],
+        merge(7, &[6, 5], json!({})),
+    );
+    render_3d_with(render, nodes)
+}
+
+/// Across the centre row of `frame`: how much green the card spills right of its edge, and how
+/// much of the hidden blue strip shows left of it.
+fn spill_and_reveal(frame: &Frame) -> (u32, u32) {
+    let channel = |xs: std::ops::Range<u32>, channel: usize| -> u32 {
+        xs.map(|x| u32::from(frame.pixel(x, CENTER)[channel])).sum()
+    };
+    (
+        channel(CENTER..CENTER + 8, 1),
+        channel(CENTER - 6..CENTER, 2),
+    )
+}
+
+#[test]
+fn a_pinhole_camera_draws_as_it_did_before_it_had_a_lens() {
+    let pinhole = || Expect::Matches(through_a_lens(json!({}), json!({})).into());
+    check(vec![
+        Case::new(
+            "an f_stop of 0, with any focus, blades and samples",
+            through_a_lens(
+                json!({ "f_stop": 0, "focus_distance": 1.5, "aperture_blades": 6 }),
+                json!({ "dof_samples": 32 }),
+            ),
+            pinhole(),
+        )
+        .tolerance(0),
+        Case::new(
+            "one sample through an open lens",
+            through_a_lens(json!({ "f_stop": 2 }), json!({ "dof_samples": 1 })),
+            pinhole(),
+        )
+        .tolerance(0),
+    ]);
+}
+
+#[test]
+fn an_open_lens_blurs_what_is_out_of_focus_and_sees_past_the_edge_of_what_is_near() {
+    let sharp = |frame: &Frame| {
+        assert_eq!(
+            frame.pixel(CENTER - 4, CENTER),
+            GREEN,
+            "the card hides the strip"
+        );
+        assert_eq!(spill_and_reveal(frame), (0, 0));
+    };
+    let blurred = |frame: &Frame| {
+        // The wall and the square on it are in focus, so their edges stay sharp.
+        for (x, color) in [(40, RED), (42, RED), (45, BLUE), (52, BLUE)] {
+            let pixel = frame.pixel(x, CENTER);
+            assert!(
+                pixel
+                    .iter()
+                    .zip(color)
+                    .all(|(&got, want)| got.abs_diff(want) <= 2),
+                "({x}, {CENTER}) is {pixel:?}, not {color:?}"
+            );
+        }
+        let (spill, reveal) = spill_and_reveal(frame);
+        assert!(spill > 150, "the card's edge blurs over the wall: {spill}");
+        assert!(
+            reveal > 100,
+            "the strip shows past the card's blurred edge: {reveal}"
+        );
+    };
+    // The lens opens from f/4 to f/2 between the frames.
+    let opening = through_a_lens(json!({ "f_stop": "=4 - frame * 2" }), json!({})).frames(2);
+    check(vec![
+        Case::new(
+            "through a pinhole",
+            through_a_lens(json!({}), json!({})),
+            Expect::Custom(Box::new(move |frames| sharp(&frames[0]))),
+        ),
+        Case::new(
+            "through a lens opening wider",
+            opening,
+            Expect::Custom(Box::new(move |frames| {
+                for frame in frames {
+                    blurred(frame);
+                }
+                let [narrow, wide] = [&frames[0], &frames[1]].map(spill_and_reveal);
+                assert!(
+                    wide.0 > narrow.0 + 200 && wide.1 > narrow.1,
+                    "f/2 {wide:?} blurs more than f/4 {narrow:?}"
+                );
+            })),
+        )
+        .frames([0.0, 1.0]),
+    ]);
+    let matte: Composition = through_a_lens(
+        json!({ "f_stop": 2 }),
+        json!({ "mattes": ["card"], "output": "matte" }),
+    )
+    .into();
+    let texels = render_working_space(&mut gpu().renderer(), &matte, 0.0, &TestMedia::default());
+    let card = |x: u32| texels[(CENTER * SIZE.0 + x) as usize][0];
+    assert!(
+        (card(CENTER - 8) - 1.0).abs() < 1e-3 && card(CENTER + 8) == 0.0,
+        "the matte covers the card and not the wall"
+    );
+    assert!(
+        (0.05..0.95).contains(&card(CENTER + 1)),
+        "the card's matte blurs with its colour: {}",
+        card(CENTER + 1)
     );
 }

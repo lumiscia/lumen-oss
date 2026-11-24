@@ -26,9 +26,15 @@ struct Args {
     frames: u32,
     triangles: u32,
     supersample: u32,
+    /// The `f_stop` of the orbiting camera of `heavy` and `cards`, focused on the scene's centre.
+    f_stop: f64,
+    dof_samples: u32,
 }
 
-const SCENARIOS: [&str; 3] = ["heavy", "plane", "clip-end"];
+const SCENARIOS: [&str; 4] = ["heavy", "plane", "clip-end", "cards"];
+
+/// Image planes in the `cards` scenario, each with its own image, so each draws on its own.
+const CARDS: u32 = 200;
 
 fn parse_args() -> anyhow::Result<Args> {
     let mut args = Args {
@@ -36,6 +42,8 @@ fn parse_args() -> anyhow::Result<Args> {
         frames: 120,
         triangles: 320_000,
         supersample: 2,
+        f_stop: 0.0,
+        dof_samples: 16,
     };
     let mut raw = std::env::args().skip(1);
     while let Some(arg) = raw.next() {
@@ -51,6 +59,8 @@ fn parse_args() -> anyhow::Result<Args> {
             "--frames" => args.frames = value()?.parse()?,
             "--triangles" => args.triangles = value()?.parse()?,
             "--supersample" => args.supersample = value()?.parse()?,
+            "--f-stop" => args.f_stop = value()?.parse()?,
+            "--dof-samples" => args.dof_samples = value()?.parse()?,
             other => bail!("unknown argument {other}"),
         }
     }
@@ -124,7 +134,7 @@ fn cases(scenario: &str, args: &Args) -> Vec<Case> {
                         size,
                         shadows,
                         environment,
-                        composition: heavy_scene(size, shadows, environment, args.supersample),
+                        composition: heavy_scene(size, shadows, environment, args),
                         media: media.clone(),
                         sequence: 0..args.frames,
                     });
@@ -167,6 +177,21 @@ fn cases(scenario: &str, args: &Args) -> Vec<Case> {
                 sequence: FPS + 30..FPS + 30 + args.frames,
             });
         }
+        "cards" => {
+            let media = (0..CARDS).fold(Scene3dMedia::default(), |media, card| {
+                media.image(InMemoryImage::checker(&format!("card {card}"), 64, 64))
+            });
+            cases.push(Case {
+                scenario: "cards",
+                name: format!("{CARDS} planes"),
+                size: (1920, 1080),
+                shadows: false,
+                environment: false,
+                composition: cards_scene(args),
+                media,
+                sequence: 0..args.frames,
+            });
+        }
         _ => unreachable!("scenarios are checked when parsed"),
     }
     cases
@@ -202,9 +227,11 @@ fn scene(
     lumen_engine::json::parse_value(&document).expect("the benchmark scene parses")
 }
 
-fn orbit_camera(radius: f64, height: f64) -> Value {
+fn orbit_camera(radius: f64, height: f64, f_stop: f64) -> Value {
     json!({
         "id": 3, "type": "camera_3d", "params": {
+            "f_stop": f_stop,
+            "focus_distance": radius,
             "look_at": true,
             "target": [0, 0, 0],
             "fov": 55,
@@ -225,12 +252,9 @@ fn render_node(size: (u32, u32), supersample: u32, environment: bool) -> Value {
     json!({ "id": 100, "type": "render_3d", "params": params })
 }
 
-fn heavy_scene(
-    size: (u32, u32),
-    shadows: bool,
-    environment: bool,
-    supersample: u32,
-) -> Composition {
+fn heavy_scene(size: (u32, u32), shadows: bool, environment: bool, args: &Args) -> Composition {
+    let mut render = render_node(size, args.supersample, environment);
+    render["params"]["dof_samples"] = json!(args.dof_samples);
     let nodes = vec![
         json!({ "id": 1, "type": "model_3d", "params": { "source": "heavy.glb" } }),
         json!({
@@ -239,8 +263,8 @@ fn heavy_scene(
                 "cast_shadows": shadows, "shadow_distance": 160,
             }
         }),
-        orbit_camera(70.0, 16.0),
-        render_node(size, supersample, environment),
+        orbit_camera(70.0, 16.0, args.f_stop),
+        render,
     ];
     scene(size, nodes, &[], &[1, 2, 3])
 }
@@ -285,10 +309,35 @@ fn plane_scene(source: PlaneSource, supersample: u32) -> Composition {
     let nodes = vec![
         raster,
         shown,
-        orbit_camera(60.0, 25.0),
+        orbit_camera(60.0, 25.0, 0.0),
         render_node(size, supersample, false),
     ];
     scene(size, nodes, &[(1, 2, port)], &[2, 3])
+}
+
+/// [`CARDS`] image planes in a grid that recedes from the camera, each showing its own image.
+fn cards_scene(args: &Args) -> Composition {
+    let size = (1920, 1080);
+    let mut render = render_node(size, args.supersample, false);
+    render["params"]["dof_samples"] = json!(args.dof_samples);
+    let mut nodes = vec![orbit_camera(30.0, 4.0, args.f_stop), render];
+    let mut wires = Vec::new();
+    let mut inputs = vec![3];
+    for card in 0..CARDS {
+        let (column, row) = (f64::from(card % 20), f64::from(card / 20));
+        nodes.push(json!({
+            "id": 1000 + card, "type": "media_in",
+            "params": { "source": format!("card {card}"), "kind": "image" }
+        }));
+        nodes.push(json!({
+            "id": 2000 + card, "type": "image_plane_3d", "params": {
+                "width": 2, "position": [column * 2.5 - 24.0, row * 1.5 - 7.0, -row * 3.0],
+            }
+        }));
+        wires.push((1000 + card, 2000 + card, "source"));
+        inputs.push(2000 + card);
+    }
+    scene(size, nodes, &wires, &inputs)
 }
 
 fn clip_scene(supersample: u32) -> Composition {

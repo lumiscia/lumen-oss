@@ -5,11 +5,13 @@ use std::collections::hash_map::Entry;
 
 use foldhash::HashMap;
 use lumen_3d::glam::Mat4;
-use lumen_3d::{Bounds, Camera, Projection};
+use lumen_3d::{Bounds, Camera, Lens, Projection};
 
 use super::{Collected, CopySource, Within};
 use crate::composition::Composition;
-use crate::gpu::{CameraProjection, CapturedCamera, CapturedObject, SceneBounds, SceneCamera};
+use crate::gpu::{
+    CameraLens, CameraProjection, CapturedCamera, CapturedObject, SceneBounds, SceneCamera,
+};
 
 /// The camera `camera` gives, held to the limits `camera_3d` keeps its params to.
 pub(crate) fn override_camera(camera: &SceneCamera) -> Camera {
@@ -39,6 +41,7 @@ pub(crate) fn override_camera(camera: &SceneCamera) -> Camera {
         projection,
         near,
         far: far.max(near + 1e-3),
+        lens: Lens::PINHOLE,
     }
 }
 
@@ -73,6 +76,12 @@ fn captured_camera(
                 near: camera.near,
                 far: camera.far,
             },
+        },
+        lens: CameraLens {
+            aperture: camera.lens.aperture,
+            focus_distance: camera.lens.focus_distance,
+            blades: camera.lens.blades,
+            rotation_degrees: camera.lens.rotation.to_degrees(),
         },
     }
 }

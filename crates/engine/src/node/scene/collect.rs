@@ -1495,7 +1495,7 @@ impl Collected {
             }
             NodeKind::Camera3d(camera) => {
                 let params = camera.params.eval(&ctx)?;
-                let camera = camera::camera_3d(&params, parent);
+                let camera = camera::camera_3d(node_id, &params, parent)?;
                 self.scene.camera.get_or_insert(camera);
                 self.cameras.push((node_id, self.within.clone(), camera));
             }

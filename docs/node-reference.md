@@ -1057,7 +1057,11 @@ Category: scene. Output: scene.
 
 Params:
 
+- **`aperture_blades`** (integer, 0 to 16; default `0`) Blades of the aperture, which shape a blurred highlight: 0 is a circle, and 3 to 16 a polygon with that many sides.
+- **`aperture_rotation`** (number; default `0`) Turn of the aperture polygon in degrees, clockwise. At 0 one corner points up.
+- **`f_stop`** (number, at least 0; default `0`) Aperture of the lens as an f-number, which blurs what is nearer or farther than `focus_distance` as a camera does: lower is blurrier. The aperture is the focal length over this, for a full-frame (36 × 24 mm) camera with this `fov` and world units in metres. 0 is a pinhole, which keeps everything sharp. `render_3d`'s `dof_samples` sets how smooth the blur is. An orthographic projection ignores it.
 - **`far`** (number, at least 0; default `1000`) Farthest distance drawn, in world units.
+- **`focus_distance`** (number, at least 0; default `5`) Distance from the camera along its view, in world units, that stays sharp while `f_stop` is above 0.
 - **`fov`** (number, 1 to 179; default `40`) Vertical field of view in degrees, with a perspective projection.
 - **`look_at`** (boolean; default `false`) Aims the camera at `target`, ignoring its rotation.
 - **`near`** (number, at least 0; default `0.05`) Nearest distance drawn, in world units.
@@ -1316,6 +1320,7 @@ Params:
 
 - **`depth_far`** (number, at least 0; default `0`) Distance from the camera, in world units, that `depth` output maps to 1, and past which it stays 1. 0 uses the camera's `far`, which spreads the 0 to 1 range thin over a scene much nearer than it.
 - **`depth_near`** (number, at least 0; default `0`) Distance from the camera, in world units, that `depth` output maps to 0. 0 uses the camera's `near`.
+- **`dof_samples`** (integer, 1 to 64; default `16`) Views through the camera's lens averaged for its depth of field, each a draw of the scene at the supersampled size: more is a smoother blur. Does nothing while the camera's `f_stop` is 0 or its projection is orthographic, and at 1. The `depth` and `normal` outputs are drawn from the centre of the lens, sharp.
 - **`environment`** (number, at least 0; default `1`) Brightness of the light from all around that surfaces reflect and are lit by: the `environment_map` when one is set, and otherwise a built-in studio of softboxes. 0 turns it off.
 - **`environment_background`** (boolean; default `false`) Shows the environment map behind the scene, through the exposure and tone mapping but not the fog, which makes the output opaque. Shadow catchers darken it.
 - **`environment_background_blur`** (number, 0 to 1; default `0`) How blurred the background is, as a surface of this roughness reflects it: 0 is sharp.

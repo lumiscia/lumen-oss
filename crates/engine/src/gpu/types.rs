@@ -51,7 +51,8 @@ pub enum CameraProjection {
 }
 
 /// A viewpoint for [`GpuCompositionRenderer::set_camera_override`](super::GpuCompositionRenderer::set_camera_override),
-/// looking down its own -Z. The aspect is that of the `render_3d` it draws.
+/// looking down its own -Z. The aspect is that of the `render_3d` it draws. It has no lens, so the
+/// render is sharp throughout whatever the scene camera's `f_stop`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneCamera {
     /// Camera to world, as 16 floats in column-major order.
@@ -95,6 +96,21 @@ pub struct CapturedCamera {
     /// Camera to world, as 16 floats in column-major order.
     pub world: [f32; 16],
     pub projection: CameraProjection,
+    pub lens: CameraLens,
+}
+
+/// The lens of a camera [`SceneCapture`] reports, through which `render_3d` blurs what is nearer
+/// or farther than its focus distance.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CameraLens {
+    /// Diameter of the aperture in world units. 0 is a pinhole, which keeps everything sharp.
+    pub aperture: f32,
+    /// Distance along the view, in world units, that stays sharp.
+    pub focus_distance: f32,
+    /// Sides of the aperture: 0 is a circle.
+    pub blades: u32,
+    /// Turn of the aperture polygon in degrees, clockwise. At 0 one corner points up.
+    pub rotation_degrees: f32,
 }
 
 /// What one `render_3d` placed on a frame, which
