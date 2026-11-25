@@ -147,7 +147,7 @@ export class Composition {
   addNode<TClip extends ClipValue>(node: TClip): CompositionNode<"clip"> & ClipReferenceTo<TClip>;
   addNode<TKind extends NodeKind>(
     node: NodeInput<TKind> & { readonly type: TKind },
-  ): WithOuts<TKind, CompositionNode<TKind>>;
+  ): TKind extends NodeKind ? WithOuts<TKind, CompositionNode<TKind>> : never;
   addNode(node: NodeInput & { readonly type: NodeKind }): CompositionNode {
     const nodes = this.#nodes.length;
     const connections = this.#connections.length;

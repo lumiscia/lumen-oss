@@ -89,6 +89,13 @@ void nodes.shape_3d().out;
 // @ts-expect-error render_3d's `depth` is a raster, not a scene
 composition.addNode({ type: "merge_3d", inputs: { objects: [render.out.depth] } });
 const depthSource: NodeSource<"raster"> = render.out.depth;
+const either = composition.addNode(Math.random() > 0.5 ? nodes.render_3d() : nodes.background());
+if (either.type === "render_3d") {
+  void either.out.depth;
+} else {
+  // @ts-expect-error background names no outputs beside `output`
+  void either.out;
+}
 void depthSource;
 
 // @ts-expect-error background outputs a raster, not a scene
