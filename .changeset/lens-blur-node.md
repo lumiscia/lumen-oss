@@ -7,8 +7,8 @@ New `lens_blur` node blurs like an out-of-focus lens: every point spreads into a
 
 ```ts
 n.lens_blur({
-  source: outputOf(render, "color"),
-  depth: outputOf(render, "depth"),
+  source: render.out.color,
+  depth: render.out.depth,
   radius: 16,
   focus: 0.2,
 });

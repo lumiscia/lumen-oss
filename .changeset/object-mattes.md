@@ -7,11 +7,11 @@
 
 ```ts
 const render = n.render_3d({ scene, mattes: ["title"] });
-const color = outputOf(render, "color");
+const { color, matte } = render.out;
 n.merge({
   base: n.blur({ source: color, radius: 12 }),
   overlay: color,
-  mask: outputOf(render, "matte"),
+  mask: matte,
   mask_mode: "red",
 });
 ```

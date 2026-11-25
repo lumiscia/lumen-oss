@@ -117,8 +117,8 @@ impl Default for LensBlurParams {
 /// ```
 ///
 /// ```ts
-/// const depth = outputOf(render, "depth");
-/// n.lens_blur({ source: outputOf(render, "color"), depth, radius: 16, focus: 0.2 });
+/// const { color, depth } = render.out;
+/// n.lens_blur({ source: color, depth, radius: 16, focus: 0.2 });
 /// ```
 ///
 /// Tilt-shift, sharp across the middle of the frame and blurred towards the top and bottom:
@@ -139,10 +139,8 @@ impl Default for LensBlurParams {
 /// ```
 ///
 /// ```ts
-/// const color = outputOf(render, "color");
-/// const depth = outputOf(render, "depth");
-/// const mask = outputOf(render, "matte");
-/// n.lens_blur({ source: color, depth, mask, radius: 16, focus: 0.2, mask_mode: "red" });
+/// const { color, depth, matte } = render.out;
+/// n.lens_blur({ source: color, depth, mask: matte, radius: 16, focus: 0.2, mask_mode: "red" });
 /// ```
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "lens_blur", name = "Lens Blur", category = "processing")]

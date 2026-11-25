@@ -2588,8 +2588,8 @@ export interface Lathe3dNode extends CompositionNodeBase<"lathe_3d"> {
  * ```
  * 
  * ```ts
- * const depth = outputOf(render, "depth");
- * n.lens_blur({ source: outputOf(render, "color"), depth, radius: 16, focus: 0.2 });
+ * const { color, depth } = render.out;
+ * n.lens_blur({ source: color, depth, radius: 16, focus: 0.2 });
  * ```
  * 
  * Tilt-shift, sharp across the middle of the frame and blurred towards the top and bottom:
@@ -2610,10 +2610,8 @@ export interface Lathe3dNode extends CompositionNodeBase<"lathe_3d"> {
  * ```
  * 
  * ```ts
- * const color = outputOf(render, "color");
- * const depth = outputOf(render, "depth");
- * const mask = outputOf(render, "matte");
- * n.lens_blur({ source: color, depth, mask, radius: 16, focus: 0.2, mask_mode: "red" });
+ * const { color, depth, matte } = render.out;
+ * n.lens_blur({ source: color, depth, mask: matte, radius: 16, focus: 0.2, mask_mode: "red" });
  * ```
  */
 export interface LensBlurNode extends CompositionNodeBase<"lens_blur"> {
@@ -5101,8 +5099,8 @@ export const nodeInputPorts = {
    * ```
    * 
    * ```ts
-   * const depth = outputOf(render, "depth");
-   * n.lens_blur({ source: outputOf(render, "color"), depth, radius: 16, focus: 0.2 });
+   * const { color, depth } = render.out;
+   * n.lens_blur({ source: color, depth, radius: 16, focus: 0.2 });
    * ```
    * 
    * Tilt-shift, sharp across the middle of the frame and blurred towards the top and bottom:
@@ -5123,10 +5121,8 @@ export const nodeInputPorts = {
    * ```
    * 
    * ```ts
-   * const color = outputOf(render, "color");
-   * const depth = outputOf(render, "depth");
-   * const mask = outputOf(render, "matte");
-   * n.lens_blur({ source: color, depth, mask, radius: 16, focus: 0.2, mask_mode: "red" });
+   * const { color, depth, matte } = render.out;
+   * n.lens_blur({ source: color, depth, mask: matte, radius: 16, focus: 0.2, mask_mode: "red" });
    * ```
    */
   "lens_blur": { "source": { kind: "raster", variadic: false }, "depth": { kind: "raster", variadic: false }, "mask": { kind: "raster", variadic: false } },
@@ -5449,6 +5445,18 @@ export const nodeInputPorts = {
 } as const satisfies [NodeParamPortNameClash] extends [never]
   ? NodeInputPortTable
   : `a param and an input port share the name ${NodeParamPortNameClash}`;
+
+type NodeNamedOutputTable = {
+  readonly [TKind in NodeKind]?: readonly Exclude<NodeOutputName<TKind>, "output">[];
+};
+
+/**
+ * The outputs each node kind names beside its default `output`, in the schema's order, for the
+ * kinds that name any.
+ */
+export const nodeNamedOutputs = {
+  "render_3d": ["color", "depth", "normal", "matte"],
+} as const satisfies NodeNamedOutputTable;
 
 /** How a param that names media reads it. */
 export interface MediaSourceParam {

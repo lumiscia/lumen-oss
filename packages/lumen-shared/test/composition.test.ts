@@ -16,7 +16,6 @@ import {
   when,
 } from "../src/expression.js";
 import { nodes } from "../src/nodes.js";
-import { outputOf } from "../src/output.js";
 import { defineComposition } from "../src/template.js";
 
 describe("Composition schema version", () => {
@@ -137,16 +136,14 @@ describe("Composition inputs", () => {
     const composition = new Composition();
     const group = composition.addNode({ type: "merge_3d" });
     const render = composition.addNode({ type: "render_3d", inputs: { scene: group } });
-    const fogged = composition.addNode({
-      type: "merge",
-      inputs: { base: outputOf(render, "color"), mask: outputOf(render, "depth") },
-    });
+    const { color, depth } = render.out;
+    const fogged = composition.addNode({ type: "merge", inputs: { base: color, mask: depth } });
     const shaded = nodes.render_3d({ scene: group });
     const lit = composition.addNode({
       type: "merge",
-      inputs: { base: shaded, mask: outputOf(shaded, "normal") },
+      inputs: { base: shaded, mask: shaded.out.normal },
     });
-    composition.connect(outputOf(render, "output"), lit, { toPort: "overlay" });
+    composition.connect(render, lit, { toPort: "overlay" });
 
     expect(composition.toJSON().connections).toEqual([
       { from_node: group.id, to_node: render.id, to_port: "scene" },
@@ -159,11 +156,25 @@ describe("Composition inputs", () => {
     ]);
   });
 
+  test("`out` stays out of the composition's JSON", () => {
+    const composition = new Composition();
+    const shaded = nodes.render_3d({});
+    const render = composition.addNode({ type: "merge", inputs: { base: shaded.out.color } });
+
+    expect(Object.keys(shaded)).toEqual(["type"]);
+    expect(JSON.parse(JSON.stringify(composition)).nodes).toEqual([
+      { id: 0, type: "render_3d" },
+      { id: 1, type: "merge" },
+    ]);
+    expect("out" in render).toBe(false);
+    expect(nodes.shape_3d()).not.toHaveProperty("out");
+  });
+
   test("`connect` reads a named output of a node value its reader added", () => {
     const composition = new Composition();
     const render = nodes.render_3d({ scene: nodes.merge_3d({}) });
     const fogged = composition.addNode({ type: "merge", inputs: { base: render } });
-    composition.connect(outputOf(render, "depth"), fogged, { toPort: "mask" });
+    composition.connect(render.out.depth, fogged, { toPort: "mask" });
 
     expect(composition.toJSON().connections.at(-1)).toEqual({
       from_node: 1,
@@ -172,7 +183,7 @@ describe("Composition inputs", () => {
       to_port: "mask",
     });
     expect(() =>
-      composition.connect(outputOf(nodes.render_3d({}), "depth"), fogged, { toPort: "overlay" }),
+      composition.connect(nodes.render_3d({}).out.depth, fogged, { toPort: "overlay" }),
     ).toThrow("A `render_3d` node value is read before it is added to this composition.");
   });
 
