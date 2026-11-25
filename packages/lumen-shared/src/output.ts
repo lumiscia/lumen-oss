@@ -1,20 +1,22 @@
-import type { NodeKind, NodeOutputName } from "@lumiscia/lumen-types";
+import { nodeNamedOutputs } from "@lumiscia/lumen-types";
 
-import type { NodeOutputOf, TypedNode } from "./types.js";
+import type { TypedNode } from "./types.js";
 
 /**
- * Output `output` of `node`, for a port to read in place of its default `output`, as
- * `outputOf(render, "depth")`. The name is checked against `node`'s kind.
+ * Gives `node` an `out` holding each output its kind names beside `output`, as
+ * `{ node, output }`. `out` isn't enumerable, so spreading the node or writing it as JSON leaves
+ * it out.
  */
-export function outputOf<
-  TKind extends NodeKind,
-  TOutput extends NodeOutputName<TKind>,
-  TNode extends TypedNode<TKind>,
->(node: TNode & { readonly type: TKind }, output: TOutput): NodeOutputOf<TKind, TOutput, TNode> {
-  return { node, output };
+export function withOutputs<TNode extends { readonly type: string }>(node: TNode): TNode {
+  if (!Object.hasOwn(nodeNamedOutputs, node.type)) {
+    return node;
+  }
+  const names: readonly string[] = nodeNamedOutputs[node.type as keyof typeof nodeNamedOutputs];
+  const out = Object.freeze(Object.fromEntries(names.map((output) => [output, { node, output }])));
+  return Object.defineProperty(node, "out", { value: out });
 }
 
-/** Whether `source` is an output `outputOf` returned rather than a node. */
+/** Whether `source` is one of a node's `out` outputs rather than a node. */
 export function isNodeOutput(
   source: number | object,
 ): source is { readonly node: TypedNode; readonly output: string } {

@@ -15,7 +15,6 @@ import {
   when,
 } from "../src/expression.js";
 import { nodes as n } from "../src/nodes.js";
-import { outputOf } from "../src/output.js";
 import { defineComposition } from "../src/template.js";
 import type { ClipNode } from "../src/index.js";
 import type { NodeInput, NodeSource, NodeValue } from "../src/types.js";
@@ -114,15 +113,7 @@ n.merge_3d({ objects: [defineComposition({ name: "plain", build: () => n.backgro
 // @ts-expect-error a template outputs a raster or a scene, not a geometry
 defineComposition({ name: "outline", build: () => n.shape_2d() });
 
-// A clip's named output, and the reference `addNode` returns for it, keep its template's kind.
-const sceneOutput = outputOf(sceneCard.clip(), "output");
-n.merge_3d({ objects: [sceneOutput] });
-// @ts-expect-error a scene template's clip output is a scene, not a raster
-n.opacity({ source: sceneOutput });
-const wrapped = defineComposition({ name: "wrapped", build: () => sceneOutput });
-n.merge_3d({ objects: [wrapped.clip()] });
-// @ts-expect-error a template returning a scene clip's output is a scene template
-n.opacity({ source: wrapped.clip() });
+// The reference `addNode` returns for a clip keeps its template's kind.
 const sceneClip = new Composition().addNode(sceneCard.clip());
 n.merge_3d({ objects: [sceneClip] });
 // @ts-expect-error an added scene clip is a scene, not a raster
@@ -142,15 +133,11 @@ const either = defineComposition({
 n.merge_3d({ objects: [either.clip()] });
 // @ts-expect-error the clip may output a scene
 n.opacity({ source: either.clip() });
-// @ts-expect-error its named output may be a scene
-n.opacity({ source: outputOf(either.clip(), "output") });
 const mixed = new Composition();
 const eitherClip = mixed.addNode(either.clip());
 const faded = mixed.addNode(n.opacity());
 // @ts-expect-error an added clip that may output a scene isn't a raster
 n.opacity({ source: eitherClip });
-// @ts-expect-error nor is its named output
-n.opacity({ source: outputOf(eitherClip, "output") });
 // @ts-expect-error nor does it connect to a raster input
 mixed.connect(eitherClip, faded, { toPort: "source" });
 // @ts-expect-error and it may output a raster, so it isn't a scene either

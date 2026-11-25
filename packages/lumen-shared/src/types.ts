@@ -97,7 +97,7 @@ type ClipBrand<TOutput extends TemplateOutput> = TOutput extends "scene"
 /**
  * What a port reads: a node of the composition, or a node value, which becomes a node of the
  * composition when the node reading it is added. One value is one node, however many read it.
- * `outputOf` reads one of a node's named outputs in place of its default.
+ * A node's `out` holds the outputs it names beside its default, as `render.out.depth`.
  */
 export type NodeSource<TOutput extends NodePortKind = NodePortKind> =
   | NodeReference<TOutput>
@@ -109,7 +109,7 @@ export type TypedNode<TKind extends NodeKind = NodeKind> =
   | { readonly id: number; readonly type: TKind }
   | NodeInput<TKind>;
 
-/** Output `TOutput` of `TNode`, a `TKind` node, as `outputOf` returns it. */
+/** Output `TOutput` of `TNode`, a `TKind` node, as its `out` holds it. */
 export interface NodeOutputOf<
   TKind extends NodeKind = NodeKind,
   TOutput extends NodeOutputName<TKind> = NodeOutputName<TKind>,
@@ -120,22 +120,31 @@ export interface NodeOutputOf<
 }
 
 /**
- * A named output of any node kind, of any name, that outputs `TOutput`. A clip's outputs are
- * what its template outputs.
+ * A named output of any node kind, of any name, that outputs `TOutput`. A clip, which outputs
+ * what its template does, names none.
  */
-export type NodeOutput<TOutput extends NodePortKind = NodePortKind> =
-  | {
-      readonly [TKind in Exclude<NodeKind, "clip">]: {
-        readonly [TName in NodeOutputName<TKind>]: NodeOutputPortKind<TKind, TName> extends TOutput
-          ? NodeOutputOf<TKind, TName>
-          : never;
-      }[NodeOutputName<TKind>];
-    }[Exclude<NodeKind, "clip">]
-  | ClipOutput<Extract<TOutput, TemplateOutput>>;
+export type NodeOutput<TOutput extends NodePortKind = NodePortKind> = {
+  readonly [TKind in Exclude<NodeKind, "clip">]: {
+    readonly [TName in NodeOutputName<TKind>]: NodeOutputPortKind<TKind, TName> extends TOutput
+      ? NodeOutputOf<TKind, TName>
+      : never;
+  }[NodeOutputName<TKind>];
+}[Exclude<NodeKind, "clip">];
 
-type ClipOutput<TOutput extends TemplateOutput> = [TOutput] extends [never]
-  ? never
-  : NodeOutputOf<"clip", NodeOutputName<"clip">, ClipValue<TOutput> | ClipReference<TOutput>>;
+/** The outputs a node kind names beside its default `output`. */
+type NamedOutputName<TKind extends NodeKind> = Exclude<NodeOutputName<TKind>, "output">;
+
+/** The outputs of `TNode`, a `TKind` node, that its kind names beside `output`, by name. */
+export type NodeOuts<TKind extends NodeKind, TNode extends TypedNode<TKind>> = {
+  readonly [TName in NamedOutputName<TKind>]: NodeOutputOf<TKind, TName, TNode>;
+};
+
+/** `TNode` with its `out`, for a kind that names outputs beside `output`. */
+export type WithOuts<TKind extends NodeKind, TNode extends TypedNode<TKind>> = [
+  NamedOutputName<TKind>,
+] extends [never]
+  ? TNode
+  : TNode & { readonly out: NodeOuts<TKind, TNode> };
 
 /** A node's params and input ports by name in one object, as `nodes` takes them. */
 export type NodeProps<TKind extends NodeKind> = NodeParamProps<TKind> &
@@ -158,7 +167,7 @@ export type NodeFunctions = {
     ...props: Record<never, never> extends NodeProps<TKind>
       ? [props?: NodeProps<TKind>]
       : [props: NodeProps<TKind>]
-  ) => NodeInput<TKind>;
+  ) => WithOuts<TKind, NodeInput<TKind>>;
 };
 
 /** Lets each param that takes `=...` strings take an `Expr` of the matching type too. */

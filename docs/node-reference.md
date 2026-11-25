@@ -642,8 +642,8 @@ Depth of field from a `render_3d`, node 9, sharp at a fifth of the way from its 
 ```
 
 ```ts
-const depth = outputOf(render, "depth");
-n.lens_blur({ source: outputOf(render, "color"), depth, radius: 16, focus: 0.2 });
+const { color, depth } = render.out;
+n.lens_blur({ source: color, depth, radius: 16, focus: 0.2 });
 ```
 
 Tilt-shift, sharp across the middle of the frame and blurred towards the top and bottom:
@@ -663,10 +663,8 @@ The same depth of field, keeping sharp the objects of a `render_3d`'s `mattes: [
 ```
 
 ```ts
-const color = outputOf(render, "color");
-const depth = outputOf(render, "depth");
-const mask = outputOf(render, "matte");
-n.lens_blur({ source: color, depth, mask, radius: 16, focus: 0.2, mask_mode: "red" });
+const { color, depth, matte } = render.out;
+n.lens_blur({ source: color, depth, mask: matte, radius: 16, focus: 0.2, mask_mode: "red" });
 ```
 
 Category: processing. Output: raster.

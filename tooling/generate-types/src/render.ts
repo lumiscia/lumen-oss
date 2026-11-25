@@ -202,6 +202,13 @@ const renderNodeInputPortTableMember = (node: NodeVariant): string => {
   return `${docComment(node.description, "  ")}  ${quote(node.kind)}: ${ports.length === 0 ? "{}" : `{ ${ports.join(", ")} }`},`;
 };
 
+/** The outputs a node names beside its default `output`. */
+const namedOutputs = (node: NodeVariant): readonly string[] =>
+  node.outputs.map((port) => port.name).filter((name) => name !== "output");
+
+const renderNodeNamedOutputTableMember = (node: NodeVariant): string =>
+  `  ${quote(node.kind)}: [${namedOutputs(node).map(quote).join(", ")}],`;
+
 const renderNodeMediaSourceTableMember = (node: NodeVariant): string => {
   const params = node.mediaSources.map(([id, media]) => {
     const selectedBy =
@@ -392,6 +399,21 @@ ${nodes.map(renderNodeInputPortTableMember).join("\n")}
 } as const satisfies [NodeParamPortNameClash] extends [never]
   ? NodeInputPortTable
   : \`a param and an input port share the name \${NodeParamPortNameClash}\`;
+
+type NodeNamedOutputTable = {
+  readonly [TKind in NodeKind]?: readonly Exclude<NodeOutputName<TKind>, "output">[];
+};
+
+/**
+ * The outputs each node kind names beside its default \`output\`, in the schema's order, for the
+ * kinds that name any.
+ */
+export const nodeNamedOutputs = {
+${nodes
+  .filter((node) => namedOutputs(node).length > 0)
+  .map(renderNodeNamedOutputTableMember)
+  .join("\n")}
+} as const satisfies NodeNamedOutputTable;
 
 /** How a param that names media reads it. */
 export interface MediaSourceParam {

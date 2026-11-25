@@ -12,7 +12,7 @@ import {
 
 import { Expr, type FunctionDefinition } from "./expression.js";
 import { literalOf } from "./literal.js";
-import { isNodeOutput } from "./output.js";
+import { isNodeOutput, withOutputs } from "./output.js";
 import type {
   AudioClipOptions,
   AudioTrackOptions,
@@ -26,6 +26,7 @@ import type {
   NodeSource,
   RenderSettingsInput,
   TimelineInput,
+  WithOuts,
 } from "./types.js";
 
 const defaultRenderSettings = {
@@ -140,12 +141,13 @@ export class Composition {
    * variadic port such as `layers` takes an array. An input may be a node value, added before
    * this node and after the values it reads in turn. A value read by several inputs is one node.
    * `node` itself is always added, so adding the same object twice makes two nodes. A clip
-   * returns a reference that outputs what its template does.
+   * returns a reference that outputs what its template does. A reference has the `out` of a node
+   * value of its kind.
    */
   addNode<TClip extends ClipValue>(node: TClip): CompositionNode<"clip"> & ClipReferenceTo<TClip>;
   addNode<TKind extends NodeKind>(
     node: NodeInput<TKind> & { readonly type: TKind },
-  ): CompositionNode<TKind>;
+  ): WithOuts<TKind, CompositionNode<TKind>>;
   addNode(node: NodeInput & { readonly type: NodeKind }): CompositionNode {
     const nodes = this.#nodes.length;
     const connections = this.#connections.length;
@@ -245,11 +247,11 @@ export class Composition {
     }
     const addTemplate = template === undefined ? undefined : this.#planTemplate(template);
     const addShaders = this.#planShaders(shader === undefined ? [] : [shader]);
-    const nextNode = {
+    const nextNode = withOutputs({
       ...input,
       id,
       ...(input.params === undefined ? {} : { params: lower(input.params) }),
-    } as CompositionNode;
+    } as CompositionNode);
 
     // Everything that can throw is above, so a failed addition adds nothing for this node.
     addTemplate?.();

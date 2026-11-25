@@ -8,9 +8,9 @@
 ```ts
 const render = n.render_3d({ scene, mattes: ["lyrics"], depth_near: 3, depth_far: 20 });
 n.lens_blur({
-  source: outputOf(render, "color"),
-  depth: outputOf(render, "depth"),
-  mask: outputOf(render, "matte"),
+  source: render.out.color,
+  depth: render.out.depth,
+  mask: render.out.matte,
   mask_mode: "red",
   radius: 16,
   focus: 0.18,
