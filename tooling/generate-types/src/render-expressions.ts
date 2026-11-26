@@ -309,6 +309,24 @@ export function renderExpressions({ builtins, globals }: ExpressionTables): stri
   return `${header}${renderImports(code)}\n\n${body}\n`;
 }
 
+const identifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/** The contents of `lumen-shared/src/generated/arity.ts`. */
+export function renderArity({ builtins }: ExpressionTables): string {
+  const entries = builtins.map(
+    ({ name, minArgs, maxArgs }) =>
+      `  ${identifier.test(name) ? name : JSON.stringify(name)}: [${minArgs}, ${maxArgs ?? "null"}],\n`,
+  );
+  return `${header}import type { ExpressionBuiltinName } from "@lumiscia/lumen-types";
+
+/** The fewest and the most arguments each builtin takes; \`null\` is no upper limit. */
+export const builtinArity: Readonly<
+  Record<ExpressionBuiltinName, readonly [min: number, max: number | null]>
+> = {
+${entries.join("")}};
+`;
+}
+
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 
 /** The builtins and globals of `x-lumen-expressions`. */
