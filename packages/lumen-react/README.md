@@ -34,6 +34,8 @@ export const App = () => {
 };
 ```
 
+`useLumenPreview(preview)` re-renders on every played frame, because the state's `frame` changes. A component that reads one part of the state can pass a selector, such as `useLumenPreview(preview, (state) => state.isPlaying)`, and then re-renders only when that value changes. The selector must return a field or a primitive: one that builds a new object or array on each call makes React throw "Maximum update depth exceeded".
+
 `Player` also takes `loop`, `rate` (0.25 to 4), `volume` (0 to 1), `muted` and `range` (`{ in, out }` in frames, `out` exclusive). They change live, without a remount or a restart of playback. `onEnded` is called once when playback reaches the end of the range without `loop`, and `onTimeUpdate` with `{ frame, timeMs }` for each frame shown; neither re-renders the component, unlike `useLumenPreview`.
 
 ```tsx
