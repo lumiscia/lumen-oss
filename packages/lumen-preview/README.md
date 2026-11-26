@@ -146,6 +146,20 @@ Colour in the preview is converted as a render converts it, but it is not pixel-
 
 Diagnostic codes are public API, and new ones can appear in a patch release, so handle codes you don't know by their `severity`. The [engine README](https://github.com/lumiscia/lumen-oss/tree/main/crates/engine#diagnostics) lists them.
 
+## Checking compositions
+
+The session runs `check`, `evaluate` and `mediaDependencies` from `@lumiscia/lumen-bindings` in the preview's worker, so a page that already shows a preview doesn't load a second copy of the wasm to call them. Each takes a composition as the `composition` input does, with the same other arguments as the bindings' function, and resolves with the same result. They don't need a composition loaded and don't change what the preview shows. A call made while the worker is starting waits for it. One still pending when the session is disposed rejects with an `AbortError`, and so does any call made after that. If the worker fails to start or crashes, pending and later calls reject with that error until the session is attached again.
+
+```ts
+const session = mountPreview(document.body, { preview, composition, runtime });
+
+const diagnostics = await session.check(draft, ["Inter"]); // a draft with errors resolves with them
+const opacity = await session.evaluate(draft, { node: 4, param: "opacity", frame: 30 });
+const { media, fonts } = await session.mediaDependencies(draft);
+```
+
+`evaluate` and `mediaDependencies` reject as the bindings' functions throw, with the engine's `message`, `code` and `diagnostics` on the error.
+
 ## Playback controls
 
 `mountPreview` takes these options, and `session.setInputs()` changes them while it plays, without loading or restarting anything. A frame is a frame of the composition's timeline, as in `preview.seek(frame)`.

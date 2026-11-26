@@ -42,7 +42,11 @@ export function sameMediaEntry(left: PreviewMediaEntry, right: PreviewMediaEntry
 function serializeComposition(
   composition: LumenPreviewComposition | null | undefined,
 ): string | null {
-  return composition ? JSON.stringify(compositionDocument(composition)) : null;
+  return composition ? compositionJson(composition) : null;
+}
+
+export function compositionJson(composition: LumenPreviewComposition): string {
+  return JSON.stringify(compositionDocument(composition));
 }
 
 function compositionDocument(composition: LumenPreviewComposition): LumenComposition {
