@@ -1,12 +1,12 @@
-import {
-  expressionBuiltins,
-  type Color,
-  type EasingName,
-  type ExpressionBuiltinName,
-  type ExpressionString,
-  type Vec2,
+import type {
+  Color,
+  EasingName,
+  ExpressionBuiltinName,
+  ExpressionString,
+  Vec2,
 } from "@lumiscia/lumen-types";
 
+import { builtinArity } from "./generated/arity.js";
 import { setLiteral } from "./literal.js";
 import { quote } from "./quote.js";
 
@@ -226,16 +226,12 @@ export function formatNumber(value: number): string {
   return String(value);
 }
 
-const specs: ReadonlyMap<string, (typeof expressionBuiltins)[number]> = new Map(
-  expressionBuiltins.map((spec) => [spec.name, spec]),
-);
-
 /** The expression `name(args)`, with trailing `undefined` arguments dropped. */
 export function call<T extends Value = Value>(
   name: ExpressionBuiltinName,
   given: readonly (AnyArg | undefined)[],
 ): Expr<T> {
-  const { maxArgs, minArgs } = specs.get(name) ?? { maxArgs: 0, minArgs: 0 };
+  const [minArgs, maxArgs] = builtinArity[name];
   let end = given.length;
   while (end > 0 && given[end - 1] === undefined) {
     end -= 1;

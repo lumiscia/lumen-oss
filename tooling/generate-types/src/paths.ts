@@ -43,4 +43,9 @@ export const generatedExpressionsPath = path.join(
   "packages/lumen-shared/src/generated/expressions.ts",
 );
 
+export const generatedArityPath = path.join(
+  repoRoot,
+  "packages/lumen-shared/src/generated/arity.ts",
+);
+
 export const engineReadmePath = path.join(repoRoot, "crates/engine/README.md");
