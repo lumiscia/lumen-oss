@@ -12,6 +12,7 @@ interface MockSession {
   host: HTMLElement;
   options: {
     composition?: unknown;
+    onEnded?: () => void;
     preview: unknown;
     runtime: unknown;
     runtimeUrl?: unknown;
@@ -94,15 +95,15 @@ describe("Player", () => {
     const options = {
       loop: true,
       muted: true,
-      onEnded,
-      onTimeUpdate,
       range: { in: 10, out: 40 },
       rate: 2,
       volume: 0.5,
     };
 
     await act(async () => {
-      root.render(<Player preview={preview} {...options} />);
+      root.render(
+        <Player preview={preview} {...options} onEnded={onEnded} onTimeUpdate={onTimeUpdate} />,
+      );
     });
     expect(sessions[0]?.options).toMatchObject(options);
 
@@ -111,6 +112,8 @@ describe("Player", () => {
         <Player
           preview={preview}
           {...options}
+          onEnded={onEnded}
+          onTimeUpdate={onTimeUpdate}
           loop={false}
           muted={false}
           range={null}
@@ -125,13 +128,49 @@ describe("Player", () => {
       expect.objectContaining({
         loop: false,
         muted: false,
-        onEnded,
-        onTimeUpdate,
+        onEnded: expect.any(Function),
+        onTimeUpdate: expect.any(Function),
         range: null,
         rate: 0.5,
         volume: 0.2,
       }),
     );
+
+    await act(async () => root.unmount());
+  });
+
+  it("sends inputs again only when their content changed, and calls the newest callback", async () => {
+    const preview = createLumenPreview();
+    const root = createRoot(document.createElement("div"));
+    const composition = { toJSON: () => ({}) } as never;
+    const calls: string[] = [];
+    const render = (out: number, label: string) =>
+      root.render(
+        <Player
+          preview={preview}
+          composition={composition}
+          range={{ in: 0, out }}
+          onEnded={() => calls.push(label)}
+        />,
+      );
+
+    await act(async () => render(40, "first"));
+    const setInputs = sessions[0]?.setInputs;
+    const initial = setInputs?.mock.calls.length;
+
+    await act(async () => render(40, "second"));
+    expect(setInputs).toHaveBeenCalledTimes(initial ?? 0);
+
+    await act(async () => render(60, "third"));
+    expect(setInputs).toHaveBeenCalledTimes((initial ?? 0) + 1);
+    expect(setInputs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ composition, range: { in: 0, out: 60 } }),
+    );
+
+    const onEnded = sessions[0]?.options.onEnded;
+    onEnded?.();
+    expect(calls).toEqual(["third"]);
+    expect(setInputs?.mock.lastCall?.[0]).toMatchObject({ onEnded });
 
     await act(async () => root.unmount());
   });
