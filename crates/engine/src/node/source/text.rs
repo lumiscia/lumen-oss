@@ -820,6 +820,7 @@ impl TextInstance {
             over,
         ];
         let instances = rec.storage_parts(&lists.map(bytemuck::cast_slice::<_, u8>));
+        #[cfg(feature = "test-hooks")]
         lists
             .into_iter()
             .for_each(|list| bound.add_glyph_instances(list));
