@@ -38,12 +38,14 @@ pub use prediction::{FrameRequirements, VideoFrameRequirement, collect_frame_req
 #[cfg(feature = "ffmpeg")]
 pub use resolver::GpuVideoMediaFrame;
 pub use resolver::{
-    CpuMediaFrame, EnvironmentResolver, FontResolver, GamutMatrix, ImageMetadata, ImageResolver,
-    LinearMediaFrame, LutResolver, MAX_LUT_BYTES, MediaFrame, ModelResolver, VideoFrameResolver,
-    VideoMetadata,
+    CpuMediaFrame, FileResolver, FontResolver, GamutMatrix, ImageMetadata, ImageResolver,
+    LinearMediaFrame, MAX_LUT_BYTES, MediaFrame, VideoFrameResolver, VideoMetadata,
 };
 pub use sniff::{Sniff, sniff, sniff_kind};
-pub use store::{MediaResolver, MediaStore, ResolvedMedia, ResolverKind, TextSession, resolve_as};
+pub use store::{
+    EnvironmentFile, LutFile, MediaResolver, MediaStore, ModelFile, ResolvedMedia, ResolverKind,
+    TextSession, resolve_as,
+};
 pub use yuv::{
     ChromaSubsampling, ColorPrimaries, Rotation, TransferFunction, YuvChroma, YuvColor, YuvFormat,
     YuvFrame, YuvLayout, YuvMatrix, YuvPlane, YuvPlanes,

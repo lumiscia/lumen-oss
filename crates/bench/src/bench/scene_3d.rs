@@ -5,7 +5,7 @@
 //! Every frame is timed from recording to the GPU going idle, split into recording, uploading,
 //! submitting and waiting for the GPU. Recording includes collecting the scene.
 
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{borrow::Cow, collections::HashMap, sync::Arc, time::Instant};
 
 use anyhow::{Context, anyhow, bail};
 use lumen_engine::{
@@ -13,8 +13,8 @@ use lumen_engine::{
     error::MediaError,
     gpu::{GpuCompositionRenderer, RenderTarget},
     media::{
-        AssetKind, CpuMediaFrame, EnvironmentResolver, ImageMetadata, ImageResolver, MediaFrame,
-        MediaIdentity, MediaResolver, MediaStore, ModelResolver, ResolvedMedia,
+        AssetKind, CpuMediaFrame, FileResolver, ImageMetadata, ImageResolver, MediaFrame,
+        MediaIdentity, MediaResolver, MediaStore, ResolvedMedia,
     },
 };
 use serde_json::{Value, json};
@@ -443,19 +443,19 @@ async fn measure(case: &Case, args: &Args) -> anyhow::Result<String> {
 /// The media the scenes read: models, environment maps and one image, by source.
 #[derive(Debug, Default, Clone)]
 struct Scene3dMedia {
-    models: HashMap<String, Arc<Vec<u8>>>,
-    environments: HashMap<String, Arc<Vec<u8>>>,
+    models: HashMap<String, Arc<[u8]>>,
+    environments: HashMap<String, Arc<[u8]>>,
     images: HashMap<String, InMemoryImage>,
 }
 
 impl Scene3dMedia {
     fn model(mut self, source: &str, glb: Vec<u8>) -> Self {
-        self.models.insert(source.to_string(), Arc::new(glb));
+        self.models.insert(source.to_string(), Arc::from(glb));
         self
     }
 
     fn environment(mut self, source: &str, hdr: Vec<u8>) -> Self {
-        self.environments.insert(source.to_string(), Arc::new(hdr));
+        self.environments.insert(source.to_string(), Arc::from(hdr));
         self
     }
 
@@ -465,17 +465,11 @@ impl Scene3dMedia {
     }
 }
 
-struct Bytes(Arc<Vec<u8>>);
+struct Bytes(Arc<[u8]>);
 
-impl ModelResolver for Bytes {
-    fn data(&self) -> Result<Vec<u8>, MediaError> {
-        Ok(self.0.to_vec())
-    }
-}
-
-impl EnvironmentResolver for Bytes {
-    fn data(&self) -> Result<Vec<u8>, MediaError> {
-        Ok(self.0.to_vec())
+impl FileResolver for Bytes {
+    fn data(&self) -> Result<Cow<'_, [u8]>, MediaError> {
+        Ok(Cow::Borrowed(&self.0))
     }
 }
 

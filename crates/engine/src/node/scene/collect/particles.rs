@@ -16,7 +16,7 @@ use super::{Collected, Extent, MAX_SCENE_JOINTS, MAX_SCENE_WEIGHTS, SceneCache, 
 use crate::composition::SceneId;
 use crate::error::{LumenError, RenderError};
 use crate::gpu::frame_graph::{ComputeProgram, FrameCx, Programs};
-use crate::media::{ModelResolver, resolve_as};
+use crate::media::{ModelFile, resolve_as};
 use crate::node::scene::{Particles3d, Shape3dKind};
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, required_input};
 
@@ -447,7 +447,7 @@ fn build_triangles(
             let media = cx_media.ok_or_else(|| RenderError::Internal {
                 details: "a model is drawn without a media store".to_string(),
             })?;
-            let (_, resolver) = resolve_as::<dyn ModelResolver>(media, &cached.source)?;
+            let (_, resolver) = resolve_as::<ModelFile>(media, &cached.source)?;
             let model = lumen_3d::model::Model::from_glb(&resolver.data()?).map_err(|error| {
                 RenderError::Internal {
                     details: format!("model `{}` no longer reads: {error}", cached.source),

@@ -5,8 +5,7 @@ use crate::audio::AudioResolver;
 use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
 
 use super::{
-    AssetKind, EnvironmentResolver, FontResolver, ImageResolver, LutResolver, MediaIdentity,
-    ModelResolver, VideoFrameResolver,
+    AssetKind, FileResolver, FontResolver, ImageResolver, MediaIdentity, VideoFrameResolver,
 };
 
 /// The fonts one store has loaded and what was shaped and measured with them. Nothing rendered
@@ -51,9 +50,9 @@ pub enum MediaResolver {
     Audio(Box<dyn AudioResolver>),
     /// One family: the files of its faces, among which weight and style choose.
     Font(Box<dyn FontResolver>),
-    Model(Box<dyn ModelResolver>),
-    Environment(Box<dyn EnvironmentResolver>),
-    Lut(Box<dyn LutResolver>),
+    Model(Box<dyn FileResolver>),
+    Environment(Box<dyn FileResolver>),
+    Lut(Box<dyn FileResolver>),
 }
 
 impl MediaResolver {
@@ -104,20 +103,34 @@ pub trait MediaStore: Send + Sync + Debug {
     }
 }
 
-/// One of the resolver traits, which [`resolve_as`] asks a store for.
+/// A 3D model file, which [`resolve_as`] reads through a [`FileResolver`].
+pub enum ModelFile {}
+
+/// An environment map file, which [`resolve_as`] reads through a [`FileResolver`].
+pub enum EnvironmentFile {}
+
+/// A `.cube` colour lookup table file, which [`resolve_as`] reads through a [`FileResolver`].
+pub enum LutFile {}
+
+/// A kind of media [`resolve_as`] asks a store for: a resolver trait such as
+/// `dyn ImageResolver`, or a file kind such as [`ModelFile`].
 pub trait ResolverKind {
     const KIND: AssetKind;
 
+    /// The resolver media of this kind is read through.
+    type Resolver: ?Sized;
+
     /// The resolver, if it is of this kind.
-    fn take(resolver: MediaResolver) -> Option<Box<Self>>;
+    fn take(resolver: MediaResolver) -> Option<Box<Self::Resolver>>;
 }
 
 macro_rules! resolver_kinds {
-    ($($resolver:ident => $variant:ident),* $(,)?) => {$(
-        impl ResolverKind for dyn $resolver {
+    ($($kind:ty => $resolver:ty, $variant:ident);* $(;)?) => {$(
+        impl ResolverKind for $kind {
             const KIND: AssetKind = AssetKind::$variant;
+            type Resolver = $resolver;
 
-            fn take(resolver: MediaResolver) -> Option<Box<Self>> {
+            fn take(resolver: MediaResolver) -> Option<Box<$resolver>> {
                 match resolver {
                     MediaResolver::$variant(resolver) => Some(resolver),
                     _ => None,
@@ -128,13 +141,13 @@ macro_rules! resolver_kinds {
 }
 
 resolver_kinds!(
-    ImageResolver => Image,
-    VideoFrameResolver => Video,
-    AudioResolver => Audio,
-    FontResolver => Font,
-    ModelResolver => Model,
-    EnvironmentResolver => Environment,
-    LutResolver => Lut,
+    dyn ImageResolver => dyn ImageResolver, Image;
+    dyn VideoFrameResolver => dyn VideoFrameResolver, Video;
+    dyn AudioResolver => dyn AudioResolver, Audio;
+    dyn FontResolver => dyn FontResolver, Font;
+    ModelFile => dyn FileResolver, Model;
+    EnvironmentFile => dyn FileResolver, Environment;
+    LutFile => dyn FileResolver, Lut;
 );
 
 /// `source` resolved by `store` as a `K`, with its identity. A store that serves another kind
@@ -142,7 +155,7 @@ resolver_kinds!(
 pub fn resolve_as<K: ResolverKind + ?Sized>(
     store: &dyn MediaStore,
     source: &str,
-) -> Result<(MediaIdentity, Box<K>), MediaError> {
+) -> Result<(MediaIdentity, Box<K::Resolver>), MediaError> {
     let ResolvedMedia { identity, resolver } = store.resolve(source, K::KIND)?;
     let found = resolver.kind();
     K::take(resolver)

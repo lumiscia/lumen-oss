@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     path::{Component, Path, PathBuf},
     sync::{Arc, PoisonError, RwLock},
@@ -8,10 +9,10 @@ use crate::{
     audio::AudioResolver,
     error::{MediaError, MediaFailure},
     media::{
-        Asset, AssetKind, AssetResolver, EnvironmentResolver, FfmpegAudioResolver,
-        FfmpegResolverOptions, FfmpegVideoResolver, ImageFileResolver, ImageResolver, LutResolver,
-        MediaIdentity, MediaResolver, MediaStore, ModelResolver, NoAssets, ResolvedMedia,
-        TextSession, VideoFrameResolver, asset_id, resolve_asset,
+        Asset, AssetKind, AssetResolver, FfmpegAudioResolver, FfmpegResolverOptions,
+        FfmpegVideoResolver, FileResolver, ImageFileResolver, ImageResolver, MediaIdentity,
+        MediaResolver, MediaStore, NoAssets, ResolvedMedia, TextSession, VideoFrameResolver,
+        asset_id, resolve_asset,
     },
 };
 use anyhow::{Context, anyhow};
@@ -427,21 +428,9 @@ fn too_large(source: &str, kind: &str, limit: usize, actual: Option<u64>) -> Med
     )
 }
 
-impl ModelResolver for SceneFile {
-    fn data(&self) -> Result<Vec<u8>, MediaError> {
-        self.read()
-    }
-}
-
-impl EnvironmentResolver for SceneFile {
-    fn data(&self) -> Result<Vec<u8>, MediaError> {
-        self.read()
-    }
-}
-
-impl LutResolver for SceneFile {
-    fn data(&self) -> Result<Vec<u8>, MediaError> {
-        self.read()
+impl FileResolver for SceneFile {
+    fn data(&self) -> Result<Cow<'_, [u8]>, MediaError> {
+        self.read().map(Cow::Owned)
     }
 }
 
@@ -540,7 +529,7 @@ mod tests {
         audio::AudioResolver,
         error::MediaReason,
         expr::{Expression, ExpressionContext},
-        media::{FontResolver, ResolverKind, resolve_as},
+        media::{EnvironmentFile, FontResolver, ModelFile, ResolverKind, resolve_as},
     };
 
     use super::*;
@@ -550,7 +539,7 @@ mod tests {
     fn resolver<K: ResolverKind + ?Sized>(
         store: &LocalMediaStore,
         source: &str,
-    ) -> Result<Box<K>, MediaError> {
+    ) -> Result<Box<K::Resolver>, MediaError> {
         resolve_as::<K>(store, source).map(|(_, resolver)| resolver)
     }
 
@@ -980,9 +969,9 @@ mod tests {
         };
         assert!(model("asset:fox").is_ok());
         assert_eq!(model("asset:logo").unwrap_err().code(), "media.wrong_kind");
-        let sky = resolver::<dyn EnvironmentResolver>(&store, "asset:sky").unwrap();
-        assert_eq!(sky.data().unwrap(), b"#?RADIANCE");
-        let wrong_sky = resolver::<dyn EnvironmentResolver>(&store, "asset:fox")
+        let sky = resolver::<EnvironmentFile>(&store, "asset:sky").unwrap();
+        assert_eq!(&*sky.data().unwrap(), b"#?RADIANCE");
+        let wrong_sky = resolver::<EnvironmentFile>(&store, "asset:fox")
             .err()
             .unwrap();
         assert_eq!(wrong_sky.code(), "media.wrong_kind");
@@ -1000,9 +989,7 @@ mod tests {
         let store = LocalMediaStore::new(root.clone(), &RenderConfig::default()).with_assets(
             Arc::new(Assets(HashMap::from([("big", Asset::Model(big))]))),
         );
-        let too_large = resolver::<dyn ModelResolver>(&store, "asset:big")
-            .err()
-            .unwrap();
+        let too_large = resolver::<ModelFile>(&store, "asset:big").err().unwrap();
         assert_eq!(too_large.code(), "media.too_large");
         let failure = too_large.failure().unwrap();
         assert_eq!(failure.source, "asset:big");

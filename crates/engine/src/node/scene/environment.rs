@@ -12,7 +12,7 @@ use super::collect::storage_buffer;
 use crate::error::{LumenError, MediaError, MediaFailure};
 use crate::gpu::evictions;
 use crate::gpu::frame_graph::FrameCx;
-use crate::media::{AssetKind, EnvironmentResolver, MediaIdentity, resolve_as, sniff};
+use crate::media::{AssetKind, EnvironmentFile, FileResolver, MediaIdentity, resolve_as, sniff};
 
 /// A map ready to light a scene.
 #[derive(Clone, Copy)]
@@ -48,7 +48,7 @@ impl EnvironmentCache {
         rec: &mut Recorder,
         tick: u64,
         source: &str,
-        (identity, resolver): (&MediaIdentity, &dyn EnvironmentResolver),
+        (identity, resolver): (&MediaIdentity, &dyn FileResolver),
         background: bool,
     ) -> Result<LoadedEnvironment, MediaError> {
         if let Some(cached) = self.maps.get_mut(identity.as_str())
@@ -269,8 +269,7 @@ pub(super) fn environment(
             "this render has no media store",
         ))
     })?;
-    let (identity, resolver) =
-        resolve_as::<dyn EnvironmentResolver>(media, source).map_err(in_node)?;
+    let (identity, resolver) = resolve_as::<EnvironmentFile>(media, source).map_err(in_node)?;
     let tick = cx.tick();
     let (rec, cache) = cx.scene_cache();
     let loaded = cache

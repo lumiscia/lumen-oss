@@ -2,6 +2,7 @@
 //! through a full-frame reference. Set `LUMEN_CASE=substring` to run only the rows it names.
 
 use std::any::Any;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::mem::Discriminant;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -13,9 +14,9 @@ use lumen_engine::{
     error::MediaError,
     gpu::{BoundFrame, GpuCompositionRenderer, RenderTarget, WORKING_COLOR_FORMAT},
     media::{
-        AssetKind, CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver,
-        LutResolver, MediaFrame, MediaIdentity, MediaResolver, MediaStore, ModelResolver,
-        ResolvedMedia, TextSession, VideoFrameResolver, VideoMetadata, YuvFrame,
+        AssetKind, CpuMediaFrame, FileResolver, FontResolver, ImageMetadata, ImageResolver,
+        MediaFrame, MediaIdentity, MediaResolver, MediaStore, ResolvedMedia, TextSession,
+        VideoFrameResolver, VideoMetadata, YuvFrame,
     },
     node::NodeKind,
 };
@@ -156,15 +157,15 @@ pub struct TestMedia {
     /// How many image resolvers were asked for, shared with its clones.
     image_requests: Arc<AtomicUsize>,
     /// Identity key and file of each model by source.
-    models: HashMap<String, (String, Arc<Vec<u8>>)>,
+    models: HashMap<String, (String, Arc<[u8]>)>,
     /// How many times model bytes were read, shared with its clones.
     model_loads: Arc<AtomicUsize>,
     /// Identity key and file of each environment map by source.
-    environments: HashMap<String, (String, Arc<Vec<u8>>)>,
+    environments: HashMap<String, (String, Arc<[u8]>)>,
     /// How many times environment map bytes were read, shared with its clones.
     environment_loads: Arc<AtomicUsize>,
     /// Identity key and file of each `.cube` LUT by source.
-    luts: HashMap<String, (String, Arc<Vec<u8>>)>,
+    luts: HashMap<String, (String, Arc<[u8]>)>,
     /// How many times LUT bytes were read, shared with its clones.
     lut_loads: Arc<AtomicUsize>,
 }
@@ -292,7 +293,7 @@ impl TestMedia {
     #[cfg(feature = "3d")]
     pub fn model_with_id(mut self, source: &str, id: &str, bytes: Vec<u8>) -> Self {
         self.models
-            .insert(source.to_string(), (id.to_string(), Arc::new(bytes)));
+            .insert(source.to_string(), (id.to_string(), Arc::from(bytes)));
         self
     }
 
@@ -310,7 +311,7 @@ impl TestMedia {
     #[cfg(feature = "3d")]
     pub fn environment_with_id(mut self, source: &str, id: &str, bytes: Vec<u8>) -> Self {
         self.environments
-            .insert(source.to_string(), (id.to_string(), Arc::new(bytes)));
+            .insert(source.to_string(), (id.to_string(), Arc::from(bytes)));
         self
     }
 
@@ -323,7 +324,7 @@ impl TestMedia {
     pub fn lut(mut self, source: &str, text: &str) -> Self {
         self.luts.insert(
             source.to_string(),
-            (source.to_string(), Arc::new(text.as_bytes().to_vec())),
+            (source.to_string(), Arc::from(text.as_bytes())),
         );
         self
     }
@@ -368,15 +369,16 @@ pub fn hdr_file(width: u32, height: u32, texels: &[[f32; 3]]) -> Vec<u8> {
     bytes
 }
 
-struct TestEnvironment {
-    data: Arc<Vec<u8>>,
+/// A model, environment map or LUT file, counting its reads.
+struct TestFile {
+    data: Arc<[u8]>,
     loads: Arc<AtomicUsize>,
 }
 
-impl EnvironmentResolver for TestEnvironment {
-    fn data(&self) -> Result<Vec<u8>, MediaError> {
+impl FileResolver for TestFile {
+    fn data(&self) -> Result<Cow<'_, [u8]>, MediaError> {
         self.loads.fetch_add(1, Ordering::Relaxed);
-        Ok(self.data.to_vec())
+        Ok(Cow::Borrowed(&self.data))
     }
 }
 
@@ -439,30 +441,6 @@ impl FontResolver for TestFont {
     }
 }
 
-struct TestLut {
-    data: Arc<Vec<u8>>,
-    loads: Arc<AtomicUsize>,
-}
-
-impl LutResolver for TestLut {
-    fn data(&self) -> Result<Vec<u8>, MediaError> {
-        self.loads.fetch_add(1, Ordering::Relaxed);
-        Ok(self.data.to_vec())
-    }
-}
-
-struct TestModel {
-    data: Arc<Vec<u8>>,
-    loads: Arc<AtomicUsize>,
-}
-
-impl ModelResolver for TestModel {
-    fn data(&self) -> Result<Vec<u8>, MediaError> {
-        self.loads.fetch_add(1, Ordering::Relaxed);
-        Ok(self.data.to_vec())
-    }
-}
-
 impl MediaStore for TestMedia {
     fn resolve(&self, source: &str, kind: AssetKind) -> Result<ResolvedMedia, MediaError> {
         let missing = || MediaError::source_not_found(source, "not registered");
@@ -508,7 +486,7 @@ impl MediaStore for TestMedia {
             }
             AssetKind::Model => {
                 let (id, data) = self.models.get(source).ok_or_else(missing)?;
-                let model = TestModel {
+                let model = TestFile {
                     data: Arc::clone(data),
                     loads: Arc::clone(&self.model_loads),
                 };
@@ -519,7 +497,7 @@ impl MediaStore for TestMedia {
             }
             AssetKind::Environment => {
                 let (id, data) = self.environments.get(source).ok_or_else(missing)?;
-                let environment = TestEnvironment {
+                let environment = TestFile {
                     data: Arc::clone(data),
                     loads: Arc::clone(&self.environment_loads),
                 };
@@ -530,7 +508,7 @@ impl MediaStore for TestMedia {
             }
             AssetKind::Lut => {
                 let (id, data) = self.luts.get(source).ok_or_else(missing)?;
-                let lut = TestLut {
+                let lut = TestFile {
                     data: Arc::clone(data),
                     loads: Arc::clone(&self.lut_loads),
                 };
