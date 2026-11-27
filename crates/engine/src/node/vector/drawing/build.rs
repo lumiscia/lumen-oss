@@ -11,18 +11,14 @@ use foldhash::{HashMap, HashSet};
 use super::super::dash::GpuDash;
 use super::super::drawable::{DrawableTransform, GpuDrawableTransform, MIN_SCALE, union_bounds};
 use super::super::paint::GpuPaint;
-use super::super::path::{
-    flattening_tolerance, hide_cancelled_edges, parse_path_points, point_bounds, set_dash_phases,
-};
-use super::super::path_bands::{GridReach, PathBins, band_capacity};
-use super::super::renderer::{
-    MAX_PATH_POINTS, PathPoint, PathUniforms, STYLE_FILL_ENABLED, STYLE_STROKE_ENABLED, style_flags,
-};
-use super::super::repeat::Drawn;
-use super::super::shape::ShapeGeometryKind;
 use super::collect::{Geometry, MAX_DRAWABLES, Record, Source, Style, Use};
+use super::path::{
+    MAX_PATH_POINTS, PathPoint, STYLE_FILL_ENABLED, STYLE_STROKE_ENABLED, flattening_tolerance,
+    hide_cancelled_edges, parse_path_points, point_bounds, set_dash_phases, style_flags,
+};
+use super::path_bands::{Drawn, GridReach, PathBins, PathGrid, band_capacity};
 use super::text::{TextCache, TextGlyphs};
-use super::{Path2d, Render2d, Text2d};
+use super::{Path2d, Render2d, ShapeGeometryKind, Text2d};
 use crate::composition::SceneId;
 use crate::error::RenderError;
 use crate::gpu::frame_graph::Timed;
@@ -33,9 +29,9 @@ pub(super) const DRAWING_SHADER: &str = concat!(
     include_str!("../../../gpu/shaders/color.wgsl"),
     include_str!("../paint/paint.wgsl"),
     include_str!("../drawable.wgsl"),
-    include_str!("../vector_common.wgsl"),
-    include_str!("../path_geometry.wgsl"),
-    include_str!("../shape_geometry.wgsl"),
+    include_str!("vector_common.wgsl"),
+    include_str!("path_geometry.wgsl"),
+    include_str!("shape_geometry.wgsl"),
     include_str!("drawing.wgsl")
 );
 
@@ -307,14 +303,13 @@ fn path_need(drawable: &Use, offset: f32, scales: [f64; 2]) -> Option<PathNeed> 
     }
 }
 
-/// The uniforms a grid shared by `needs`, laid out from `position`, is binned from: a fill
-/// whose coverage varies across every need's span, and a stroke as wide as the widest.
-fn grid_uniforms<'a>(
-    needs: impl Iterator<Item = &'a PathNeed>,
-    position: [f32; 2],
-) -> PathUniforms {
-    let mut uniforms = PathUniforms::zeroed();
-    uniforms.position = position;
+/// What a grid shared by `needs`, laid out from `position`, is binned for: a fill whose coverage
+/// varies across every need's span, and a stroke as wide as the widest.
+fn path_grid<'a>(needs: impl Iterator<Item = &'a PathNeed>, position: [f32; 2]) -> PathGrid {
+    let mut uniforms = PathGrid {
+        position,
+        ..PathGrid::default()
+    };
     let mut span: Option<[f32; 2]> = None;
     for need in needs {
         if let Some([low, high]) = need.fill_span {
@@ -1046,8 +1041,14 @@ fn build_path(
 
     let shadows = shadow_transforms(record, instance, of);
     let drawn = [
-        Drawn::Affine(&instance.transforms, instance.scales),
-        Drawn::Affine(&shadows, instance.scales),
+        Drawn {
+            transforms: &instance.transforms,
+            scales: instance.scales,
+        },
+        Drawn {
+            transforms: &shadows,
+            scales: instance.scales,
+        },
     ];
     let mut grids = [false, true].map(|shadow| {
         let mut needs = needs
@@ -1056,7 +1057,7 @@ fn build_path(
             .map(|(_, need)| need)
             .peekable();
         needs.peek()?;
-        Some(grid_uniforms(needs, position))
+        Some(path_grid(needs, position))
     });
     let reaches: Vec<Option<GridReach>> = grids
         .iter_mut()

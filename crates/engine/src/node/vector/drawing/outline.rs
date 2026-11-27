@@ -3,9 +3,9 @@
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use super::super::drawable::MIN_SCALE;
-use super::super::path::{POINT_CLOSED, parse_path_points};
-use super::super::shape::ShapeGeometryKind;
+use super::ShapeGeometryKind;
 use super::collect::{Outline, Source};
+use super::path::{POINT_CLOSED, parse_path_points};
 use super::text::TextGlyphs;
 
 /// Fewest sides a flattened ellipse has, and most, whatever its size.

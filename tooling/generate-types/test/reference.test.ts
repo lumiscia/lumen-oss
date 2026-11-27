@@ -77,8 +77,7 @@ test("marks expressions where the schema allows them, not on a container that on
 
   // A map whose values take expressions is still literal as a whole.
   expect(line("- **`font_features`**")).toContain("literal as a whole");
-  expect(line("- **`repeat`**")).toContain("literal as a whole");
-  expect(line("- **`stroke_dash`**")).toContain("literal as a whole");
+  expect(line("- **`dash`**")).toContain("literal as a whole");
   expect(line("- **`highlight`**")).toContain("literal as a whole");
   // The values and elements inside say that they take expressions.
   expect(markdown).toContain(
@@ -97,9 +96,10 @@ test("shows what a shared type holds", async () => {
     return markdown.slice(start, end === -1 ? undefined : end);
   };
 
-  expect(section("repeat")).toMatch(/`count`\*\* \(required; integer, 0 to 1024\)/u);
-  expect(section("repeat")).toContain("`columns`");
-  expect(section("repeat")).toContain("`scale_offset`");
+  expect(section("instance2dCopy")).toContain(
+    "- **`rotation`** (number; default `0`; literal only)",
+  );
+  expect(section("instance2dCopy")).toContain("No other fields.");
   expect(section("dashPattern")).toContain("at most 16 items");
 });
 

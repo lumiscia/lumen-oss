@@ -10,7 +10,7 @@ use lyon_path::{
 };
 use svgtypes::PathSegment;
 
-use crate::node::vector::{path::build_lyon_path, renderer::MAX_PATH_POINTS};
+use crate::node::vector::drawing::{MAX_PATH_POINTS, build_lyon_path};
 
 /// Most distance in pixels between a curve and the chords its length is measured along.
 const MEASURE_TOLERANCE: f32 = 0.1;
@@ -141,7 +141,7 @@ struct PathMeasure {
 
 impl PathMeasure {
     /// Measures `data`, coarsening the flattening until it fits `MAX_PATH_POINTS` pieces, as
-    /// the path node does.
+    /// `path_2d` does.
     fn new(data: &str) -> Result<Self, String> {
         let path = build_lyon_path(data)?;
         let mut tolerance = MEASURE_TOLERANCE;
@@ -309,7 +309,7 @@ impl MorphError {
 
 /// Interpolates two path data strings with the same commands in the same order, point by point.
 /// The result is path data with each command written out, its numbers rounded to the `f32` that
-/// the path node draws with. Numbers equal on both sides aren't mixed, so they don't jitter from
+/// `path_2d` draws with. Numbers equal on both sides aren't mixed, so they don't jitter from
 /// frame to frame.
 pub(super) fn morph(from: &str, to: &str, t: f64) -> Result<String, MorphError> {
     let commands = |data: &str, side| {

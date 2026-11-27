@@ -1,8 +1,9 @@
 use std::ops::Range;
 
-use super::path::{POINT_CLOSED, POINT_END, POINT_FILL_HIDDEN};
-use super::renderer::{PathPoint, PathUniforms, STYLE_FILL_ENABLED, STYLE_STROKE_ENABLED};
-use super::repeat::Drawn;
+use super::super::drawable::{GpuDrawableTransform, MIN_SCALE};
+use super::path::{
+    POINT_CLOSED, POINT_END, POINT_FILL_HIDDEN, PathPoint, STYLE_FILL_ENABLED, STYLE_STROKE_ENABLED,
+};
 
 /// Most bands a path is split into.
 const MAX_PATH_BANDS: usize = 1024;
@@ -14,7 +15,7 @@ const MIN_CELL_PIXELS: f64 = 16.0;
 /// and larger cells.
 const BAND_ENTRIES_PER_POINT: usize = 8;
 
-// Bits of a cell's count; keep in sync with `path_renderer.wgsl`. The fill covers all or none of
+// Bits of a cell's count; keep in sync with `path_geometry.wgsl`. The fill covers all or none of
 // the cell, as `CELL_INSIDE` says, so the shader neither counts crossings nor measures fill edges.
 pub(super) const CELL_FILL_DECIDED: u32 = 1 << 31;
 pub(super) const CELL_INSIDE: u32 = 1 << 30;
@@ -26,55 +27,83 @@ pub(super) fn band_capacity(point_capacity: usize) -> usize {
         + BAND_ENTRIES_PER_POINT * point_capacity.max(1)
 }
 
-/// Splits the path into horizontal bands and a grid of cells in untransformed space, and fills
-/// in the culling fields of `uniforms`.
-///
-/// A band lists the segments whose rows it holds, which are all that a pixel's horizontal
-/// crossing ray can meet, so the fill rule reads only its band. A cell lists the segments that
-/// can decide the coverage of one of its pixels: those near enough to change the stroke or the
-/// fill's edge, and of the fill's edges only those that can be the nearest one. Where the fill
-/// covers all or none of a cell the cell says so instead, and lists only what the stroke needs.
-///
-/// The buffer starts with a `(start, count)` pair per band, then one per cell from
-/// `grid_start`, then the index of the first point of each listed segment. An empty buffer means
-/// nothing is drawn. Everything is measured for every transform the path is `drawn` under, and
-/// the grid only covers what those map a canvas of `canvas` pixels back to. The screen bounds
-/// are set for a path drawn once, and left empty for copies, whose bounds are their own. `min`
-/// and `max` are the box around `points`.
-pub(super) fn bin_path(
-    uniforms: &mut PathUniforms,
-    points: &[PathPoint],
-    bounds: ([f32; 2], [f32; 2]),
-    drawn: &Drawn<'_>,
-    canvas: [f32; 2],
-    capacity: usize,
-) -> Vec<u32> {
-    let Some(reach) = GridReach::new(uniforms, bounds, drawn) else {
-        return Vec::new();
-    };
-    let bins = PathBins::new(
-        points,
-        bounds,
-        [reach.fill, reach.stroke],
-        reach.pixel,
-        reach.reach,
-        capacity,
-    );
-    let start = bins.data.len();
-    let Some((_, cells)) = bins.grid(uniforms, &reach, points, drawn, canvas, start, capacity)
-    else {
-        return Vec::new();
-    };
-    let mut data = bins.data;
-    data.extend(cells);
-    if let Drawn::Once(_, motion) = drawn {
-        let (low, high) = reach.drawn_box(uniforms.position, bounds);
-        uniforms.screen_bounds = motion.canvas_bounds(uniforms.transform, low, high);
-    }
-    data
+/// What a path's grid is binned for, and the fields that binning fills in for the shader to find
+/// the grid by. Lengths are in untransformed pixels.
+#[derive(Debug, Default)]
+pub(super) struct PathGrid {
+    /// Where the path's points are laid out from.
+    pub(super) position: [f32; 2],
+    /// The style bits of what the grid is read for.
+    pub(super) flags: u32,
+    pub(super) stroke_width: f32,
+    /// Distance the fill's edge moves outward by.
+    pub(super) fill_offset: f32,
+    /// Width the fill's edge fades over.
+    pub(super) fill_feather: f32,
+    /// `y`, relative to `position`, where the first band starts.
+    pub(super) band_origin: f32,
+    /// Bands per untransformed pixel.
+    pub(super) band_scale: f32,
+    pub(super) band_count: u32,
+    /// Distance beyond which a segment cannot cover a pixel.
+    pub(super) reach: f32,
+    /// Point, relative to `position`, where the grid's first cell starts.
+    pub(super) grid_origin: [f32; 2],
+    /// Cells per untransformed pixel along each axis.
+    pub(super) grid_scale: [f32; 2],
+    pub(super) grid_size: [u32; 2],
+    /// Index in the bands buffer of the grid's first `(start, count)` pair.
+    pub(super) grid_start: u32,
 }
 
-/// What a grid is binned for: the style fields of the uniforms it is measured from, in
+/// The affine maps a path is drawn under, which share their scales along their narrowest and
+/// widest directions, as `render_2d` draws an outline and the shadows it casts.
+pub(super) struct Drawn<'a> {
+    pub(super) transforms: &'a [GpuDrawableTransform],
+    /// The scales along the narrowest and widest directions.
+    pub(super) scales: [f64; 2],
+}
+
+impl Drawn<'_> {
+    /// Whether anything is drawn.
+    fn is_visible(&self) -> bool {
+        self.scales[0] > 0.0
+            && self
+                .transforms
+                .iter()
+                .any(|transform| transform.opacity > 0.0)
+    }
+
+    /// The smallest absolute scale component over every transform it is drawn under.
+    fn smallest_scale(&self) -> f64 {
+        self.scales[0].max(MIN_SCALE)
+    }
+
+    /// Whether every transform it is drawn under scales both axes by the same amount.
+    fn has_uniform_scale(&self) -> bool {
+        self.scales[0] == self.scales[1]
+    }
+
+    /// The untransformed box around every point that a canvas pixel within `size` maps back to,
+    /// or `None` where one maps to no finite point.
+    fn local_bounds(&self, size: [f32; 2]) -> Option<([f64; 2], [f64; 2])> {
+        let (mut min, mut max) = ([f64::MAX; 2], [f64::MIN; 2]);
+        let mut finite = true;
+        for transform in self.transforms {
+            for corner in [[0.0, 0.0], [size[0], 0.0], [0.0, size[1]], size] {
+                let point = transform.to_local(corner).map(f64::from);
+                finite &= point.iter().all(|value| value.is_finite());
+                for axis in 0..2 {
+                    min[axis] = min[axis].min(point[axis]);
+                    max[axis] = max[axis].max(point[axis]);
+                }
+            }
+        }
+        finite.then_some((min, max))
+    }
+}
+
+/// What a grid is binned for: the style fields of the [`PathGrid`] it is measured from, in
 /// untransformed pixels, and how far its segments reach.
 pub(super) struct GridReach {
     /// Untransformed size of a canvas pixel, at its largest.
@@ -85,8 +114,6 @@ pub(super) struct GridReach {
     fill_depth: f64,
     offset: f64,
     half_feather: f64,
-    /// How far past the outline a segment can still cover part of a pixel.
-    extent: f64,
     /// The shader's `reach`, within which it measures a segment.
     reach: f64,
 }
@@ -95,11 +122,10 @@ impl GridReach {
     /// Measures a grid for the style of `uniforms`, turning off a fill shrunk past nothing.
     /// `None` when nothing is drawn. `min` and `max` are the box around the path's points.
     pub(super) fn new(
-        uniforms: &mut PathUniforms,
+        uniforms: &mut PathGrid,
         (min, max): ([f32; 2], [f32; 2]),
         drawn: &Drawn<'_>,
     ) -> Option<Self> {
-        uniforms.screen_bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
         uniforms.band_count = 0;
         uniforms.grid_size = [0, 0];
         let pixel = 1.0 / drawn.smallest_scale();
@@ -129,7 +155,6 @@ impl GridReach {
             fill_depth,
             offset,
             half_feather,
-            extent,
             reach: extent.max(pixel + fill_depth),
         })
     }
@@ -141,19 +166,6 @@ impl GridReach {
 
     pub(super) fn reach(&self) -> f64 {
         self.reach
-    }
-
-    /// The untransformed box, laid out at `position`, past which nothing of the path is drawn.
-    pub(super) fn drawn_box(
-        &self,
-        [x, y]: [f32; 2],
-        (min, max): ([f32; 2], [f32; 2]),
-    ) -> ([f32; 2], [f32; 2]) {
-        let extent = self.extent as f32;
-        (
-            [min[0] - extent + x, min[1] - extent + y],
-            [max[0] + extent + x, max[1] + extent + y],
-        )
     }
 }
 
@@ -222,7 +234,7 @@ impl PathBins {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn grid(
         &self,
-        uniforms: &mut PathUniforms,
+        uniforms: &mut PathGrid,
         reach: &GridReach,
         points: &[PathPoint],
         drawn: &Drawn<'_>,
@@ -328,7 +340,7 @@ fn margin(largest: f64, reach: f64) -> f64 {
 /// pixel when drawn at a smallest absolute scale component of `scale`: a canvas pixel of
 /// antialiasing past the farther of the stroke's half width and the fill's offset edge and fade,
 /// or just the pixel when neither is drawn.
-pub(super) fn segment_extent(uniforms: &PathUniforms, scale: f64) -> f64 {
+fn segment_extent(uniforms: &PathGrid, scale: f64) -> f64 {
     let stroke = if uniforms.flags & STYLE_STROKE_ENABLED != 0 {
         f64::from(uniforms.stroke_width).max(0.0) * 0.5
     } else {
@@ -879,10 +891,9 @@ impl Measure<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::drawable::{DrawableMotion, DrawableTransform};
+    use super::super::super::drawable::DrawableTransform;
     use super::super::path::{parse_path_points, point_bounds};
     use super::*;
-    use bytemuck::Zeroable;
 
     fn identity() -> DrawableTransform {
         DrawableTransform {
@@ -898,16 +909,42 @@ mod tests {
         parse_path_points(data, 0.25, 4096).unwrap()
     }
 
-    fn bin(data: &str, capacity: usize) -> (PathUniforms, Vec<u32>) {
+    /// Bins `points` for one grid, as `render_2d` bins a path's, into one buffer of its bands and
+    /// then its cells. Empty when nothing is drawn.
+    fn bin_path(
+        uniforms: &mut PathGrid,
+        points: &[PathPoint],
+        drawn: &Drawn<'_>,
+        canvas: [f32; 2],
+        capacity: usize,
+    ) -> Vec<u32> {
+        let bounds = point_bounds(points);
+        let Some(reach) = GridReach::new(uniforms, bounds, drawn) else {
+            return Vec::new();
+        };
+        let bins = PathBins::new(
+            points,
+            bounds,
+            reach.draws(),
+            reach.pixel,
+            reach.reach,
+            capacity,
+        );
+        let start = bins.data.len();
+        let Some((_, cells)) = bins.grid(uniforms, &reach, points, drawn, canvas, start, capacity)
+        else {
+            return Vec::new();
+        };
+        let mut data = bins.data;
+        data.extend(cells);
+        data
+    }
+
+    fn bin(data: &str, capacity: usize) -> (PathGrid, Vec<u32>) {
         bin_soft(data, capacity, 0.0, 0.0)
     }
 
-    fn bin_soft(
-        data: &str,
-        capacity: usize,
-        offset: f32,
-        feather: f32,
-    ) -> (PathUniforms, Vec<u32>) {
+    fn bin_soft(data: &str, capacity: usize, offset: f32, feather: f32) -> (PathGrid, Vec<u32>) {
         // A canvas no edge of which clips the grid.
         bin_on(data, capacity, offset, feather, [f32::INFINITY; 2])
     }
@@ -918,22 +955,18 @@ mod tests {
         offset: f32,
         feather: f32,
         canvas: [f32; 2],
-    ) -> (PathUniforms, Vec<u32>) {
-        let transform = identity();
-        let mut uniforms = PathUniforms::zeroed();
-        uniforms.flags = STYLE_FILL_ENABLED;
-        uniforms.fill_offset = offset;
-        uniforms.fill_feather = feather;
-        uniforms.transform = transform.to_gpu();
-        let points = points_of(data);
-        let data = bin_path(
-            &mut uniforms,
-            &points,
-            point_bounds(&points),
-            &Drawn::Once(&transform, &DrawableMotion::default()),
-            canvas,
-            capacity,
-        );
+    ) -> (PathGrid, Vec<u32>) {
+        let mut uniforms = PathGrid {
+            flags: STYLE_FILL_ENABLED,
+            fill_offset: offset,
+            fill_feather: feather,
+            ..PathGrid::default()
+        };
+        let drawn = Drawn {
+            transforms: &[identity().to_gpu()],
+            scales: [1.0, 1.0],
+        };
+        let data = bin_path(&mut uniforms, &points_of(data), &drawn, canvas, capacity);
         (uniforms, data)
     }
 
@@ -950,48 +983,25 @@ mod tests {
         assert!(count > 1);
         assert_eq!(band(&data, 0), &[0, 2]);
         assert_eq!(band(&data, count - 1), &[0, 1, 2]);
-        for (bound, expected) in uniforms
-            .screen_bounds
-            .iter()
-            .zip([-11.0, -1.0, 11.0, 101.0])
-        {
-            assert!(
-                (bound - expected).abs() < 0.01,
-                "{bound} is not near {expected}"
-            );
-        }
     }
 
     #[test]
-    fn offset_and_feather_move_the_drawn_bounds() {
-        // A 40 by 20 box, drawn a pixel past its fill's faded edge.
-        let bounds = |offset: f32, feather: f32| {
-            let (uniforms, data) = bin_soft("M 0 0 H 40 V 20 H 0 Z", 4096, offset, feather);
-            (!data.is_empty()).then_some(uniforms.screen_bounds)
+    fn fills_shrunk_past_their_middle_list_nothing() {
+        // A 40 by 20 box: shrunk by its half height and a pixel, nothing is left to draw.
+        let draws = |offset: f32, feather: f32| {
+            !bin_soft("M 0 0 H 40 V 20 H 0 Z", 4096, offset, feather)
+                .1
+                .is_empty()
         };
-        let near = |bounds: Option<[f32; 4]>, expected: [f32; 4]| {
-            let bounds = bounds.expect("something is drawn");
-            assert!(
-                bounds
-                    .iter()
-                    .zip(expected)
-                    .all(|(a, b)| (a - b).abs() < 0.01),
-                "{bounds:?} is not near {expected:?}"
-            );
-        };
-        near(bounds(0.0, 0.0), [-1.0, -1.0, 41.0, 21.0]);
-        near(bounds(6.0, 4.0), [-9.0, -9.0, 49.0, 29.0]);
-        near(bounds(-4.0, 0.0), [3.0, 3.0, 37.0, 17.0]);
-        // Shrunk by its half height and a pixel, nothing is left to draw.
-        assert!(bounds(-10.5, 0.0).is_some());
-        assert_eq!(bounds(-11.0, 0.0), None);
-        assert!(bounds(-12.5, 4.0).is_some());
-        assert_eq!(bounds(-13.0, 4.0), None);
+        assert!(draws(-10.5, 0.0));
+        assert!(!draws(-11.0, 0.0));
+        assert!(draws(-12.5, 4.0));
+        assert!(!draws(-13.0, 4.0));
     }
 
     /// The segments listed in the cell holding `p`, and the cell's fill flags, read as the
     /// shader reads them.
-    fn cell(uniforms: &PathUniforms, data: &[u32], p: [f32; 2]) -> (Vec<u32>, u32) {
+    fn cell(uniforms: &PathGrid, data: &[u32], p: [f32; 2]) -> (Vec<u32>, u32) {
         let [x, y] = [0, 1].map(|axis| {
             ((p[axis] - uniforms.grid_origin[axis]) * uniforms.grid_scale[axis]) as u32
         });
@@ -1065,21 +1075,16 @@ mod tests {
             opacity: 0.0,
             ..identity()
         };
-        let mut uniforms = PathUniforms::zeroed();
-        uniforms.flags = STYLE_FILL_ENABLED;
-        uniforms.transform = transform.to_gpu();
+        let mut uniforms = PathGrid {
+            flags: STYLE_FILL_ENABLED,
+            ..PathGrid::default()
+        };
+        let drawn = Drawn {
+            transforms: &[transform.to_gpu()],
+            scales: [1.0, 1.0],
+        };
         let points = points_of("M 0 0 L 1 0 L 0 1 Z");
-        assert!(
-            bin_path(
-                &mut uniforms,
-                &points,
-                point_bounds(&points),
-                &Drawn::Once(&transform, &DrawableMotion::default()),
-                [100.0, 100.0],
-                4096
-            )
-            .is_empty()
-        );
+        assert!(bin_path(&mut uniforms, &points, &drawn, [100.0, 100.0], 4096).is_empty());
         assert_eq!(uniforms.band_count, 0);
         assert_eq!(uniforms.grid_size, [0, 0]);
     }

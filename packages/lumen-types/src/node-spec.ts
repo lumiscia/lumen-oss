@@ -11,7 +11,6 @@ import type {
   NodeParamKind,
   NodePortKind,
   Palette,
-  Repeat,
   ShaderUniforms,
   TextContent,
   TextHighlight,
@@ -85,7 +84,6 @@ export type NodeLiteralValue =
   | ColorCurves
   | DashPattern
   | Palette
-  | Repeat
   | InstanceCopies
   | Instance2dCopies
   | readonly [number, number]

@@ -438,8 +438,6 @@ pub(crate) struct RecordSettings {
     pub(crate) output_format: wgpu::TextureFormat,
     pub(crate) output_encoding: OutputEncoding,
     pub(crate) full_frame_sources: bool,
-    /// Whether repeats draw from one tile, as `set_single_tile_repeats` sets.
-    pub(crate) single_tile_repeats: bool,
     pub(crate) retain_static: bool,
     /// How many times a frame is recorded again while fonts its walk loads change its text.
     pub(crate) max_rebinds: usize,
@@ -1135,11 +1133,6 @@ impl<'a> FrameCx<'a> {
 
     pub(crate) fn output_encoding(&self) -> OutputEncoding {
         self.settings.output_encoding
-    }
-
-    /// Whether repeats draw from one tile, as `set_single_tile_repeats` sets.
-    pub(crate) fn single_tile_repeats(&self) -> bool {
-        self.settings.single_tile_repeats
     }
 
     pub(crate) fn frame_number(&self) -> u32 {

@@ -16,7 +16,7 @@ use crate::{
         path::morph,
         spec::{BuiltinSpec, NamedEasing, ValueKind, builtin_for_name},
     },
-    node::{NodeId, vector::path::build_lyon_path},
+    node::{NodeId, vector::drawing::build_lyon_path},
 };
 
 #[derive(Debug, Clone, PartialEq)]

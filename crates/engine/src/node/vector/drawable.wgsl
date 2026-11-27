@@ -1,4 +1,4 @@
-// Transform and opacity shared by the shape, path and text renderers.
+// Transform and opacity shared by the text and drawing renderers.
 
 struct DrawableTransform {
     linear: mat2x2<f32>,
@@ -19,16 +19,6 @@ struct DrawableMotion {
     _pad1: u32,
     _pad2: u32,
     taps: array<DrawableTransform, 32>,
-}
-
-// One copy of a repeated shape or path. It is drawn under `transform`, or averaged over its
-// `tap_count` taps from `first_tap` when it moves, and draws nothing outside `bounds`.
-struct RepeatCopy {
-    transform: DrawableTransform,
-    bounds: vec4<f32>,
-    first_tap: u32,
-    tap_count: u32,
-    _pad: vec2<u32>,
 }
 
 // Bit of `DrawableTransform.flags`, set when scale or rotation differ from the identity.

@@ -134,7 +134,6 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
             dash::{MAX_DASH_LENGTH, MAX_DASH_LENGTHS},
             drawing::{CastShadowDelegate, MAX_SHADOWS},
             paint::{GradientPaintDelegate, GradientStopDelegate, MAX_GRADIENT_STOPS},
-            repeat::{MAX_REPEAT_COUNT, RepeatDelegate},
         },
     };
 
@@ -243,17 +242,6 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
             "maxItems": 4
         }),
     );
-    insert_object_def::<RepeatDelegate>(
-        &mut defs,
-        "Repeat",
-        &[
-            (
-                "count",
-                json!({ "type": "integer", "minimum": 0, "maximum": MAX_REPEAT_COUNT }),
-            ),
-            ("columns", json!({ "type": "integer", "minimum": 0 })),
-        ],
-    )?;
     insert_def(
         &mut defs,
         "FontFeatures",

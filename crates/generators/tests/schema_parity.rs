@@ -516,43 +516,6 @@ fn color_curves_schema_matches_engine_parsing() {
     }
 }
 
-#[test]
-fn repeat_schema_matches_engine_parsing() {
-    let validator = schema_validator();
-    for (repeat, valid) in [
-        (json!({ "count": 0 }), true),
-        (
-            json!({ "count": 1024, "position_offset": [4, 0], "opacity_offset": "=-0.1" }),
-            true,
-        ),
-        (
-            json!({ "count": "=frame", "columns": 8, "row_offset": [0, 10] }),
-            true,
-        ),
-        (json!({ "count": 1025 }), false),
-        (json!({ "count": -1 }), false),
-        (json!({ "count": 4, "columns": -1 }), false),
-        (json!({ "position_offset": [4, 0] }), false),
-        (json!({ "count": 2, "offset": [4, 0] }), false),
-        (json!("=frame"), false),
-    ] {
-        for kind in ["shape", "path"] {
-            let composition =
-                composition_with_node(&node_schema(kind), json!({ "repeat": repeat }));
-            assert_eq!(
-                validator.is_valid(&composition),
-                valid,
-                "{kind} {repeat} schema"
-            );
-            assert_eq!(
-                lumen_engine::json::parse_value(&composition).is_ok(),
-                valid,
-                "{kind} {repeat} engine"
-            );
-        }
-    }
-}
-
 /// A row of the document table: sets `path` (a JSON pointer) in the base document to `value`, or
 /// removes it when `value` is null, and expects the schema and the engine to both give `valid`.
 type Row = (&'static str, &'static str, Value, bool);
@@ -962,8 +925,8 @@ fn editor_hint_ranges_are_not_enforced() {
             true,
         ),
         (
-            "shape motion blur above 360",
-            "shape",
+            "text motion blur above 360",
+            "text",
             json!({ "motion_blur": 720 }),
             true,
         ),

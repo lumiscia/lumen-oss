@@ -1,9 +1,9 @@
-//! Shapes, paths, transforms, sampling, crop and resize against hand-computed pixels and
+//! Drawn shapes and paths, transforms, sampling, crop and resize against hand-computed pixels and
 //! independent geometry: supersampled outlines and exact ellipse distances.
 
 use std::f64::consts::{PI, TAU};
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::color::{light, srgb8};
 use crate::support::{
@@ -11,16 +11,86 @@ use crate::support::{
     render, scene,
 };
 
-fn one_node(size: (u32, u32), kind: &str, params: Value) -> Scene {
-    scene(size, json!([{ "id": 1, "type": kind, "params": params }]))
+/// The nodes of one outline drawn into `render_2d` 1. `params` holds, flat, the `shape_2d` or
+/// `path_2d` params of `kind`, the fill's (`fill_enabled`, default on, `fill_paint`, `feather`
+/// and `offset`, which grows the fill alone), the stroke's (`stroke_enabled`, default off, and
+/// `stroke_paint`, `stroke_width`, `trim_*` and `stroke_dash*`) and an `opacity` for both.
+fn outline_nodes(kind: &str, params: Value) -> Vec<Value> {
+    let mut params = params.as_object().unwrap().clone();
+    let mut take = |keys: &[(&str, &str)]| -> Map<String, Value> {
+        keys.iter()
+            .filter_map(|(from, to)| Some((to.to_string(), params.remove(*from)?)))
+            .collect()
+    };
+    let outline_keys: &[(&str, &str)] = match kind {
+        "shape" => &[
+            ("geometry_kind", "geometry_kind"),
+            ("width", "width"),
+            ("height", "height"),
+            ("border_radius", "border_radius"),
+        ],
+        _ => &[("data", "data")],
+    };
+    let mut geometry = take(outline_keys);
+    geometry.extend(take(&[
+        ("position", "position"),
+        ("scale", "scale"),
+        ("rotation", "rotation"),
+        ("anchor", "anchor"),
+    ]));
+    let mut fill = take(&[("fill_paint", "paint"), ("feather", "feather")]);
+    let mut stroke = take(&[
+        ("stroke_paint", "paint"),
+        ("stroke_width", "width"),
+        ("trim_start", "trim_start"),
+        ("trim_end", "trim_end"),
+        ("stroke_dash", "dash"),
+        ("stroke_dash_offset", "dash_offset"),
+    ]);
+    let enabled = |params: &mut Map<String, Value>, key: &str, default: bool| {
+        params
+            .remove(key)
+            .map_or(default, |value| value.as_bool().unwrap())
+    };
+    let (fill_enabled, stroke_enabled) = (
+        enabled(&mut params, "fill_enabled", true),
+        enabled(&mut params, "stroke_enabled", false),
+    );
+    if let Some(opacity) = params.remove("opacity") {
+        fill.insert("opacity".into(), opacity.clone());
+        stroke.insert("opacity".into(), opacity);
+    }
+    let offset = params.remove("offset");
+    assert!(params.is_empty(), "unhandled params {params:?}");
+
+    let mut nodes = vec![json!({ "id": 10, "type": format!("{kind}_2d"), "params": geometry })];
+    let mut fill_geometry = 10;
+    if let Some(offset) = offset {
+        nodes.push(json!({ "id": 11, "type": "offset_2d", "params": { "offset": offset }, "in": { "geometry": 10 } }));
+        fill_geometry = 11;
+    }
+    let mut drawings = Vec::new();
+    if fill_enabled {
+        nodes.push(json!({ "id": 12, "type": "fill_2d", "params": fill, "in": { "geometry": fill_geometry } }));
+        drawings.push(12);
+    }
+    if stroke_enabled {
+        nodes.push(
+            json!({ "id": 13, "type": "stroke_2d", "params": stroke, "in": { "geometry": 10 } }),
+        );
+        drawings.push(13);
+    }
+    nodes.push(json!({ "id": 14, "type": "merge_2d", "in": { "drawings": drawings } }));
+    nodes.push(json!({ "id": 1, "type": "render_2d", "in": { "drawing": 14 } }));
+    nodes
 }
 
 fn shape(size: (u32, u32), params: Value) -> Scene {
-    one_node(size, "shape", params)
+    scene(size, json!(outline_nodes("shape", params)))
 }
 
 fn path(size: (u32, u32), params: Value) -> Scene {
-    one_node(size, "path", params)
+    scene(size, json!(outline_nodes("path", params)))
 }
 
 /// `params` with the fields of `more` added over them.
@@ -534,16 +604,14 @@ fn shape_rotation_and_anchor_match_the_transform_node() {
         })
     };
     let own = shape((128, 128), rounded(true));
-    let via_node = scene(
-        (128, 128),
-        json!([
-            { "id": 1, "type": "shape", "params": rounded(false) },
-            { "id": 2, "type": "transform", "in": { "source": 1 }, "params": {
-                "scale_x": 1.25, "scale_y": 0.8, "rotate": 30, "pivot_x": 42, "pivot_y": 56,
-                "custom_pivot": true
-            } },
-        ]),
+    let mut nodes = outline_nodes("shape", rounded(false));
+    nodes.push(
+        json!({ "id": 2, "type": "transform", "in": { "source": 1 }, "params": {
+        "scale_x": 1.25, "scale_y": 0.8, "rotate": 30, "pivot_x": 42, "pivot_y": 56,
+        "custom_pivot": true
+    } }),
     );
+    let via_node = scene((128, 128), json!(nodes));
     let gpu = gpu();
     let media = TestMedia::default();
     let own = render(&mut gpu.renderer(), &own.into(), 0.0, &media);

@@ -1,8 +1,8 @@
 // Path outlines measured from a pixel: the even-odd fill, its offset and feathered edge, and the
-// trimmed and dashed stroke. Each renderer that includes it declares `params`, `path_points`,
-// `path_bands` and `dash_length`.
+// trimmed and dashed stroke. `drawing.wgsl` declares the `params`, `path_points`, `path_bands`
+// and `dash_length` it reads.
 
-// Bits of `flags` in `PathPoint`; unrelated to the style bits in `PathUniforms.flags`.
+// Bits of `flags` in `PathPoint`; unrelated to the style bits in `VectorDrawable.flags`.
 const POINT_END: u32 = 1u;
 const POINT_CLOSED: u32 = 2u;
 // The segment from the point is no edge of the fill, as coincident pieces of the outline

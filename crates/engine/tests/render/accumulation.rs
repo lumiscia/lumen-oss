@@ -21,15 +21,18 @@ fn growing() -> Value {
     ))
 }
 
-/// [`growing`] as a raster `shape`, with an analytic shutter of `motion_blur`.
-fn growing_raster(motion_blur: f64) -> Value {
-    json!({ "id": 1, "type": "shape", "params": {
-        "width": "=8 + frame * 6",
-        "height": 20,
-        "position": "=vec2(10 + frame * 4, 32)",
-        "fill_paint": ORANGE,
-        "motion_blur": motion_blur,
-    } })
+/// [`growing`] moved by a `transform`, with an analytic shutter of `motion_blur`.
+fn sliding(motion_blur: f64) -> Value {
+    json!([
+        filled_shape(
+            5,
+            json!({ "width": "=8 + frame * 6", "height": 20, "position": [10, 32] }),
+            json!({ "paint": ORANGE }),
+        ),
+        { "id": 1, "type": "transform", "in": { "source": 5 }, "params": {
+            "translate_x": "=frame * 4", "motion_blur": motion_blur
+        } }
+    ])
 }
 
 fn canvas(nodes: Value) -> Scene {
@@ -44,27 +47,6 @@ fn motion_blur(id: u32, source: u32, samples: i64, shutter: f64) -> Value {
 /// `source`, with id 1, under a `motion_blur`.
 fn blurred(samples: i64, shutter: f64, source: Value) -> Scene {
     canvas(json!([source, motion_blur(2, 1, samples, shutter)]))
-}
-
-/// A shape or path that stays put while the copies it repeats spread apart, with an analytic
-/// shutter of `motion_blur`.
-fn spreading(kind: &str, motion_blur: f64) -> Value {
-    let mut params = match kind {
-        "shape" => json!({ "width": 8, "height": 8 }),
-        _ => json!({ "data": "M 0 0 L 8 0 L 4 8 Z" }),
-    };
-    params.as_object_mut().unwrap().extend(
-        json!({
-            "position": [4, 28],
-            "fill_paint": ORANGE,
-            "motion_blur": motion_blur,
-            "repeat": { "count": 4, "position_offset": "=vec2(4 + frame * 3, 0)" },
-        })
-        .as_object()
-        .unwrap()
-        .clone(),
-    );
-    json!({ "id": 1, "type": kind, "params": params })
 }
 
 /// Whether `blurred` is `average` to within a code. The average is of sub-frames rounded to bytes,
@@ -120,36 +102,6 @@ fn an_animated_width_blurs_to_the_average_of_its_sub_frames() {
 }
 
 #[test]
-fn repeated_copies_blur_once_across_the_sub_frames() {
-    let gpu = gpu();
-    let mut renderer = gpu.renderer();
-    let media = TestMedia::default();
-    let at = 3.0;
-    for kind in ["shape", "path"] {
-        // The copies' own shutter would blur each sample again on top of the average.
-        let blurred = render(
-            &mut renderer,
-            &blurred(8, 180.0, spreading(kind, 180.0)).into(),
-            at,
-            &media,
-        );
-        let source: Composition = canvas(json!([spreading(kind, 0.0)])).into();
-        assert!(
-            is_average(
-                &blurred.rgba,
-                &sub_frame_average(&mut renderer, &source, at)
-            ),
-            "the {kind}'s blurred copies are not the average of their sub-frames"
-        );
-        let held = render(&mut renderer, &source, at, &media);
-        assert!(
-            blurred.rgba != held.rgba,
-            "the {kind}'s blurred copies match the held copies"
-        );
-    }
-}
-
-#[test]
 fn renders_once_unless_it_samples() {
     let unwrapped = || canvas(json!([growing()])).into();
     let same = |name: &str, scene: Scene, like: Composition| {
@@ -170,8 +122,8 @@ fn renders_once_unless_it_samples() {
         ),
         same(
             "analytic motion blur is off while it samples",
-            blurred(8, 180.0, growing_raster(180.0)),
-            blurred(8, 180.0, growing_raster(0.0)).into(),
+            blurred(8, 180.0, sliding(180.0)),
+            blurred(8, 180.0, sliding(0.0)).into(),
         ),
         same(
             "a motion_blur inside one that samples renders once per sample",

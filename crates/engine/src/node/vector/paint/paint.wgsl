@@ -1,4 +1,4 @@
-// Shared paint sampling for background, shape, path and text shaders. Requires the alpha and
+// Shared paint sampling for background, text and drawing shaders. Requires the alpha and
 // colour chunks. Paint colours arrive as straight sRGB and are sampled as linear, premultiplied
 // colour. Gradient stops are interpolated premultiplied, sRGB-encoded or in linear light as the
 // paint asks.

@@ -119,13 +119,8 @@ impl GpuDash {
         lengths: [[0.0; 4]; GPU_DASH_LENGTHS / 4],
     };
 
-    /// Checks `pattern` and `offset`, naming the params `stroke_dash` and `stroke_dash_offset`
-    /// in errors. A pattern that is empty or all zeros in f32 strokes solidly, as in SVG.
-    pub(super) fn new(pattern: &DashPattern, offset: f64) -> Result<Self, String> {
-        Self::named(pattern, offset, ["stroke_dash", "stroke_dash_offset"])
-    }
-
-    /// [`Self::new`], naming the pattern and offset params `names` in errors.
+    /// Checks `pattern` and `offset`, naming the pattern and offset params `names` in errors. A
+    /// pattern that is empty or all zeros in f32 strokes solidly, as in SVG.
     pub(super) fn named(
         pattern: &DashPattern,
         offset: f64,
@@ -179,7 +174,11 @@ mod tests {
     use super::*;
 
     fn gpu(lengths: &[f64], offset: f64) -> Result<GpuDash, String> {
-        GpuDash::new(&DashPattern(lengths.to_vec()), offset)
+        GpuDash::named(
+            &DashPattern(lengths.to_vec()),
+            offset,
+            ["dash", "dash_offset"],
+        )
     }
 
     #[test]
@@ -211,7 +210,7 @@ mod tests {
         );
         assert_eq!(
             gpu(&[1e40, 1.0], 0.0).unwrap_err(),
-            "`stroke_dash[0]` must be at most 1e37, got 1e40"
+            "`dash[0]` must be at most 1e37, got 1e40"
         );
     }
 
@@ -219,15 +218,15 @@ mod tests {
     fn negative_non_finite_and_too_many_lengths_are_errors() {
         assert_eq!(
             gpu(&[4.0, -1.0], 0.0).unwrap_err(),
-            "`stroke_dash[1]` must not be negative, got -1"
+            "`dash[1]` must not be negative, got -1"
         );
         assert_eq!(
             gpu(&[f64::NAN], 0.0).unwrap_err(),
-            "`stroke_dash[0]` must be finite, got NaN"
+            "`dash[0]` must be finite, got NaN"
         );
         assert_eq!(
             gpu(&[4.0], f64::INFINITY).unwrap_err(),
-            "`stroke_dash_offset` must be finite, got inf"
+            "`dash_offset` must be finite, got inf"
         );
         assert!(gpu(&[1.0; MAX_DASH_LENGTHS], 0.0).is_ok());
         assert!(

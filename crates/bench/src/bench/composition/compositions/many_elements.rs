@@ -16,11 +16,10 @@ use lumen_engine::{
         },
         vector::{
             drawing::{
-                Fill2dParamsDelegate, Shape2d, Shape2dParamsDelegate, Stroke2dParamsDelegate,
-                Transform2dDelegate,
+                Fill2dParamsDelegate, Shape2d, Shape2dParamsDelegate, ShapeGeometryKind,
+                Stroke2dParamsDelegate, Transform2dDelegate,
             },
             paint::Paint,
-            shape::ShapeGeometryKind,
         },
     },
 };

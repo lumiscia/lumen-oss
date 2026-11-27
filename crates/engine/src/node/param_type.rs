@@ -185,18 +185,6 @@ impl NodeParamType for super::scene::MatteNames {
     }
 }
 
-impl NodeParamType for super::vector::repeat::Repeat {
-    fn property_kind() -> PropertyKind {
-        PropertyKind::Custom(&super::vector::repeat::REPEAT)
-    }
-}
-
-impl NodeParamType for super::vector::repeat::RepeatCount {
-    fn property_kind() -> PropertyKind {
-        PropertyKind::Int
-    }
-}
-
 // Only nested delegates may hold `Vec` fields: `#[derive(Node)]` rejects params with
 // `NodeParams::HAS_VEC_FIELDS` because the schema has no array kind.
 impl<T> NodeParamType for Vec<T> {
