@@ -130,8 +130,8 @@ A host gives a render its media through one method, `MediaStore::resolve(source,
 is what the composition wrote (a path, an alias, `asset:<id>`, or a font family) and `kind` is the
 `AssetKind` the use reads it as. The store answers with a `ResolvedMedia`: an `identity` and a
 `MediaResolver`, which holds the kind's resolver trait object (`ImageResolver`,
-`VideoFrameResolver`, `AudioResolver`, `FontResolver`, `ModelResolver`, `EnvironmentResolver` or
-`LutResolver`).
+`VideoFrameResolver`, `AudioResolver` or `FontResolver`; a model, environment map or LUT is a
+`FileResolver`, which returns the file's bytes).
 Video decode settings, such as hardware decode, are the store's own, set when it is made.
 
 The `MediaIdentity` names the bytes. The engine treats equal identities, from any store in the
@@ -177,7 +177,8 @@ The engine asks again on each frame that uses a source, to see whether its ident
 store should resolve an opened source cheaply and let font, model and environment resolvers read
 their bytes only when asked. A source the store doesn't have fails as `media.not_found`, which for
 a font family that isn't an asset reference makes its text fall back to other fonts. Typed access
-goes through `media::resolve_as::<dyn ImageResolver>(store, source)`; a store that serves another
+goes through `media::resolve_as::<dyn ImageResolver>(store, source)`, or
+`resolve_as::<ModelFile>` (`EnvironmentFile`, `LutFile`) for a file; a store that serves another
 kind than asked fails there as `media.wrong_kind`, so a store that keeps one kind per name can
 return whatever it has. A minimal store, from
 [`examples/media_store.rs`](examples/media_store.rs):

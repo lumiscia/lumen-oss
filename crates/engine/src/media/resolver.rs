@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 #[cfg(feature = "ffmpeg")]
 use std::sync::OnceLock;
@@ -197,21 +198,12 @@ pub trait FontResolver: Send + Sync {
     fn data(&self) -> Result<Vec<Vec<u8>>, MediaError>;
 }
 
-/// A 3D model file.
-pub trait ModelResolver: Send + Sync {
-    fn data(&self) -> Result<Vec<u8>, MediaError>;
-}
-
-/// An environment map file.
-pub trait EnvironmentResolver: Send + Sync {
-    fn data(&self) -> Result<Vec<u8>, MediaError>;
+/// A file's bytes: a 3D model, an environment map or a `.cube` colour lookup table. A resolver
+/// that keeps the bytes lends them, and one that reads them on each call hands them over.
+pub trait FileResolver: Send + Sync {
+    fn data(&self) -> Result<Cow<'_, [u8]>, MediaError>;
 }
 
 /// The largest `.cube` file a host should read: a table of the largest size, written with six
 /// decimals, is about 58 MB.
 pub const MAX_LUT_BYTES: usize = 64 << 20;
-
-/// A `.cube` colour lookup table file.
-pub trait LutResolver: Send + Sync {
-    fn data(&self) -> Result<Vec<u8>, MediaError>;
-}

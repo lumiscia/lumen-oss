@@ -35,7 +35,7 @@ use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
 use crate::gpu::evictions;
 use crate::gpu::frame_graph::{FrameCx, Raster};
 use crate::gpu::render_scale::device_rect;
-use crate::media::{AssetKind, MediaIdentity, ModelResolver, resolve_as};
+use crate::media::{AssetKind, FileResolver, MediaIdentity, ModelFile, resolve_as};
 use crate::node::processing::RasterSampling;
 use crate::node::vector::paint::Paint;
 use crate::node::{
@@ -218,7 +218,7 @@ impl SceneCache {
         rec: &mut Recorder,
         tick: u64,
         source: &str,
-        (identity, resolver): (&MediaIdentity, &dyn ModelResolver),
+        (identity, resolver): (&MediaIdentity, &dyn FileResolver),
     ) -> Result<LoadedModel, MediaError> {
         if let Some(cached) = self.models.get_mut(identity.as_str()) {
             cached.last_used = tick;
@@ -807,7 +807,7 @@ fn open_model(cx: &mut FrameCx<'_>, node_id: NodeId, source: &str) -> crate::Res
             "this render has no media store",
         ))
     })?;
-    let (identity, resolver) = resolve_as::<dyn ModelResolver>(media, source).map_err(in_node)?;
+    let (identity, resolver) = resolve_as::<ModelFile>(media, source).map_err(in_node)?;
     let tick = cx.tick();
     let (rec, cache) = cx.scene_cache();
     let model = cache

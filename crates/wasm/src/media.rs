@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     sync::{Arc, RwLock},
 };
@@ -6,10 +7,9 @@ use std::{
 use lumen_engine::{
     error::{MediaError, MediaFailure},
     media::{
-        AssetKind, CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver,
-        LutResolver, MediaFrame, MediaIdentity, MediaResolver, MediaStore, ModelResolver,
-        ResolvedMedia, TextSession, VideoFrameRequirement, VideoFrameResolver, VideoMetadata,
-        YuvFrame,
+        AssetKind, CpuMediaFrame, FileResolver, FontResolver, ImageMetadata, ImageResolver,
+        MediaFrame, MediaIdentity, MediaResolver, MediaStore, ResolvedMedia, TextSession,
+        VideoFrameRequirement, VideoFrameResolver, VideoMetadata, YuvFrame,
     },
 };
 /// Total bytes of decoded video frames kept across all streams of one media store.
@@ -208,7 +208,7 @@ impl Default for StoredVideo {
 /// The bytes of a model, environment map or `.cube` LUT file, which the engine reads when it draws it.
 #[derive(Debug, Clone)]
 struct StoredFile {
-    data: Arc<Vec<u8>>,
+    data: Arc<[u8]>,
     identity: MediaIdentity,
 }
 
@@ -397,7 +397,7 @@ impl WasmMediaStore {
             .insert(
                 (kind, source),
                 StoredFile {
-                    data: Arc::new(data),
+                    data: Arc::from(data),
                     identity: MediaIdentity::unique(),
                 },
             );
@@ -709,24 +709,12 @@ impl VideoFrameResolver for WasmVideoResolver {
 
 /// A model, environment map or `.cube` LUT file.
 struct WasmFileResolver {
-    data: Arc<Vec<u8>>,
+    data: Arc<[u8]>,
 }
 
-impl ModelResolver for WasmFileResolver {
-    fn data(&self) -> Result<Vec<u8>, MediaError> {
-        Ok(self.data.as_ref().clone())
-    }
-}
-
-impl EnvironmentResolver for WasmFileResolver {
-    fn data(&self) -> Result<Vec<u8>, MediaError> {
-        Ok(self.data.as_ref().clone())
-    }
-}
-
-impl LutResolver for WasmFileResolver {
-    fn data(&self) -> Result<Vec<u8>, MediaError> {
-        Ok(self.data.as_ref().clone())
+impl FileResolver for WasmFileResolver {
+    fn data(&self) -> Result<Cow<'_, [u8]>, MediaError> {
+        Ok(Cow::Borrowed(&self.data))
     }
 }
 
@@ -743,11 +731,14 @@ impl FontResolver for WasmFontResolver {
 
 #[cfg(test)]
 mod tests {
-    use lumen_engine::media::{ResolverKind, resolve_as};
+    use lumen_engine::media::{EnvironmentFile, LutFile, ModelFile, ResolverKind, resolve_as};
 
     use super::*;
 
-    fn resolver<K: ResolverKind + ?Sized>(store: &WasmMediaStore, source: &str) -> Box<K> {
+    fn resolver<K: ResolverKind + ?Sized>(
+        store: &WasmMediaStore,
+        source: &str,
+    ) -> Box<K::Resolver> {
         match resolve_as::<K>(store, source) {
             Ok((_, resolver)) => resolver,
             Err(error) => panic!("{source}: {error}"),
@@ -1001,10 +992,10 @@ mod tests {
     fn a_model_serves_the_set_bytes_with_an_identity_each_set_changes() {
         let store = WasmMediaStore::default();
         let resolve = |store: &WasmMediaStore| {
-            let model = resolver::<dyn ModelResolver>(store, "fox");
+            let model = resolver::<ModelFile>(store, "fox");
             (
                 identity(store, "fox", AssetKind::Model),
-                model.data().unwrap(),
+                model.data().unwrap().into_owned(),
             )
         };
         assert!(store.resolve("fox", AssetKind::Model).is_err());
@@ -1013,14 +1004,14 @@ mod tests {
             .set_file(AssetKind::Model, "fox".to_string(), vec![1, 2])
             .unwrap();
         let (first, data) = resolve(&store);
-        assert_eq!(data, [1, 2]);
+        assert_eq!(*data, [1, 2]);
         assert_eq!(resolve(&store).0, first);
 
         store
             .set_file(AssetKind::Model, "fox".to_string(), vec![3])
             .unwrap();
         let (second, data) = resolve(&store);
-        assert_eq!(data, [3]);
+        assert_eq!(*data, [3]);
         assert_ne!(second, first);
 
         store.remove_file(AssetKind::Model, "fox").unwrap();
@@ -1036,8 +1027,8 @@ mod tests {
         store
             .set_file(AssetKind::Lut, "warm.cube".to_string(), vec![7, 8])
             .unwrap();
-        let lut = resolver::<dyn LutResolver>(&store, "warm.cube");
-        assert_eq!(lut.data().unwrap(), [7, 8]);
+        let lut = resolver::<LutFile>(&store, "warm.cube");
+        assert_eq!(*lut.data().unwrap(), [7, 8]);
         assert!(store.has_file(AssetKind::Lut, "warm.cube"));
 
         store.remove_file(AssetKind::Lut, "warm.cube").unwrap();
@@ -1059,8 +1050,8 @@ mod tests {
             .set_file(AssetKind::Environment, "sky.hdr".to_string(), vec![7, 8])
             .unwrap();
         let first = identity(&store, "sky.hdr", AssetKind::Environment);
-        let environment = resolver::<dyn EnvironmentResolver>(&store, "sky.hdr");
-        assert_eq!(environment.data().unwrap(), [7, 8]);
+        let environment = resolver::<EnvironmentFile>(&store, "sky.hdr");
+        assert_eq!(*environment.data().unwrap(), [7, 8]);
         assert!(store.has_file(AssetKind::Environment, "sky.hdr"));
 
         store

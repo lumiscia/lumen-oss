@@ -5,7 +5,7 @@ use lumen_gpu::{Recorder, TexRef, wgpu};
 
 use super::inline_lut;
 use crate::error::{LumenError, MediaError, MediaFailure};
-use crate::media::{AssetKind, LutResolver, MediaIdentity, resolve_as};
+use crate::media::{AssetKind, FileResolver, LutFile, MediaIdentity, resolve_as};
 use crate::node::processing::cube_lut::{CubeError, CubeLut};
 use crate::node::{
     Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef,
@@ -272,7 +272,7 @@ impl ColorGrade {
                 "this render has no media store",
             ))
         })?;
-        let (identity, resolver) = resolve_as::<dyn LutResolver>(media, source).map_err(in_node)?;
+        let (identity, resolver) = resolve_as::<LutFile>(media, source).map_err(in_node)?;
         let tick = cx.tick();
         let (rec, cache) = cx.lut_cache();
         let loaded = cache
@@ -316,7 +316,7 @@ impl LutCache {
         tick: u64,
         source: &str,
         identity: &MediaIdentity,
-        resolver: &dyn LutResolver,
+        resolver: &dyn FileResolver,
     ) -> Result<LoadedLut, MediaError> {
         if let Some(cached) = self.luts.get_mut(identity.as_str()) {
             cached.last_used = tick;
