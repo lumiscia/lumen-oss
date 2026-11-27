@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{Path, State, rejection::JsonRejection, ws::WebSocketUpgrade},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
@@ -14,7 +14,7 @@ use lumen_server_api::{
     CheckReport, CheckRequest, CreateRenderResponse, ErrorCode, Health, RenderRequest,
     RenderResponse, VideoBitDepth, VideoCodec,
 };
-use tokio::sync::OwnedSemaphorePermit;
+use tokio::{io::AsyncReadExt, sync::OwnedSemaphorePermit};
 
 use crate::{
     Artifact, RenderJob, RenderJobError, RenderRecord, RenderStatus, current_timestamp,
@@ -118,11 +118,11 @@ pub(super) async fn create_render(
     })?;
 
     let id = new_render_id();
-    let record = state.insert(RenderRecord::new(
+    let record = RenderRecord::new(
         id.clone(),
         current_timestamp(),
         input_hash(&input.composition, &input.media, encoder.as_ref(), &output),
-    ));
+    );
     let render = record.render(&RenderStatus::Queued);
 
     // A waiting render's place is held by its record, so cancelling it can give the place back.
@@ -134,21 +134,29 @@ pub(super) async fn create_render(
         }
     };
     let (max_text_glyphs, sequence_limits) = (state.max_text_glyphs, state.sequence_limits);
-    spawn_render_task(
-        state,
-        record,
-        slot,
-        RenderJob {
-            id,
-            composition,
-            media: input.media,
-            encoder,
-            output,
-            sequence_limits,
-            max_text_glyphs,
-            assets,
-        },
-    );
+    let destination = state.render_destination(&id, output.format);
+    let job = RenderJob {
+        id,
+        composition,
+        media: input.media,
+        encoder,
+        output,
+        sequence_limits,
+        max_text_glyphs,
+        assets,
+        destination,
+    };
+    state
+        .start_render(record, |record| {
+            spawn_render_task(state.clone(), record, slot, job)
+        })
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::RenderCancelled,
+                "server is shutting down",
+            )
+        })?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -257,6 +265,19 @@ pub(super) async fn get_render_artifact(
     let status = record.status.borrow().clone();
     match status {
         RenderStatus::Succeeded { artifact } => {
+            // An evicted render's file is gone, as its record is.
+            let file = artifact.file.open().await.map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    ApiError::not_found()
+                } else {
+                    tracing::error!(render_id = %id, %error, "failed to open render artifact");
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        ErrorCode::OutputIo,
+                        "failed to read the finished render",
+                    )
+                }
+            })?;
             let mut headers = HeaderMap::new();
             headers.insert(
                 header::CONTENT_TYPE,
@@ -270,7 +291,8 @@ pub(super) async fn get_render_artifact(
                 ))
                 .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
             );
-            Ok((StatusCode::OK, headers, artifact.bytes).into_response())
+            headers.insert(header::CONTENT_LENGTH, artifact.file.size().into());
+            Ok((StatusCode::OK, headers, file_body(file)).into_response())
         }
         RenderStatus::Failed { error, .. } | RenderStatus::Cancelled { error, .. } => {
             Err(ApiError::rejected(StatusCode::CONFLICT, error))
@@ -281,6 +303,20 @@ pub(super) async fn get_render_artifact(
             "render has not finished",
         )),
     }
+}
+
+/// The contents of `file`, read a chunk at a time as the client takes them.
+fn file_body(file: tokio::fs::File) -> Body {
+    const CHUNK_BYTES: usize = 256 * 1024;
+    Body::from_stream(futures_util::stream::try_unfold(
+        file,
+        |mut file| async move {
+            let mut chunk = vec![0; CHUNK_BYTES];
+            let read = file.read(&mut chunk).await?;
+            chunk.truncate(read);
+            Ok::<_, std::io::Error>((read > 0).then(|| (Bytes::from(chunk), file)))
+        },
+    ))
 }
 
 struct ReleaseQueueSpot(Arc<RenderRecord>);
@@ -296,7 +332,7 @@ fn spawn_render_task(
     record: Arc<RenderRecord>,
     slot: Option<OwnedSemaphorePermit>,
     job: RenderJob,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // A queued task that ends any other way still gives its queue place back.
         let _queue_place = ReleaseQueueSpot(Arc::clone(&record));
@@ -350,7 +386,7 @@ fn spawn_render_task(
                 RenderStatus::Succeeded {
                     artifact: Artifact {
                         url: format!("/renders/{}/artifact", record.id),
-                        bytes: Bytes::from(completed.bytes),
+                        file: Arc::new(completed.file),
                         content_type: completed.format.content_type(),
                         extension: completed.format.extension(),
                         render_ms: completed.render_ms,
@@ -359,5 +395,5 @@ fn spawn_render_task(
             ),
             Err(error) => state.fail(&record, error),
         }
-    });
+    })
 }
