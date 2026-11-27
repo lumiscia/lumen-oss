@@ -555,7 +555,7 @@
           "type": "number"
         },
         "instance": {
-          "description": "The copy an `instance_3d`'s `position`, `rotation` and `scale` are evaluated for, which\nthey read as `instance`. Other nodes and params ignore it.",
+          "description": "The copy an `instance_2d`'s or `instance_3d`'s per-copy params are evaluated for, which\nthey read as `instance`. Other nodes and params ignore it.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"

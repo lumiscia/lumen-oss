@@ -115,6 +115,40 @@ Params:
 - **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier.
 - **`paint`** ([paint](#type-paint); default `[255,255,255,255]`) Fill paint. Accepts a solid color or gradient, laid out in the geometry's untransformed pixels.
 
+## `instance_2d`
+
+Draws its input drawing `count` times, each copy placed by `position`, `scale`, `rotation` and `anchor` evaluated for that copy, where `instance` is the copy's index from 0 and `instance_count` is `count`. Copies are drawn in index order, the first lowest, each placed over the drawing's own pixels as a `merge_2d` with those params would place it, strokes and shadows included. A grid of 10 columns 40 pixels apart:
+
+```json
+{ "id": 1, "type": "shape_2d", "params": { "geometry_kind": "ellipse", "width": 24, "height": 24 } },
+{ "id": 2, "type": "fill_2d", "params": { "paint": "#ee5b24" }, "in": { "geometry": 1 } },
+{ "id": 3, "type": "instance_2d", "params": { "count": 50, "position": "=vec2((instance % 10) * 40, floor(instance / 10) * 40)" }, "in": { "drawing": 2 } },
+{ "id": 4, "type": "render_2d", "in": { "drawing": 3 } }
+```
+
+A ring follows from `sin` and `cos` of `instance / instance_count`: `position = vec2(960 + 300 * cos(6.283 * instance / instance_count), 540 + 300 * sin(6.283 * instance / instance_count))` with `rotation = 360 * instance / instance_count` turns each copy to face along the ring. `opacity` fades copies and `tint` colours them: `tint = rgb(255 * instance / instance_count, 128, 255)` shifts the colour along the copies.
+
+Copies placed by hand are listed in `copies` instead, as literals: `copies = [{ "position": [0, 0] }, { "position": [80, 0], "rotation": 45, "tint": "#ff8040" }]` places two. `count`, `position`, `scale`, `rotation`, `anchor`, `opacity` and `tint` must not be set beside a `copies` list that has copies, or `check` fails.
+
+The input drawing is walked once, and its outlines are flattened and measured once for every copy that turns and scales them alike, so copies that only move cost a drawable each. A copy's scale scales the softness and spread of the shadows inside it. An `instance_2d` may hold another, which multiplies their counts, up to 8 deep. A drawing holds at most 16384 drawables in all, counting each copy's, and a count that would exceed this fails the render. The node is static when its params don't read the frame and its drawing is static.
+
+Category: vector. Output: drawing.
+
+Inputs:
+
+- `drawing`: drawing, required
+
+Params:
+
+- **`anchor`** ([number, number]; default `[0,0]`) Pivot for each copy's scale and rotation, in pixels relative to its `position`. Evaluated for every copy, and can read `instance` and `instance_count`.
+- **`copies`** ([instance2dCopies](#type-instance2dcopies); default `[]`; literal as a whole) Copies to place, each given literally as `{ position, scale, rotation, anchor, opacity, tint }` with any field left out taking the default of the param of that name. The list can't hold expressions and holds at most 100000 copies. An empty list places none of its own. When it has copies, `count`, `position`, `scale`, `rotation`, `anchor`, `opacity` and `tint` must not be set, and `check` fails if they are.
+- **`count`** (integer, 0 to 100000; default `1`) Copies to place, from 0 to 100000. 0 draws nothing. Not set together with `copies`.
+- **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier of each copy. Evaluated for every copy, and can read `instance` and `instance_count`. Opacities of nested `instance_2d` nodes multiply.
+- **`position`** ([number, number]; default `[0,0]`) Origin in pixels of each copy, in the drawing's own pixels. Evaluated for every copy, and can read `instance` and `instance_count`.
+- **`rotation`** (number; default `0`) Clockwise rotation in degrees of each copy, about its anchor. Evaluated for every copy, and can read `instance` and `instance_count`.
+- **`scale`** ([number, number]; default `[1,1]`) Scale multiplier per axis of each copy, about its anchor. Evaluated for every copy, and can read `instance` and `instance_count`.
+- **`tint`** ([color](#type-color); default `[255,255,255,255]`) Colour that multiplies the paint of every fill and stroke in each copy, gradients included. White leaves a copy as it is. Evaluated for every copy, and can read `instance` and `instance_count`. Its alpha is ignored, and shadows keep their own colour. Tints of nested `instance_2d` nodes multiply.
+
 ## `merge_2d`
 
 Draws drawings one over another in input order, the first lowest, placing them together by its transform. The transform applies to everything inside, strokes and shadows included.
@@ -1494,6 +1528,27 @@ No other fields.
 A color at a point along a gradient: `{ offset, color }` or `[offset, color]`.
 
 Value: { color: [color](#type-color); offset: number } | [number, [color](#type-color)].
+
+### Type `instance2dCopies`
+
+Copies an `instance_2d` places, each given literally. The list can't be an expression.
+
+Value: array of [instance2dCopy](#type-instance2dcopy), at most 100000 items.
+
+### Type `instance2dCopy`
+
+One copy of an `instance_2d`: where it sits, how it is scaled and turned, its opacity and its tint. Fields left out take the defaults of the `instance_2d` params of the same names. Every value is a literal.
+
+Fields:
+
+- **`anchor`** ([number, number]; default `[0,0]`; literal as a whole)
+- **`opacity`** (number; default `1`; literal only)
+- **`position`** ([number, number]; default `[0,0]`; literal as a whole)
+- **`rotation`** (number; default `0`; literal only)
+- **`scale`** ([number, number]; default `[1,1]`; literal as a whole)
+- **`tint`** ([color](#type-color); default `[255,255,255,255]`; literal as a whole)
+
+No other fields.
 
 ### Type `instanceCopies`
 

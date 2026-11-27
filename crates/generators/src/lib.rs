@@ -296,6 +296,33 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
     );
     insert_def(
         &mut defs,
+        "Instance2dCopy",
+        json!({
+            "description": "One copy of an `instance_2d`: where it sits, how it is scaled and turned, its opacity and its tint. Fields left out take the defaults of the `instance_2d` params of the same names. Every value is a literal.",
+            "type": "object",
+            "properties": {
+                "position": { "$ref": "#/$defs/vec2", "default": [0, 0] },
+                "scale": { "$ref": "#/$defs/vec2", "default": [1, 1] },
+                "rotation": { "type": "number", "default": 0 },
+                "anchor": { "$ref": "#/$defs/vec2", "default": [0, 0] },
+                "opacity": { "type": "number", "default": 1 },
+                "tint": { "$ref": "#/$defs/color", "default": [255, 255, 255, 255] }
+            },
+            "additionalProperties": false
+        }),
+    );
+    insert_def(
+        &mut defs,
+        "Instance2dCopies",
+        json!({
+            "description": "Copies an `instance_2d` places, each given literally. The list can't be an expression.",
+            "type": "array",
+            "maxItems": MAX_INSTANCES,
+            "items": { "$ref": "#/$defs/instance2dCopy" }
+        }),
+    );
+    insert_def(
+        &mut defs,
         "MatteNames",
         json!({
             "description": "Matte names, one for each channel of a `render_3d`'s `matte` output in turn: red, green, blue and alpha. Each is a literal, listed once.",

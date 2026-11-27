@@ -6,7 +6,7 @@ use std::hash::BuildHasher;
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use foldhash::HashMap;
+use foldhash::{HashMap, HashSet};
 
 use super::super::dash::GpuDash;
 use super::super::drawable::{DrawableTransform, GpuDrawableTransform, MIN_SCALE, union_bounds};
@@ -54,6 +54,8 @@ pub(super) struct GpuVectorDrawable {
     pub(super) transform: GpuDrawableTransform,
     /// Canvas-space `[min_x, min_y, max_x, max_y]` outside which nothing is drawn.
     pub(super) screen_bounds: [f32; 4],
+    /// Linear colour multiplying the paint of a fill or stroke; its alpha is 1.
+    pub(super) tint: [f32; 4],
     /// Columns of the map from the untransformed points the shader measures to those the paint
     /// is laid out in.
     pub(super) paint_frame: [[f32; 2]; 2],
@@ -371,8 +373,8 @@ struct BuiltPath {
 struct PathKey {
     /// The id of the text a text outline was shaped as, or 0.
     text: u64,
-    transform: GpuDrawableTransform,
-    casts: Vec<[f32; 2]>,
+    transforms: Vec<GpuDrawableTransform>,
+    casts: Vec<GpuDrawableTransform>,
     needs: Vec<PathNeed>,
     dash: Option<(u64, u64)>,
     canvas: [f32; 2],
@@ -415,11 +417,14 @@ pub(crate) struct Keeping<'a> {
     pub(crate) tick: u64,
 }
 
-/// The drawables of one outline under one placement, and the dash its points are measured for.
+/// The drawables of one outline under placements that differ only by where they move it, and
+/// the dash its points are measured for. One build of the outline serves them all.
 struct Instance {
     geometry: usize,
-    /// The placement, at full opacity.
+    /// The first placement.
     measured: Measured,
+    /// Every placement the shaders measure with, each once, at full opacity.
+    transforms: Vec<GpuDrawableTransform>,
     scales: [f64; 2],
     dash: Option<GpuDash>,
     uses: Vec<usize>,
@@ -435,20 +440,26 @@ struct PlacedPath {
     turn: Option<[[f64; 2]; 2]>,
 }
 
-/// The bits of a transform's linear part and offset, which drawables placed alike share.
-fn placement_key(transform: &GpuDrawableTransform) -> [u32; 12] {
-    let mut key = [0; 12];
+/// The bits of a transform's linear part, which drawables sharing a build of their outline share.
+fn linear_key(transform: &GpuDrawableTransform) -> [u32; 8] {
+    let mut key = [0; 8];
     let values = transform
         .linear
         .iter()
         .chain(&transform.inverse_linear)
-        .flatten()
-        .chain(&transform.offset)
-        .chain(&transform.inverse_offset);
+        .flatten();
     for (slot, value) in key.iter_mut().zip(values) {
         *slot = value.to_bits();
     }
     key
+}
+
+/// `transform` at full opacity, as builds of outlines are keyed by it.
+fn opaque(transform: GpuDrawableTransform) -> GpuDrawableTransform {
+    GpuDrawableTransform {
+        opacity: 1.0,
+        ..transform
+    }
 }
 
 impl Drawing {
@@ -513,8 +524,14 @@ impl Drawing {
         }
     }
 
-    /// Adds `drawable`, drawn under `transform` with the outline `path` placed.
-    fn push_path(&mut self, drawable: &Use, offset: f32, instance: &Instance, path: &PlacedPath) {
+    /// Adds `drawable`, measured under `measured` with the outline `path` placed.
+    fn push_path(
+        &mut self,
+        drawable: &Use,
+        (offset, measured): (f32, GpuDrawableTransform),
+        instance: &Instance,
+        path: &PlacedPath,
+    ) {
         let Some(need) = path_need(drawable, offset, instance.scales) else {
             return;
         };
@@ -522,8 +539,8 @@ impl Drawing {
         let Some((grid, grid_start)) = path.grids[usize::from(shadow)] else {
             return;
         };
-        let mut transform = instance.measured.transform;
-        transform.opacity = drawable.opacity * instance.measured.transform.opacity;
+        let mut transform = measured;
+        transform.opacity = drawable.opacity * measured.opacity;
         let mut shadow_paint = None;
         if let Some(cast) = drawable.shadow {
             transform = transform.translated(cast.offset);
@@ -552,6 +569,7 @@ impl Drawing {
         self.drawables.push(GpuVectorDrawable {
             transform,
             screen_bounds: transform.canvas_bounds(low, high),
+            tint: tint(drawable),
             paint_frame,
             paint_min: path.paint_box.0,
             paint_size: path.paint_box.1,
@@ -651,6 +669,7 @@ impl Drawing {
             transform,
             // Antialiasing reaches a canvas pixel beyond the box.
             screen_bounds: [min_x - 1.0, min_y - 1.0, max_x + 1.0, max_y + 1.0],
+            tint: tint(drawable),
             paint_frame: [[1.0, 0.0], [0.0, 1.0]],
             paint_min: position,
             paint_size: size,
@@ -670,6 +689,11 @@ impl Drawing {
             ..Zeroable::zeroed()
         });
     }
+}
+
+fn tint(drawable: &Use) -> [f32; 4] {
+    let [r, g, b] = drawable.tint;
+    [r, g, b, 1.0]
 }
 
 /// Builds the buffers for `record`, drawn on a canvas of `canvas` pixels, with the glyphs each
@@ -697,7 +721,8 @@ pub(super) fn build<'t>(
             visible.then_some(transform)
         })
         .collect();
-    let (instances, instance_of) = instances(record, &placed);
+    let grouped = instances(record, &placed);
+    let instances = grouped.instances;
 
     let mut parsed: HashMap<(NodeId, u32), (Vec<PathPoint>, usize)> = HashMap::default();
     let tolerance =
@@ -724,7 +749,13 @@ pub(super) fn build<'t>(
         let slot = (keeping.scene, keeping.render, node, *ordinal);
         *ordinal += 1;
         let text = matches!(geometry.source, Source::Text { .. }).then(|| &texts[&node]);
-        let key = path_key(record, instance, canvas, text.map_or(0, |text| text.id));
+        let key = path_key(
+            record,
+            instance,
+            &grouped.of,
+            canvas,
+            text.map_or(0, |text| text.id),
+        );
         let keep = keeps(node);
         let turn = instance.measured.turn;
         if keep
@@ -745,7 +776,13 @@ pub(super) fn build<'t>(
                 let points = take_points(&mut parsed, node, tolerance(instance), data)?;
                 let bounds = point_bounds(&points);
                 vec![build_path(
-                    record, instance, geometry, points, bounds, canvas,
+                    record,
+                    instance,
+                    &grouped.of,
+                    geometry,
+                    points,
+                    bounds,
+                    canvas,
                 )]
             }
             (Source::Text { .. }, Some(text)) => {
@@ -761,6 +798,7 @@ pub(super) fn build<'t>(
                         build_path(
                             record,
                             instance,
+                            &grouped.of,
                             geometry,
                             points.clone(),
                             paths.bounds,
@@ -791,9 +829,14 @@ pub(super) fn build<'t>(
         let geometry = &record.geometries[drawable.geometry];
         match geometry.source {
             Source::Path { .. } | Source::Text { .. } => {
-                let instance = instance_of[index];
+                let (instance, measured) = grouped.of[index];
                 for path in &placed_paths[instance] {
-                    drawing.push_path(drawable, geometry.offset, &instances[instance], path);
+                    drawing.push_path(
+                        drawable,
+                        (geometry.offset, measured),
+                        &instances[instance],
+                        path,
+                    );
                 }
             }
             Source::Shape {
@@ -819,17 +862,22 @@ pub(super) fn build<'t>(
     Ok(drawing)
 }
 
-type InstanceKey = (usize, [u32; 12], Option<(u64, u64)>);
+type InstanceKey = (usize, [u32; 8], Option<(u64, u64)>);
 
-/// Groups the drawn path drawables by outline and placement, and gives each drawable's group.
-fn instances(
-    record: &Record,
-    placed: &[Option<GpuDrawableTransform>],
-) -> (Vec<Instance>, Vec<usize>) {
+/// The drawn path drawables grouped by outline and linear part of their placements.
+struct Grouped {
+    instances: Vec<Instance>,
+    /// Each path drawable's group and the transform the shaders measure it with.
+    of: Vec<(usize, GpuDrawableTransform)>,
+}
+
+/// Groups the drawn path drawables by outline, linear part of their placement and, for dashed
+/// strokes, the dash their points are measured for.
+fn instances(record: &Record, placed: &[Option<GpuDrawableTransform>]) -> Grouped {
     let mut instances: Vec<Instance> = Vec::new();
-    let mut instance_of = vec![usize::MAX; record.uses.len()];
-    // By outline, placement and, for dashed strokes, the dash their points are measured for.
+    let mut of = vec![(usize::MAX, identity()); record.uses.len()];
     let mut found: HashMap<InstanceKey, usize> = HashMap::default();
+    let mut placements: HashSet<(usize, [u32; 4])> = HashSet::default();
     for (index, drawable) in record.uses.iter().enumerate() {
         let Some(transform) = placed[index] else {
             continue;
@@ -841,62 +889,68 @@ fn instances(
         {
             continue;
         }
-        let placement = placement_key(&transform);
+        let linear = linear_key(&transform);
         let dash = match drawable.style {
             Style::Stroke(stroke) if stroke.dash.count > 0 => Some(stroke.dash),
             _ => None,
         };
-        // Fills and solid strokes share the placement's first group; a dashed stroke needs the
-        // points measured for its own dash.
-        let first = found.get(&(drawable.geometry, placement, None)).copied();
+        // Fills and solid strokes share the first group of their linear part; a dashed stroke
+        // needs the points measured for its own dash.
+        let first = found.get(&(drawable.geometry, linear, None)).copied();
         let slot = match (dash, first) {
             (None, first) => first,
             (Some(dash), Some(first)) if instances[first].dash.is_none() => {
                 instances[first].dash = Some(dash);
-                found.insert(
-                    (drawable.geometry, placement, Some(dash.phase_key())),
-                    first,
-                );
+                found.insert((drawable.geometry, linear, Some(dash.phase_key())), first);
                 Some(first)
             }
             (Some(dash), _) => found
-                .get(&(drawable.geometry, placement, Some(dash.phase_key())))
+                .get(&(drawable.geometry, linear, Some(dash.phase_key())))
                 .copied(),
         };
+        let measured = measured(transform);
         let slot = slot.unwrap_or_else(|| {
             let slot = instances.len();
-            let measured = measured(transform);
             instances.push(Instance {
                 geometry: drawable.geometry,
                 measured,
+                transforms: Vec::new(),
                 scales: scales(&measured.transform),
                 dash,
                 uses: Vec::new(),
             });
             found
-                .entry((drawable.geometry, placement, None))
+                .entry((drawable.geometry, linear, None))
                 .or_insert(slot);
             if let Some(dash) = dash {
-                found.insert((drawable.geometry, placement, Some(dash.phase_key())), slot);
+                found.insert((drawable.geometry, linear, Some(dash.phase_key())), slot);
             }
             slot
         });
+        let ([x, y], [inverse_x, inverse_y]) = (transform.offset, transform.inverse_offset);
+        let offsets = [x, y, inverse_x, inverse_y].map(f32::to_bits);
+        if placements.insert((slot, offsets)) {
+            instances[slot].transforms.push(opaque(measured.transform));
+        }
         instances[slot].uses.push(index);
-        instance_of[index] = slot;
+        of[index] = (slot, measured.transform);
     }
-    (instances, instance_of)
+    Grouped { instances, of }
 }
 
-fn path_key(record: &Record, instance: &Instance, canvas: [f32; 2], text: u64) -> PathKey {
+fn path_key(
+    record: &Record,
+    instance: &Instance,
+    of: &[(usize, GpuDrawableTransform)],
+    canvas: [f32; 2],
+    text: u64,
+) -> PathKey {
     let geometry = &record.geometries[instance.geometry];
     let uses = instance.uses.iter().map(|&index| &record.uses[index]);
     PathKey {
         text,
-        transform: instance.measured.transform,
-        casts: uses
-            .clone()
-            .filter_map(|drawable| drawable.shadow.map(|cast| cast.offset))
-            .collect(),
+        transforms: instance.transforms.clone(),
+        casts: shadow_transforms(record, instance, of),
         needs: uses
             .filter_map(|drawable| path_need(drawable, geometry.offset, instance.scales))
             .collect(),
@@ -930,24 +984,43 @@ fn take_points(
     })
 }
 
+/// The transforms the shaders draw the shadows among `instance`'s drawables with, at full
+/// opacity.
+fn shadow_transforms(
+    record: &Record,
+    instance: &Instance,
+    of: &[(usize, GpuDrawableTransform)],
+) -> Vec<GpuDrawableTransform> {
+    instance
+        .uses
+        .iter()
+        .filter_map(|&index| {
+            let cast = record.uses[index].shadow?;
+            Some(opaque(of[index].1.translated(cast.offset)))
+        })
+        .collect()
+}
+
 /// Measures and bins the outline of `instance` for every drawable it draws, from its flattened
 /// `points`, with a paint in bounding-box units spanning `paint_bounds`, a box of untransformed
 /// points.
+#[allow(clippy::too_many_arguments)]
 fn build_path(
     record: &Record,
     instance: &Instance,
+    of: &[(usize, GpuDrawableTransform)],
     geometry: &Geometry,
     mut points: Vec<PathPoint>,
     paint_bounds: ([f32; 2], [f32; 2]),
     canvas: [f32; 2],
 ) -> BuiltPath {
-    let needs: Vec<(Option<[f32; 2]>, PathNeed)> = instance
+    let needs: Vec<(bool, PathNeed)> = instance
         .uses
         .iter()
         .filter_map(|&index| {
             let drawable = &record.uses[index];
             let need = path_need(drawable, geometry.offset, instance.scales)?;
-            Some((drawable.shadow.map(|cast| cast.offset), need))
+            Some((drawable.shadow.is_some(), need))
         })
         .collect();
     if needs.iter().any(|(_, need)| need.fill_span.is_some()) {
@@ -971,20 +1044,15 @@ fn build_path(
     }
     let bounds = point_bounds(&points);
 
-    let transform = instance.measured.transform;
-    let body = [transform];
-    let shadows: Vec<GpuDrawableTransform> = needs
-        .iter()
-        .filter_map(|(cast, _)| cast.map(|offset| transform.translated(offset)))
-        .collect();
+    let shadows = shadow_transforms(record, instance, of);
     let drawn = [
-        Drawn::Affine(&body, instance.scales),
+        Drawn::Affine(&instance.transforms, instance.scales),
         Drawn::Affine(&shadows, instance.scales),
     ];
     let mut grids = [false, true].map(|shadow| {
         let mut needs = needs
             .iter()
-            .filter(|(cast, _)| cast.is_some() == shadow)
+            .filter(|(cast, _)| *cast == shadow)
             .map(|(_, need)| need)
             .peekable();
         needs.peek()?;

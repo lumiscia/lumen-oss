@@ -5,8 +5,8 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
-export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_copies" | "int" | "matte_names" | "paint" | "palette" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "corner_pin" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "lathe_3d" | "lens_blur" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "pixel_sort" | "posterize" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_2d_copies" | "instance_copies" | "int" | "matte_names" | "paint" | "palette" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "corner_pin" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_2d" | "instance_3d" | "lathe_3d" | "lens_blur" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "pixel_sort" | "posterize" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1234,11 +1234,11 @@ export const expressionGlobals = [
     "name": "span_count"
   },
   {
-    "doc": "Index of the copy being placed, from 0. Only in an `instance_3d`'s `position`, `rotation`, `scale` and `tint` params.",
+    "doc": "Index of the copy being placed, from 0. Only in an `instance_2d`'s or `instance_3d`'s per-copy params.",
     "name": "instance"
   },
   {
-    "doc": "Number of copies. Only in an `instance_3d`'s `position`, `rotation`, `scale` and `tint` params.",
+    "doc": "Number of copies. Only in an `instance_2d`'s or `instance_3d`'s per-copy params.",
     "name": "instance_count"
   }
 ] as const;
@@ -1519,6 +1519,17 @@ export type GradientStop = {
 export type GradientUnits = "object_bounding_box" | "user_space" | "userSpaceOnUse";
 export type HalftoneShape = "round" | "line";
 export type ImagePlane3dSampling = RasterSampling;
+/** Copies an `instance_2d` places, each given literally. The list can't be an expression. */
+export type Instance2dCopies = readonly Instance2dCopy[];
+/** One copy of an `instance_2d`: where it sits, how it is scaled and turned, its opacity and its tint. Fields left out take the defaults of the `instance_2d` params of the same names. Every value is a literal. */
+export type Instance2dCopy = {
+  readonly anchor?: Vec2;
+  readonly opacity?: number;
+  readonly position?: Vec2;
+  readonly rotation?: number;
+  readonly scale?: Vec2;
+  readonly tint?: Color;
+};
 /** Copies an `instance_3d` places, each given literally. The list can't be an expression. */
 export type InstanceCopies = readonly InstanceCopy[];
 /** One copy of an `instance_3d`: where it sits, how it is scaled and turned, and its tint. Fields left out take the defaults of the `instance_3d` params of the same names. Every value is a literal. */
@@ -2414,6 +2425,73 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
      * aspect ratio of the source's full display size.
      */
     readonly width?: ExpressionValue<number>;
+  };
+}
+
+/**
+ * Draws its input drawing `count` times, each copy placed by `position`, `scale`, `rotation` and
+ * `anchor` evaluated for that copy, where `instance` is the copy's index from 0 and
+ * `instance_count` is `count`. Copies are drawn in index order, the first lowest, each placed
+ * over the drawing's own pixels as a `merge_2d` with those params would place it, strokes and
+ * shadows included. A grid of 10 columns 40 pixels apart:
+ * 
+ * ```json
+ * { "id": 1, "type": "shape_2d", "params": { "geometry_kind": "ellipse", "width": 24, "height": 24 } },
+ * { "id": 2, "type": "fill_2d", "params": { "paint": "#ee5b24" }, "in": { "geometry": 1 } },
+ * { "id": 3, "type": "instance_2d", "params": { "count": 50, "position": "=vec2((instance % 10) * 40, floor(instance / 10) * 40)" }, "in": { "drawing": 2 } },
+ * { "id": 4, "type": "render_2d", "in": { "drawing": 3 } }
+ * ```
+ * 
+ * A ring follows from `sin` and `cos` of `instance / instance_count`: `position =
+ * vec2(960 + 300 * cos(6.283 * instance / instance_count), 540 + 300 * sin(6.283 * instance /
+ * instance_count))` with `rotation = 360 * instance / instance_count` turns each copy to face
+ * along the ring. `opacity` fades copies and `tint` colours them: `tint = rgb(255 * instance /
+ * instance_count, 128, 255)` shifts the colour along the copies.
+ * 
+ * Copies placed by hand are listed in `copies` instead, as literals: `copies = [{ "position":
+ * [0, 0] }, { "position": [80, 0], "rotation": 45, "tint": "#ff8040" }]` places two. `count`,
+ * `position`, `scale`, `rotation`, `anchor`, `opacity` and `tint` must not be set beside a
+ * `copies` list that has copies, or `check` fails.
+ * 
+ * The input drawing is walked once, and its outlines are flattened and measured once for every
+ * copy that turns and scales them alike, so copies that only move cost a drawable each. A copy's
+ * scale scales the softness and spread of the shadows inside it. An `instance_2d` may hold
+ * another, which multiplies their counts, up to 8 deep. A drawing holds at most 16384
+ * drawables in all, counting each copy's, and a count that would exceed this fails the render.
+ * The node is static when its params don't read the frame and its drawing is static.
+ */
+export interface Instance2dNode extends CompositionNodeBase<"instance_2d"> {
+  readonly params?: {
+    /** Pivot for each copy's scale and rotation, in pixels relative to its `position`. Evaluated for every copy, and can read `instance` and `instance_count`. */
+    readonly anchor?: ExpressionValue<Vec2>;
+    /**
+     * Copies to place, each given literally as `{ position, scale, rotation, anchor, opacity,
+     * tint }` with any field left out taking the default of the param of that name. The list
+     * can't hold expressions and holds at most 100000 copies. An empty list places none of its
+     * own. When it has copies, `count`, `position`, `scale`, `rotation`, `anchor`, `opacity` and
+     * `tint` must not be set, and `check` fails if they are.
+     */
+    readonly copies?: Instance2dCopies;
+    /** Copies to place, from 0 to 100000. 0 draws nothing. Not set together with `copies`. */
+    readonly count?: ExpressionValue<number>;
+    /**
+     * Opacity multiplier of each copy. Evaluated for every copy, and can read `instance` and
+     * `instance_count`. Opacities of nested `instance_2d` nodes multiply.
+     */
+    readonly opacity?: ExpressionValue<number>;
+    /** Origin in pixels of each copy, in the drawing's own pixels. Evaluated for every copy, and can read `instance` and `instance_count`. */
+    readonly position?: ExpressionValue<Vec2>;
+    /** Clockwise rotation in degrees of each copy, about its anchor. Evaluated for every copy, and can read `instance` and `instance_count`. */
+    readonly rotation?: ExpressionValue<number>;
+    /** Scale multiplier per axis of each copy, about its anchor. Evaluated for every copy, and can read `instance` and `instance_count`. */
+    readonly scale?: ExpressionValue<Vec2>;
+    /**
+     * Colour that multiplies the paint of every fill and stroke in each copy, gradients
+     * included. White leaves a copy as it is. Evaluated for every copy, and can read `instance`
+     * and `instance_count`. Its alpha is ignored, and shadows keep their own colour. Tints of
+     * nested `instance_2d` nodes multiply.
+     */
+    readonly tint?: ExpressionValue<Color>;
   };
 }
 
@@ -4174,6 +4252,7 @@ export interface CompositionNodeByKind {
   readonly "halftone": HalftoneNode;
   readonly "hue_saturation": HueSaturationNode;
   readonly "image_plane_3d": ImagePlane3dNode;
+  readonly "instance_2d": Instance2dNode;
   readonly "instance_3d": Instance3dNode;
   readonly "lathe_3d": Lathe3dNode;
   readonly "lens_blur": LensBlurNode;
@@ -4286,6 +4365,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "image_plane_3d": Omit<ImagePlane3dNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "instance_2d": Omit<Instance2dNode, "id"> & {
     readonly id?: number;
   };
   readonly "instance_3d": Omit<Instance3dNode, "id"> & {
@@ -4440,6 +4522,7 @@ export interface NodeInputPortNameByKind {
   readonly "halftone": "source";
   readonly "hue_saturation": "source";
   readonly "image_plane_3d": "material" | "source";
+  readonly "instance_2d": "drawing";
   readonly "instance_3d": "scene";
   readonly "lathe_3d": "geometry" | "material";
   readonly "lens_blur": "depth" | "mask" | "source";
@@ -4508,6 +4591,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "halftone": never;
   readonly "hue_saturation": never;
   readonly "image_plane_3d": never;
+  readonly "instance_2d": never;
   readonly "instance_3d": never;
   readonly "lathe_3d": never;
   readonly "lens_blur": never;
@@ -4576,6 +4660,7 @@ export interface NodeOutputKindByKind {
   readonly "halftone": "raster";
   readonly "hue_saturation": "raster";
   readonly "image_plane_3d": "scene";
+  readonly "instance_2d": "drawing";
   readonly "instance_3d": "scene";
   readonly "lathe_3d": "scene";
   readonly "lens_blur": "raster";
@@ -4644,6 +4729,7 @@ export interface NodeInputPortKindByKind {
   readonly "halftone": { readonly "source": "raster" };
   readonly "hue_saturation": { readonly "source": "raster" };
   readonly "image_plane_3d": { readonly "source": "raster"; readonly "material": "material" };
+  readonly "instance_2d": { readonly "drawing": "drawing" };
   readonly "instance_3d": { readonly "scene": "scene" };
   readonly "lathe_3d": { readonly "geometry": "geometry"; readonly "material": "material" };
   readonly "lens_blur": { readonly "source": "raster"; readonly "depth": "raster"; readonly "mask": "raster" };
@@ -4712,6 +4798,7 @@ export interface NodeOutputPortKindByKind {
   readonly "halftone": { readonly "output": "raster" };
   readonly "hue_saturation": { readonly "output": "raster" };
   readonly "image_plane_3d": { readonly "output": "scene" };
+  readonly "instance_2d": { readonly "output": "drawing" };
   readonly "instance_3d": { readonly "output": "scene" };
   readonly "lathe_3d": { readonly "output": "scene" };
   readonly "lens_blur": { readonly "output": "raster" };
@@ -5002,6 +5089,39 @@ export const nodeInputPorts = {
    * `supersample` averages it, unless `sampling` is `nearest`.
    */
   "image_plane_3d": { "source": { kind: "raster", variadic: false }, "material": { kind: "material", variadic: false } },
+  /**
+   * Draws its input drawing `count` times, each copy placed by `position`, `scale`, `rotation` and
+   * `anchor` evaluated for that copy, where `instance` is the copy's index from 0 and
+   * `instance_count` is `count`. Copies are drawn in index order, the first lowest, each placed
+   * over the drawing's own pixels as a `merge_2d` with those params would place it, strokes and
+   * shadows included. A grid of 10 columns 40 pixels apart:
+   * 
+   * ```json
+   * { "id": 1, "type": "shape_2d", "params": { "geometry_kind": "ellipse", "width": 24, "height": 24 } },
+   * { "id": 2, "type": "fill_2d", "params": { "paint": "#ee5b24" }, "in": { "geometry": 1 } },
+   * { "id": 3, "type": "instance_2d", "params": { "count": 50, "position": "=vec2((instance % 10) * 40, floor(instance / 10) * 40)" }, "in": { "drawing": 2 } },
+   * { "id": 4, "type": "render_2d", "in": { "drawing": 3 } }
+   * ```
+   * 
+   * A ring follows from `sin` and `cos` of `instance / instance_count`: `position =
+   * vec2(960 + 300 * cos(6.283 * instance / instance_count), 540 + 300 * sin(6.283 * instance /
+   * instance_count))` with `rotation = 360 * instance / instance_count` turns each copy to face
+   * along the ring. `opacity` fades copies and `tint` colours them: `tint = rgb(255 * instance /
+   * instance_count, 128, 255)` shifts the colour along the copies.
+   * 
+   * Copies placed by hand are listed in `copies` instead, as literals: `copies = [{ "position":
+   * [0, 0] }, { "position": [80, 0], "rotation": 45, "tint": "#ff8040" }]` places two. `count`,
+   * `position`, `scale`, `rotation`, `anchor`, `opacity` and `tint` must not be set beside a
+   * `copies` list that has copies, or `check` fails.
+   * 
+   * The input drawing is walked once, and its outlines are flattened and measured once for every
+   * copy that turns and scales them alike, so copies that only move cost a drawable each. A copy's
+   * scale scales the softness and spread of the shadows inside it. An `instance_2d` may hold
+   * another, which multiplies their counts, up to 8 deep. A drawing holds at most 16384
+   * drawables in all, counting each copy's, and a count that would exceed this fails the render.
+   * The node is static when its params don't read the frame and its drawing is static.
+   */
+  "instance_2d": { "drawing": { kind: "drawing", variadic: false } },
   /**
    * Draws its input scene `count` times, each copy placed by `position`, `rotation` and `scale`
    * evaluated for that copy, where `instance` is the copy's index from 0 and `instance_count` is
@@ -5500,6 +5620,7 @@ export const nodeMediaSources = {
   "halftone": {},
   "hue_saturation": {},
   "image_plane_3d": {},
+  "instance_2d": {},
   "instance_3d": {},
   "lathe_3d": {},
   "lens_blur": {},

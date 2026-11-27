@@ -247,6 +247,7 @@ node_kinds! {
     Stroke2d(vector::drawing::Stroke2d),
     Shadow2d(vector::drawing::Shadow2d),
     Merge2d(vector::drawing::Merge2d),
+    Instance2d(vector::drawing::Instance2d),
     Render2d(vector::drawing::Render2d),
     Boolean(compositing::boolean::Boolean),
     Merge(compositing::merge::Merge),

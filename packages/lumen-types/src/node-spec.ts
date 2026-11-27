@@ -4,6 +4,8 @@ import type {
   DashPattern,
   FontFeatures,
   GradientPaint,
+  Instance2dCopies,
+  InstanceCopies,
   NodeCategory,
   NodeKind,
   NodeParamKind,
@@ -84,6 +86,8 @@ export type NodeLiteralValue =
   | DashPattern
   | Palette
   | Repeat
+  | InstanceCopies
+  | Instance2dCopies
   | readonly [number, number]
   | readonly [number, number, number]
   | readonly [number, number, number, number]

@@ -7,6 +7,8 @@
 struct VectorDrawable {
     transform: DrawableTransform,
     screen_bounds: vec4<f32>,
+    // Linear colour multiplying a fill's or stroke's paint; its alpha is 1.
+    tint: vec4<f32>,
     // Maps the untransformed points measured here to those the paint is laid out in.
     paint_frame: mat2x2<f32>,
     // The box a paint in bounding-box units spans.
@@ -107,7 +109,7 @@ fn sample_drawable_paint(local: vec2<f32>) -> vec4<f32> {
 fn drawable_color(local: vec2<f32>) -> vec4<f32> {
     let source = sample_drawable_paint(local);
     if ((params.flags & STYLE_SHADOW) == 0u) {
-        return source;
+        return source * params.tint;
     }
     return sample_paint(paints[params.shadow_paint], local, vec2<f32>(0.0)) * source.a;
 }

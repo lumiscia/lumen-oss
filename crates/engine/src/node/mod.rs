@@ -7,6 +7,7 @@ mod clip_props;
 mod deferred;
 mod delegate;
 mod ids;
+mod instance_count;
 mod kind;
 mod media_source;
 pub(crate) mod motion;
@@ -33,6 +34,7 @@ pub use delegate::{
     PropertyRead,
 };
 pub use ids::NodeId;
+pub use instance_count::{InstanceCount, MAX_INSTANCES};
 pub use kind::NodeKind;
 pub use media_source::{MediaParam, MediaSource, MediaValue};
 pub use param_type::NodeParamType;

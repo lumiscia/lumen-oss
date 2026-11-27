@@ -47,15 +47,11 @@ pub(super) fn usable(value: ExpressionValue) -> crate::Result<ExpressionValue> {
     }
 }
 
-/// Expressions evaluated for each copy of an `instance_3d` as one plan, so a step they share is
+/// Expressions evaluated for each copy of an `instance_2d` or `instance_3d` as one plan, so a step they share is
 /// evaluated once per copy, and a step that reads neither `instance` nor `instance_count` is
 /// evaluated once for all copies, by the first copy that reaches it. Every evaluation must be in
 /// the same context but for its instance scope. A step that is not pure, or reads one that is
 /// not, is evaluated for each expression as it would be alone.
-#[cfg_attr(
-    not(feature = "3d"),
-    allow(dead_code, reason = "only instance_3d evaluates copies")
-)]
 pub(crate) struct InstanceEvaluator {
     plan: EvalPlan,
     depths: Vec<usize>,
@@ -64,10 +60,6 @@ pub(crate) struct InstanceEvaluator {
     copy: Option<InstanceScope>,
 }
 
-#[cfg_attr(
-    not(feature = "3d"),
-    allow(dead_code, reason = "only instance_3d evaluates copies")
-)]
 impl InstanceEvaluator {
     pub(crate) fn new<'e>(expressions: impl IntoIterator<Item = &'e Expression>) -> Self {
         let expressions: Vec<&Expression> = expressions.into_iter().collect();
@@ -796,8 +788,8 @@ pub(super) fn global_value(
             .map(f64::from)
             .ok_or_else(|| {
                 LumenError::evaluate(format!(
-                    "`{}` is only available in an instance_3d's position, rotation, scale \
-                     and tint params",
+                    "`{}` is only available in the per-copy params of an instance_2d or \
+                     instance_3d",
                     global.name()
                 ))
             })
