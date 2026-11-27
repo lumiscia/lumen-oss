@@ -13,14 +13,13 @@ use lumen_3d::{
 use lumen_gpu::TexRef;
 
 use super::{
-    Collected, Extent, GpuMesh, MAX_SCENE_JOINTS, MAX_SCENE_WEIGHTS, Origin, PosedSkin, placement,
-    solid_linear,
+    Collected, Extent, GpuMesh, MAX_SCENE_JOINTS, MAX_SCENE_WEIGHTS, Origin, PosedSkin,
+    linear_color, placement,
 };
 use crate::error::{ExpressionError, LumenError, RenderError};
 use crate::expr::{ExpressionContext, InstanceEvaluator, InstanceScope};
 use crate::gpu::frame_graph::FrameCx;
 use crate::node::scene::{Instance3d, InstanceCopies, MAX_INSTANCES, Placement3d, Pose3d};
-use crate::node::vector::paint::{Paint, PaintDelegate};
 use crate::node::{Deferred, DelegateEvalContext, Node, NodeId, ParamValue, required_input};
 
 const _: () = assert!(MAX_INSTANCES as usize <= MAX_SCENE_NODES);
@@ -229,14 +228,11 @@ fn draws_from_list(object: &Object<GpuMesh, TexRef>) -> bool {
 }
 
 /// How an `instance_3d` tints its copies.
-enum TintSource<'n> {
-    /// Every copy has this tint, evaluated once.
+enum TintSource {
+    /// Every copy has this tint.
     Fixed(Tint),
     /// The tint is the colour expression after the placement's, evaluated for each copy.
     Colour,
-    /// The tint's red, green and blue, those that are expressions evaluated for each copy after
-    /// the placement's.
-    Channels([&'n Deferred<u8>; 3]),
 }
 
 /// Evaluates the matrix placing each of an `instance_3d`'s copies in its scene's space, from its
@@ -245,7 +241,7 @@ struct Placer<'n> {
     node_id: NodeId,
     /// Each placement param, with where a failure of it is located.
     params: [(&'static str, &'n Deferred<[f64; 3]>); 3],
-    tint: TintSource<'n>,
+    tint: TintSource,
     /// The params that are expressions, in their order, the tint's last.
     expressions: InstanceEvaluator,
 }
@@ -258,35 +254,9 @@ impl<'n> Placer<'n> {
             ("placement.rotation", &given.pose.rotation),
             ("placement.scale", &given.scale),
         ];
-        let (tint, tint_expressions) = match &node.params.tint {
-            PaintDelegate::SolidColor(r, g, b, _) => match [r, g, b] {
-                [Deferred::Value(r), Deferred::Value(g), Deferred::Value(b)] => (
-                    TintSource::Fixed(linear_tint(node.id, &Paint::SolidColor(*r, *g, *b, 255))?),
-                    Vec::new(),
-                ),
-                channels => (
-                    TintSource::Channels(channels),
-                    channels
-                        .iter()
-                        .filter_map(|channel| match channel {
-                            Deferred::Expr(expression) => Some(expression),
-                            Deferred::Value(_) => None,
-                        })
-                        .collect(),
-                ),
-            },
-            PaintDelegate::Expr(Deferred::Value(paint)) => {
-                (TintSource::Fixed(linear_tint(node.id, paint)?), Vec::new())
-            }
-            PaintDelegate::Expr(Deferred::Expr(expression)) => {
-                (TintSource::Colour, vec![expression])
-            }
-            PaintDelegate::Gradient(_) => {
-                return Err(instance_error(
-                    node.id,
-                    "`tint` must be a solid colour; a gradient can't tint a surface".into(),
-                ));
-            }
+        let (tint, tint_expression) = match &node.params.tint {
+            Deferred::Value(color) => (TintSource::Fixed(linear_tint(*color)), None),
+            Deferred::Expr(expression) => (TintSource::Colour, Some(expression)),
         };
         let expressions = InstanceEvaluator::new(
             params
@@ -295,7 +265,7 @@ impl<'n> Placer<'n> {
                     Deferred::Expr(expression) => Some(expression),
                     Deferred::Value(_) => None,
                 })
-                .chain(tint_expressions),
+                .chain(tint_expression),
         );
         Ok(Self {
             node_id: node.id,
@@ -323,36 +293,12 @@ impl<'n> Placer<'n> {
         }
         let tint = match &self.tint {
             TintSource::Fixed(tint) => *tint,
-            TintSource::Colour => {
-                let paint = self
-                    .expressions
+            TintSource::Colour => linear_tint(
+                self.expressions
                     .evaluate(expression, scoped)
-                    .and_then(Paint::from_expression)
-                    .map_err(|error| at_instance(error.located(self.node_id, "tint"), index))?;
-                linear_tint(self.node_id, &paint)?
-            }
-            TintSource::Channels(channels) => {
-                let mut rgb = [0; 3];
-                for (channel, (value, path)) in rgb
-                    .iter_mut()
-                    .zip(channels.iter().zip(["tint.0", "tint.1", "tint.2"]))
-                {
-                    *channel = match value {
-                        Deferred::Value(value) => *value,
-                        Deferred::Expr(_) => {
-                            expression += 1;
-                            self.expressions
-                                .evaluate(expression - 1, scoped)
-                                .and_then(u8::from_expression)
-                                .map_err(|error| {
-                                    at_instance(error.located(self.node_id, path), index)
-                                })?
-                        }
-                    };
-                }
-                let [r, g, b] = rgb;
-                linear_tint(self.node_id, &Paint::SolidColor(r, g, b, 255))?
-            }
+                    .and_then(<[u8; 4]>::from_expression)
+                    .map_err(|error| at_instance(error.located(self.node_id, "tint"), index))?,
+            ),
         };
         let [position, rotation, scale] = values;
         let matrix = placement(&Placement3d {
@@ -364,10 +310,10 @@ impl<'n> Placer<'n> {
     }
 }
 
-/// `paint` as the linear colour that multiplies a copy, leaving out its alpha.
-fn linear_tint(node_id: NodeId, paint: &Paint) -> crate::Result<Tint> {
-    let [r, g, b, _] = solid_linear::<Instance3d>(node_id, paint)?;
-    Ok([r, g, b])
+/// `color` as the linear colour that multiplies a copy, leaving out its alpha.
+fn linear_tint(color: [u8; 4]) -> Tint {
+    let [r, g, b, _] = linear_color(color);
+    [r, g, b]
 }
 
 impl Collected {
@@ -717,7 +663,7 @@ fn placements(
                 })
                 .matrix(),
             );
-            tints.push(linear_tint(node.id, &Paint::SolidColor(r, g, b, 255))?);
+            tints.push(linear_tint([r, g, b, 255]));
         }
     } else {
         let mut placer = Placer::new(node)?;

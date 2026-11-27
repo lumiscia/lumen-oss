@@ -1590,48 +1590,129 @@ fn a_raster_wired_into_a_solid_s_geometry_points_at_the_2d_geometry_nodes() {
     );
 }
 
-#[cfg(feature = "3d")]
+/// Each param that takes a plain colour, as its node kind, the param `evaluate_param` reads, the
+/// params setting the colour to `color`, and where the colour sits in what it reads.
+fn plain_color_params(color: &Value) -> Vec<(&'static str, &'static str, Value, &'static str)> {
+    use serde_json::json;
+    #[allow(unused_mut)]
+    let mut params = vec![
+        ("shadow", "color", json!({ "color": color }), ""),
+        ("halftone", "ink", json!({ "ink": color }), ""),
+        ("halftone", "paper", json!({ "paper": color }), ""),
+        ("ordered_dither", "ink", json!({ "ink": color }), ""),
+        ("ordered_dither", "paper", json!({ "paper": color }), ""),
+        ("chroma_key", "key_color", json!({ "key_color": color }), ""),
+        ("glow", "tint", json!({ "tint": color }), ""),
+        (
+            "shadow_2d",
+            "shadows",
+            json!({ "shadows": [{ "color": color }] }),
+            "/0/color",
+        ),
+    ];
+    #[cfg(feature = "3d")]
+    params.extend([
+        ("material_3d", "color", json!({ "color": color }), ""),
+        ("light_3d", "color", json!({ "color": color }), ""),
+        ("render_3d", "fog_color", json!({ "fog_color": color }), ""),
+        ("instance_3d", "tint", json!({ "tint": color }), ""),
+    ]);
+    params
+}
+
 #[test]
-fn a_gradient_where_3d_needs_a_solid_color_is_reported_at_its_param() {
+fn a_param_that_takes_a_plain_color_reads_every_solid_form() {
+    let forms = [
+        (serde_json::json!("#10203040"), [16, 32, 48, 64]),
+        (serde_json::json!([1, 2, 3]), [1, 2, 3, 255]),
+        (serde_json::json!([1, 2, 3, 4]), [1, 2, 3, 4]),
+        (serde_json::json!("=rgba(5, 6, 7, 128)"), [5, 6, 7, 128]),
+        (
+            serde_json::json!("=lerp(rgb(0, 0, 0), rgb(200, 100, 50), 0.5)"),
+            [100, 50, 25, 255],
+        ),
+        (
+            serde_json::json!("=tween(#000000, #ff0000, 0, 30, 'linear')"),
+            [128, 0, 0, 255],
+        ),
+    ];
+    let expr = crate::expr::ExpressionContext {
+        frame: 15.0,
+        ..Default::default()
+    };
+    for (form, expected) in forms {
+        for (kind, param, params, pointer) in plain_color_params(&form) {
+            let node = NodeKind::from_json(kind, NodeId::new(1), params.as_object())
+                .unwrap_or_else(|errors| panic!("{kind} `{param}` = {form}: {errors:?}"));
+            let evaluated = crate::node::PropertyEval::evaluate_property(&node, param, &expr)
+                .unwrap()
+                .unwrap_or_else(|error| panic!("{kind} `{param}` = {form}: {error}"));
+            assert_eq!(
+                evaluated.pointer(pointer),
+                Some(&serde_json::json!(expected)),
+                "{kind} `{param}` = {form}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_gradient_where_a_param_takes_a_plain_color_fails_check_at_that_param() {
     let gradient = serde_json::json!({
         "type": "linear",
         "stops": [{ "offset": 0, "color": "#000000" }, { "offset": 1, "color": "#ffffff" }]
     });
-    let diagnostics = check_value(
-        &scene_document(
-            serde_json::json!([
-                { "id": 4, "type": "material_3d", "params": { "color": gradient } },
-                { "id": 5, "type": "light_3d", "params": { "color": gradient } },
-                { "id": 6, "type": "render_3d", "params": { "fog_color": gradient } },
-                { "id": 7, "type": "material_3d", "params": { "color": gradient } },
-                { "id": 8, "type": "material_3d", "params": { "color": "=rgb(1, 2, 3)" } },
-                { "id": 9, "type": "light_3d", "params": { "color": "#ff0000" } }
-            ]),
-            serde_json::json!([]),
-        ),
-        None,
-        None,
-    );
-    let invalid: Vec<_> = diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.code == "node.invalid_param")
+    #[allow(unused_mut)]
+    let mut nodes: Vec<Value> = plain_color_params(&gradient)
+        .into_iter()
+        .map(|(kind, _, params, _)| serde_json::json!({ "type": kind, "params": params }))
         .collect();
-    assert_eq!(
-        invalid
-            .iter()
-            .map(|diagnostic| (diagnostic.path.as_str(), diagnostic.node.map(|node| node.0)))
-            .collect::<Vec<_>>(),
-        [
-            ("/nodes/3/params/color", Some(4)),
-            ("/nodes/4/params/color", Some(5)),
-            ("/nodes/5/params/fog_color", Some(6)),
-            ("/nodes/6/params/color", Some(7)),
-        ]
-    );
-    assert_eq!(
-        invalid[0].message,
-        "node 4: `color` expected a solid color, got a gradient: a gradient can't light a surface"
-    );
+    #[cfg(feature = "3d")]
+    nodes.push(serde_json::json!({
+        "type": "instance_3d",
+        "params": { "copies": [{ "tint": gradient }] }
+    }));
+    for (index, node) in nodes.iter_mut().enumerate() {
+        node["id"] = serde_json::json!(index + 1);
+    }
+    let document = serde_json::json!({
+        "timeline": { "fps": 30, "duration_frames": 1 },
+        "render_settings": { "width": 16, "height": 16 },
+        "nodes": nodes,
+        "connections": []
+    });
+    let invalid: Vec<_> = check_value(&document, None, None)
+        .into_iter()
+        .filter(|diagnostic| diagnostic.code == "node.invalid_param")
+        .map(|diagnostic| (diagnostic.path, diagnostic.message))
+        .collect();
+    let mut expected: Vec<_> = plain_color_params(&gradient)
+        .into_iter()
+        .enumerate()
+        .map(|(index, (_, param, _, pointer))| {
+            let field = if pointer.is_empty() {
+                format!("`{param}`")
+            } else {
+                "`shadows[0].color`".to_string()
+            };
+            (
+                format!("/nodes/{index}/params/{param}"),
+                format!(
+                    "node {}: {field} expected color: color must be an array or a #RRGGBB string, got {gradient}",
+                    index + 1
+                ),
+            )
+        })
+        .collect();
+    #[cfg(feature = "3d")]
+    expected.push((
+        format!("/nodes/{}/params/copies", nodes.len() - 1),
+        format!(
+            "node {}: `copies[0].tint`: color must be an array or a #RRGGBB string, got {gradient}",
+            nodes.len()
+        ),
+    ));
+    assert_eq!(invalid, expected);
 }
 
 #[test]

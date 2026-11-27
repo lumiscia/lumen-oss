@@ -118,19 +118,19 @@
         "color": {
           "anyOf": [
             {
-              "$ref": "#/$defs/paint"
+              "$ref": "#/$defs/color"
             },
             {
               "$ref": "#/$defs/expression"
             }
           ],
           "default": [0, 0, 0, 255],
-          "description": "Shadow color. Must be a solid color.",
+          "description": "Shadow color.",
           "title": "Color",
           "x-lumen-constraints": {
             "role": "color"
           },
-          "x-lumen-kind": "paint"
+          "x-lumen-kind": "color"
         },
         "offset": {
           "anyOf": [
@@ -2549,19 +2549,19 @@
                   "key_color": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/paint"
+                        "$ref": "#/$defs/color"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
                     "default": [0, 255, 0, 255],
-                    "description": "The screen color. Must be a solid color; a gradient is an error.",
+                    "description": "The screen color.",
                     "title": "Key Color",
                     "x-lumen-constraints": {
                       "role": "color"
                     },
-                    "x-lumen-kind": "paint"
+                    "x-lumen-kind": "color"
                   },
                   "matte_only": {
                     "anyOf": [
@@ -4644,19 +4644,19 @@
                   "tint": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/paint"
+                        "$ref": "#/$defs/color"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Glow colour when `tint_enabled` is set, at the brightness of the light that casts it. Must\nbe a solid color; a gradient is an error.",
+                    "description": "Glow colour when `tint_enabled` is set, at the brightness of the light that casts it.",
                     "title": "Tint",
                     "x-lumen-constraints": {
                       "role": "color"
                     },
-                    "x-lumen-kind": "paint"
+                    "x-lumen-kind": "color"
                   },
                   "tint_enabled": {
                     "anyOf": [
@@ -4729,36 +4729,36 @@
                   "ink": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/paint"
+                        "$ref": "#/$defs/color"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
                     "default": [0, 0, 0, 255],
-                    "description": "Color where the source is dark. Must be a solid color; a gradient is an error.",
+                    "description": "Color where the source is dark.",
                     "title": "Ink",
                     "x-lumen-constraints": {
                       "role": "color"
                     },
-                    "x-lumen-kind": "paint"
+                    "x-lumen-kind": "color"
                   },
                   "paper": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/paint"
+                        "$ref": "#/$defs/color"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Color where the source is light. Must be a solid color; a gradient is an error.",
+                    "description": "Color where the source is light.",
                     "title": "Paper",
                     "x-lumen-constraints": {
                       "role": "color"
                     },
-                    "x-lumen-kind": "paint"
+                    "x-lumen-kind": "color"
                   },
                   "pitch": {
                     "anyOf": [
@@ -5207,7 +5207,7 @@
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Colour that multiplies the base colour of every object in each copy, texture and base\ncolour map included, and the light they give off, so a glowing copy glows in its tint.\nWhite leaves a copy as it is. Evaluated for every copy, and can read `instance` and\n`instance_count`. Its alpha is ignored: a copy is opaque or blended exactly as its\nmaterial makes it. Tints of nested `instance_3d` nodes multiply. Must be a solid color; a\ngradient fails `check`.",
+                    "description": "Colour that multiplies the base colour of every object in each copy, texture and base\ncolour map included, and the light they give off, so a glowing copy glows in its tint.\nWhite leaves a copy as it is. Evaluated for every copy, and can read `instance` and\n`instance_count`. Its alpha is ignored: a copy is opaque or blended exactly as its\nmaterial makes it. Tints of nested `instance_3d` nodes multiply.",
                     "title": "Tint",
                     "x-lumen-constraints": {
                       "role": "color"
@@ -5952,7 +5952,7 @@
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Light colour. Must be a solid color; a gradient fails `check`.",
+                    "description": "Light colour.",
                     "title": "Color",
                     "x-lumen-constraints": {
                       "role": "color"
@@ -6228,7 +6228,7 @@
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Base colour, which multiplies the `texture` on a shape and the raster on an image plane.\nMust be a solid color; a gradient fails `check`.",
+                    "description": "Base colour, which multiplies the `texture` on a shape and the raster on an image plane.",
                     "title": "Color",
                     "x-lumen-constraints": {
                       "role": "color"
@@ -7629,19 +7629,19 @@
                   "ink": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/paint"
+                        "$ref": "#/$defs/color"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
                     "default": [0, 0, 0, 255],
-                    "description": "Color of the darkest level. Must be a solid color; a gradient is an error. Only\n`ink_paper` uses it.",
+                    "description": "Color of the darkest level. Only `ink_paper` uses it.",
                     "title": "Ink",
                     "x-lumen-constraints": {
                       "role": "color"
                     },
-                    "x-lumen-kind": "paint"
+                    "x-lumen-kind": "color"
                   },
                   "levels": {
                     "anyOf": [
@@ -7725,19 +7725,19 @@
                   "paper": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/paint"
+                        "$ref": "#/$defs/color"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Color of the lightest level. Must be a solid color; a gradient is an error. Only\n`ink_paper` uses it.",
+                    "description": "Color of the lightest level. Only `ink_paper` uses it.",
                     "title": "Paper",
                     "x-lumen-constraints": {
                       "role": "color"
                     },
-                    "x-lumen-kind": "paint"
+                    "x-lumen-kind": "color"
                   },
                   "pitch": {
                     "anyOf": [
@@ -9286,7 +9286,7 @@
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Colour surfaces fade to with distance. Must be a solid color; a gradient fails `check`.",
+                    "description": "Colour surfaces fade to with distance.",
                     "title": "Fog Color",
                     "x-lumen-constraints": {
                       "role": "color"
@@ -9636,19 +9636,19 @@
                   "color": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/paint"
+                        "$ref": "#/$defs/color"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
                     "default": [0, 0, 0, 255],
-                    "description": "Shadow color. Must be a solid color; a gradient is an error.",
+                    "description": "Shadow color.",
                     "title": "Color",
                     "x-lumen-constraints": {
                       "role": "color"
                     },
-                    "x-lumen-kind": "paint"
+                    "x-lumen-kind": "color"
                   },
                   "offset_x": {
                     "anyOf": [

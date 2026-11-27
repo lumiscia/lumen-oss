@@ -1,10 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::error::PropertyError;
 use crate::gpu::frame_graph::ComputeProgram;
-use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef, vector::paint::Paint,
-};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -15,9 +12,9 @@ const CHROMA_KEY: ComputeProgram = ComputeProgram::spatial("chroma-key", SHADER)
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ChromaKeyParams {
-    /// The screen color. Must be a solid color; a gradient is an error.
+    /// The screen color.
     #[meta(role = "color")]
-    pub key_color: Paint,
+    pub key_color: [u8; 4],
     /// How far a color may be from the key color in chromaticity, 0 for the same hue to 1.4 for
     /// the furthest, and still be fully removed.
     #[meta(min = 0, step = 0.005)]
@@ -38,7 +35,7 @@ pub struct ChromaKeyParams {
 impl Default for ChromaKeyParams {
     fn default() -> Self {
         Self {
-            key_color: Paint::solid([0, 255, 0, 255]),
+            key_color: [0, 255, 0, 255],
             tolerance: 0.08,
             softness: 0.08,
             spill: 0.5,
@@ -109,14 +106,7 @@ impl crate::gpu::frame_graph::RecordNode for ChromaKey {
             pixel_scale: cx.pixel_scale(),
         })?;
         // The key's alpha doesn't take part.
-        let Paint::SolidColor(r, g, b, _) = params.key_color else {
-            return Err(PropertyError::InvalidType {
-                at: crate::error::At::param(self.id, "key_color"),
-                expected: "a solid color",
-                actual: "a gradient",
-            }
-            .into());
-        };
+        let [r, g, b, _] = params.key_color;
         let key = [r, g, b].map(|c| crate::gpu::color::srgb_to_linear(f32::from(c) / 255.0));
         let sum = key.iter().sum::<f32>().max(f32::EPSILON);
         let uniforms = ChromaKeyUniforms {

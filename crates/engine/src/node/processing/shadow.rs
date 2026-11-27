@@ -1,9 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::error::PropertyError;
-use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef, vector::paint::Paint,
-};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
 
@@ -27,9 +24,9 @@ pub struct ShadowParams {
     /// Shadow blur radius in pixels. Fractional radii blend smoothly. Radii above about 588 look the same.
     #[meta(name = "Blur radius", min = 0, step = 0.5)]
     pub radius: f64,
-    /// Shadow color. Must be a solid color; a gradient is an error.
+    /// Shadow color.
     #[meta(role = "color")]
-    pub color: Paint,
+    pub color: [u8; 4],
     /// Shadow opacity.
     #[meta(min = 0, max = 1, step = 0.05)]
     pub opacity: f64,
@@ -41,7 +38,7 @@ impl Default for ShadowParams {
             offset_x: 8.0,
             offset_y: 8.0,
             radius: 8.0,
-            color: Paint::solid([0, 0, 0, 255]),
+            color: [0, 0, 0, 255],
             opacity: 0.5,
         }
     }
@@ -124,14 +121,7 @@ impl crate::gpu::frame_graph::RecordNode for Shadow {
                 offset: [evaluated.offset_x, evaluated.offset_y],
             },
         )?;
-        let Paint::SolidColor(r, g, b, a) = evaluated.color else {
-            return Err(PropertyError::InvalidType {
-                at: crate::error::At::param(self.id, "color"),
-                expected: "a solid color",
-                actual: "a gradient",
-            }
-            .into());
-        };
+        let [r, g, b, a] = evaluated.color;
         let color =
             [r, g, b].map(|channel| crate::gpu::color::srgb_to_linear(f32::from(channel) / 255.0));
         let opacity = evaluated.opacity.clamp(0.0, 1.0) as f32 * f32::from(a) / 255.0;

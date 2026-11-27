@@ -192,20 +192,6 @@ fn bind_errors() {
         ));
     }
     rows.push(row(
-        "shadow color that is a gradient",
-        json!([
-            solid(1, [255, 0, 0, 255]),
-            { "id": 2, "type": "shadow", "in": { "source": 1 }, "params": { "color": {
-                "type": "linear_gradient",
-                "stops": [
-                    { "offset": 0.0, "color": [255, 0, 0, 255] },
-                    { "offset": 1.0, "color": [0, 0, 255, 255] }
-                ]
-            } } },
-        ]),
-        "node 2 `color`: invalid type: expected a solid color, got a gradient",
-    ));
-    rows.push(row(
         "malformed path data",
         json!([{ "id": 1, "type": "path", "params": { "data": "M 0 0 L 10 10 C nope" } }]),
         "path node 1 evaluation failed: `data` is malformed",

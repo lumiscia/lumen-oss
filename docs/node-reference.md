@@ -365,7 +365,7 @@ Inputs:
 
 Params:
 
-- **`key_color`** ([paint](#type-paint); default `[0,255,0,255]`) The screen color. Must be a solid color; a gradient is an error.
+- **`key_color`** ([color](#type-color); default `[0,255,0,255]`) The screen color.
 - **`matte_only`** (boolean; default `false`) Outputs the matte as white over transparent instead of the keyed image.
 - **`softness`** (number, at least 0; default `0.08`) How much further out the edge is feathered, from fully removed to fully kept. 0 is a hard edge at `tolerance`.
 - **`spill`** (number, 0 to 1; default `0.5`) How much of the key color's cast is removed from the colors that are kept, from 0 for none to 1 for all of it.
@@ -574,7 +574,7 @@ Params:
 - **`intensity`** (number, 0 to 1000; default `1`) Multiplies the glow's brightness, up to 1000.
 - **`radius`** (number, at least 0; default `12`) Glow blur radius in pixels, as on `blur`. Radii above about 588 look the same.
 - **`threshold`** (number, 0 to 1; default `0.6`) Luminance from 0 to 1 where the glow starts, on the sRGB-encoded scale, so 0.5 is half way up from black to white as they look. Brighter pixels glow more, white at full strength, and 1 lets nothing glow. Past 254/255 white dims too, so the glow fades out continuously as the threshold reaches 1.
-- **`tint`** ([paint](#type-paint); default `[255,255,255,255]`) Glow colour when `tint_enabled` is set, at the brightness of the light that casts it. Must be a solid color; a gradient is an error.
+- **`tint`** ([color](#type-color); default `[255,255,255,255]`) Glow colour when `tint_enabled` is set, at the brightness of the light that casts it.
 - **`tint_enabled`** (boolean; default `false`) Colours the glow with `tint` instead of the colours that cast it.
 
 ## `halftone`
@@ -592,8 +592,8 @@ Inputs:
 Params:
 
 - **`angle`** (number; default `45`) Rotation of the grid in degrees.
-- **`ink`** ([paint](#type-paint); default `[0,0,0,255]`) Color where the source is dark. Must be a solid color; a gradient is an error.
-- **`paper`** ([paint](#type-paint); default `[255,255,255,255]`) Color where the source is light. Must be a solid color; a gradient is an error.
+- **`ink`** ([color](#type-color); default `[0,0,0,255]`) Color where the source is dark.
+- **`paper`** ([color](#type-color); default `[255,255,255,255]`) Color where the source is light.
 - **`pitch`** (number, at least 1; default `8`) Width and height of a cell in pixels.
 - **`shape`** (`"round"` | `"line"`; default `"round"`) What each cell draws.
 
@@ -768,11 +768,11 @@ Inputs:
 
 Params:
 
-- **`ink`** ([paint](#type-paint); default `[0,0,0,255]`) Color of the darkest level. Must be a solid color; a gradient is an error. Only `ink_paper` uses it.
+- **`ink`** ([color](#type-color); default `[0,0,0,255]`) Color of the darkest level. Only `ink_paper` uses it.
 - **`levels`** (integer, at least 2; default `2`) Levels each value quantizes to, at least 2. 2 gives only the extremes.
 - **`matrix`** (`"bayer2"` | `"bayer4"` | `"bayer8"`; default `"bayer4"`) The threshold matrix.
 - **`mode`** (`"ink_paper"` | `"source"`; default `"ink_paper"`) What the node draws.
-- **`paper`** ([paint](#type-paint); default `[255,255,255,255]`) Color of the lightest level. Must be a solid color; a gradient is an error. Only `ink_paper` uses it.
+- **`paper`** ([color](#type-color); default `[255,255,255,255]`) Color of the lightest level. Only `ink_paper` uses it.
 - **`pitch`** (number, at least 1; default `1`) Width and height of a matrix cell in pixels. A cell is a whole number of output pixels, at least one, so the pitch rounds at render scales where it isn't.
 
 ## `pixel_sort`
@@ -866,7 +866,7 @@ Inputs:
 
 Params:
 
-- **`color`** ([paint](#type-paint); default `[0,0,0,255]`) Shadow color. Must be a solid color; a gradient is an error.
+- **`color`** ([color](#type-color); default `[0,0,0,255]`) Shadow color.
 - **`offset_x`** (number; default `8`) Horizontal shadow offset in pixels.
 - **`offset_y`** (number; default `8`) Vertical shadow offset in pixels.
 - **`opacity`** (number, 0 to 1; default `0.5`) Shadow opacity.
@@ -1138,7 +1138,7 @@ Params:
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z of each copy, in the scene's own space. Evaluated for every copy, and can read `instance` and `instance_count`.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z of each copy, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z. Evaluated for every copy, and can read `instance` and `instance_count`.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z of each copy, applied before the rotation. Evaluated for every copy, and can read `instance` and `instance_count`.
-- **`tint`** ([color](#type-color); default `[255,255,255,255]`) Colour that multiplies the base colour of every object in each copy, texture and base colour map included, and the light they give off, so a glowing copy glows in its tint. White leaves a copy as it is. Evaluated for every copy, and can read `instance` and `instance_count`. Its alpha is ignored: a copy is opaque or blended exactly as its material makes it. Tints of nested `instance_3d` nodes multiply. Must be a solid color; a gradient fails `check`.
+- **`tint`** ([color](#type-color); default `[255,255,255,255]`) Colour that multiplies the base colour of every object in each copy, texture and base colour map included, and the light they give off, so a glowing copy glows in its tint. White leaves a copy as it is. Evaluated for every copy, and can read `instance` and `instance_count`. Its alpha is ignored: a copy is opaque or blended exactly as its material makes it. Tints of nested `instance_3d` nodes multiply.
 
 ## `lathe_3d`
 
@@ -1170,7 +1170,7 @@ Category: scene. Output: scene.
 Params:
 
 - **`cast_shadows`** (boolean; default `false`) Casts shadows from objects that block it onto those behind them. A scene draws shadows for its first 8 lights that cast them, in the order its scene inputs are wired, and warns about the rest. A spot light's shadows reach 170° across at most.
-- **`color`** ([color](#type-color); default `[255,255,255,255]`) Light colour. Must be a solid color; a gradient fails `check`.
+- **`color`** ([color](#type-color); default `[255,255,255,255]`) Light colour.
 - **`intensity`** (number, at least 0; default `3`) Unitless brightness multiplier; point and spot lights fall off with the square of distance.
 - **`light`** (`"directional"` | `"point"` | `"spot"` | `"ambient"`; default `"directional"`; literal only) Kind of light.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
@@ -1201,7 +1201,7 @@ Params:
 - **`alpha_cutoff`** (number, 0 to 1; default `0.5`) The alpha a texel needs to show when `alpha_mode` is `mask`. Not read otherwise.
 - **`alpha_mode`** (`"blend"` | `"mask"`; default `"blend"`; literal only) `blend` draws the surface blended where its alpha is below 1. `mask` draws it with the opaque objects, so it writes depth and crossing masked surfaces order correctly: texels whose alpha, the colour's times `opacity` times the texture's or raster's, is below `alpha_cutoff` are discarded and the rest show at full opacity. Masked surfaces cast shadows shaped by the cut-out. It takes precedence over `opaque` on an `image_plane_3d`, and with `shadow_catcher` fails `check`.
 - **`cast_shadows`** (boolean; default `true`) Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light, such as a bulb around a point light, needs this off.
-- **`color`** ([color](#type-color); default `[255,255,255,255]`) Base colour, which multiplies the `texture` on a shape and the raster on an image plane. Must be a solid color; a gradient fails `check`.
+- **`color`** ([color](#type-color); default `[255,255,255,255]`) Base colour, which multiplies the `texture` on a shape and the raster on an image plane.
 - **`double_sided`** (boolean; default `false`) Draws the back of each face too.
 - **`emissive`** (number, at least 0; default `0`) Light the surface gives off on its own, as a multiple of its base colour.
 - **`metallic`** (number, 0 to 1; default `0`) 0 is a dielectric such as plastic, 1 a bare metal.
@@ -1325,7 +1325,7 @@ Params:
 - **`environment_map`** (string; media: environment; default `""`) An equirectangular Radiance `.hdr` or OpenEXR `.exr` file that lights the scene from all around in place of the studio: a path or `media` alias, or `asset:<id>` for an environment map asset of the host's. Its centre is the view along -Z, with +X to its right and +Y at its top, and it is stretched over the whole sphere whatever its aspect. Non-finite and negative pixels are read as black. While a map lights a scene without lights, it gets no default ones. Empty uses the studio.
 - **`environment_rotation`** (number; default `0`) Turn of the environment map about +Y in degrees, as a yaw turns an object.
 - **`exposure`** (number; default `0`) Exposure adjustment in stops before tone mapping.
-- **`fog_color`** ([color](#type-color); default `[255,255,255,255]`) Colour surfaces fade to with distance. Must be a solid color; a gradient fails `check`.
+- **`fog_color`** ([color](#type-color); default `[255,255,255,255]`) Colour surfaces fade to with distance.
 - **`fog_density`** (number, at least 0; default `0`) How quickly surfaces fade into the fog: the fraction of their colour left after `d` world units is e^(-density * d). 0 turns fog off.
 - **`height`** (integer, at least 0; default `0`; literal only) Output height in pixels. Use 0 to match the composition height.
 - **`mattes`** ([matteNames](#type-mattenames); default `[]`; literal as a whole) The matte names whose objects' coverage the `matte` output holds, in its red, green, blue and alpha channels in turn: at most 4, each listed once, or the render fails. Objects take a name from their `matte` param, or from the `merge_3d`, `instance_3d` or `particles_3d` holding them. A name no object takes leaves its channel 0, with a `scene.matte_unused` warning when the `matte` output is drawn.
@@ -1410,7 +1410,7 @@ Inputs:
 
 Fields:
 
-- **`color`** ([paint](#type-paint); default `[0,0,0,255]`) Shadow color. Must be a solid color.
+- **`color`** ([color](#type-color); default `[0,0,0,255]`) Shadow color.
 - **`offset`** ([number, number]; default `[8,8]`) Offset of the shadow in the drawing's pixels. With no offset the shadow is a glow.
 - **`opacity`** (number, 0 to 1; default `0.5`) Shadow opacity.
 - **`radius`** (number, at least 0; default `8`) Softness in the drawing's pixels, matching the edge of a `shadow` node of the same radius.

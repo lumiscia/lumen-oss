@@ -13,7 +13,7 @@ use lumen_gpu::{
     TexRef, TextureDomain, wgpu,
 };
 
-use super::collect::{Collected, CopySource, GpuMesh, solid_linear};
+use super::collect::{Collected, CopySource, GpuMesh, linear_color};
 use super::{Light3d, Render3d, Render3dOutput, Render3dOutputDelegate};
 use crate::error::{LumenError, RenderError};
 use crate::gpu::frame_graph::{
@@ -1262,7 +1262,7 @@ impl Render3d {
         let aspect = size.width as f32 / size.height.max(1) as f32;
         let mipped = mip_rasters(cx, &mut collected, &camera, aspect, target_size)?;
         let scene = &collected.scene;
-        let fog = solid_linear::<Render3d>(self.id, &params.fog_color)?;
+        let fog = linear_color(params.fog_color);
         let view = camera.view();
         let draws = Draws::new(&scene.objects, &view)
             .map_err(|error| render_error(self.id, error.to_string()))?;

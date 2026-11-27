@@ -5,7 +5,6 @@ use serde_json::{Map, Value};
 use super::{InstanceCopies, Placement3d};
 use crate::error::LumenError;
 use crate::expr::ExpressionValue;
-use crate::node::vector::paint::Paint;
 use crate::node::{
     Deferred, Delegated, NodeId, NodeParamType, NodeParams, OutputRef, ParamValue, PropertyKind,
     truncated_int,
@@ -89,10 +88,9 @@ pub struct Instance3dParams {
     /// colour map included, and the light they give off, so a glowing copy glows in its tint.
     /// White leaves a copy as it is. Evaluated for every copy, and can read `instance` and
     /// `instance_count`. Its alpha is ignored: a copy is opaque or blended exactly as its
-    /// material makes it. Tints of nested `instance_3d` nodes multiply. Must be a solid color; a
-    /// gradient fails `check`.
-    #[meta(role = "color", solid)]
-    pub tint: Paint,
+    /// material makes it. Tints of nested `instance_3d` nodes multiply.
+    #[meta(role = "color")]
+    pub tint: [u8; 4],
     /// Copies to place, each given literally as `{ position, rotation, scale, tint }` with any
     /// field left out taking the default of the param of that name: position and rotation 0,
     /// scale 1 and a white tint. The list can't hold expressions and holds at most 100000
@@ -112,7 +110,7 @@ impl Default for Instance3dParams {
         Self {
             count: InstanceCount(1),
             placement: Placement3d::default(),
-            tint: Paint::solid([255, 255, 255, 255]),
+            tint: [255, 255, 255, 255],
             copies: InstanceCopies::default(),
             matte: String::new(),
         }
