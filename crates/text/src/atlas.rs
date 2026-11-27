@@ -325,18 +325,13 @@ impl TextSystem {
                     && let Some(commands) = self
                         .swash_cache
                         .get_outline_commands_uncached(&mut self.font_system, key)
+                    && let Some([min_x, min_y, max_x, max_y]) = msdf::outline_bounds(&commands)
                 {
-                    let mut oversized = false;
-                    swash::zeno::Mask::new(&commands[..])
-                        .origin(swash::zeno::Origin::BottomLeft)
-                        .offset(swash::zeno::Vector::new(
-                            key.x_bin.as_float(),
-                            key.y_bin.as_float(),
-                        ))
-                        .inspect(|_, width, height| {
-                            oversized = width > max_size || height > max_size
-                        });
-                    if oversized {
+                    let dx = key.x_bin.as_float();
+                    let dy = key.y_bin.as_float();
+                    let width = (max_x + dx).ceil() - (min_x + dx).floor();
+                    let height = (max_y + dy).ceil() - (min_y + dy).floor();
+                    if width > max_size as f32 || height > max_size as f32 {
                         return RenderedGlyph::Oversized;
                     }
                 }
@@ -374,20 +369,45 @@ impl TextSystem {
     /// A plain outline stroked `half_width` pixels to each side with round joins, placed as
     /// Swash places its fill.
     fn render_stroke(&mut self, key: CacheKey, half_width: f32, max_size: u32) -> RenderedGlyph {
-        use swash::zeno::{Join, Mask, Origin, Stroke, Vector};
+        use cosmic_text::CacheKeyFlags;
+        use swash::zeno::{Angle, Join, Mask, Origin, Stroke, Transform, Vector};
+
         if half_width == 0.0 || !self.is_plain_outline(key) {
             return RenderedGlyph::Empty;
         }
-        let Some(commands) = self
-            .swash_cache
-            .get_outline_commands_uncached(&mut self.font_system, key)
-        else {
+        let Some(font) = self.font_system.get_font(key.font_id, key.font_weight) else {
             return RenderedGlyph::Empty;
         };
+        let swash_font = font.as_swash();
+        let mut scaler = self
+            .scale_context
+            .0
+            .builder(swash_font)
+            .size(f32::from_bits(key.font_size_bits))
+            .hint(!key.flags.contains(CacheKeyFlags::DISABLE_HINTING));
+        if let Some(variation) = swash_font
+            .variations()
+            .find_by_tag(swash::Tag::from_be_bytes(*b"wght"))
+        {
+            scaler = scaler.normalized_coords(swash_font.variations().normalized_coords([(
+                swash::Tag::from_be_bytes(*b"wght"),
+                f32::from(key.font_weight.0).clamp(variation.min_value(), variation.max_value()),
+            )]));
+        }
+        let mut scaler = scaler.build();
+        let Some(mut outline) = scaler.scale_outline(key.glyph_id) else {
+            return RenderedGlyph::Empty;
+        };
+        if key.flags.contains(CacheKeyFlags::FAKE_ITALIC) {
+            outline.transform(&Transform::skew(
+                Angle::from_degrees(14.0),
+                Angle::from_degrees(0.0),
+            ));
+        }
         let offset = Vector::new(key.x_bin.as_float(), key.y_bin.as_float());
         let mut stroke = Stroke::new(2.0 * half_width);
         stroke.join(Join::Round);
-        let mut mask = Mask::new(&commands[..]);
+        let mut mask = Mask::new((outline.points(), outline.verbs()));
         let mut size = [0; 2];
         mask.style(stroke)
             .origin(Origin::BottomLeft)
