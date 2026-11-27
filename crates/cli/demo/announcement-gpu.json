@@ -22,34 +22,27 @@
       }
     },
     {
-      "id": 2,
-      "type": "shape",
-      "params": {
-        "geometry_kind": "ellipse",
-        "width": 620,
-        "height": 620,
-        "position": [760, -140],
-        "fill_enabled": true,
-        "fill_paint": [37, 99, 235, 68],
-        "stroke_enabled": false
-      }
+      "id": 15,
+      "type": "shape_2d",
+      "params": { "geometry_kind": "ellipse", "width": 620, "height": 620, "position": [760, -140] }
     },
+    { "id": 16, "type": "fill_2d", "params": { "paint": [37, 99, 235, 68] } },
+    { "id": 2, "type": "render_2d" },
     {
-      "id": 3,
-      "type": "shape",
+      "id": 17,
+      "type": "shape_2d",
       "params": {
         "geometry_kind": "rectangle",
         "width": 860,
         "height": 310,
         "border_radius": 28,
-        "position": [210, 190],
-        "fill_enabled": true,
-        "fill_paint": [15, 27, 49, 255],
-        "stroke_enabled": true,
-        "stroke_paint": [71, 85, 105, 255],
-        "stroke_width": 1.5
+        "position": [210, 190]
       }
     },
+    { "id": 18, "type": "fill_2d", "params": { "paint": [15, 27, 49, 255] } },
+    { "id": 19, "type": "stroke_2d", "params": { "paint": [71, 85, 105, 255], "width": 1.5 } },
+    { "id": 20, "type": "merge_2d" },
+    { "id": 3, "type": "render_2d" },
     {
       "id": 4,
       "type": "text",
@@ -81,19 +74,18 @@
       }
     },
     {
-      "id": 6,
-      "type": "shape",
+      "id": 21,
+      "type": "shape_2d",
       "params": {
         "geometry_kind": "rectangle",
         "width": "=text_width(\"Open editor\", 20) + 48",
         "height": "=text_height(\"Open editor\", 20) + 32",
         "border_radius": 999,
-        "position": [260, 420],
-        "fill_enabled": true,
-        "fill_paint": [37, 99, 235, 255],
-        "stroke_enabled": false
+        "position": [260, 420]
       }
     },
+    { "id": 22, "type": "fill_2d", "params": { "paint": [37, 99, 235, 255] } },
+    { "id": 6, "type": "render_2d" },
     {
       "id": 7,
       "type": "text",
@@ -175,6 +167,15 @@
     { "from_node": 6, "from_port": "output", "to_node": 12, "to_port": "overlay" },
     { "from_node": 12, "from_port": "output", "to_node": 13, "to_port": "base" },
     { "from_node": 7, "from_port": "output", "to_node": 13, "to_port": "overlay" },
-    { "from_node": 13, "from_port": "output", "to_node": 14, "to_port": "source" }
+    { "from_node": 13, "from_port": "output", "to_node": 14, "to_port": "source" },
+    { "from_node": 15, "to_node": 16, "to_port": "geometry" },
+    { "from_node": 16, "to_node": 2, "to_port": "drawing" },
+    { "from_node": 17, "to_node": 18, "to_port": "geometry" },
+    { "from_node": 17, "to_node": 19, "to_port": "geometry" },
+    { "from_node": 18, "to_node": 20, "to_port": "drawings" },
+    { "from_node": 19, "to_node": 20, "to_port": "drawings" },
+    { "from_node": 20, "to_node": 3, "to_port": "drawing" },
+    { "from_node": 21, "to_node": 22, "to_port": "geometry" },
+    { "from_node": 22, "to_node": 6, "to_port": "drawing" }
   ]
 }

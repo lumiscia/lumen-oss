@@ -247,7 +247,7 @@ fn a_textured_material_on_a_solid_fails_naming_the_solid() {
             ortho(4, json!({})),
         );
         let nodes = scene.0["nodes"].as_array_mut().expect("nodes");
-        nodes.push(json!({ "id": 6, "type": "shape", "params": {} }));
+        nodes.push(json!({ "id": 6, "type": "background", "params": {} }));
         let connections = scene.0["connections"].as_array_mut().expect("connections");
         connections.push(json!({ "from_node": 6, "to_node": 3, "to_port": "texture" }));
         let error = failure(scene);

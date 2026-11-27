@@ -5,7 +5,9 @@ use lumen_engine::{
 };
 use serde_json::{Value, json};
 
-use crate::support::{CLEAR, Case, Expect, Scene, TestMedia, check, gpu, render, scene};
+use crate::support::{
+    CLEAR, Case, Expect, Scene, TestMedia, check, filled_shape, gpu, render, scene,
+};
 
 pub fn probe(red: u8) -> [u8; 4] {
     [red, 7, 0, 255]
@@ -313,13 +315,18 @@ fn mover_scene() -> Scene {
             "mover": {
                 "timeline": { "duration_frames": 12 },
                 "nodes": [
-                    { "id": 1, "type": "shape", "params": {
-                        "width": 2, "height": 2, "position": "=vec2(frame, 1)",
-                        "fill_paint": "#ffffff", "edge_antialias": false
+                    { "id": 3, "type": "shape_2d", "params": {
+                        "width": 2, "height": 2, "position": "=vec2(frame, 1)"
                     } },
+                    { "id": 4, "type": "fill_2d", "params": { "edge_antialias": false } },
+                    { "id": 1, "type": "render_2d" },
                     { "id": 2, "type": "media_output" }
                 ],
-                "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+                "connections": [
+                    { "from_node": 3, "to_node": 4, "to_port": "geometry" },
+                    { "from_node": 4, "to_node": 1, "to_port": "drawing" },
+                    { "from_node": 1, "to_node": 2, "to_port": "source" }
+                ]
             }
         },
         "nodes": [
@@ -462,13 +469,17 @@ fn wide_template_scene(width: u32, reader: &str) -> Composition {
         "wide": {
             "render_settings": { "width": width, "height": 64 },
             "nodes": [
-                { "id": 1, "type": "shape", "params": {
-                    "width": 8, "height": 8, "position": [32, 32], "fill_paint": "#ff0000"
+                { "id": 4, "type": "shape_2d", "params": {
+                    "width": 8, "height": 8, "position": [32, 32]
                 } },
+                { "id": 5, "type": "fill_2d", "params": { "paint": "#ff0000" } },
+                { "id": 1, "type": "render_2d" },
                 { "id": 2, "type": reader },
                 { "id": 3, "type": "media_output" }
             ],
             "connections": [
+                { "from_node": 4, "to_node": 5, "to_port": "geometry" },
+                { "from_node": 5, "to_node": 1, "to_port": "drawing" },
                 { "from_node": 1, "to_node": 2, "to_port": "source" },
                 { "from_node": 2, "to_node": 3, "to_port": "source" }
             ]
@@ -527,9 +538,11 @@ fn a_root_canvas_over_the_texture_limit_fails_a_render() {
     let width = max + 1;
     let composition: Composition = scene(
         (width, 64),
-        json!([{ "id": 1, "type": "shape", "params": {
-            "width": 8, "height": 8, "position": [32, 32], "fill_paint": "#ff0000"
-        } }]),
+        json!(filled_shape(
+            1,
+            json!({ "width": 8, "height": 8, "position": [32, 32] }),
+            json!({ "paint": "#ff0000" }),
+        )),
     )
     .into();
     let error = gpu
@@ -563,7 +576,11 @@ fn a_root_canvas_over_the_texture_limit_fails_the_output_size_check() {
     let width = max + 1;
     let composition: Composition = scene(
         (width, 64),
-        json!([{ "id": 1, "type": "shape", "params": { "width": 8, "height": 8 } }]),
+        json!(filled_shape(
+            1,
+            json!({ "width": 8, "height": 8 }),
+            json!({})
+        )),
     )
     .into();
     let error = renderer
@@ -589,15 +606,14 @@ fn an_oversized_texture_is_blamed_on_the_node_that_acquires_it() {
         .limits()
         .max_texture_dimension_2d;
     let width = max + 1;
-    let shape = |position: u32| {
-        json!({ "type": "shape", "params": {
-            "width": 8, "height": 8, "position": [position, 32], "fill_paint": "#ff0000"
-        } })
+    let shape = |id: u32, position: u32| {
+        json!(filled_shape(
+            id,
+            json!({ "width": 8, "height": 8, "position": [position, 32] }),
+            json!({ "paint": "#ff0000" }),
+        ))
     };
-    let mut nodes = vec![shape(16), shape(40)];
-    for (node, id) in nodes.iter_mut().zip(1..) {
-        node["id"] = json!(id);
-    }
+    let mut nodes = vec![shape(1, 16), shape(2, 40)];
     nodes.push(json!({
         "id": 3, "type": "boolean", "params": {}, "in": { "a": 1, "b": 2 }
     }));

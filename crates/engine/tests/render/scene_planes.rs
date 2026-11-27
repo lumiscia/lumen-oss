@@ -8,7 +8,9 @@ use crate::support::scene::{
     CENTER, SIZE, covered, environment_file, flat, framed, half_blue, image, light, lit_by,
     material, merge, ortho, plane, plate, render_3d, render_3d_with, sphere, with_material,
 };
-use crate::support::{BLUE, CLEAR, Case, Expect, GREEN, RED, Scene, TestMedia, check, gpu, render};
+use crate::support::{
+    BLUE, CLEAR, Case, Expect, GREEN, RED, Scene, TestMedia, check, filled_shape, gpu, render,
+};
 
 /// A plane 4 units wide showing the clip of a 128 x 64 composition whose output `output`, which
 /// is 64 x 32 pixels of the 64 x 64 frame.
@@ -362,9 +364,11 @@ fn a_render_3d_over_a_plane_is_kept_until_the_source_animates() {
 fn a_planes_source_keeps_its_place_within_the_canvas_when_it_draws_less_than_all_of_it() {
     // A 2D shape that fills a corner of the canvas is a bounded raster. The plane shows the whole
     // canvas, so the shape stays in that corner of the plane, at the plane's scale.
-    let mut nodes = vec![json!({ "id": 10, "type": "shape", "params": {
-        "position": [8, 8], "width": 16, "height": 16, "fill_paint": GREEN
-    } })];
+    let mut nodes = filled_shape(
+        10,
+        json!({ "position": [8, 8], "width": 16, "height": 16 }),
+        json!({ "paint": GREEN }),
+    );
     nodes.extend(framed(10));
     check(vec![Case::new(
         "a 16 pixel square near the top left",
@@ -385,7 +389,11 @@ fn a_planes_source_keeps_its_place_within_the_canvas_when_it_draws_less_than_all
 #[test]
 fn compiling_reaches_the_programs_of_a_planes_source_through_the_scene_nodes() {
     let mut nodes = vec![
-        json!({ "id": 10, "type": "shape", "params": { "width": 16, "height": 16 } }),
+        json!(filled_shape(
+            10,
+            json!({ "width": 16, "height": 16 }),
+            json!({})
+        )),
         json!({ "id": 11, "type": "blur", "params": { "radius": 2 }, "in": { "source": 10 } }),
         plane(1, 11, json!({ "width": 4 })),
         // Shadows, and a catcher from the second frame on, that only an expression turns on.

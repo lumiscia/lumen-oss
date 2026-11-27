@@ -4,7 +4,9 @@
 
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
+use crate::support::{
+    Case, Expect, Frame, Scene, TestMedia, check, filled_path, filled_shape, gpu, render, scene,
+};
 
 fn blurred(canvas: (u32, u32), source: Value, kind: &str, params: Value) -> Scene {
     scene(
@@ -14,8 +16,11 @@ fn blurred(canvas: (u32, u32), source: Value, kind: &str, params: Value) -> Scen
 }
 
 fn rect(position: [f64; 2], size: [f64; 2], color: [u8; 4]) -> Value {
-    json!({ "id": 1, "type": "shape", "params": {
-        "position": position, "width": size[0], "height": size[1], "fill_paint": color } })
+    json!(filled_shape(
+        1,
+        json!({ "position": position, "width": size[0], "height": size[1] }),
+        json!({ "paint": color })
+    ))
 }
 
 fn fill(color: [u8; 4]) -> Value {
@@ -425,7 +430,11 @@ fn sweeps_crossfade_between_two_passes_and_every_tap() {
     let thin = |amount: f64| {
         render_scene(blurred(
             (1024, 4),
-            json!({ "id": 1, "type": "path", "params": { "data": columns, "fill_paint": [255, 255, 255, 255] } }),
+            json!(filled_path(
+                1,
+                json!({ "data": columns }),
+                json!({ "paint": [255, 255, 255, 255] })
+            )),
             "zoom_blur",
             json!({ "center": [512.5, 0.5], "amount": amount }),
         ))
@@ -442,8 +451,11 @@ fn sweeps_crossfade_between_two_passes_and_every_tap() {
 fn sweep_bounds_match_reference() {
     let canvas = (384, 288);
     let small = |position: Value| {
-        json!({ "id": 1, "type": "shape", "params": {
-            "position": position, "width": 23, "height": 17, "fill_paint": [255, 120, 0, 220] } })
+        json!(filled_shape(
+            1,
+            json!({ "position": position, "width": 23, "height": 17 }),
+            json!({ "paint": [255, 120, 0, 220] })
+        ))
     };
     let mut cases = Vec::new();
     for edge in ["clamp", "transparent"] {

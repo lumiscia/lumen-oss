@@ -593,10 +593,16 @@ fn a_vector_written_as_a_literal_keeps_its_components_exactly() {
             "timeline": { "fps": 24, "duration_frames": 12 },
             "render_settings": { "width": 8, "height": 4 },
             "nodes": [
-                { "id": 1, "type": "shape", "params": { "position": [0.9999999999999999, 0] } },
+                { "id": 1, "type": "shape_2d", "params": { "position": [0.9999999999999999, 0] } },
+                { "id": 3, "type": "fill_2d" },
+                { "id": 4, "type": "render_2d" },
                 { "id": 2, "type": "media_output" }
             ],
-            "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+            "connections": [
+                { "from_node": 1, "to_node": 3, "to_port": "geometry" },
+                { "from_node": 3, "to_node": 4, "to_port": "drawing" },
+                { "from_node": 4, "to_node": 2, "to_port": "source" }
+            ]
         }"#,
     )
     .unwrap();

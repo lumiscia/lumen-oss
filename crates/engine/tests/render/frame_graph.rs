@@ -13,7 +13,7 @@ use lumen_gpu::{ExternalTexture, wgpu};
 use serde_json::{Value, json};
 
 use crate::color::srgb8;
-use crate::support::{Scene, TestMedia, gpu, read_rgba8, render, scene};
+use crate::support::{Scene, TestMedia, filled_shape, gpu, read_rgba8, render, scene};
 
 const CANVAS: (u32, u32) = (64, 32);
 
@@ -39,12 +39,8 @@ fn every_program() -> Scene {
         },
         "nodes": [
             { "id": 1, "type": "background", "params": { "paint": [200, 30, 30, 255] } },
-            { "id": 2, "type": "shape", "params": {
-                "position": "=vec2(frame, 4)", "width": 12, "height": 12, "fill_paint": "#ffffff"
-            } },
-            { "id": 3, "type": "path", "params": {
-                "data": "M 2 2 L 20 2 L 10 16 Z", "fill_paint": "#30dc40"
-            } },
+            { "id": 2, "type": "render_2d" },
+            { "id": 3, "type": "render_2d" },
             { "id": 4, "type": "text", "params": {
                 "content": "text", "font_size": 12, "position": "=vec2(frame, 8)",
                 "opacity": "=1 - frame / 60", "motion_blur": 180
@@ -69,9 +65,19 @@ fn every_program() -> Scene {
             { "id": 22, "type": "glow", "params": { "radius": "=frame * 2", "threshold": 0.3 } },
             { "id": 23, "type": "directional_blur", "params": { "distance": "=frame" } },
             { "id": 24, "type": "radial_blur", "params": { "center": [32, 16], "amount": "=frame" } },
-            { "id": 25, "type": "zoom_blur", "params": { "center": [32, 16], "amount": "=frame / 30" } }
+            { "id": 25, "type": "zoom_blur", "params": { "center": [32, 16], "amount": "=frame / 30" } },
+            { "id": 26, "type": "shape_2d", "params": {
+                "position": "=vec2(frame, 4)", "width": 12, "height": 12
+            } },
+            { "id": 27, "type": "fill_2d" },
+            { "id": 28, "type": "path_2d", "params": { "data": "M 2 2 L 20 2 L 10 16 Z" } },
+            { "id": 29, "type": "fill_2d", "params": { "paint": "#30dc40" } }
         ],
         "connections": [
+            { "from_node": 26, "to_node": 27, "to_port": "geometry" },
+            { "from_node": 27, "to_node": 2, "to_port": "drawing" },
+            { "from_node": 28, "to_node": 29, "to_port": "geometry" },
+            { "from_node": 29, "to_node": 3, "to_port": "drawing" },
             { "from_node": 2, "to_node": 6, "to_port": "source" },
             { "from_node": 6, "to_node": 7, "to_port": "source" },
             { "from_node": 7, "to_node": 8, "to_port": "source" },
@@ -228,9 +234,11 @@ fn animated() -> Composition {
         { "id": 1, "type": "background", "params": {
             "paint": [20, 20, 60, 255], "width": CANVAS.0, "height": CANVAS.1
         } },
-        { "id": 2, "type": "shape", "params": {
-            "position": "=vec2(frame * 3, 8)", "width": 10, "height": 10, "fill_paint": "#ffffff"
-        } },
+        filled_shape(
+            2,
+            json!({ "position": "=vec2(frame * 3, 8)", "width": 10, "height": 10 }),
+            json!({}),
+        ),
         { "id": 3, "type": "blur", "params": { "radius": 2 }, "in": { "source": 2 } },
         { "id": 4, "type": "merge", "in": { "base": 1, "overlay": 3 } }
     ]);
@@ -384,9 +392,11 @@ fn a_kept_output_is_copied_to_the_target_and_stays_kept() {
         { "id": 1, "type": "background", "params": {
             "paint": [200, 30, 30, 255], "width": CANVAS.0, "height": CANVAS.1
         } },
-        { "id": 2, "type": "shape", "params": {
-            "position": [4, 4], "width": 8, "height": 8, "fill_paint": "#2040dc"
-        } },
+        filled_shape(
+            2,
+            json!({ "position": [4, 4], "width": 8, "height": 8 }),
+            json!({ "paint": "#2040dc" }),
+        ),
         { "id": 3, "type": "merge", "in": { "base": 1, "overlay": 2 } }
     ]);
     let composition: Composition = scene(CANVAS, nodes).frames(4).into();
@@ -594,9 +604,11 @@ fn a_frame_with_nothing_to_record_still_returns_its_own_submission() {
         { "id": 1, "type": "background", "params": {
             "paint": [200, 30, 30, 255], "width": CANVAS.0, "height": CANVAS.1
         } },
-        { "id": 2, "type": "shape", "params": {
-            "position": [4, 4], "width": 8, "height": 8, "fill_paint": "#2040dc"
-        } },
+        filled_shape(
+            2,
+            json!({ "position": [4, 4], "width": 8, "height": 8 }),
+            json!({ "paint": "#2040dc" }),
+        ),
         { "id": 3, "type": "merge", "in": { "base": 1, "overlay": 2 } }
     ]);
     let composition: Composition = scene(CANVAS, nodes).frames(5).into();

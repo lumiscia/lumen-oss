@@ -25,7 +25,8 @@ const box = composition.addNode({ type: "shape_3d" });
 
 const lit = n.raster_multimerge({ layers: [n.text({ content: "on" }), title] });
 const glow: NodeInput<"glow"> = n.glow({ glow_only: true, radius: 46, source: lit });
-n.merge({ base: glow, overlay: title, mask: n.shape(), opacity: progress(0, 30) });
+const matte = n.render_2d({ drawing: n.fill_2d({ geometry: n.shape_2d() }) });
+n.merge({ base: glow, overlay: title, mask: matte, opacity: progress(0, 30) });
 n.text({ content: "Hi", color: when(frame.gte(10), hex("#ffffff"), [0, 0, 0]) });
 n.switch({ layers: glow, selected_layer: 1 });
 n.camera_3d();

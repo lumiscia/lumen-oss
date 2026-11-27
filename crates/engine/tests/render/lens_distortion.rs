@@ -5,7 +5,8 @@ use lumen_engine::composition::Composition;
 use serde_json::{Value, json};
 
 use crate::support::{
-    BLACK, CLEAR, Case, Expect, Frame, Scene, TestMedia, WHITE, check, gpu, render, scene,
+    BLACK, CLEAR, Case, Expect, Frame, Scene, TestMedia, WHITE, check, filled_shape, gpu, render,
+    scene,
 };
 
 const SIZE: u32 = 128;
@@ -13,8 +14,11 @@ const SIZE: u32 = 128;
 const HALF_DIAGONAL: f64 = SIZE as f64 * std::f64::consts::SQRT_2 / 2.0;
 
 fn rect(id: u32, position: [u32; 2], size: [u32; 2], paint: [u8; 4]) -> Value {
-    json!({ "id": id, "type": "shape", "params": {
-        "position": position, "width": size[0], "height": size[1], "fill_paint": paint } })
+    json!(filled_shape(
+        id,
+        json!({ "position": position, "width": size[0], "height": size[1] }),
+        json!({ "paint": paint }),
+    ))
 }
 
 fn background(paint: [u8; 4]) -> Value {
@@ -23,12 +27,17 @@ fn background(paint: [u8; 4]) -> Value {
 
 /// `layers`, the first of them the base, merged one over the next into the last node.
 fn stacked(layers: Vec<Value>) -> Vec<Value> {
+    // A layer of several nodes is drawn by its last.
+    let drawn = |layer: &Value| match layer {
+        Value::Array(nodes) => nodes.last().expect("a node")["id"].clone(),
+        node => node["id"].clone(),
+    };
     let mut nodes = layers.clone();
-    let mut merged = layers[0]["id"].clone();
+    let mut merged = drawn(&layers[0]);
     for (index, layer) in layers.iter().enumerate().skip(1) {
         let id = 200 + index;
         nodes.push(json!({ "id": id, "type": "merge",
-            "in": { "base": merged, "overlay": layer["id"] } }));
+            "in": { "base": merged, "overlay": drawn(layer) } }));
         merged = json!(id);
     }
     nodes

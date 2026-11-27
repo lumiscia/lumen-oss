@@ -3,15 +3,18 @@
 
 use serde_json::{Value, json};
 
-use crate::support::{CLEAR, Case, Expect, Scene, WHITE, check, scene};
+use crate::support::{CLEAR, Case, Expect, Scene, WHITE, check, filled_shape, scene};
 
 const WIDTH: u32 = 32;
 const HEIGHT: u32 = 8;
 
 /// A white bar over columns 8 to 11.
 fn bar() -> Value {
-    json!({ "id": 1, "type": "shape", "params": {
-        "position": [8, 0], "width": 4, "height": HEIGHT, "fill_paint": WHITE } })
+    json!(filled_shape(
+        1,
+        json!({ "position": [8, 0], "width": 4, "height": HEIGHT }),
+        json!({ "paint": WHITE }),
+    ))
 }
 
 fn solid_map(color: [u8; 4], width: u32, height: u32) -> Value {
@@ -213,8 +216,11 @@ fn edges_clamp_or_read_transparent() {
 #[test]
 fn displacement_bounds_match_reference() {
     let canvas = (160, 120);
-    let shape = json!({ "id": 1, "type": "shape", "params": {
-        "position": [61.5, 40.25], "width": 23, "height": 17, "fill_paint": [255, 120, 0, 220] } });
+    let shape = json!(filled_shape(
+        1,
+        json!({ "position": [61.5, 40.25], "width": 23, "height": 17 }),
+        json!({ "paint": [255, 120, 0, 220] }),
+    ));
     let noise = |width: u32, height: u32| {
         json!({ "id": 2, "type": "fractal_noise", "params": {
             "scale": 9, "octaves": 3, "contrast": 3, "width": width, "height": height,
@@ -238,8 +244,11 @@ fn displacement_bounds_match_reference() {
         row_of(name, shape.clone(), map, params, bounded)
     };
     // Clamping repeats the column at the canvas edge, which this shape covers.
-    let at_edge = json!({ "id": 1, "type": "shape", "params": {
-        "position": [-4, 70.5], "width": 19, "height": 13, "fill_paint": [40, 200, 90, 255] } });
+    let at_edge = json!(filled_shape(
+        1,
+        json!({ "position": [-4, 70.5], "width": 19, "height": 13 }),
+        json!({ "paint": [40, 200, 90, 255] }),
+    ));
     check(vec![
         row_of(
             "clamped at the canvas edge",

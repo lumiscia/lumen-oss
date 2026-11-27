@@ -4,7 +4,9 @@
 use lumen_engine::composition::Composition;
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
+use crate::support::{
+    Case, Expect, Frame, Scene, TestMedia, check, filled_shape, gpu, render, scene,
+};
 
 const CANVAS: (u32, u32) = (256, 256);
 
@@ -218,8 +220,11 @@ fn grain_is_the_same_pattern_at_any_render_scale() {
 #[test]
 fn grain_stays_on_the_canvas_when_the_source_does_not_cover_it() {
     // A grey square is stored at its own bounds, but its grain is what the full-canvas grey has.
-    let square = json!({ "id": 1, "type": "shape", "params": {
-        "position": [37, 21], "width": 90, "height": 70, "fill_paint": [128, 128, 128, 255] } });
+    let square = json!(filled_shape(
+        1,
+        json!({ "position": [37, 21], "width": 90, "height": 70 }),
+        json!({ "paint": [128, 128, 128, 255] }),
+    ));
     let params = json!({ "amount": 0.2, "size": 2 });
     let covering = render_scene(grained(CANVAS, grey(), params.clone()), 1.0);
     let bounded = render_scene(grained(CANVAS, square, params), 1.0);

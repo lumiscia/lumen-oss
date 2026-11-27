@@ -5,7 +5,9 @@ use lumen_engine::composition::Composition;
 use lumen_engine::gpu::GpuCompositionRenderer;
 use serde_json::{Value, json};
 
-use crate::support::{Frame, TestMedia, check_each, gpu, render, scene};
+use crate::support::{
+    Frame, TestMedia, check_each, filled_and_stroked, filled_path, filled_shape, gpu, render, scene,
+};
 
 const CANVAS: (u32, u32) = (96, 64);
 
@@ -46,15 +48,21 @@ fn layered() -> Composition {
         CANVAS,
         json!([
             { "id": 1, "type": "background", "params": { "paint": [30, 40, 50, 255] } },
-            { "id": 2, "type": "shape", "params": {
-                "width": 40, "height": 24, "border_radius": 6, "position": [8, 8],
-                "fill_paint": gradient, "stroke_enabled": true, "stroke_width": 2,
-                "stroke_paint": [255, 255, 255, 255] } },
+            filled_and_stroked(
+                2,
+                "shape_2d",
+                json!({ "width": 40, "height": 24, "border_radius": 6, "position": [8, 8] }),
+                json!({ "paint": gradient }),
+                json!({ "width": 2, "paint": [255, 255, 255, 255] }),
+            ),
             { "id": 3, "type": "blur", "in": { "source": 2 }, "params": { "radius": 2 } },
-            { "id": 4, "type": "path", "params": {
-                "data": "M 0 0 L 30 0 L 15 20 Z", "position": [56, 6],
-                "fill_paint": [40, 220, 90, 255], "stroke_enabled": true, "stroke_width": 1,
-                "stroke_paint": [0, 0, 0, 255] } },
+            filled_and_stroked(
+                4,
+                "path_2d",
+                json!({ "data": "M 0 0 L 30 0 L 15 20 Z", "position": [56, 6] }),
+                json!({ "paint": [40, 220, 90, 255] }),
+                json!({ "width": 1 }),
+            ),
             { "id": 5, "type": "text", "params": {
                 "content": "Ag", "font_family": "Inter", "font_size": 20,
                 "position": [10, 36], "color": [255, 255, 255, 255] } },
@@ -322,9 +330,11 @@ fn rectangles_keep_their_scaled_edges_and_thin_shapes_stay_thin() {
         (
             "a shape one canvas pixel wide covers half a device pixel",
             (
-                json!([{ "id": 1, "type": "shape", "params": {
-                    "width": 1, "height": 8, "position": [4, 4],
-                    "fill_paint": [255, 255, 255, 255] } }]),
+                json!([filled_shape(
+                    1,
+                    json!({ "width": 1, "height": 8, "position": [4, 4] }),
+                    json!({ "paint": [255, 255, 255, 255] })
+                )]),
                 0.5,
                 |frame| {
                     let alpha = frame.pixel(2, 3)[3];
@@ -336,9 +346,11 @@ fn rectangles_keep_their_scaled_edges_and_thin_shapes_stay_thin() {
         (
             "a thin path keeps its scaled width",
             (
-                json!([{ "id": 1, "type": "path", "params": {
-                    "data": "M 0 0 L 1 0 L 1 8 L 0 8 Z", "position": [4, 4],
-                    "fill_paint": [255, 255, 255, 255] } }]),
+                json!([filled_path(
+                    1,
+                    json!({ "data": "M 0 0 L 1 0 L 1 8 L 0 8 Z", "position": [4, 4] }),
+                    json!({ "paint": [255, 255, 255, 255] })
+                )]),
                 0.5,
                 |frame| {
                     let alpha = frame.pixel(2, 3)[3];
@@ -367,9 +379,7 @@ fn a_blur_past_the_cap_looks_the_same_at_every_scale() {
         scene(
             CANVAS,
             json!([
-                { "id": 1, "type": "shape", "params": {
-                    "width": 90, "height": 60, "position": [3, 2],
-                    "fill_paint": [255, 255, 255, 255] } },
+                filled_shape(1, json!({ "width": 90, "height": 60, "position": [3, 2] }), json!({ "paint": [255, 255, 255, 255] })),
                 { "id": 2, "type": "blur", "in": { "source": 1 }, "params": { "radius": radius } },
             ]),
         )

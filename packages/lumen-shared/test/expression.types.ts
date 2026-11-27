@@ -39,10 +39,8 @@ const tint: Expr<Color> = lerp(color, [255, 0, 0], 0.5);
 const slid: Expr<Vec2> = moves(point, [{ by: [10, 0], start: 0, duration: 10 }]);
 const rise = fn("rise(start)", (start: Num) => tween(0, 1, start, 12));
 const composition = new Composition().addFunction(rise);
-composition.addNode({
-  type: "path",
-  params: { fill_paint: color, position: point, stroke_width: number },
-});
+composition.addNode({ type: "path_2d", params: { position: point } });
+composition.addNode({ type: "stroke_2d", params: { paint: color, width: number } });
 const bezier = cubicBezier([0.4, 0], [0.2, 1]);
 const keyed: Expr<number> = keyframes(frame, key(0, 0), key(30, 1, bezier));
 const eased: Expr<Vec2> = keyframes(frame, ease.outExpo, key(0, [0, 0]), key(30, point, "hold"));
@@ -79,9 +77,9 @@ lerp([0, 0, 0], spot, 0.5);
 keyframes(frame, key(0, vec3(1, 2, 3)), key(10, rgb(1, 2, 3)));
 
 new Composition().addNode({
-  type: "path",
+  type: "fill_2d",
   // @ts-expect-error a vec3 expression can't paint
-  params: { fill_paint: spot },
+  params: { paint: spot },
 });
 
 // @ts-expect-error every key holds the same kind of value
@@ -121,19 +119,19 @@ tween(0, color, 0, 12);
 rgb(1, 2, 3).add(number);
 
 new Composition().addNode({
-  type: "path",
+  type: "fill_2d",
   // @ts-expect-error a non-colour expression can't paint
-  params: { fill_paint: number },
+  params: { paint: number },
 });
 
 new Composition().addNode({
-  type: "path",
+  type: "path_2d",
   // @ts-expect-error a number expression can't be a vec2
   params: { position: number },
 });
 
 new Composition().addNode({
-  type: "shape",
+  type: "shape_2d",
   // @ts-expect-error constant string params don't take expressions
   params: { geometry_kind: lowercase("ELLIPSE") },
 });

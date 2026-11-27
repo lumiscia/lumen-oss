@@ -9,7 +9,7 @@ use lumen_engine::{
 use lumen_gpu::wgpu;
 use serde_json::{Value, json};
 
-use crate::support::{BLUE, RED, Scene, TestMedia, gpu, read_rgba8, render, scene};
+use crate::support::{BLUE, RED, Scene, TestMedia, filled_shape, gpu, read_rgba8, render, scene};
 
 const CANVAS: (u32, u32) = (32, 16);
 
@@ -24,9 +24,11 @@ fn background(id: u32, color: [u8; 4]) -> Value {
 }
 
 fn square(id: u32, position: Value, size: u32, color: [u8; 4]) -> Value {
-    json!({ "id": id, "type": "shape", "params": {
-        "position": position, "width": size, "height": size, "fill_paint": color
-    } })
+    json!(filled_shape(
+        id,
+        json!({ "position": position, "width": size, "height": size }),
+        json!({ "paint": color }),
+    ))
 }
 
 fn merge(id: u32, layers: &[u32]) -> Value {
@@ -319,11 +321,17 @@ fn a_layer_past_the_retained_budget_renders_again_when_revisited() {
 fn discarded_binds_keep_nothing_and_stale_uploads_are_still_rejected() {
     let gpu = gpu();
     let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
-    let mut composition = static_under_animated();
-    composition.0["nodes"][1] = json!({ "id": 2, "type": "text", "params": {
-        "content": "Kept", "font_size": 12, "position": [2, 8]
-    } });
-    let composition: Composition = composition.into();
+    // `static_under_animated` with text for its static square.
+    let composition: Composition = canvas(vec![
+        background(1, [200, 30, 30, 255]),
+        json!({ "id": 2, "type": "text", "params": {
+            "content": "Kept", "font_size": 12, "position": [2, 8]
+        } }),
+        merge(3, &[1, 2]),
+        square(4, json!("=vec2(frame * 2, 6)"), 4, [30, 220, 60, 255]),
+        merge(5, &[3, 4]),
+    ])
+    .into();
     let media = TestMedia::default();
     let submit = |renderer: &mut GpuCompositionRenderer, frame| {
         let bound = renderer
@@ -819,12 +827,15 @@ fn a_template_read_with_other_props_in_one_frame_gets_their_values() {
 fn a_node_evaluates_again_only_its_moving_param_and_binds_with_the_values_found() {
     let composition: Composition = canvas(vec![
         background(1, [200, 30, 30, 255]),
-        json!({ "id": 2, "type": "shape", "params": {
-            "position": "=vec2(frame, 4)",
-            "width": "=tween(8, 4, 40, 4)",
-            "height": "=tween(8, 4, 40, 4, 'out_expo')",
-            "fill_paint": "=rgba(20, 40, tween(220, 0, 40, 4), 255)"
-        } }),
+        json!(filled_shape(
+            2,
+            json!({
+                "position": "=vec2(frame, 4)",
+                "width": "=tween(8, 4, 40, 4)",
+                "height": "=tween(8, 4, 40, 4, 'out_expo')"
+            }),
+            json!({ "paint": "=rgba(20, 40, tween(220, 0, 40, 4), 255)" }),
+        )),
         merge(3, &[1, 2]),
     ])
     .into();

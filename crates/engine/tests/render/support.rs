@@ -89,11 +89,20 @@ impl Gpu {
 pub struct Scene(pub Value);
 
 /// A one-frame 30 fps scene of `nodes`. A node's `in` maps each input port to a node id, or to an
-/// array of them for a variadic port, and the last node feeds the output.
+/// array of them for a variadic port, and the last node feeds the output. An array among the nodes
+/// stands for the nodes it holds, as [`filled_shape`] returns them.
 pub fn scene((width, height): (u32, u32), nodes: Value) -> Scene {
-    let Value::Array(mut nodes) = nodes else {
+    let Value::Array(nodes_in) = nodes else {
         panic!("scene nodes must be an array");
     };
+    fn flatten(node: Value, nodes: &mut Vec<Value>) {
+        match node {
+            Value::Array(inner) => inner.into_iter().for_each(|node| flatten(node, nodes)),
+            node => nodes.push(node),
+        }
+    }
+    let mut nodes = Vec::new();
+    flatten(Value::Array(nodes_in), &mut nodes);
     let mut connections = Vec::new();
     for node in &mut nodes {
         let id = node["id"].clone();
@@ -118,6 +127,45 @@ pub fn scene((width, height): (u32, u32), nodes: Value) -> Scene {
         "nodes": nodes,
         "connections": connections,
     }))
+}
+
+/// A `shape_2d` of `shape` params filled by a `fill_2d` of `fill` params and drawn by a `render_2d`
+/// of id `id`, which takes the place of a raster node. The shape and fill take the ids `id + 1000`
+/// and `id + 2000`.
+pub fn filled_shape(id: u32, shape: Value, fill: Value) -> Vec<Value> {
+    filled(id, "shape_2d", shape, fill)
+}
+
+/// [`filled_shape`] for a `path_2d` of `path` params.
+pub fn filled_path(id: u32, path: Value, fill: Value) -> Vec<Value> {
+    filled(id, "path_2d", path, fill)
+}
+
+/// A `kind` geometry of `geometry` params filled by `fill` params and stroked over it by `stroke`
+/// params, merged and drawn by a `render_2d` of id `id`. The geometry, fill, stroke and merge take
+/// the ids `id + 1000` to `id + 4000`.
+pub fn filled_and_stroked(
+    id: u32,
+    kind: &str,
+    geometry: Value,
+    fill: Value,
+    stroke: Value,
+) -> Vec<Value> {
+    vec![
+        json!({ "id": id + 1000, "type": kind, "params": geometry }),
+        json!({ "id": id + 2000, "type": "fill_2d", "params": fill, "in": { "geometry": id + 1000 } }),
+        json!({ "id": id + 3000, "type": "stroke_2d", "params": stroke, "in": { "geometry": id + 1000 } }),
+        json!({ "id": id + 4000, "type": "merge_2d", "in": { "drawings": [id + 2000, id + 3000] } }),
+        json!({ "id": id, "type": "render_2d", "in": { "drawing": id + 4000 } }),
+    ]
+}
+
+fn filled(id: u32, kind: &str, geometry: Value, fill: Value) -> Vec<Value> {
+    vec![
+        json!({ "id": id + 1000, "type": kind, "params": geometry }),
+        json!({ "id": id + 2000, "type": "fill_2d", "params": fill, "in": { "geometry": id + 1000 } }),
+        json!({ "id": id, "type": "render_2d", "in": { "drawing": id + 2000 } }),
+    ]
 }
 
 impl Scene {

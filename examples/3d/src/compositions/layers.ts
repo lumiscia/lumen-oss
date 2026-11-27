@@ -22,12 +22,16 @@ export function createLayers(): Composition {
     [0, 0.2, -2],
   );
   const dot = layer(
-    n.shape({
-      geometry_kind: "ellipse",
-      width: 90,
-      height: 90,
-      position: [635, 315],
-      fill_paint: "#ffffffb4",
+    n.render_2d({
+      drawing: n.fill_2d({
+        geometry: n.shape_2d({
+          geometry_kind: "ellipse",
+          width: 90,
+          height: 90,
+          position: [635, 315],
+        }),
+        paint: "#ffffffb4",
+      }),
     }),
     3,
     [0.3, -0.4, 2.5],

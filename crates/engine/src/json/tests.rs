@@ -518,19 +518,23 @@ fn parses_and_evaluates_vec2_expression() {
             "timeline": { "fps": 24, "duration_frames": 48 },
             "render_settings": { "width": 800, "height": 600 },
             "nodes": [
-                { "id": 1, "type": "path", "params": {
+                { "id": 1, "type": "path_2d", "params": {
                     "data": "M 0 0 L 100 100",
                     "position": "=vec2(frame * 2, time + 3)"
                 }},
+                { "id": 3, "type": "stroke_2d" },
+                { "id": 4, "type": "render_2d" },
                 { "id": 2, "type": "media_output" }
             ],
             "connections": [
-                { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }
+                { "from_node": 1, "to_node": 3, "to_port": "geometry" },
+                { "from_node": 3, "to_node": 4, "to_port": "drawing" },
+                { "from_node": 4, "from_port": "output", "to_node": 2, "to_port": "source" }
             ]
         }"##;
 
     let composition = parse(json).expect("should parse vec2 expression");
-    let crate::node::NodeKind::Path(path) = composition
+    let crate::node::NodeKind::Path2d(path) = composition
         .graph()
         .nodes
         .get(&NodeId::new(1))
@@ -554,7 +558,7 @@ fn parses_and_evaluates_vec2_expression() {
 
         assert_eq!(
             path.params
-                .placement
+                .transform
                 .position
                 .eval(path.id, "position", &context)
                 .unwrap(),
@@ -1248,7 +1252,7 @@ fn a_phase_reports_every_error_with_its_path_and_stops_the_check() {
         "render_settings": { "width": 16, "height": 16 },
         "compositions": { "card/a": {
             "nodes": [
-                { "id": 1, "type": "shape", "params": { "opacity": "=1 +" } },
+                { "id": 1, "type": "text", "params": { "opacity": "=1 +" } },
                 { "id": 2, "type": "media_output" }
             ],
             "connections": []

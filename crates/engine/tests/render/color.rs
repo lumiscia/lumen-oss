@@ -7,7 +7,9 @@ use lumen_engine::{
 };
 use serde_json::{Value, json};
 
-use crate::support::{CLEAR, Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
+use crate::support::{
+    CLEAR, Case, Expect, Frame, Scene, TestMedia, check, filled_shape, gpu, render, scene,
+};
 
 /// An sRGB-encoded value in `0..=1` in linear light.
 pub fn decode(encoded: f64) -> f64 {
@@ -309,9 +311,11 @@ fn transparent_and_coloured_edges_have_no_dark_fringe() {
             (16, 4),
             json!([
                 { "id": 1, "type": "background", "params": { "paint": [255, 255, 255, 255] } },
-                { "id": 2, "type": "shape", "params": {
-                    "position": [4.5, 0], "width": 8, "height": 4, "fill_paint": [255, 0, 0, 255]
-                } },
+                filled_shape(
+                    2,
+                    json!({ "position": [4.5, 0], "width": 8, "height": 4 }),
+                    json!({ "paint": [255, 0, 0, 255] }),
+                ),
                 { "id": 3, "type": "merge", "in": { "base": 1, "overlay": 2 } },
             ]),
         ),
@@ -405,10 +409,11 @@ fn a_black_white_edge_filters_in_linear_light() {
             (64, 64),
             json!([
                 { "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255] } },
-                { "id": 2, "type": "shape", "params": {
-                    "position": [32, -32], "width": 64, "height": 128,
-                    "fill_paint": [255, 255, 255, 255]
-                } },
+                filled_shape(
+                    2,
+                    json!({ "position": [32, -32], "width": 64, "height": 128 }),
+                    json!({ "paint": [255, 255, 255, 255] }),
+                ),
                 { "id": 3, "type": "merge", "in": { "base": 1, "overlay": 2 } },
                 { "id": 4, "type": "blur", "in": { "source": 3 }, "params": { "radius": 4 } },
             ]),

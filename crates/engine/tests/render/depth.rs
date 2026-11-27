@@ -18,10 +18,10 @@ fn on_default_stack<T: Send + 'static>(run: impl FnOnce() -> T + Send + 'static)
         .expect("does not panic")
 }
 
-/// A path drawn through `links` nodes of `kind` in a row, into the output, node `links + 2`.
+/// A line of text drawn through `links` nodes of `kind` in a row, into the output, node `links + 2`.
 fn chain(kind: &str, params: Value, links: u64) -> Value {
-    let mut nodes = vec![json!({ "id": 1, "type": "path", "params": {
-        "data": "M 2 2 L 20 2 L 10 16 Z", "fill_paint": "#30dc40"
+    let mut nodes = vec![json!({ "id": 1, "type": "text", "params": {
+        "content": "Deep", "font_size": 16, "color": "#30dc40"
     } })];
     let mut connections = Vec::new();
     for id in 2..links + 3 {
@@ -85,8 +85,8 @@ fn a_chain_too_deep_to_record_fails_with_an_error_instead_of_overflowing_the_sta
     );
 }
 
-/// Makes the path at the bottom of `chain` evaluate the costliest expression the evaluator allows
-/// while every node above it is still recording. The path's `opacity` reads the `rotate` of a
+/// Makes the text at the bottom of `chain` evaluate the costliest expression the evaluator allows
+/// while every node above it is still recording. The text's `opacity` reads the `rotate` of a
 /// `transform`, and each nests right-leaning sums as deep as the 96 evaluation levels allow. The
 /// second ends in the measurement of a text node, which shapes text with all those evaluations open.
 fn with_the_costliest_expression(mut document: Value) -> Value {
@@ -111,7 +111,7 @@ fn with_the_costliest_expression(mut document: Value) -> Value {
 
 #[test]
 fn the_deepest_chains_allowed_render_on_a_default_stack_with_the_costliest_expression() {
-    // The output, 46 nodes and a path are 48 deep. `transform` has the largest frame of the nodes
+    // The output, 46 nodes and the text are 48 deep. `transform` has the largest frame of the nodes
     // with an input, with `color_grade` next after keeping its colour table out of it. In a debug
     // build the heaviest chain, 46 transforms, needs about 1.65 MiB of the 2 MiB.
     for (kind, params) in [

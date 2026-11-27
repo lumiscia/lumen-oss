@@ -1,5 +1,5 @@
 use lumen_engine::node::source::text_content::TextContentDelegate;
-use lumen_engine::node::vector::drawable::{DrawablePlacementDelegate, DrawableStyleDelegate};
+use lumen_engine::node::vector::drawable::DrawablePlacementDelegate;
 use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     graph::{Connection, Graph},
@@ -13,14 +13,16 @@ use lumen_engine::{
             text::{Text, TextDrawParamsDelegate, TextLayoutParamsDelegate, TextParamsDelegate},
         },
         vector::{
+            drawing::{
+                Fill2dParamsDelegate, Path2d, Path2dParamsDelegate, Shape2d, Shape2dParamsDelegate,
+                Stroke2dParamsDelegate, Transform2dDelegate,
+            },
             paint::{GradientPaint, GradientStop, Paint, PaintKind},
-            path::{Path, PathParamsDelegate},
-            shape::{Shape, ShapeParamsDelegate},
         },
     },
 };
 
-use super::{render_1080p, timeline};
+use super::{insert_drawn, render_1080p, timeline};
 use crate::bench::CompositionFixture;
 
 pub struct AntialiasingStress {
@@ -93,119 +95,133 @@ impl CompositionFixture for AntialiasingStress {
             }),
         );
 
-        let path =
-            |id: NodeId, data: &str, position: (f64, f64), fill: Paint, stroke_enabled: bool| {
-                NodeKind::Path(Path {
-                    id,
-                    params: PathParamsDelegate {
-                        data: Deferred::value(data.to_string()),
-                        placement: DrawablePlacementDelegate {
-                            position: Deferred::value(position),
-                            ..Default::default()
+        let mut next_id = 9;
+        let mut id = || {
+            next_id += 1;
+            NodeId::new(next_id - 1)
+        };
+        let fill = |paint: Paint| Fill2dParamsDelegate {
+            paint: paint.into(),
+            edge_antialias: Deferred::value(self.edge_antialias),
+            ..Default::default()
+        };
+        let mut path = |graph: &mut Graph,
+                        render: NodeId,
+                        data: &str,
+                        position: (f64, f64),
+                        paint: Paint,
+                        stroke_enabled: bool| {
+            let data = data.to_string();
+            insert_drawn(
+                graph,
+                render,
+                &mut id,
+                |id| {
+                    NodeKind::Path2d(Path2d {
+                        id,
+                        params: Path2dParamsDelegate {
+                            data: Deferred::value(data),
+                            transform: Transform2dDelegate {
+                                position: Deferred::value(position),
+                                ..Default::default()
+                            },
                         },
-                        style: DrawableStyleDelegate {
-                            fill_enabled: Deferred::value(true),
-                            fill_paint: fill.into(),
-                            stroke_enabled: Deferred::value(stroke_enabled),
-                            stroke_paint: Paint::solid([255, 255, 255, 210]).into(),
-                            stroke_width: Deferred::value(2.0),
-                            edge_antialias: Deferred::value(self.edge_antialias),
+                    })
+                },
+                fill(paint),
+                stroke_enabled.then(|| Stroke2dParamsDelegate {
+                    paint: Paint::solid([255, 255, 255, 210]).into(),
+                    width: Deferred::value(2.0),
+                    ..Default::default()
+                }),
+            );
+        };
+
+        path(
+            &mut graph,
+            diagonal_a,
+            "M0,0 L1510.25,486.75 1507.75,494.25 -2.5,7.5 Z",
+            (204.35, 250.65),
+            Paint::solid([255, 255, 255, 230]),
+            false,
+        );
+        path(
+            &mut graph,
+            diagonal_b,
+            "M0,0 L1220.5,-340.25 1222.25,-333.75 1.75,6.5 Z",
+            (352.4, 830.35),
+            Paint::Gradient(GradientPaint {
+                kind: PaintKind::LinearGradient,
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: [96, 165, 250, 245],
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: [250, 204, 21, 245],
+                    },
+                ],
+                start: [350.0, 492.0],
+                end: [1575.0, 830.0],
+                ..Default::default()
+            }),
+            false,
+        );
+        path(
+            &mut graph,
+            diagonal_c,
+            "M0,0 L1002.75,118.35 1001.85,125.85 -0.9,7.5 Z",
+            (465.55, 526.25),
+            Paint::solid([248, 113, 113, 230]),
+            true,
+        );
+        insert_drawn(
+            &mut graph,
+            hard_gradient,
+            &mut id,
+            |id| {
+                NodeKind::Shape2d(Shape2d {
+                    id,
+                    params: Shape2dParamsDelegate {
+                        width: Deferred::value(460.0),
+                        height: Deferred::value(220.0),
+                        transform: Transform2dDelegate {
+                            position: Deferred::value((222.45, 690.35)),
+                            ..Default::default()
                         },
                         ..Default::default()
                     },
                 })
-            };
-
-        graph.nodes.insert(
-            diagonal_a,
-            path(
-                diagonal_a,
-                "M0,0 L1510.25,486.75 1507.75,494.25 -2.5,7.5 Z",
-                (204.35, 250.65),
-                Paint::solid([255, 255, 255, 230]),
-                false,
-            ),
-        );
-        graph.nodes.insert(
-            diagonal_b,
-            path(
-                diagonal_b,
-                "M0,0 L1220.5,-340.25 1222.25,-333.75 1.75,6.5 Z",
-                (352.4, 830.35),
-                Paint::Gradient(GradientPaint {
-                    kind: PaintKind::LinearGradient,
-                    stops: vec![
-                        GradientStop {
-                            offset: 0.0,
-                            color: [96, 165, 250, 245],
-                        },
-                        GradientStop {
-                            offset: 1.0,
-                            color: [250, 204, 21, 245],
-                        },
-                    ],
-                    start: [350.0, 492.0],
-                    end: [1575.0, 830.0],
-                    ..Default::default()
-                }),
-                false,
-            ),
-        );
-        graph.nodes.insert(
-            diagonal_c,
-            path(
-                diagonal_c,
-                "M0,0 L1002.75,118.35 1001.85,125.85 -0.9,7.5 Z",
-                (465.55, 526.25),
-                Paint::solid([248, 113, 113, 230]),
-                true,
-            ),
-        );
-        graph.nodes.insert(
-            hard_gradient,
-            NodeKind::Shape(Shape {
-                id: hard_gradient,
-                params: ShapeParamsDelegate {
-                    width: Deferred::value(460.0),
-                    height: Deferred::value(220.0),
-                    placement: DrawablePlacementDelegate {
-                        position: Deferred::value((222.45, 690.35)),
-                        ..Default::default()
+            },
+            fill(Paint::Gradient(GradientPaint {
+                kind: PaintKind::LinearGradient,
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: [14, 165, 233, 255],
                     },
-                    style: DrawableStyleDelegate {
-                        fill_enabled: Deferred::value(true),
-                        fill_paint: Paint::Gradient(GradientPaint {
-                            kind: PaintKind::LinearGradient,
-                            stops: vec![
-                                GradientStop {
-                                    offset: 0.0,
-                                    color: [14, 165, 233, 255],
-                                },
-                                GradientStop {
-                                    offset: 0.495,
-                                    color: [14, 165, 233, 255],
-                                },
-                                GradientStop {
-                                    offset: 0.505,
-                                    color: [244, 63, 94, 255],
-                                },
-                                GradientStop {
-                                    offset: 1.0,
-                                    color: [244, 63, 94, 255],
-                                },
-                            ],
-                            start: [222.45, 690.35],
-                            end: [682.45, 910.35],
-                            ..Default::default()
-                        })
-                        .into(),
-                        stroke_enabled: Deferred::value(true),
-                        stroke_paint: Paint::solid([255, 255, 255, 220]).into(),
-                        stroke_width: Deferred::value(3.0),
-                        edge_antialias: Deferred::value(self.edge_antialias),
+                    GradientStop {
+                        offset: 0.495,
+                        color: [14, 165, 233, 255],
                     },
-                    ..Default::default()
-                },
+                    GradientStop {
+                        offset: 0.505,
+                        color: [244, 63, 94, 255],
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: [244, 63, 94, 255],
+                    },
+                ],
+                start: [222.45, 690.35],
+                end: [682.45, 910.35],
+                ..Default::default()
+            })),
+            Some(Stroke2dParamsDelegate {
+                paint: Paint::solid([255, 255, 255, 220]).into(),
+                width: Deferred::value(3.0),
+                ..Default::default()
             }),
         );
         graph.nodes.insert(

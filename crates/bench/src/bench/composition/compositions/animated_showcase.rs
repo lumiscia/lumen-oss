@@ -1,5 +1,5 @@
 use lumen_engine::node::source::text_content::TextContentDelegate;
-use lumen_engine::node::vector::drawable::{DrawablePlacementDelegate, DrawableStyleDelegate};
+use lumen_engine::node::vector::drawable::DrawablePlacementDelegate;
 use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     expr::Expression,
@@ -13,11 +13,18 @@ use lumen_engine::{
             background::{Background, BackgroundParamsDelegate},
             text::{Text, TextDrawParamsDelegate, TextLayoutParamsDelegate, TextParamsDelegate},
         },
-        vector::shape::{Shape, ShapeGeometryKind, ShapeParamsDelegate},
+        vector::{
+            drawing::{
+                Fill2dParamsDelegate, Shape2d, Shape2dParamsDelegate, Stroke2dParamsDelegate,
+                Transform2dDelegate,
+            },
+            paint::Paint,
+            shape::ShapeGeometryKind,
+        },
     },
 };
 
-use super::{render_720p, timeline};
+use super::{insert_drawn, render_720p, timeline};
 use crate::bench::CompositionFixture;
 
 pub struct AnimatedShowcase;
@@ -58,58 +65,63 @@ impl CompositionFixture for AnimatedShowcase {
                 },
             }),
         );
-        graph.nodes.insert(
+        let mut next_id = 11;
+        let mut id = || {
+            next_id += 1;
+            NodeId::new(next_id - 1)
+        };
+        insert_drawn(
+            &mut graph,
             glow,
-            NodeKind::Shape(Shape {
-                id: glow,
-                params: ShapeParamsDelegate {
-                    geometry_kind: ShapeGeometryKind::Ellipse.into(),
-                    width: Deferred::value(620.0),
-                    height: Deferred::value(620.0),
-                    placement: DrawablePlacementDelegate {
-                        position: Deferred::value((760.0, -140.0)),
+            &mut id,
+            |id| {
+                NodeKind::Shape2d(Shape2d {
+                    id,
+                    params: Shape2dParamsDelegate {
+                        geometry_kind: ShapeGeometryKind::Ellipse.into(),
+                        width: Deferred::value(620.0),
+                        height: Deferred::value(620.0),
+                        transform: Transform2dDelegate {
+                            position: Deferred::value((760.0, -140.0)),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
-                    style: DrawableStyleDelegate {
-                        fill_enabled: Deferred::value(true),
-                        fill_paint: lumen_engine::node::vector::paint::Paint::solid([
-                            37, 99, 235, 68,
-                        ])
-                        .into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-            }),
+                })
+            },
+            Fill2dParamsDelegate {
+                paint: Paint::solid([37, 99, 235, 68]).into(),
+                ..Default::default()
+            },
+            None,
         );
-        graph.nodes.insert(
+        insert_drawn(
+            &mut graph,
             card,
-            NodeKind::Shape(Shape {
-                id: card,
-                params: ShapeParamsDelegate {
-                    width: Deferred::value(860.0),
-                    height: Deferred::value(310.0),
-                    border_radius: Deferred::value(28.0),
-                    placement: DrawablePlacementDelegate {
-                        position: Deferred::value((210.0, 190.0)),
+            &mut id,
+            |id| {
+                NodeKind::Shape2d(Shape2d {
+                    id,
+                    params: Shape2dParamsDelegate {
+                        width: Deferred::value(860.0),
+                        height: Deferred::value(310.0),
+                        border_radius: Deferred::value(28.0),
+                        transform: Transform2dDelegate {
+                            position: Deferred::value((210.0, 190.0)),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
-                    style: DrawableStyleDelegate {
-                        fill_enabled: Deferred::value(true),
-                        fill_paint: lumen_engine::node::vector::paint::Paint::solid([
-                            15, 27, 49, 255,
-                        ])
-                        .into(),
-                        stroke_enabled: Deferred::value(true),
-                        stroke_paint: lumen_engine::node::vector::paint::Paint::solid([
-                            71, 85, 105, 255,
-                        ])
-                        .into(),
-                        stroke_width: Deferred::value(1.5),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
+                })
+            },
+            Fill2dParamsDelegate {
+                paint: Paint::solid([15, 27, 49, 255]).into(),
+                ..Default::default()
+            },
+            Some(Stroke2dParamsDelegate {
+                paint: Paint::solid([71, 85, 105, 255]).into(),
+                width: Deferred::value(1.5),
+                ..Default::default()
             }),
         );
         graph.nodes.insert(

@@ -5,7 +5,9 @@
 use serde_json::{Value, json};
 
 use crate::color::{decode, encode, linear};
-use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
+use crate::support::{
+    Case, Expect, Frame, Scene, TestMedia, check, filled_shape, gpu, render, scene,
+};
 
 const CANVAS: (u32, u32) = (96, 64);
 const LUMA: [f64; 3] = [0.2126, 0.7152, 0.0722];
@@ -23,8 +25,11 @@ fn fill(color: [u8; 4]) -> Value {
 }
 
 fn square(position: Value, size: u32, color: [u8; 4]) -> Value {
-    json!({ "id": 1, "type": "shape", "params": {
-        "position": position, "width": size, "height": size, "fill_paint": color } })
+    json!(filled_shape(
+        1,
+        json!({ "position": position, "width": size, "height": size }),
+        json!({ "paint": color }),
+    ))
 }
 
 /// The light an opaque `color` casts at `threshold`, in linear light, before it is blurred: its

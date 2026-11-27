@@ -5,7 +5,10 @@ use lumen_gpu::{RectI, Size};
 use serde_json::{Value, json};
 
 use crate::color::{linear, opaque};
-use crate::support::{CLEAR, Case, Expect, GREEN, RED, TestMedia, check, gpu, render, scene};
+use crate::support::{
+    CLEAR, Case, Expect, GREEN, RED, TestMedia, check, filled_path, filled_shape, gpu, render,
+    scene,
+};
 
 fn composition((width, height): (u32, u32), nodes: Value) -> Composition {
     scene((width, height), nodes).frames(12).into()
@@ -120,7 +123,11 @@ fn bind_errors() {
     ));
     rows.push(row(
         "glyph on a node that is not text",
-        json!([{ "id": 1, "type": "shape", "params": { "opacity": "=glyph / glyph_count" } }]),
+        json!(filled_shape(
+            1,
+            json!({}),
+            json!({ "opacity": "=glyph / glyph_count" })
+        )),
         glyph("glyph"),
     ));
     // Another node's property is evaluated outside the glyph, so it fails as it would alone.
@@ -207,8 +214,12 @@ fn bind_errors() {
     ));
     rows.push(row(
         "malformed path data",
-        json!([{ "id": 1, "type": "path", "params": { "data": "M 0 0 L 10 10 C nope" } }]),
-        "path node 1 evaluation failed: `data` is malformed",
+        json!(filled_path(
+            1,
+            json!({ "data": "M 0 0 L 10 10 C nope" }),
+            json!({})
+        )),
+        "path_2d node 1001 evaluation failed: `data` is malformed",
     ));
     let mut data = String::from("M 10 10");
     for index in 1..20_000 - 2 {
@@ -220,7 +231,7 @@ fn bind_errors() {
     }
     rows.push(row(
         "path above the point limit",
-        json!([{ "id": 1, "type": "path", "params": { "data": data + " Z" } }]),
+        json!(filled_path(1, json!({ "data": data + " Z" }), json!({}))),
         "more than 16384 points",
     ));
 
@@ -308,15 +319,7 @@ fn animated_values_update_each_frame() {
 
 #[test]
 fn expressions_on_path_data_draw_like_their_values() {
-    let path = |params: Value| {
-        let mut params = params;
-        params["stroke_enabled"] = json!(false);
-        scene(
-            (24, 24),
-            json!([{ "id": 1, "type": "path", "params": params }]),
-        )
-        .frames(12)
-    };
+    let path = |params: Value| scene((24, 24), json!(filled_path(1, params, json!({})))).frames(12);
     let row = |name: &str, animated: Value, literal: Value| {
         Case::new(name, path(animated), Expect::Matches(path(literal).into()))
             .frames([5.0])
@@ -528,10 +531,15 @@ fn crop_clamps_extreme_values_to_its_source() {
 fn a_small_shape_records_around_its_bounds() {
     let composition = composition(
         (1920, 1080),
-        json!([{ "id": 1, "type": "shape", "params": {
-            "width": 40, "height": 20, "position": [100, 200],
-            "stroke_enabled": true, "stroke_width": 2
-        } }]),
+        json!([
+            { "id": 2, "type": "shape_2d", "params": {
+                "width": 40, "height": 20, "position": [100, 200]
+            } },
+            { "id": 3, "type": "fill_2d", "in": { "geometry": 2 } },
+            { "id": 4, "type": "stroke_2d", "params": { "width": 2 }, "in": { "geometry": 2 } },
+            { "id": 5, "type": "merge_2d", "in": { "drawings": [3, 4] } },
+            { "id": 1, "type": "render_2d", "in": { "drawing": 5 } },
+        ]),
     );
     let gpu = gpu();
     let mut renderer = gpu.renderer();
@@ -585,9 +593,11 @@ fn text_over_shape() -> Composition {
     composition(
         (8, 4),
         json!([
-            { "id": 1, "type": "shape", "params": {
-                "width": 6, "height": 4, "position": [1, 0], "fill_paint": RED
-            } },
+            filled_shape(
+                1,
+                json!({ "width": 6, "height": 4, "position": [1, 0] }),
+                json!({ "paint": RED }),
+            ),
             { "id": 2, "type": "text", "params": {
                 "content": "hi", "font_size": 4,
                 "color": {

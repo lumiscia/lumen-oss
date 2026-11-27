@@ -33,25 +33,28 @@
       }
     },
     {
-      "id": 2,
-      "type": "path",
+      "id": 9,
+      "type": "path_2d",
       "params": {
         "data": "M 0 0 L 1510.25 486.75 L 1507.75 494.25 L -2.5 7.5 Z",
-        "position": [204.35, 250.65],
-        "fill_enabled": true,
-        "fill_paint": [255, 255, 255, 230],
-        "stroke_enabled": false,
-        "stroke_width": 1
+        "position": [204.35, 250.65]
+      }
+    },
+    { "id": 10, "type": "fill_2d", "params": { "paint": [255, 255, 255, 230] } },
+    { "id": 2, "type": "render_2d" },
+    {
+      "id": 11,
+      "type": "path_2d",
+      "params": {
+        "data": "M 0 0 L 1220.5 -340.25 L 1222.25 -333.75 L 1.75 6.5 Z",
+        "position": [352.4, 830.35]
       }
     },
     {
-      "id": 3,
-      "type": "path",
+      "id": 12,
+      "type": "fill_2d",
       "params": {
-        "data": "M 0 0 L 1220.5 -340.25 L 1222.25 -333.75 L 1.75 6.5 Z",
-        "position": [352.4, 830.35],
-        "fill_enabled": true,
-        "fill_paint": {
+        "paint": {
           "type": "linear_gradient",
           "units": "user_space",
           "start": [350, 492],
@@ -60,35 +63,38 @@
             { "offset": 0, "color": [96, 165, 250, 245] },
             { "offset": 1, "color": [250, 204, 21, 245] }
           ]
-        },
-        "stroke_enabled": false,
-        "stroke_width": 1
+        }
       }
     },
+    { "id": 3, "type": "render_2d" },
     {
-      "id": 4,
-      "type": "path",
+      "id": 13,
+      "type": "path_2d",
       "params": {
         "data": "M 0 0 L 1002.75 118.35 L 1001.85 125.85 L -0.9 7.5 Z",
-        "position": [465.55, 526.25],
-        "fill_enabled": true,
-        "fill_paint": [248, 113, 113, 230],
-        "stroke_enabled": true,
-        "stroke_paint": [255, 255, 255, 210],
-        "stroke_width": 2
+        "position": [465.55, 526.25]
       }
     },
+    { "id": 14, "type": "fill_2d", "params": { "paint": [248, 113, 113, 230] } },
+    { "id": 15, "type": "stroke_2d", "params": { "paint": [255, 255, 255, 210], "width": 2 } },
+    { "id": 16, "type": "merge_2d" },
+    { "id": 4, "type": "render_2d" },
     {
-      "id": 5,
-      "type": "shape",
+      "id": 17,
+      "type": "shape_2d",
       "params": {
         "geometry_kind": "rectangle",
         "width": 460,
         "height": 220,
         "border_radius": 0,
-        "position": [222.45, 690.35],
-        "fill_enabled": true,
-        "fill_paint": {
+        "position": [222.45, 690.35]
+      }
+    },
+    {
+      "id": 18,
+      "type": "fill_2d",
+      "params": {
+        "paint": {
           "type": "linear_gradient",
           "units": "user_space",
           "start": [222.45, 690.35],
@@ -99,12 +105,12 @@
             { "offset": 0.505, "color": [244, 63, 94, 255] },
             { "offset": 1, "color": [244, 63, 94, 255] }
           ]
-        },
-        "stroke_enabled": true,
-        "stroke_paint": [255, 255, 255, 220],
-        "stroke_width": 3
+        }
       }
     },
+    { "id": 19, "type": "stroke_2d", "params": { "paint": [255, 255, 255, 220], "width": 3 } },
+    { "id": 20, "type": "merge_2d" },
+    { "id": 5, "type": "render_2d" },
     {
       "id": 6,
       "type": "text",
@@ -148,6 +154,20 @@
     { "from_node": 4, "from_port": "output", "to_node": 7, "to_port": "layers" },
     { "from_node": 5, "from_port": "output", "to_node": 7, "to_port": "layers" },
     { "from_node": 6, "from_port": "output", "to_node": 7, "to_port": "layers" },
-    { "from_node": 7, "from_port": "output", "to_node": 8, "to_port": "source" }
+    { "from_node": 7, "from_port": "output", "to_node": 8, "to_port": "source" },
+    { "from_node": 9, "to_node": 10, "to_port": "geometry" },
+    { "from_node": 10, "to_node": 2, "to_port": "drawing" },
+    { "from_node": 11, "to_node": 12, "to_port": "geometry" },
+    { "from_node": 12, "to_node": 3, "to_port": "drawing" },
+    { "from_node": 13, "to_node": 14, "to_port": "geometry" },
+    { "from_node": 13, "to_node": 15, "to_port": "geometry" },
+    { "from_node": 14, "to_node": 16, "to_port": "drawings" },
+    { "from_node": 15, "to_node": 16, "to_port": "drawings" },
+    { "from_node": 16, "to_node": 4, "to_port": "drawing" },
+    { "from_node": 17, "to_node": 18, "to_port": "geometry" },
+    { "from_node": 17, "to_node": 19, "to_port": "geometry" },
+    { "from_node": 18, "to_node": 20, "to_port": "drawings" },
+    { "from_node": 19, "to_node": 20, "to_port": "drawings" },
+    { "from_node": 20, "to_node": 5, "to_port": "drawing" }
   ]
 }
