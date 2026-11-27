@@ -29,6 +29,7 @@ pub use error::{Error, ErrorCode};
 pub use fonts::{FONT_DIR_ENV, FontCatalog, ResolvedFont, existing_font_dir};
 pub use gpu::{
     Mp4Render, RenderReport, RenderTiming, RenderedOutput, create_gpu_renderer, render_project,
+    render_project_to_path,
 };
 pub use image_render::{EncodedImage, ImageRender};
 pub use lumen_gpu::GpuSettings;
@@ -53,7 +54,8 @@ pub struct RenderConfig {
     pub hardware_decode: bool,
     /// How the GPU instance and adapter are chosen. The default reads no environment variables.
     pub gpu: GpuSettings,
-    /// Where a render keeps its output while encoding, in a directory of its own that it removes.
+    /// Where [`render_project`] keeps its output while encoding, in a directory of its own that it
+    /// removes. [`render_project_to_path`] writes beside its destination instead.
     /// `None` is the system temporary directory, which the standard library takes from `TMPDIR`.
     pub temp_dir: Option<PathBuf>,
     /// Device pixels each canvas pixel renders at, as

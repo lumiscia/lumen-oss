@@ -41,11 +41,37 @@ pub struct RenderedOutput {
 /// An output that can't be rendered, or a sequence past `options.sequence_limits`, ends the render
 /// before any GPU work. Frames are encoded and written to the ZIP one at a time, so a sequence
 /// takes memory for one frame and, at the end, for the archive that holds them.
+/// [`render_project_to_path`] writes the output to a file without holding it in memory.
 pub fn render_project(
     composition: &Composition,
     options: &RenderOptions,
     on_progress: &mut dyn FnMut(RenderProgress),
 ) -> Result<RenderedOutput, Error> {
+    let tmp = match &options.config.temp_dir {
+        Some(dir) => tempfile::tempdir_in(dir),
+        None => tempfile::tempdir(),
+    }
+    .map_err(|err| output_io("failed to create temp dir", err))?;
+    let output_path = tmp
+        .path()
+        .join(format!("output.{}", options.output.format.extension()));
+    let format = render_project_to_path(composition, options, &output_path, on_progress)?;
+    let bytes =
+        fs::read(&output_path).map_err(|err| output_io("failed to read encoded output", err))?;
+    Ok(RenderedOutput { format, bytes })
+}
+
+/// Renders `composition` as [`render_project`] does and writes the output to `path`, replacing any
+/// file there, and returns its format. The output is written to a new file in `path`'s directory
+/// and renamed to `path` once it is complete, so a render that fails or is cancelled leaves no file
+/// and keeps any earlier one. A process killed mid-render leaves the new file, named
+/// `.lumen-*.partial.<extension>`, behind.
+pub fn render_project_to_path(
+    composition: &Composition,
+    options: &RenderOptions,
+    path: &Path,
+    on_progress: &mut dyn FnMut(RenderProgress),
+) -> Result<OutputFormat, Error> {
     let format = options.output.format;
     options.output.validate(
         composition.timeline().duration_frames,
@@ -78,12 +104,7 @@ pub fn render_project(
     if let Some(assets) = &options.assets {
         media_store = media_store.with_assets(Arc::clone(assets));
     }
-    let tmp = match &options.config.temp_dir {
-        Some(dir) => tempfile::tempdir_in(dir),
-        None => tempfile::tempdir(),
-    }
-    .map_err(|err| output_io("failed to create temp dir", err))?;
-    let output_path = tmp.path().join(format!("output.{}", format.extension()));
+    let partial = partial_file(path, format)?;
 
     if format.is_video() {
         let choice = match &options.encoder {
@@ -99,7 +120,7 @@ pub fn render_project(
             composition,
             media_store,
             choice,
-            &output_path,
+            &partial,
             &options.output,
             options.cancel.clone(),
         )?;
@@ -126,24 +147,47 @@ pub fn render_project(
                 },
                 on_progress,
             )?;
-            return Ok(RenderedOutput {
+            options.cancel.check()?;
+            fs::write(&partial, still)
+                .map_err(|err| output_io("failed to write the output", err))?;
+        } else {
+            write_archive(
+                render,
+                &partial,
                 format,
-                bytes: still,
-            });
+                &options.sequence_limits,
+                on_progress,
+            )?;
         }
-        write_archive(
-            render,
-            &output_path,
-            format,
-            &options.sequence_limits,
-            on_progress,
-        )?;
     }
 
     options.cancel.check()?;
-    let bytes =
-        fs::read(&output_path).map_err(|err| output_io("failed to read encoded output", err))?;
-    Ok(RenderedOutput { format, bytes })
+    partial
+        .persist(path)
+        .map_err(|err| output_io("failed to move the output into place", err.error))?;
+    Ok(format)
+}
+
+/// A new, empty file beside `path` that is removed when dropped. Its name keeps the format's
+/// extension, which names the container a video encoder writes.
+fn partial_file(path: &Path, format: OutputFormat) -> Result<tempfile::TempPath, Error> {
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let suffix = format!(".partial.{}", format.extension());
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".lumen-").suffix(&suffix);
+    // The output gets the permissions a newly created file would, rather than owner-only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o666));
+    }
+    let file = builder
+        .tempfile_in(directory)
+        .map_err(|err| output_io("failed to create the output file", err))?;
+    Ok(file.into_temp_path())
 }
 
 fn output_io(context: &str, error: std::io::Error) -> Error {

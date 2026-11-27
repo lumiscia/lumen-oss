@@ -12,6 +12,7 @@ use serde_json::json;
 use super::{
     CancelToken, ErrorCode, FrameRange, OutputFormat, RenderConfig, RenderOptions, RenderOutput,
     SequenceLimits, archive::tests::read_zip, parse_composition, render_project,
+    render_project_to_path,
 };
 
 const FPS: u32 = 24;
@@ -568,6 +569,69 @@ fn cancelling_a_sequence_stops_it_and_leaves_nothing_behind() {
     assert_eq!(error.code(), ErrorCode::Cancelled, "{error}");
     assert_eq!(rendered, 3);
     assert!(setup.nothing_left_behind());
+}
+
+#[test]
+fn rendering_to_a_path_writes_the_bytes_render_project_returns() {
+    let setup = Setup::new();
+    let destination = tempfile::tempdir().unwrap();
+    for (format, name) in [
+        (OutputFormat::Mp4, "film.mp4"),
+        (OutputFormat::Png, "still.png"),
+        (OutputFormat::PngSequence, "frames.zip"),
+    ] {
+        let options = setup.options(image_format(format, range(Some(2), None)));
+        let expected = render_project(&ramp(true), &options, &mut |_| {})
+            .unwrap()
+            .bytes;
+        let path = destination.path().join(name);
+        let written = render_project_to_path(&ramp(true), &options, &path, &mut |_| {}).unwrap();
+        assert_eq!(written, format);
+        assert!(fs::read(&path).unwrap() == expected, "{format:?}");
+    }
+    assert_eq!(fs::read_dir(destination.path()).unwrap().count(), 3);
+    assert!(setup.nothing_left_behind());
+}
+
+#[test]
+fn a_cancelled_render_to_a_path_leaves_no_file_and_keeps_an_earlier_one() {
+    let setup = Setup::new();
+    let destination = tempfile::tempdir().unwrap();
+    let cancelled_at_frame_3 = |path: &Path| {
+        let cancel = CancelToken::new();
+        let mut options = setup.options(video(range(Some(0), Some(60))));
+        options.cancel = cancel.clone();
+        render_project_to_path(&ramp(false), &options, path, &mut |progress| {
+            if progress.frame == 3 {
+                cancel.cancel();
+            }
+        })
+        .unwrap_err()
+    };
+
+    let error = cancelled_at_frame_3(&destination.path().join("fresh.mp4"));
+    assert_eq!(error.code(), ErrorCode::Cancelled, "{error}");
+    assert_eq!(fs::read_dir(destination.path()).unwrap().count(), 0);
+
+    let earlier = destination.path().join("earlier.mp4");
+    fs::write(&earlier, b"earlier").unwrap();
+    let error = cancelled_at_frame_3(&earlier);
+    assert_eq!(error.code(), ErrorCode::Cancelled, "{error}");
+    assert_eq!(fs::read(&earlier).unwrap(), b"earlier");
+    assert_eq!(fs::read_dir(destination.path()).unwrap().count(), 1);
+
+    let still_path = destination.path().join("earlier.png");
+    fs::write(&still_path, b"earlier-still").unwrap();
+    let cancel = CancelToken::new();
+    let mut still_options = setup.options(image_format(OutputFormat::Png, range(Some(2), None)));
+    still_options.cancel = cancel.clone();
+    let error = render_project_to_path(&ramp(false), &still_options, &still_path, &mut |_| {
+        cancel.cancel();
+    })
+    .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Cancelled, "{error}");
+    assert_eq!(fs::read(&still_path).unwrap(), b"earlier-still");
+    assert_eq!(fs::read_dir(destination.path()).unwrap().count(), 2);
 }
 
 #[test]
