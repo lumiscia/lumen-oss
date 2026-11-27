@@ -209,6 +209,7 @@ pub fn route<'a>(
                 .unwrap_or_default()
         }
         NodeKind::Clip(node) => node.route(scope, frame, media)?.into_iter().collect(),
+        #[cfg(feature = "3d")]
         NodeKind::Merge3d(node) if !node.visible(&scope.expr_context(frame, media))? => Vec::new(),
         _ => node
             .input_ports()

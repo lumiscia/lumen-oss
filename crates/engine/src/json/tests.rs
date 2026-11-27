@@ -237,14 +237,16 @@ fn a_connection_names_an_output_its_source_has_or_none() {
         .unwrap()
         .remove("from_port");
     assert!(parse_value(&omitted).is_ok());
-    for (source, port, outputs) in [
+    let cases = [
         ("background", "mask", "its only output is `output`"),
+        #[cfg(feature = "3d")]
         (
             "render_3d",
             "velocity",
             "its outputs are `output`, `color`, `depth`, `normal` and `matte`",
         ),
-    ] {
+    ];
+    for (source, port, outputs) in cases {
         let document = composition(source, serde_json::json!(port));
         let error = parse_value(&document).unwrap_err();
         let expected = format!("connection 0: node 1 has no output \"{port}\"; {outputs}");
@@ -1472,6 +1474,7 @@ fn scene_document(nodes: Value, connections: Value) -> Value {
     })
 }
 
+#[cfg(feature = "3d")]
 #[test]
 fn scenes_and_rasters_only_wire_into_inputs_of_their_kind() {
     let document = scene_document(
@@ -1506,6 +1509,7 @@ fn scenes_and_rasters_only_wire_into_inputs_of_their_kind() {
     );
 }
 
+#[cfg(feature = "3d")]
 #[test]
 fn a_clip_outputs_what_its_template_outputs() {
     let template = |nodes: Value| {
@@ -1557,6 +1561,7 @@ fn a_clip_outputs_what_its_template_outputs() {
     );
 }
 
+#[cfg(feature = "3d")]
 #[test]
 fn a_raster_wired_into_a_solid_s_geometry_points_at_the_2d_geometry_nodes() {
     let document = scene_document(
@@ -1585,6 +1590,7 @@ fn a_raster_wired_into_a_solid_s_geometry_points_at_the_2d_geometry_nodes() {
     );
 }
 
+#[cfg(feature = "3d")]
 #[test]
 fn a_gradient_where_3d_needs_a_solid_color_is_reported_at_its_param() {
     let gradient = serde_json::json!({
@@ -1653,6 +1659,53 @@ fn scene_nodes_need_an_engine_built_with_3d() {
                 ("node.unsupported", "/nodes/4/type", Some(5)),
                 ("node.unsupported", "/nodes/5/type", Some(6)),
             ]
+        );
+    }
+}
+
+#[cfg(not(feature = "3d"))]
+#[test]
+fn every_3d_node_kind_reports_node_unsupported_without_3d_feature() {
+    let kinds = [
+        "material_3d",
+        "shape_3d",
+        "image_plane_3d",
+        "text_3d",
+        "extrude_3d",
+        "lathe_3d",
+        "model_3d",
+        "camera_3d",
+        "light_3d",
+        "merge_3d",
+        "instance_3d",
+        "particles_3d",
+        "render_3d",
+    ];
+    let nodes: Vec<_> = kinds
+        .iter()
+        .enumerate()
+        .map(|(index, kind)| serde_json::json!({ "id": index + 1, "type": kind }))
+        .chain(std::iter::once(
+            serde_json::json!({ "id": 100, "type": "media_output" }),
+        ))
+        .collect();
+    let document = serde_json::json!({
+        "timeline": { "duration_frames": 1 },
+        "render_settings": { "width": 16, "height": 16 },
+        "nodes": nodes,
+        "connections": []
+    });
+    let diagnostics = check_value(&document, None, None);
+    assert_eq!(diagnostics.len(), kinds.len());
+    for (index, (diagnostic, kind)) in diagnostics.iter().zip(kinds).enumerate() {
+        let id = index + 1;
+        assert_eq!(diagnostic.code, "node.unsupported", "{kind}");
+        assert_eq!(diagnostic.path, format!("/nodes/{index}/type"), "{kind}");
+        assert_eq!(diagnostic.node, Some(NodeId::new(id as u64)), "{kind}");
+        assert_eq!(
+            diagnostic.message,
+            format!("node {id} (`{kind}`): {}", crate::error::NO_3D_SUPPORT),
+            "{kind}"
         );
     }
 }
@@ -1904,6 +1957,7 @@ fn check_finds_asset_references_the_host_lacks_or_holds_as_another_kind() {
     );
 }
 
+#[cfg(feature = "3d")]
 #[test]
 fn a_masked_shadow_catcher_is_reported_at_the_materials_alpha_mode() {
     let diagnostics = check_value(

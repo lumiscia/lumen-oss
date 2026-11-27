@@ -171,12 +171,14 @@ impl NodeParamType for super::vector::drawing::Shadows {
     }
 }
 
+#[cfg(feature = "3d")]
 impl NodeParamType for super::scene::Region {
     fn property_kind() -> PropertyKind {
         PropertyKind::Custom(&super::scene::REGION)
     }
 }
 
+#[cfg(feature = "3d")]
 impl NodeParamType for super::scene::MatteNames {
     fn property_kind() -> PropertyKind {
         PropertyKind::Custom(&super::scene::MATTE_NAMES)

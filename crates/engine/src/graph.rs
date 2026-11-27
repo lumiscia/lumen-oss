@@ -509,6 +509,7 @@ mod tests {
         assert_eq!(shader(Some(NodeId::new(2).into())), ["node.unsupported"]);
     }
 
+    #[cfg(feature = "3d")]
     #[test]
     fn nodes_that_output_or_take_a_scene_need_3d() {
         use crate::node::{
