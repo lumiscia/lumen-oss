@@ -1,6 +1,6 @@
 [target.wasm32-unknown-unknown]
 rustflags = [
   "--cfg=web_sys_unstable_apis",
-  "-Clink-arg=--initial-memory=134217728",
+  "-Clink-arg=--initial-memory=16777216",
   "-Clink-arg=--max-memory=2147483648",
 ]
