@@ -22,7 +22,6 @@ pub use ast::{
 };
 pub use cache::HeldValues;
 pub(crate) use cache::{HeldCache, same_value};
-#[cfg(feature = "3d")]
 pub(crate) use eval::InstanceEvaluator;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use eval::evaluation_count;
@@ -49,7 +48,8 @@ pub struct ExpressionContext<'a> {
     pub media: Option<&'a dyn crate::media::MediaStore>,
     /// The glyph being drawn, while a text node evaluates its per-glyph params.
     pub glyph: Option<GlyphScope>,
-    /// The copy being placed, while an `instance_3d` evaluates its per-instance params.
+    /// The copy being placed, while an `instance_2d` or `instance_3d` evaluates its per-copy
+    /// params.
     pub instance: Option<InstanceScope>,
     /// The props of the template instance being evaluated, which `prop('name')` reads.
     pub props: Option<&'a crate::scope::PropValues>,
@@ -66,7 +66,7 @@ pub struct GlyphScope {
     pub counts: lumen_text::TextItem,
 }
 
-/// Which of an `instance_3d`'s copies is being placed, read by the `instance` and
+/// Which of an instance node's copies is being placed, read by the `instance` and
 /// `instance_count` globals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InstanceScope {

@@ -83,13 +83,13 @@ export const lineCount = new Expr<number>("line_count");
 export const spanCount = new Expr<number>("span_count");
 
 /**
- * Index of the copy being placed, from 0. Only in an `instance_3d`'s `position`, `rotation`,
- * `scale` and `tint` params.
+ * Index of the copy being placed, from 0. Only in an `instance_2d`'s or `instance_3d`'s per-copy
+ * params.
  */
 export const instance = new Expr<number>("instance");
 
 /**
- * Number of copies. Only in an `instance_3d`'s `position`, `rotation`, `scale` and `tint` params.
+ * Number of copies. Only in an `instance_2d`'s or `instance_3d`'s per-copy params.
  */
 export const instanceCount = new Expr<number>("instance_count");
 

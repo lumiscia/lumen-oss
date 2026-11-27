@@ -484,7 +484,9 @@ fn wrong_kind_hint(expected: PortKind, actual: PortKind) -> &'static str {
         (Scene, _) => "show the raster in the scene through an image_plane_3d",
         (Geometry, Drawing) => "wire in the geometry the drawing's fill_2d or stroke_2d styles",
         (Geometry, _) => "build the outline from path_2d, shape_2d, text_2d and offset_2d nodes",
-        (Drawing, _) => "build the drawing from fill_2d, stroke_2d, shadow_2d and merge_2d nodes",
+        (Drawing, _) => {
+            "build the drawing from fill_2d, stroke_2d, shadow_2d, merge_2d and instance_2d nodes"
+        }
     }
 }
 

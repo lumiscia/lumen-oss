@@ -276,7 +276,7 @@ export interface EvaluateRequest {
    */
   readonly frame: number;
   /**
-   * The copy an `instance_3d`'s `position`, `rotation` and `scale` are evaluated for, which
+   * The copy an `instance_2d`'s or `instance_3d`'s per-copy params are evaluated for, which
    * they read as `instance`. Other nodes and params ignore it.
    */
   readonly instance?: number;

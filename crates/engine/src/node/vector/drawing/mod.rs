@@ -5,6 +5,7 @@
 
 mod build;
 mod collect;
+mod instance;
 #[cfg(feature = "3d")]
 mod outline;
 mod record;
@@ -30,6 +31,9 @@ use crate::node::{
 pub(crate) use build::DrawingCache;
 #[cfg(feature = "3d")]
 pub(crate) use collect::{Outline, Source, resolve_outline};
+pub use instance::{
+    Instance2d, Instance2dCopies, Instance2dCopy, Instance2dParams, Instance2dParamsDelegate,
+};
 #[cfg(feature = "3d")]
 pub(crate) use outline::{Contour, flatten};
 #[cfg(feature = "3d")]

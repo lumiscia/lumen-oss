@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{ParseError, load, read_json};
-#[cfg(feature = "3d")]
 use crate::expr::InstanceScope;
 use crate::{
     composition::{Composition, SceneId},
@@ -29,7 +28,7 @@ pub struct EvaluateRequest {
     /// The composition frame, which may be fractional. A node inside a `clip`, or behind a
     /// `time_remap`, is evaluated at the frame of its own time that this frame maps to.
     pub frame: f64,
-    /// The copy an `instance_3d`'s `position`, `rotation` and `scale` are evaluated for, which
+    /// The copy an `instance_2d`'s or `instance_3d`'s per-copy params are evaluated for, which
     /// they read as `instance`. Other nodes and params ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<u32>,
@@ -68,16 +67,18 @@ fn evaluate(composition: &Composition, request: &EvaluateRequest) -> crate::Resu
     };
     let scope = Scope::root(composition);
     let frame = local_frame(&scope, request)?;
-    #[cfg(feature = "3d")]
     let mut ctx = scope.expr_context(frame, None);
-    #[cfg(not(feature = "3d"))]
-    let ctx = scope.expr_context(frame, None);
-    // `count` is the one param of an `instance_3d` that isn't evaluated for a copy.
-    #[cfg(feature = "3d")]
-    if let (NodeKind::Instance3d(instances), Some(index)) = (node, request.instance)
+    // `count` is the one param of an instance node that isn't evaluated for a copy.
+    let count = match node {
+        NodeKind::Instance2d(instances) => Some(&instances.params.count),
+        #[cfg(feature = "3d")]
+        NodeKind::Instance3d(instances) => Some(&instances.params.count),
+        _ => None,
+    };
+    if let (Some(count), Some(index)) = (count, request.instance)
         && request.param != "count"
     {
-        let count = instances.params.count.eval(request.node, "count", &ctx)?;
+        let count = count.eval(request.node, "count", &ctx)?;
         ctx.instance = Some(InstanceScope {
             index,
             count: count.0,

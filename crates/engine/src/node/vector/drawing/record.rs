@@ -9,9 +9,13 @@ use super::build::{DRAWING_SHADER, Keeping, build};
 use super::collect::{Source, collect};
 use super::text::{check_length, check_weight, shape_text};
 use super::tiles::{TILE_SIZE, tile_lists};
-use super::{Fill2d, Merge2d, Offset2d, Path2d, Render2d, Shadow2d, Shape2d, Stroke2d, Text2d};
+use super::{
+    Fill2d, Instance2d, Merge2d, Offset2d, Path2d, Render2d, Shadow2d, Shape2d, Stroke2d, Text2d,
+};
 use crate::error::{LumenError, RenderError};
-use crate::gpu::frame_graph::{ComputeProgram, FrameCx, Programs, Raster, RecordNode};
+use crate::gpu::frame_graph::{
+    ComputeProgram, FrameCx, Programs, Raster, RecordNode, Staticness, held,
+};
 use crate::node::{Deferred, JsonNode, Node, required_input};
 
 fn not_a_raster<N: JsonNode>(node_id: crate::node::NodeId, outputs: &str) -> LumenError {
@@ -46,6 +50,26 @@ vector_nodes! {
     Stroke2d => "a drawing",
     Shadow2d => "a drawing",
     Merge2d => "a drawing",
+}
+
+impl RecordNode for Instance2d {
+    fn programs(&self, _: &mut Programs<'_>) -> crate::Result<()> {
+        Ok(())
+    }
+
+    fn record(&self, _: &mut FrameCx<'_>) -> crate::Result<Raster> {
+        Err(not_a_raster::<Instance2d>(self.id, "a drawing"))
+    }
+
+    // Per-copy params are evaluated in a scope of their own, which `frame_values` doesn't
+    // evaluate them in.
+    fn staticness(&self, reads_frame: bool) -> Staticness {
+        if reads_frame {
+            Staticness::Never
+        } else {
+            held(reads_frame)
+        }
+    }
 }
 
 impl RecordNode for Text2d {

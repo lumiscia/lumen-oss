@@ -24,6 +24,7 @@ use serde_json::{Number, Value};
 
 #[cfg(feature = "3d")]
 use crate::node::scene::{Instance3d, Material3d};
+use crate::node::vector::drawing::Instance2d;
 use crate::{
     audio::{AudioClip, AudioGain, AudioTimeline, AudioTrack},
     composition::{
@@ -956,10 +957,13 @@ fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Grap
                 continue;
             }
         };
-        #[cfg(feature = "3d")]
-        if let (NodeKind::Instance3d(_), Some(params)) = (&node_kind, params)
-            && let Some(details) = Instance3d::copies_conflict(params)
-        {
+        let copies_conflict = match &node_kind {
+            NodeKind::Instance2d(_) => params.and_then(Instance2d::copies_conflict),
+            #[cfg(feature = "3d")]
+            NodeKind::Instance3d(_) => params.and_then(Instance3d::copies_conflict),
+            _ => None,
+        };
+        if let Some(details) = copies_conflict {
             errors.push(
                 DocumentError::InvalidParam {
                     at: At::param(id, "copies"),

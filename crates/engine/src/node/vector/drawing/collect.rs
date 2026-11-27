@@ -10,9 +10,11 @@ use super::super::paint::{GpuPaint, Paint};
 use super::super::path::{MAX_PATH_COORDINATE, normalized_trim_range};
 use super::super::shape::ShapeGeometryKind;
 use super::build::{identity, then};
-use super::{CastShadow, Fill2d, Offset2d, Render2d, Shadow2d, Stroke2d, Text2dParams};
+use super::instance::MAX_NESTING;
+use super::{CastShadow, Fill2d, Instance2d, Offset2d, Render2d, Shadow2d, Stroke2d, Text2dParams};
 use crate::error::{At, PropertyError, RenderError};
 use crate::expr::ExpressionContext;
+use crate::gpu::color::srgb_to_linear;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeKind};
 
 /// Most nodes a drawing may reach, counting a node each time it is reached.
@@ -188,6 +190,26 @@ impl Cast {
         SHADOW_FADE_PER_SIGMA * self.sigma
     }
 
+    /// This shadow in a copy placed by the canvas map `linear`, which scales its lengths by its
+    /// area scale and turns its offset.
+    fn copied(self, linear: [[f32; 2]; 2]) -> Cast {
+        let [column_x, column_y] = linear.map(|column| column.map(f64::from));
+        let scale = (column_x[0] * column_y[1] - column_x[1] * column_y[0])
+            .abs()
+            .sqrt();
+        let [x, y] = self.offset.map(f64::from);
+        let offset = [
+            column_x[0] * x + column_y[0] * y,
+            column_x[1] * x + column_y[1] * y,
+        ];
+        Cast {
+            offset: offset.map(|value| value as f32),
+            sigma: self.sigma * scale,
+            spread: self.spread * scale,
+            ..self
+        }
+    }
+
     /// The shadow `outer` casts of this one.
     fn under(self, outer: Cast) -> Cast {
         Cast {
@@ -212,6 +234,8 @@ pub(super) struct Use {
     pub(super) style: Style,
     pub(super) paint: GpuPaint,
     pub(super) opacity: f32,
+    /// Linear colour multiplying the paint, from the tints of the `instance_2d` nodes around it.
+    pub(super) tint: [f32; 3],
     pub(super) shadow: Option<Cast>,
 }
 
@@ -223,12 +247,20 @@ pub(super) struct Record {
 }
 
 enum Step {
-    Draw(NodeId, GpuDrawableTransform),
+    /// Draws a node under a transform, inside as many `instance_2d` nodes.
+    Draw(NodeId, GpuDrawableTransform, u32),
     /// Casts `node`'s shadows of the drawables from `start` on, under them.
     Cast {
         node: NodeId,
         parent: GpuDrawableTransform,
         start: usize,
+    },
+    /// Replaces the drawables from `start` on with `count` copies of them, placed by `node`.
+    Copy {
+        node: NodeId,
+        parent: GpuDrawableTransform,
+        start: usize,
+        count: u32,
     },
 }
 
@@ -270,15 +302,23 @@ pub(super) fn collect(
         }
         .to_gpu(),
     };
-    let mut pending = vec![Step::Draw(root, placed)];
+    let mut pending = vec![Step::Draw(root, placed, 0)];
     while let Some(step) = pending.pop() {
         match step {
-            Step::Draw(node_id, parent) => collector.draw(node_id, parent, &mut pending)?,
+            Step::Draw(node_id, parent, nesting) => {
+                collector.draw(node_id, parent, nesting, &mut pending)?
+            }
             Step::Cast {
                 node,
                 parent,
                 start,
             } => collector.cast(node, parent, start)?,
+            Step::Copy {
+                node,
+                parent,
+                start,
+                count,
+            } => collector.copy(node, parent, start, count)?,
         }
     }
     Ok(collector.record)
@@ -329,6 +369,7 @@ impl<'e> Collector<'_, 'e> {
         &mut self,
         node_id: NodeId,
         parent: GpuDrawableTransform,
+        nesting: u32,
         pending: &mut Vec<Step>,
     ) -> crate::Result<()> {
         let node = self.reach(node_id)?;
@@ -345,7 +386,7 @@ impl<'e> Collector<'_, 'e> {
                         .drawings
                         .iter()
                         .rev()
-                        .map(|input| Step::Draw(input.node, world)),
+                        .map(|input| Step::Draw(input.node, world, nesting)),
                 );
             }
             NodeKind::Shadow2d(shadow) => {
@@ -355,7 +396,28 @@ impl<'e> Collector<'_, 'e> {
                     parent,
                     start: self.record.uses.len(),
                 });
-                pending.push(Step::Draw(input.node, parent));
+                pending.push(Step::Draw(input.node, parent, nesting));
+            }
+            NodeKind::Instance2d(instance) => {
+                let count = instance.count(&self.expr)?;
+                if count == 0 {
+                    return Ok(());
+                }
+                if nesting >= MAX_NESTING {
+                    return Err(RenderError::evaluating::<Instance2d>(
+                        node_id,
+                        format!("instance_2d nodes are nested more than {MAX_NESTING} deep"),
+                    )
+                    .into());
+                }
+                let input = crate::node::required_input(node_id, "drawing", instance.drawing)?;
+                pending.push(Step::Copy {
+                    node: node_id,
+                    parent,
+                    start: self.record.uses.len(),
+                    count,
+                });
+                pending.push(Step::Draw(input.node, parent, nesting + 1));
             }
             NodeKind::Fill2d(_) | NodeKind::Stroke2d(_) => {
                 let (geometry, style, paint, opacity) = self.style(node_id)?;
@@ -365,6 +427,7 @@ impl<'e> Collector<'_, 'e> {
                     style,
                     paint,
                     opacity,
+                    tint: [1.0; 3],
                     shadow: None,
                 })?;
             }
@@ -372,7 +435,7 @@ impl<'e> Collector<'_, 'e> {
             _ => {
                 return Err(RenderError::evaluating::<Render2d>(
                     node_id,
-                    "a drawing input takes fill_2d, stroke_2d, shadow_2d and merge_2d nodes",
+                    "a drawing input takes fill_2d, stroke_2d, shadow_2d, merge_2d and instance_2d nodes",
                 )
                 .into());
             }
@@ -490,6 +553,63 @@ impl<'e> Collector<'_, 'e> {
             })
             .collect();
         self.record.uses.splice(start..start, cast_uses);
+        Ok(())
+    }
+}
+
+impl Collector<'_, '_> {
+    /// Replaces the drawables from `start` on, drawn under `parent`, with `count` copies of them,
+    /// each placed by instance node `node_id` within `parent`'s pixels.
+    fn copy(
+        &mut self,
+        node_id: NodeId,
+        parent: GpuDrawableTransform,
+        start: usize,
+        count: u32,
+    ) -> crate::Result<()> {
+        let Some(node @ NodeKind::Instance2d(instance)) = self.cx.node(node_id) else {
+            unreachable!("only instance nodes copy drawables")
+        };
+        let _timed = self.cx.node_times().time(node);
+        let drawn = self.record.uses.len() - start;
+        if drawn == 0 {
+            return Ok(());
+        }
+        if start + drawn * count as usize > MAX_DRAWABLES {
+            return Err(RenderError::evaluating::<Instance2d>(
+                node_id,
+                format!(
+                    "{count} copies of a drawing of {drawn} drawables make a drawing of more than \
+                     {MAX_DRAWABLES} drawables"
+                ),
+            )
+            .into());
+        }
+        let copies = instance.copies(&self.expr, count)?;
+        let inner: Vec<Use> = self.record.uses.drain(start..).collect();
+        // Copies are placed in the pixels inside `parent`, which the drawables already include.
+        let inverse = GpuDrawableTransform {
+            linear: parent.inverse_linear,
+            inverse_linear: parent.linear,
+            offset: parent.inverse_offset,
+            inverse_offset: parent.offset,
+            opacity: 1.0,
+            ..parent
+        };
+        for (placed, [r, g, b, _]) in copies {
+            let local = placed.to_gpu_from((0.0, 0.0));
+            if local.opacity <= 0.0 {
+                continue;
+            }
+            let world = then(then(inverse, local), parent);
+            let tint = [r, g, b].map(|channel| srgb_to_linear(f32::from(channel) / 255.0));
+            self.record.uses.extend(inner.iter().map(|drawable| Use {
+                parent: then(drawable.parent, world),
+                tint: [0, 1, 2].map(|channel| drawable.tint[channel] * tint[channel]),
+                shadow: drawable.shadow.map(|cast| cast.copied(world.linear)),
+                ..*drawable
+            }));
+        }
         Ok(())
     }
 }
