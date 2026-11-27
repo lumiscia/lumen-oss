@@ -8,7 +8,7 @@ use foldhash::HashMap;
 use super::build::{DRAWING_SHADER, Keeping, build};
 use super::collect::{Source, collect};
 use super::text::{check_length, check_weight, shape_text};
-use super::tiles::{TILE_SIZE, tile_lists};
+use super::tiles::tile_lists;
 use super::{
     Fill2d, Instance2d, Merge2d, Offset2d, Path2d, Render2d, Shadow2d, Shape2d, Stroke2d, Text2d,
 };
@@ -120,8 +120,12 @@ const RENDER_2D_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(3, lumen_gpu::LayoutKind::Storage),
     lumen_gpu::LayoutEntry::compute(4, lumen_gpu::LayoutKind::Storage),
     lumen_gpu::LayoutEntry::compute(5, lumen_gpu::LayoutKind::Storage),
-    lumen_gpu::LayoutEntry::compute(6, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
+    lumen_gpu::LayoutEntry::compute(6, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::compute(7, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
+/// Side in texels of the square a workgroup of `drawing.wgsl` draws, a quarter of a tile; keep in
+/// sync with it.
+const GROUP_SIZE: u32 = 8;
 const RENDER_2D: ComputeProgram = ComputeProgram {
     label: "render_2d",
     shader: DRAWING_SHADER,
@@ -191,7 +195,7 @@ impl RecordNode for Render2d {
                 tick,
             },
         )?;
-        if drawing.drawables.is_empty() {
+        if drawing.copies.is_empty() {
             return Ok(cx.transparent(cx.canvas_size()));
         }
         let bounds = cx.bounds_of(Some(drawing.bounds()));
@@ -208,19 +212,20 @@ impl RecordNode for Render2d {
         let bindings = [
             (0, params),
             (1, storage(cx, &drawing.drawables)),
-            (2, storage(cx, &drawing.points)),
-            (3, storage(cx, &drawing.bands)),
-            (4, storage(cx, &drawing.paints)),
-            (5, storage(cx, &tiles)),
-            (6, lumen_gpu::Res::Tex(tex)),
+            (2, storage(cx, &drawing.copies)),
+            (3, storage(cx, &drawing.points)),
+            (4, storage(cx, &drawing.bands)),
+            (5, storage(cx, &drawing.paints)),
+            (6, storage(cx, &tiles)),
+            (7, lumen_gpu::Res::Tex(tex)),
         ];
         let program = cx.program(&RENDER_2D)?;
         cx.dispatch(
             program,
             &bindings,
             lumen_gpu::Dispatch {
-                x: size.width.div_ceil(TILE_SIZE),
-                y: size.height.div_ceil(TILE_SIZE),
+                x: size.width.div_ceil(GROUP_SIZE),
+                y: size.height.div_ceil(GROUP_SIZE),
                 z: 1,
             },
         );

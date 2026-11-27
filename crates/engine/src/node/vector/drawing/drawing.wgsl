@@ -1,14 +1,10 @@
-// Rasterizes a drawing: each workgroup covers one tile of the output, and composites the
-// drawables its tile lists at every pixel, from the top down, until the pixel is opaque.
+// Rasterizes a drawing: each workgroup covers a quarter of one tile of the output, and composites
+// the copies its tile lists at every pixel, from the top down, until the pixel is opaque.
 
-// One drawable: the fill or stroke of a path or a shape, or a shadow of one. Paths read their
-// points and their bands and grid from the shared buffers, at offsets folded into the indices
-// they hold.
+// One drawable: the fill or stroke of a path or a shape, or a shadow of one, which each of its
+// copies places. Paths read their points and their bands and grid from the shared buffers, at
+// offsets folded into the indices they hold.
 struct VectorDrawable {
-    transform: DrawableTransform,
-    screen_bounds: vec4<f32>,
-    // Linear colour multiplying a fill's or stroke's paint; its alpha is 1.
-    tint: vec4<f32>,
     // Maps the untransformed points measured here to those the paint is laid out in.
     paint_frame: mat2x2<f32>,
     // The box a paint in bounding-box units spans.
@@ -49,6 +45,15 @@ struct VectorDrawable {
     dash: array<vec4<f32>, 8>,
 }
 
+// One place a drawable is drawn at.
+struct VectorCopy {
+    transform: DrawableTransform,
+    screen_bounds: vec4<f32>,
+    // Linear colour multiplying a fill's or stroke's paint.
+    tint: vec3<f32>,
+    drawable: u32,
+}
+
 struct DrawingParams {
     // Canvas pixel of the output's first texel.
     origin: vec2<i32>,
@@ -67,22 +72,26 @@ const STYLE_SHADOW: u32 = 8u;
 const STYLE_OFFSET_STROKE: u32 = 16u;
 const DRAWABLE_SHEARED: u32 = 32u;
 const TILE_SIZE: u32 = 16u;
+// Side in texels of the square a workgroup draws.
+const GROUP_SIZE: u32 = 8u;
 
 @group(0) @binding(0) var<uniform> drawing: DrawingParams;
 @group(0) @binding(1) var<storage, read> drawables: array<VectorDrawable>;
-@group(0) @binding(2) var<storage, read> path_points: PathPoints;
-@group(0) @binding(3) var<storage, read> path_bands: PathBands;
-@group(0) @binding(4) var<storage, read> paints: array<Paint>;
-// A `(start, count)` pair per tile, then the drawables each lists, topmost first.
-@group(0) @binding(5) var<storage, read> tiles: array<u32>;
-@group(0) @binding(6) var output_tex: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(2) var<storage, read> copies: array<VectorCopy>;
+@group(0) @binding(3) var<storage, read> path_points: PathPoints;
+@group(0) @binding(4) var<storage, read> path_bands: PathBands;
+@group(0) @binding(5) var<storage, read> paints: array<Paint>;
+// A `(start, count)` pair per tile, then the copies each lists, topmost first.
+@group(0) @binding(6) var<storage, read> tiles: array<u32>;
+@group(0) @binding(7) var output_tex: texture_storage_2d<rgba16float, write>;
 
-// The drawable being drawn, which the path and shape geometry read as `params`.
+// The drawable being drawn, which the path and shape geometry read as `params`, and the copy of
+// it being drawn.
 var<private> params: VectorDrawable;
-var<private> current: u32;
+var<private> placed: VectorCopy;
 
 fn dash_length(index: u32) -> f32 {
-    return drawables[current].dash[index / 4u][index % 4u];
+    return drawables[placed.drawable].dash[index / 4u][index % 4u];
 }
 
 // Coverage of a shadow `distance` canvas pixels outside its grown outline, fading like a blurred
@@ -109,7 +118,7 @@ fn sample_drawable_paint(local: vec2<f32>) -> vec4<f32> {
 fn drawable_color(local: vec2<f32>) -> vec4<f32> {
     let source = sample_drawable_paint(local);
     if ((params.flags & STYLE_SHADOW) == 0u) {
-        return source * params.tint;
+        return source * vec4<f32>(placed.tint, 1.0);
     }
     return sample_paint(paints[params.shadow_paint], local, vec2<f32>(0.0)) * source.a;
 }
@@ -219,7 +228,7 @@ fn offset_stroke(transform: DrawableTransform, p: vec2<f32>) -> OffsetStroke {
 }
 
 fn draw_path(pixel: vec2<f32>) -> vec4<f32> {
-    let transform = params.transform;
+    let transform = placed.transform;
     let fill_enabled = (params.flags & STYLE_FILL_ENABLED) != 0u;
     let stroke_enabled = (params.flags & STYLE_STROKE_ENABLED) != 0u;
     let edge_antialias = (params.flags & STYLE_EDGE_ANTIALIAS) != 0u;
@@ -281,7 +290,7 @@ fn offset_shape_distance(transform: DrawableTransform, p: vec2<f32>, half_size: 
 }
 
 fn draw_shape(pixel: vec2<f32>) -> vec4<f32> {
-    let transform = params.transform;
+    let transform = placed.transform;
     let half_size = max(params.size * 0.5, vec2<f32>(0.5));
     let center = params.position + half_size;
     let p = drawable_local_offset(transform, pixel, center);
@@ -302,31 +311,33 @@ fn draw_shape(pixel: vec2<f32>) -> vec4<f32> {
     return drawable_color(center + p) * alpha * transform.opacity;
 }
 
-@compute @workgroup_size(16, 16, 1)
-fn cs_main(@builtin(workgroup_id) tile: vec3<u32>, @builtin(local_invocation_id) texel_in_tile: vec3<u32>) {
-    let texel = tile.xy * TILE_SIZE + texel_in_tile.xy;
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) texel_in_group: vec3<u32>) {
+    let texel = group.xy * GROUP_SIZE + texel_in_group.xy;
     if (any(texel >= textureDimensions(output_tex))) {
         return;
     }
     let pixel = vec2<f32>(vec2<i32>(texel) + drawing.origin) + vec2<f32>(0.5);
+    let tile = group.xy * GROUP_SIZE / TILE_SIZE;
     let entry = 2u * (tile.y * drawing.tile_columns + tile.x);
     let start = tiles[entry];
     let end = start + tiles[entry + 1u];
     var color = vec4<f32>(0.0);
     for (var at = start; at < end; at = at + 1u) {
-        current = tiles[at];
-        params = drawables[current];
-        if (any(pixel < params.screen_bounds.xy) || any(pixel > params.screen_bounds.zw)) {
-            continue;
+        placed = copies[tiles[at]];
+        // Read before the per-pixel test, where the whole workgroup reads one record at once.
+        params = drawables[placed.drawable];
+        // Bounds that are not finite hold every pixel.
+        if (!(any(pixel < placed.screen_bounds.xy) || any(pixel > placed.screen_bounds.zw))) {
+            var drawn: vec4<f32>;
+            if (params.kind == DRAWABLE_SHAPE) {
+                drawn = draw_shape(pixel);
+            } else {
+                drawn = draw_path(pixel);
+            }
+            // Under what is above it, which is the same as drawing it first and the rest over it.
+            color += drawn * (1.0 - color.a);
         }
-        var drawn: vec4<f32>;
-        if (params.kind == DRAWABLE_SHAPE) {
-            drawn = draw_shape(pixel);
-        } else {
-            drawn = draw_path(pixel);
-        }
-        // Under what is above it, which is the same as drawing it first and the rest over it.
-        color += drawn * (1.0 - color.a);
         if (color.a >= 1.0) {
             break;
         }
