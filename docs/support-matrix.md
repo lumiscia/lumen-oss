@@ -64,7 +64,7 @@ AMD and Intel adapters should use the Vulkan renderer path without CUDA-specific
 
 Software Vulkan through lavapipe is the deterministic CI baseline. It is useful for catching portability issues and running integration tests on GitHub-hosted Linux runners. It is not a performance target.
 
-lavapipe compiles shaders for the CPU it runs on. On Intel CPUs with AVX-512 older than Sapphire Rapids (Skylake-X to Ice Lake and Tiger Lake), Mesa 25.2 and 26.0 with LLVM 21 draw some path fills wrongly, such as a `path` with an `offset` or `feather` under non-uniform scale, and can hang on them. Setting `GALLIUM_OVERRIDE_CPU_CAPS=avx` keeps lavapipe to AVX2, which draws them correctly. CI sets it.
+lavapipe compiles shaders for the CPU it runs on. On Intel CPUs with AVX-512 older than Sapphire Rapids (Skylake-X to Ice Lake and Tiger Lake), Mesa 25.2 and 26.0 with LLVM 21 draw some path fills wrongly, such as a `fill_2d` of an `offset_2d` or with a `feather` under non-uniform scale, and can hang on them. Setting `GALLIUM_OVERRIDE_CPU_CAPS=avx` keeps lavapipe to AVX2, which draws them correctly. CI sets it.
 
 ## Encoding
 

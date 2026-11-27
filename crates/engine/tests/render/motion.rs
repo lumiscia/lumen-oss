@@ -2,13 +2,13 @@
 //! shared table form renders one scene, so these rows are run by hand: each renders the blurred
 //! scene, the held scene, and one scene per tap on a single renderer.
 //!
-//! A shape, path or text node samples its position, scale, rotation and anchor over the shutter,
-//! and a transform node samples its scale, translation, rotation and pivot. Every other param
+//! A text node samples its position, scale, rotation and anchor over the shutter, and a
+//! transform node samples its scale, translation, rotation and pivot. Every other param
 //! keeps its value at the frame, so a tap scene writes only those params at the tap's time.
 
 use serde_json::{Value, json};
 
-use crate::support::{Frame, Gpu, ORANGE, Scene, TestMedia, check_each, gpu, render, scene};
+use crate::support::{Frame, Gpu, Scene, TestMedia, check_each, gpu, render, scene};
 
 /// Which render of a layer a row's `layer` function describes.
 #[derive(Clone, Copy)]
@@ -267,20 +267,6 @@ fn canvas(size: u32, nodes: Value) -> Scene {
     scene((size, size), nodes).frames(4)
 }
 
-fn shape(m: Moment, params: Value) -> Value {
-    let mut params = params;
-    params["fill_paint"] = json!(ORANGE);
-    params["motion_blur"] = json!(m.angle());
-    json!({ "id": 1, "type": "shape", "params": params })
-}
-
-fn path(m: Moment, data: &str, position: Value, scale: Value) -> Value {
-    json!({ "id": 1, "type": "path", "params": {
-        "data": data, "position": position, "scale": scale, "fill_paint": ORANGE,
-        "motion_blur": m.angle(),
-    } })
-}
-
 fn text(m: Moment, content: &str, size: u32, params: Value) -> Value {
     let mut params = params;
     params["content"] = json!(content);
@@ -305,47 +291,16 @@ fn moved_plate(m: Moment, x0: f64, speed: f64, rotate: f64) -> Scene {
     )
 }
 
-fn rotated_shape(m: Moment) -> Scene {
-    let params = json!({
-        "width": 20, "height": 12, "rotation": 15, "anchor": [10, 6],
-        "position": m.drift(10.0, 31.0, 30.0),
-    });
-    canvas(96, json!([shape(m, params)]))
-}
-
-/// An 8 pixel square 32 pixels above the canvas centre turns about it by 90 degrees a frame.
-/// Pixels on the square's arc, at 55, 90 and 125 degrees from straight up.
-const ON_ARC: &[[u32; 4]] = &[[90, 45, 91, 46], [96, 64, 97, 65], [90, 82, 91, 83]];
-
-fn orbiting_square(m: Moment) -> Scene {
-    let params = json!({
-        "width": 8, "height": 8, "position": [60, 28], "anchor": [4, 36],
-        "rotation": m.param("frame * 90", |t| json!(t * 90.0)),
-    });
-    canvas(128, json!([shape(m, params)]))
-}
-
 fn plate_moving(m: Moment) -> Scene {
     moved_plate(m, 10.0, 19.0, 10.0)
 }
 
-/// A 40 × 20 rectangle, a path round it, a curve or text, whose x scale crosses zero at frame 1
-/// and is not zero at any other time of a 360 degree shutter.
-fn scale_through_zero(m: Moment, kind: usize) -> Scene {
+/// Text whose x scale crosses zero at frame 1 and is not zero at any other time of a 360 degree
+/// shutter.
+fn zero_text(m: Moment) -> Scene {
     let scale = m.param("vec2(frame - 1, 1)", |t| json!([t - 1.0, 1.0]));
-    let at = json!([20, 30]);
-    let rectangle = "M 0 0 L 40 0 L 40 20 L 0 20 Z";
     let word = json!({ "render_mode": "msdf", "position": [10, 30], "scale": scale });
-    let layer = match kind {
-        0 => shape(
-            m,
-            json!({ "width": 40, "height": 20, "position": at, "scale": scale }),
-        ),
-        1 => path(m, rectangle, at, scale),
-        2 => path(m, "M 0 0 C 40 0 40 40 0 40 Z", at, scale),
-        _ => text(m, "Lumen", 32, word),
-    };
-    canvas(96, json!([layer]))
+    canvas(96, json!([text(m, "Lumen", 32, word)]))
 }
 
 /// Scale stretching along x at the shutter's open and along y at its close, or the reverse.
@@ -452,44 +407,12 @@ fn closing(m: Moment) -> Scene {
     stretching(m, true)
 }
 
-fn zero_shape(m: Moment) -> Scene {
-    scale_through_zero(m, 0)
-}
-
-fn zero_straight(m: Moment) -> Scene {
-    scale_through_zero(m, 1)
-}
-
-fn zero_curved(m: Moment) -> Scene {
-    scale_through_zero(m, 2)
-}
-
-fn zero_text(m: Moment) -> Scene {
-    scale_through_zero(m, 3)
-}
-
 fn translucent_nearest(m: Moment) -> Scene {
     translucent(m, "nearest", 0.0, 20.0)
 }
 
 fn translucent_linear(m: Moment) -> Scene {
     translucent(m, "linear", 0.5, 2.999)
-}
-
-fn still_shape(m: Moment) -> Scene {
-    let params = json!({
-        "width": 30, "height": 20, "position": "=vec2(30.5, 40)", "rotation": 20,
-        "stroke_enabled": true,
-    });
-    canvas(64, json!([shape(m, params)]))
-}
-
-fn still_path(m: Moment) -> Scene {
-    let (position, scale) = (json!("=vec2(20, 10 + 0 * frame)"), json!([1.5, 0.75]));
-    canvas(
-        64,
-        json!([path(m, "M 5 5 Q 40 0 45 40 L 5 45 Z", position, scale)]),
-    )
 }
 
 fn still_text(m: Moment) -> Scene {
@@ -507,8 +430,6 @@ fn still_plate(m: Moment) -> Scene {
 #[test]
 fn motion_matches_taps() {
     check(vec![
-        row("rotated shape", rotated_shape, 2.0, 180.0, 16, 2),
-        row("arc", orbiting_square, 1.0, 360.0, 32, 2).ink(ON_ARC),
         row("image", plate_moving, 1.0, 180.0, 10, 2).media(plate()),
         row("raster marks", raster_marks, 0.0, 360.0, 3, 2),
         row("msdf marks", msdf_marks, 0.0, 360.0, 3, 2),
@@ -517,9 +438,6 @@ fn motion_matches_taps() {
         row("wide scroll", scrolling, 0.0, 360.0, 32, 8).ink(&[[191, 0, 192, 192]]),
         row("open and close", opening, 1.0, 360.0, 32, 24),
         row("close and open", closing, 1.0, 360.0, 0, 2).like(opening),
-        row("zero shape", zero_shape, 1.0, 360.0, 32, 2),
-        row("zero straight path", zero_straight, 1.0, 360.0, 32, 2),
-        row("zero curved path", zero_curved, 1.0, 360.0, 32, 2),
         row("zero text", zero_text, 1.0, 360.0, 32, 16),
         row("glyphs beyond box", glyphs_beyond_box, 1.0, 180.0, 30, 4).ink(&[[0, 200, 256, 256]]),
         row("raster smears cross", raster_smears, 2.0, 360.0, 32, 6),
@@ -540,8 +458,6 @@ fn motion_matches_taps() {
 fn still_layers_are_unchanged() {
     // An expression that holds still is evaluated over the shutter like a moving one.
     check(vec![
-        Row::held("shape", still_shape),
-        Row::held("path", still_path),
         Row::held("text", still_text),
         Row::held("image", still_plate).media(plate()),
     ]);

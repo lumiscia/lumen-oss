@@ -1,5 +1,5 @@
-// Rectangle and ellipse outlines measured from a pixel. Each renderer that includes it declares
-// `params`.
+// Rectangle and ellipse outlines measured from a pixel. `drawing.wgsl` declares the `params` it
+// reads.
 
 // Signed canvas distances to the fill and to the stroke, negative inside.
 struct ShapeDistance {

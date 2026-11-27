@@ -237,8 +237,6 @@ node_kinds! {
     Background(source::background::Background),
     FractalNoise(source::fractal_noise::FractalNoise),
     Text(source::text::Text),
-    Path(vector::path::Path),
-    Shape(vector::shape::Shape),
     Path2d(vector::drawing::Path2d),
     Shape2d(vector::drawing::Shape2d),
     Text2d(vector::drawing::Text2d),

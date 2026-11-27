@@ -180,35 +180,6 @@ Params:
 
 - **`offset`** (number; default `0`) Distance in the geometry's untransformed pixels that the outline grows outward by, or shrinks inward by when negative.
 
-## `path`
-
-Produces a rasterized vector path source.
-
-Category: vector. Output: raster.
-
-Params:
-
-- **`anchor`** ([number, number]; default `[0,0]`) Pivot for scale and rotation, in pixels relative to `position`.
-- **`data`** (string; default `"M 0 0 L 100 0 L 100 100 L 0 100 Z"`) SVG-style path data.
-- **`edge_antialias`** (boolean; default `true`) Enables analytic distance-based edge antialiasing.
-- **`feather`** (number, at least 0; default `0`) Width in untransformed pixels over which the fill's edge fades out, centred on the edge. 0 keeps a sharp edge.
-- **`fill_enabled`** (boolean; default `true`) Enables fill rendering.
-- **`fill_paint`** ([paint](#type-paint); default `[255,255,255,255]`) Fill paint. Accepts a solid color or gradient.
-- **`motion_blur`** (number, 0 to 360; default `0`) Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the usual film look and 360 smears over the whole frame.
-- **`offset`** (number; default `0`) Distance in untransformed pixels that the fill grows outward by, or shrinks inward by when negative, rounding the corners it grows around. A shape shrunk past its middle vanishes. The stroke stays on the outline in `data`.
-- **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier.
-- **`position`** ([number, number]; default `[0,0]`) Path origin in pixels.
-- **`repeat`** ([repeat](#type-repeat); literal as a whole) Copies of the path drawn in one pass. Absent draws the path once.
-- **`rotation`** (number; default `0`) Clockwise rotation in degrees, about the anchor.
-- **`scale`** ([number, number]; default `[1,1]`) Scale multiplier per axis, about the anchor.
-- **`stroke_dash`** ([dashPattern](#type-dashpattern); default `[]`; literal as a whole) Lengths in untransformed pixels that the stroke alternately draws and skips along each contour, starting with a dash. An odd number of lengths is repeated to make the pattern, as in SVG. Each dash has round caps, so a dash of length 0 draws a dot. No lengths, or only zeros, draw a solid stroke. Dashes are measured along the whole contour, and `trim_start` and `trim_end` then clip them.
-- **`stroke_dash_offset`** (number; default `0`) Distance in untransformed pixels into the dash pattern at which each contour starts. Increasing it moves the dashes toward the start of the contour.
-- **`stroke_enabled`** (boolean; default `false`) Enables stroke rendering.
-- **`stroke_paint`** ([paint](#type-paint); default `[0,0,0,255]`) Stroke paint. Accepts a solid color or gradient.
-- **`stroke_width`** (number, at least 0; default `1`) Stroke width in untransformed pixels. Under non-uniform scale the stroke stretches with the path, so it is wider across the more scaled axis.
-- **`trim_end`** (number, 0 to 1; default `1`) Normalized end of the visible stroke range for each contour.
-- **`trim_start`** (number, 0 to 1; default `0`) Normalized start of the visible stroke range for each contour.
-
 ## `path_2d`
 
 The outline of SVG path data, without paint. The fill covers it under the even-odd rule, and a stroke follows its contours, leaving the closing segment of an open contour unstroked. Curves are flattened for the largest scale `render_2d` draws them at.
@@ -246,32 +217,6 @@ Inputs:
 Params:
 
 - **`shadows`** ([shadows](#type-shadows); default `[]`; literal as a whole) Shadows cast beneath the whole drawing, the first lowest.
-
-## `shape`
-
-Produces a vector shape layer for GPU rasterization.
-
-Category: vector. Output: raster.
-
-Params:
-
-- **`anchor`** ([number, number]; default `[0,0]`) Pivot for scale and rotation, in pixels relative to `position`.
-- **`border_radius`** (number, at least 0; default `0`) Corner radius for rectangle geometry.
-- **`edge_antialias`** (boolean; default `true`) Enables analytic distance-based edge antialiasing.
-- **`fill_enabled`** (boolean; default `true`) Enables fill rendering.
-- **`fill_paint`** ([paint](#type-paint); default `[255,255,255,255]`) Fill paint. Accepts a solid color or gradient.
-- **`geometry_kind`** (`"rectangle"` | `"ellipse"`; default `"rectangle"`; literal only) Geometry primitive to rasterize.
-- **`height`** (number, at least 0; default `1`) Shape height in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel tall.
-- **`motion_blur`** (number, 0 to 360; default `0`) Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the usual film look and 360 smears over the whole frame.
-- **`opacity`** (number, 0 to 1; default `1`) Opacity multiplier.
-- **`position`** ([number, number]; default `[0,0]`) Shape origin in pixels.
-- **`repeat`** ([repeat](#type-repeat); literal as a whole) Copies of the shape drawn in one pass. Absent draws the shape once.
-- **`rotation`** (number; default `0`) Clockwise rotation in degrees, about the anchor.
-- **`scale`** ([number, number]; default `[1,1]`) Scale multiplier per axis, about the anchor.
-- **`stroke_enabled`** (boolean; default `false`) Enables stroke rendering.
-- **`stroke_paint`** ([paint](#type-paint); default `[0,0,0,255]`) Stroke paint. Accepts a solid color or gradient.
-- **`stroke_width`** (number, at least 0; default `1`) Stroke width in untransformed pixels. Under non-uniform scale the stroke stretches with the shape, so it is wider across the more scaled axis.
-- **`width`** (number, at least 0; default `1`) Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel wide.
 
 ## `shape_2d`
 
@@ -1592,20 +1537,6 @@ Value: array of [color](#type-color), at least 2, at most 16 items.
 A rectangle of pixels, `[x, y, width, height]`. Each number takes an integer or an expression.
 
 Value: [integer | expression, integer | expression, integer | expression, integer | expression].
-
-### Type `repeat`
-
-Fields:
-
-- **`columns`** (integer, at least 0; default `0`) Copies per row, after which the next row starts. 0 puts every copy in one row.
-- **`count`** (required; integer, 0 to 1024) Copies to draw, from 0 to 1024. 0 draws nothing, and 1 draws the node alone.
-- **`opacity_offset`** (number, -1 to 1; default `0`) Opacity added for each copy. Each copy's opacity is clamped to 0–1.
-- **`position_offset`** ([number, number]; default `[0,0]`) Position in pixels added for each column.
-- **`rotation_offset`** (number; default `0`) Clockwise rotation in degrees added for each copy.
-- **`row_offset`** ([number, number]; default `[0,0]`) Position in pixels added for each row.
-- **`scale_offset`** ([number, number]; default `[0,0]`) Scale added for each copy, per axis. A negative offset shrinks later copies through 0, where they draw nothing, into mirrored copies.
-
-No other fields.
 
 ### Type `shaderUniformComponent`
 

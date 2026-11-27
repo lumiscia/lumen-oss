@@ -524,9 +524,6 @@ struct Fade {
 #[test]
 fn fades_as_one_layer() {
     let red = json!([255, 0, 0, 255]);
-    let gradient = json!({
-        "type": "linear_gradient", "stops": [[0, [255, 0, 0, 255]], [1, [0, 0, 255, 128]]]
-    });
     // Opaque on the left half of the glyphs and clear on the right, switching inside a pixel.
     let sharp = json!({
         "type": "linear_gradient", "start": [0, 0], "end": [1, 0],
@@ -545,38 +542,16 @@ fn fades_as_one_layer() {
         field,
         mode,
     };
-    let mut fades = vec![
-        fade(
-            "shape",
-            (56, 56),
-            json!({ "id": 1, "type": "shape", "params": {
-                "geometry_kind": "ellipse", "width": 40, "height": 30, "position": [4.5, 6],
-                "fill_paint": gradient
-            } }),
-            "opacity",
-            None,
+    let mut fades = vec![fade(
+        "text layer over overlapping marks",
+        (128, 72),
+        text(
+            json!({ "content": "e\u{301}\u{301} f\u{301}\u{301}", "font_size": 48, "position": [8, 8] }),
+            Mode::Raster,
         ),
-        fade(
-            "path",
-            (56, 56),
-            json!({ "id": 1, "type": "path", "params": {
-                "data": "M 5 5 Q 40 0 45 40 L 5 45 Z", "fill_paint": gradient,
-                "stroke_enabled": true, "stroke_width": 2
-            } }),
-            "opacity",
-            None,
-        ),
-        fade(
-            "text layer over overlapping marks",
-            (128, 72),
-            text(
-                json!({ "content": "e\u{301}\u{301} f\u{301}\u{301}", "font_size": 48, "position": [8, 8] }),
-                Mode::Raster,
-            ),
-            "opacity",
-            Some(Mode::Raster),
-        ),
-    ];
+        "opacity",
+        Some(Mode::Raster),
+    )];
     for (mode_name, mode) in MODES {
         fades.push(fade(
             Box::leak(format!("cluster ({mode_name})").into_boxed_str()),

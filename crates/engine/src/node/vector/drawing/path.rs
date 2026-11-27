@@ -1,290 +1,42 @@
-use super::dash::{DashPattern, GpuDash};
-use super::drawable::{
-    DrawableMotion, DrawablePlacement, DrawableStyle, DrawableTransform, largest_scale, peak_scale,
-};
-use super::renderer::{MAX_PATH_POINTS, PathPoint, PathUniforms, domain_origin, style_flags};
-use super::repeat::{Drawn, GpuCopies, Repeat, RepeatedTransform};
-use crate::error::RenderError;
-use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
-use crate::node::motion::Shutter;
-use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use bytemuck::{Pod, Zeroable};
 
-pub(crate) const PATH_SHADER: &str = concat!(
-    include_str!("../../gpu/shaders/alpha.wgsl"),
-    include_str!("../../gpu/shaders/color.wgsl"),
-    include_str!("paint/paint.wgsl"),
-    include_str!("drawable.wgsl"),
-    include_str!("vector_common.wgsl"),
-    include_str!("path_geometry.wgsl"),
-    include_str!("path_renderer.wgsl")
-);
+use super::super::dash::GpuDash;
+use super::super::drawable::largest_scale;
 
-/// Produces a rasterized vector path source.
-#[derive(Debug, Clone, lumen_macros::Delegate)]
-pub struct PathParams {
-    /// SVG-style path data.
-    #[meta(
-        name = "Path data",
-        format = "path_data",
-        multiline,
-        recommended_rows = 5
-    )]
-    pub data: String,
-    #[meta(flatten, doc(position = "Path origin in pixels."))]
-    pub placement: DrawablePlacement,
-    #[meta(
-        flatten,
-        doc(
-            stroke_width = "Stroke width in untransformed pixels. Under non-uniform scale the stroke stretches\nwith the path, so it is wider across the more scaled axis."
-        )
-    )]
-    pub style: DrawableStyle,
-    /// Normalized start of the visible stroke range for each contour.
-    #[meta(name = "Trim start", min = 0, max = 1, step = 0.01)]
-    pub trim_start: f64,
-    /// Normalized end of the visible stroke range for each contour.
-    #[meta(name = "Trim end", min = 0, max = 1, step = 0.01)]
-    pub trim_end: f64,
-    /// Lengths in untransformed pixels that the stroke alternately draws and skips along each
-    /// contour, starting with a dash. An odd number of lengths is repeated to make the
-    /// pattern, as in SVG. Each dash has round caps, so a dash of length 0 draws a dot. No
-    /// lengths, or only zeros, draw a solid stroke. Dashes are measured along the whole
-    /// contour, and `trim_start` and `trim_end` then clip them.
-    #[meta(name = "Stroke dash", pixels)]
-    pub stroke_dash: DashPattern,
-    /// Distance in untransformed pixels into the dash pattern at which each contour starts.
-    /// Increasing it moves the dashes toward the start of the contour.
-    #[meta(name = "Stroke dash offset", step = 0.5, pixels)]
-    pub stroke_dash_offset: f64,
-    /// Distance in untransformed pixels that the fill grows outward by, or shrinks inward by
-    /// when negative, rounding the corners it grows around. A shape shrunk past its middle
-    /// vanishes. The stroke stays on the outline in `data`.
-    #[meta(step = 0.5, pixels)]
-    pub offset: f64,
-    /// Width in untransformed pixels over which the fill's edge fades out, centred on the
-    /// edge. 0 keeps a sharp edge.
-    #[meta(min = 0, step = 0.5, pixels)]
-    pub feather: f64,
-    /// Copies of the path drawn in one pass. Absent draws the path once.
-    #[meta()]
-    pub repeat: Option<Repeat>,
-}
+/// Most points a path may flatten to.
+pub(crate) const MAX_PATH_POINTS: usize = 16384;
 
-impl Default for PathParams {
-    fn default() -> Self {
-        Self {
-            data: "M 0 0 L 100 0 L 100 100 L 0 100 Z".to_string(),
-            placement: DrawablePlacement::default(),
-            style: DrawableStyle::default(),
-            trim_start: 0.0,
-            trim_end: 1.0,
-            stroke_dash: DashPattern::default(),
-            stroke_dash_offset: 0.0,
-            offset: 0.0,
-            feather: 0.0,
-            repeat: None,
-        }
+// Bits of a drawable's `flags`; keep in sync with `vector_common.wgsl`.
+pub(super) const STYLE_FILL_ENABLED: u32 = 1;
+pub(super) const STYLE_STROKE_ENABLED: u32 = 2;
+const STYLE_EDGE_ANTIALIAS: u32 = 4;
+
+pub(super) fn style_flags(fill: bool, stroke: bool, edge_antialias: bool) -> u32 {
+    let mut flags = 0;
+    if fill {
+        flags |= STYLE_FILL_ENABLED;
     }
-}
-
-/// Produces a rasterized vector path source.
-#[derive(Debug, Clone, Default, lumen_macros::Node)]
-#[node(kind = "path", name = "Path", category = "vector")]
-pub struct Path {
-    pub id: NodeId,
-    #[params]
-    pub params: PathParamsDelegate,
-}
-
-/// Evaluates a path node's uniforms, points and bands at the frame of `expr` for a canvas of
-/// `canvas` device pixels at `pixel_scale`, blurring its motion only when `motion_blur` allows.
-fn path_frame(
-    params: &PathParamsDelegate,
-    node_id: NodeId,
-    expr: &crate::expr::ExpressionContext<'_>,
-    pixel_scale: f64,
-    canvas: [f32; 2],
-    band_capacity: usize,
-    motion_blur: bool,
-) -> crate::Result<PathFrame> {
-    let mut evaluated = params.eval(&DelegateEvalContext {
-        pixel_scale,
-        ..DelegateEvalContext::new(node_id, expr)
-    })?;
-    if !motion_blur {
-        evaluated.placement.motion_blur = 0.0;
+    if stroke {
+        flags |= STYLE_STROKE_ENABLED;
     }
-    let shutter = params
-        .placement
-        .shutter(&evaluated.placement, node_id, expr, pixel_scale)?;
-    let transform = evaluated.placement.transform();
-    let repeat = match (&evaluated.repeat, &params.repeat) {
-        (Some(repeat), Some(delegate)) if repeat.draws_copies() => Some((
-            repeat,
-            delegate.shutter(
-                repeat,
-                evaluated.placement.motion_blur,
-                node_id,
-                expr,
-                pixel_scale,
-            )?,
-        )),
-        _ => None,
-    };
-    let repeated = repeat
-        .as_ref()
-        .map(|(repeat, repeat_shutter)| RepeatedTransform {
-            base: &transform,
-            base_shutter: shutter.as_ref(),
-            repeat,
-            repeat_shutter: repeat_shutter.as_ref(),
-        });
-    // Curves are flattened for the largest scale that the shutter or a copy draws them at.
-    let peak = repeated.as_ref().map_or_else(
-        || peak_scale(evaluated.placement.scale, shutter.as_ref()),
-        RepeatedTransform::peak_scale,
-    );
-    let mut points = parse_scaled_path_points(
-        &evaluated.data,
-        pixel_scale,
-        flattening_tolerance(peak),
-        MAX_PATH_POINTS,
-    )
-    .map_err(|details| RenderError::evaluating::<Path>(node_id, format!("`data` {details}")))?;
-    let (x, y) = evaluated.placement.position;
-    let style = &evaluated.style;
-    let (trim_start, trim_end) = normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
-    let dash = GpuDash::new(&evaluated.stroke_dash, evaluated.stroke_dash_offset)
-        .map_err(|details| RenderError::evaluating::<Path>(node_id, details))?;
-    if style.fill_enabled {
-        hide_cancelled_edges(&mut points, MAX_PATH_POINTS);
+    if edge_antialias {
+        flags |= STYLE_EDGE_ANTIALIAS;
     }
-    set_dash_phases(&mut points, &dash);
-    let fill_length = |name: &str, value: f64, min: f64| {
-        if value.is_nan() {
-            return Err(RenderError::evaluating::<Path>(
-                node_id,
-                format!("`{name}` is not a number"),
-            ));
-        }
-        Ok(value.clamp(min, MAX_PATH_COORDINATE) as f32)
-    };
-
-    let uniforms = PathUniforms {
-        fill_paint: style.fill_paint.to_gpu(),
-        stroke_paint: style.stroke_paint.to_gpu(),
-        position: [x as f32, y as f32],
-        stroke_width: style.stroke_width.max(0.0) as f32,
-        flags: style_flags(
-            style.fill_enabled,
-            style.stroke_enabled && style.stroke_width > 0.0,
-            style.edge_antialias,
-        ),
-        trim_start,
-        trim_end,
-        dash_count: dash.count,
-        dash_period: dash.period(),
-        dash_start_phase: dash.phase(0.0),
-        dash: dash.lengths,
-        fill_offset: fill_length("offset", evaluated.offset, -MAX_PATH_COORDINATE)?,
-        fill_feather: fill_length("feather", evaluated.feather, 0.0)?,
-        ..bytemuck::Zeroable::zeroed()
-    };
-    Ok(PathFrame::new(
-        uniforms,
-        points,
-        &transform,
-        shutter.as_ref(),
-        repeated.as_ref(),
-        canvas,
-        band_capacity,
-        pixel_scale,
-    ))
+    flags
 }
 
-/// A frame's uniforms, points and bands for the path shader, and its copies when it repeats.
-pub(super) struct PathFrame {
-    pub(super) uniforms: PathUniforms,
-    pub(super) points: Vec<PathPoint>,
-    pub(super) bands: Vec<u32>,
-    pub(super) copies: Option<GpuCopies>,
-}
-
-impl PathFrame {
-    /// Fills in the bounds, transform, culling and motion of `uniforms` and bins `points` for a
-    /// canvas of `canvas` pixels at `pixel_scale`.
-    #[allow(clippy::too_many_arguments, reason = "a frame's flat inputs")]
-    pub(super) fn new(
-        mut uniforms: PathUniforms,
-        points: Vec<PathPoint>,
-        transform: &DrawableTransform,
-        shutter: Option<&Shutter<DrawableTransform>>,
-        repeated: Option<&RepeatedTransform<'_>>,
-        canvas: [f32; 2],
-        band_capacity: usize,
-        pixel_scale: f64,
-    ) -> Self {
-        let bounds = point_bounds(&points);
-        uniforms.bounds_min = bounds.0;
-        // At least a canvas pixel across, which also keeps a paint's box from collapsing.
-        let least = pixel_scale as f32;
-        uniforms.bounds_size = [
-            (bounds.1[0] - bounds.0[0]).max(least),
-            (bounds.1[1] - bounds.0[1]).max(least),
-        ];
-        uniforms.transform = transform.to_gpu();
-        let [x, y] = uniforms.position;
-        let min = [x + uniforms.bounds_min[0], y + uniforms.bounds_min[1]];
-        let max = [
-            min[0] + uniforms.bounds_size[0],
-            min[1] + uniforms.bounds_size[1],
-        ];
-        let Some(repeated) = repeated else {
-            let motion = DrawableMotion::new(shutter, min, max);
-            let bands = super::path_bands::bin_path(
-                &mut uniforms,
-                &points,
-                bounds,
-                &Drawn::Once(transform, &motion),
-                canvas,
-                band_capacity,
-            );
-            uniforms.motion = motion.to_gpu();
-            return Self {
-                uniforms,
-                points,
-                bands,
-                copies: None,
-            };
-        };
-        let copies = repeated.copies(min, max);
-        let bands = super::path_bands::bin_path(
-            &mut uniforms,
-            &points,
-            bounds,
-            &Drawn::Copies(&copies),
-            canvas,
-            band_capacity,
-        );
-        // Each copy is culled like the path drawn once, by how far it draws at its own scale.
-        let mut gpu = copies.to_gpu(
-            min,
-            max,
-            |scale| super::path_bands::segment_extent(&uniforms, scale) as f32,
-            0.0,
-        );
-        if bands.is_empty() {
-            gpu.copies.clear();
-        } else {
-            uniforms.screen_bounds = gpu.bounds;
-        }
-        Self {
-            uniforms,
-            points,
-            bands,
-            copies: Some(gpu),
-        }
-    }
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "PathPoint", source = super::build::DRAWING_SHADER)]
+pub(crate) struct PathPoint {
+    pub(crate) position: [f32; 2],
+    pub(crate) contour_start: u32,
+    pub(crate) flags: u32,
+    /// Fraction of its contour's length at which the point lies.
+    pub(crate) offset: f32,
+    /// Distance into the dash pattern at which the point lies, within one period. A contour's
+    /// first point holds it where the contour ends instead, after its closing segment.
+    pub(crate) dash_phase: f32,
 }
 
 /// Canvas-space flattening tolerance in pixels; curves are flattened untransformed, so
@@ -294,7 +46,7 @@ const PATH_MAX_FLATTENING_ATTEMPTS: usize = 12;
 /// f32 loses whole pixels above this, and the limit keeps relative sums and arc arithmetic
 /// finite without tracking the current point. Fill offsets and feathers are clamped to it.
 pub(super) const MAX_PATH_COORDINATE: f64 = 1e7;
-// Bits of `PathPoint::flags`; keep in sync with `path_renderer.wgsl`.
+// Bits of `PathPoint::flags`; keep in sync with `path_geometry.wgsl`.
 pub(super) const POINT_END: u32 = 1;
 pub(super) const POINT_CLOSED: u32 = 2;
 /// The segment from the point is no edge of the fill, though it counts toward its crossings.
@@ -312,22 +64,7 @@ pub(super) fn parse_path_points(
     tolerance: f32,
     max_points: usize,
 ) -> Result<Vec<PathPoint>, String> {
-    parse_scaled_path_points(data, 1.0, tolerance, max_points)
-}
-
-/// [`parse_path_points`] of the geometry in `data` scaled by `scale` about its origin, with
-/// `tolerance` in the scaled units.
-pub(super) fn parse_scaled_path_points(
-    data: &str,
-    scale: f64,
-    tolerance: f32,
-    max_points: usize,
-) -> Result<Vec<PathPoint>, String> {
-    let mut path = build_lyon_path(data)?;
-    if scale != 1.0 {
-        path = path.transformed(&lyon_path::geom::Scale::new(scale as f32));
-    }
-
+    let path = build_lyon_path(data)?;
     let mut tolerance = tolerance;
     for _ in 0..PATH_MAX_FLATTENING_ATTEMPTS {
         if let Some(mut points) = flatten_path(&path, tolerance, max_points) {
@@ -788,106 +525,6 @@ pub(super) fn set_dash_phases(points: &mut [PathPoint], dash: &GpuDash) {
 
 fn precise_distance(from: [f32; 2], to: [f32; 2]) -> f64 {
     (f64::from(to[0]) - f64::from(from[0])).hypot(f64::from(to[1]) - f64::from(from[1]))
-}
-
-impl crate::gpu::frame_graph::RecordNode for Path {
-    fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.compute(&PATH)?;
-        if self.params.repeat.is_some() {
-            programs.compute(&PATH_REPEAT)?;
-        }
-        Ok(())
-    }
-
-    fn record(
-        &self,
-        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
-    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
-        let canvas = cx.canvas_size();
-        let frame = path_frame(
-            &self.params,
-            self.id,
-            &cx.expr(),
-            cx.pixel_scale(),
-            [canvas.width as f32, canvas.height as f32],
-            super::path_bands::band_capacity(MAX_PATH_POINTS),
-            cx.analytic_motion_blur(),
-        )?;
-        record_path_source(cx, frame)
-    }
-
-    fn analytic_shutter(&self) -> Option<&Deferred<f64>> {
-        Some(&self.params.placement.motion_blur)
-    }
-}
-
-const RECORD_PATH_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
-    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Uniform),
-    lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Storage),
-    lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Storage),
-    lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
-];
-
-const RECORD_PATH_REPEAT_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
-    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Uniform),
-    lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Storage),
-    lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Storage),
-    lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
-    lumen_gpu::LayoutEntry::compute(4, lumen_gpu::LayoutKind::Storage),
-    lumen_gpu::LayoutEntry::compute(5, lumen_gpu::LayoutKind::Storage),
-    lumen_gpu::LayoutEntry::compute(6, lumen_gpu::LayoutKind::Storage),
-];
-const PATH: ComputeProgram = ComputeProgram {
-    label: "path",
-    shader: PATH_SHADER,
-    entry: "cs_main",
-    layout: RECORD_PATH_LAYOUT,
-};
-const PATH_REPEAT: ComputeProgram = ComputeProgram {
-    label: "path_repeat",
-    shader: PATH_SHADER,
-    entry: "cs_repeat",
-    layout: RECORD_PATH_REPEAT_LAYOUT,
-};
-
-/// Records a vector path, or its copies, sized to what it draws this frame.
-fn record_path_source(
-    cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
-    frame: PathFrame,
-) -> crate::Result<crate::gpu::frame_graph::Raster> {
-    let mut uniforms = frame.uniforms;
-    let bounds = cx.bounds_of(Some(uniforms.screen_bounds));
-    let domain = cx.source_domain(bounds);
-    uniforms.origin = domain_origin(domain);
-    let size = domain.storage_size;
-    let tex = cx.storage_target(size);
-    let uniform = cx.rec.uniform(&uniforms);
-    let points = cx.rec.storage_parts(&[bytemuck::cast_slice(&frame.points)]);
-    let bands = cx.rec.storage_parts(&[bytemuck::cast_slice(&frame.bands)]);
-    let bindings = [
-        (0, uniform),
-        (1, points),
-        (2, bands),
-        (3, lumen_gpu::Res::Tex(tex)),
-    ];
-    if let Some(copies) = &frame.copies {
-        let program = cx.program(&PATH_REPEAT)?;
-        let [copy_list, taps, tiles] = copies.storage(cx, domain);
-        cx.dispatch(
-            program,
-            &[&bindings[..], &[(4, copy_list), (5, taps), (6, tiles)]].concat(),
-            dispatch_for(size),
-        );
-    } else {
-        let program = cx.program(&PATH)?;
-        cx.dispatch(program, &bindings, dispatch_for(size));
-    }
-    Ok(crate::gpu::frame_graph::Raster {
-        tex,
-        domain,
-        bounds: None,
-        reduced: None,
-    })
 }
 
 #[cfg(test)]

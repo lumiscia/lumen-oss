@@ -8,6 +8,8 @@ mod collect;
 mod instance;
 #[cfg(feature = "3d")]
 mod outline;
+mod path;
+mod path_bands;
 mod record;
 mod text;
 mod tiles;
@@ -17,7 +19,6 @@ use serde_json::Value;
 use super::dash::DashPattern;
 use super::drawable::DrawableTransform;
 use super::paint::Paint;
-use super::shape::ShapeGeometryKind;
 use crate::expr::Expression;
 use crate::node::source::text::{
     TextAlignmentHorizontal, TextAlignmentVertical, TextFontStyle, TextTransform,
@@ -36,6 +37,7 @@ pub use instance::{
 };
 #[cfg(feature = "3d")]
 pub(crate) use outline::{Contour, flatten};
+pub(crate) use path::{MAX_PATH_POINTS, build_lyon_path};
 #[cfg(feature = "3d")]
 pub(crate) use text::{TextGlyphs, shape_text};
 
@@ -214,6 +216,17 @@ pub struct Path2d {
     pub id: NodeId,
     #[params]
     pub params: Path2dParamsDelegate,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum")]
+pub enum ShapeGeometryKind {
+    #[default]
+    Rectangle = 0,
+    Ellipse = 1,
 }
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]

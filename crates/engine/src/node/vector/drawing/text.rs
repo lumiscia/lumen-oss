@@ -13,8 +13,7 @@ use lyon_tessellation::{
     GeometryBuilderError, VertexId,
 };
 
-use super::super::path::{contour_points, point_bounds};
-use super::super::renderer::{MAX_PATH_POINTS, PathPoint};
+use super::path::{MAX_PATH_POINTS, PathPoint, contour_points, point_bounds};
 use super::{Text2d, Text2dParams};
 use crate::error::{LumenError, RenderError, WarningKind};
 use crate::gpu::frame_graph::FrameCx;

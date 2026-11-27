@@ -1,6 +1,5 @@
 use bytemuck::{Pod, Zeroable};
 
-use super::paint::Paint;
 use crate::expr::ExpressionContext;
 use crate::node::motion::{
     self, Lerp, MAX_BOUNDED_MAGNITUDE, MAX_MOTION_TAPS, ROUNDING_ERROR_FACTOR, Shutter,
@@ -22,13 +21,8 @@ pub(crate) fn largest_scale(scale: (f64, f64)) -> f64 {
     scale.0.abs().max(scale.1.abs()).max(MIN_SCALE)
 }
 
-/// The smallest absolute scale component, so the fewest canvas pixels per local pixel.
-pub(crate) fn smallest_scale(scale: (f64, f64)) -> f64 {
-    scale.0.abs().min(scale.1.abs()).max(MIN_SCALE)
-}
-
-/// Transform and opacity shared by the shape, path and text nodes, applied analytically
-/// by their shaders. Follows the `transform` node: rotation is in degrees, clockwise on
+/// Transform and opacity shared by the text node and the drawings `render_2d` draws, applied
+/// analytically by their shaders. Follows the `transform` node: rotation is in degrees, clockwise on
 /// screen, and scale and rotation pivot about `position + anchor`. A drawable therefore
 /// matches its untransformed self fed through a `transform` node with that custom pivot.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -123,7 +117,7 @@ impl Lerp for DrawableTransform {
     }
 }
 
-/// Where a shape, path or text node draws, and how it fades and blurs.
+/// Where a text node draws, and how it fades and blurs.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct DrawablePlacement {
     /// Origin in pixels.
@@ -219,61 +213,6 @@ impl DrawablePlacementDelegate {
     }
 }
 
-/// How a shape or path fills and strokes what it draws.
-#[derive(Debug, Clone, lumen_macros::Delegate)]
-pub struct DrawableStyle {
-    /// Enables fill rendering.
-    #[meta()]
-    pub fill_enabled: bool,
-    /// Fill paint. Accepts a solid color or gradient.
-    #[meta()]
-    pub fill_paint: Paint,
-    /// Enables stroke rendering.
-    #[meta()]
-    pub stroke_enabled: bool,
-    /// Stroke paint. Accepts a solid color or gradient.
-    #[meta()]
-    pub stroke_paint: Paint,
-    /// Stroke width in untransformed pixels.
-    #[meta(min = 0, step = 0.5, pixels)]
-    pub stroke_width: f64,
-    /// Enables analytic distance-based edge antialiasing.
-    #[meta()]
-    pub edge_antialias: bool,
-}
-
-impl Default for DrawableStyle {
-    fn default() -> Self {
-        Self {
-            fill_enabled: true,
-            fill_paint: Paint::solid([255, 255, 255, 255]),
-            stroke_enabled: false,
-            stroke_paint: Paint::solid([0, 0, 0, 255]),
-            stroke_width: 1.0,
-            edge_antialias: true,
-        }
-    }
-}
-
-impl DrawableStyleDelegate {}
-
-/// The largest absolute scale components that the transform has at the frame or at either
-/// end of its shutter, so also anywhere between them.
-pub(crate) fn peak_scale(
-    frame: (f64, f64),
-    shutter: Option<&Shutter<DrawableTransform>>,
-) -> (f64, f64) {
-    let frame = (frame.0.abs(), frame.1.abs());
-    let Some(shutter) = shutter else {
-        return frame;
-    };
-    [shutter.open.scale, shutter.close.scale]
-        .iter()
-        .fold(frame, |peak, scale| {
-            (peak.0.max(scale.0.abs()), peak.1.max(scale.1.abs()))
-        })
-}
-
 /// The taps a drawable averages over its shutter, each moving the geometry laid out at the
 /// frame to where it lies at the tap's time. Without taps the drawable is not blurred, and
 /// is drawn at the frame alone; with them it is drawn at the taps alone.
@@ -322,76 +261,10 @@ impl DrawableMotion {
         }
     }
 
-    /// The transforms the drawable is drawn under.
-    fn drawn<'a>(&'a self, frame: &'a DrawableTransform) -> &'a [DrawableTransform] {
-        if self.taps.is_empty() {
-            std::slice::from_ref(frame)
-        } else {
-            &self.taps
-        }
-    }
-
-    /// Whether anything is drawn under some transform: the layer is not fully transparent
-    /// and not every transform it is drawn under collapses it. A zero scale at the frame
-    /// alone hides nothing while the taps around it have a scale.
-    pub(crate) fn is_visible(&self, frame: &DrawableTransform) -> bool {
-        frame.opacity > 0.0
-            && self
-                .drawn(frame)
-                .iter()
-                .any(|transform| !transform.is_degenerate())
-    }
-
-    /// The smallest absolute scale component of the drawable, over the transforms that
-    /// draw it.
-    pub(crate) fn smallest_scale(&self, frame: &DrawableTransform) -> f64 {
-        self.drawn(frame)
-            .iter()
-            .filter(|transform| !transform.is_degenerate())
-            .map(|transform| smallest_scale(transform.scale))
-            .fold(f64::MAX, f64::min)
-    }
-
-    /// Whether every transform that draws the drawable scales both axes by the same amount.
-    pub(crate) fn has_uniform_scale(&self, frame: &DrawableTransform) -> bool {
-        self.drawn(frame)
-            .iter()
-            .all(|transform| transform.scale.0.abs() == transform.scale.1.abs())
-    }
-
-    /// `frame.canvas_bounds`, or when blurred the box that holds the box from `min` to
-    /// `max` under every tap.
-    pub(crate) fn canvas_bounds(
-        &self,
-        frame: GpuDrawableTransform,
-        min: [f32; 2],
-        max: [f32; 2],
-    ) -> [f32; 4] {
-        if self.taps.is_empty() {
-            return frame.canvas_bounds(min, max);
-        }
-        self.gpu_taps()
-            .map(|tap| tap.canvas_bounds(min, max))
-            .reduce(union_bounds)
-            .unwrap_or_default()
-    }
-
     pub(super) fn gpu_taps(&self) -> impl Iterator<Item = GpuDrawableTransform> + '_ {
         self.taps
             .iter()
             .map(|tap| tap.to_gpu_from(self.layout_position))
-    }
-
-    /// The transforms the shaders draw the drawable under, given the frame's.
-    pub(super) fn gpu_drawn(
-        &self,
-        frame: GpuDrawableTransform,
-    ) -> impl Iterator<Item = GpuDrawableTransform> + '_ {
-        self.taps
-            .is_empty()
-            .then_some(frame)
-            .into_iter()
-            .chain(self.gpu_taps())
     }
 
     /// The transform that text is drawn under, to a layer of `layer` pixels, before the
@@ -703,8 +576,6 @@ mod tests {
         );
         let gpu = motion.to_gpu();
         assert!(gpu.tap_count >= 2);
-        let bounds = motion.canvas_bounds(frame.to_gpu(), [10.0, 20.0], [20.0, 30.0]);
-        assert!(bounds[2] > 20.0);
     }
 
     #[test]
@@ -717,24 +588,5 @@ mod tests {
                 .flatten()
                 .all(|value| value.is_finite())
         );
-    }
-
-    #[test]
-    fn blurred_drawable_is_visible_while_some_tap_has_a_scale() {
-        let frame = transform((0.0, 1.0), 0.0);
-        let shutter = Shutter {
-            open: transform((-0.5, 1.0), 0.0),
-            frame,
-            close: transform((0.5, 1.0), 0.0),
-        };
-        let motion = DrawableMotion::new(Some(&shutter), [10.0, 20.0], [20.0, 30.0]);
-        assert!(motion.is_visible(&frame));
-        assert!(motion.smallest_scale(&frame) > 0.001);
-        assert!(!DrawableMotion::default().is_visible(&frame));
-        let hidden = DrawableTransform {
-            opacity: 0.0,
-            ..transform((1.0, 1.0), 0.0)
-        };
-        assert!(!motion.is_visible(&hidden));
     }
 }

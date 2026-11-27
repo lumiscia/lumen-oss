@@ -637,9 +637,9 @@ fn a_held_value_is_kept_only_while_the_shutter_sees_it_hold() {
     let jump = held_jump(2.2);
     let analytic = canvas(vec![
         background(1, [200, 30, 30, 255]),
-        json!({ "id": 2, "type": "shape", "params": {
-            "position": jump, "width": 8, "height": 8, "fill_paint": [20, 40, 220, 255],
-            "motion_blur": 180
+        square(7, json!([4, 4]), 8, [20, 40, 220, 255]),
+        json!({ "id": 2, "type": "transform", "in": { "source": 7 }, "params": {
+            "translate_x": "=keyframes(frame, 'hold', key(0, 0), key(2.2, 8))", "motion_blur": 180
         } }),
         merge(3, &[1, 2]),
         square(4, json!("=vec2(frame * 2, 6)"), 4, [30, 220, 60, 255]),

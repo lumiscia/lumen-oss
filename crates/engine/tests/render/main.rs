@@ -46,7 +46,6 @@ mod particles;
 mod pixel_sort;
 mod posterize;
 mod render_scale;
-mod repeat;
 #[cfg(feature = "3d")]
 mod scene;
 #[cfg(feature = "3d")]

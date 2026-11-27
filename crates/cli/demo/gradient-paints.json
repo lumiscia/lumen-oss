@@ -167,7 +167,7 @@
       "id": 7,
       "type": "text",
       "params": {
-        "content": "fill_paint and stroke_paint accept raw colors or gradient objects.",
+        "content": "Fills and strokes accept raw colors or gradient objects.",
         "font_size": 24,
         "font_weight": 400,
         "font_style": "normal",

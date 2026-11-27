@@ -172,7 +172,6 @@ pub struct GpuCompositionRenderer {
     output_encoding: OutputEncoding,
     reuse_static_output: bool,
     full_frame_sources: bool,
-    single_tile_repeats: bool,
     max_text_glyphs: usize,
     max_image_side: u32,
     profile_nodes: bool,
@@ -223,7 +222,6 @@ impl GpuCompositionRenderer {
             },
             reuse_static_output: true,
             full_frame_sources: false,
-            single_tile_repeats: false,
             max_text_glyphs: DEFAULT_MAX_TEXT_GLYPHS,
             max_image_side: u32::MAX,
             profile_nodes: false,
@@ -473,17 +471,6 @@ impl GpuCompositionRenderer {
         }
     }
 
-    /// Sets whether repeated shapes and paths draw their copies from one tile covering their
-    /// texture instead of from tiles that each list the copies reaching them, which gives tests
-    /// an untiled reference. Drops what frames recorded so far when it changes.
-    #[cfg(feature = "test-hooks")]
-    pub fn set_single_tile_repeats(&mut self, enabled: bool) {
-        if self.single_tile_repeats != enabled {
-            self.single_tile_repeats = enabled;
-            self.reset_recorded(self.output_format);
-        }
-    }
-
     /// Estimated GPU memory held by pooled textures, excluding the shared text atlas and media
     /// cache.
     pub fn held_bytes(&self) -> u64 {
@@ -623,7 +610,6 @@ impl GpuCompositionRenderer {
                 output_format: self.output_format,
                 output_encoding: self.output_encoding,
                 full_frame_sources: self.full_frame_sources,
-                single_tile_repeats: self.single_tile_repeats,
                 retain_static: self.reuse_static_output
                     && !self.capture_scenes
                     && self.camera_override.is_none(),

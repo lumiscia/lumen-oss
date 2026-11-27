@@ -17,9 +17,8 @@ use crate::error::{At, RenderError};
 use crate::gpu::frame_graph::FrameCx;
 use crate::node::vector::drawable::DrawableTransform;
 use crate::node::vector::drawing::{
-    Contour, Outline, Source, TextGlyphs, flatten, resolve_outline, shape_text,
+    Contour, Outline, ShapeGeometryKind, Source, TextGlyphs, flatten, resolve_outline, shape_text,
 };
-use crate::node::vector::shape::ShapeGeometryKind;
 use crate::node::{JsonNode, NodeId};
 
 /// Greatest distance between a curve and the straight edges it is built from, in world units.

@@ -1,8 +1,8 @@
 //! Lists the drawables that can draw in each tile of `render_2d`'s output.
 
-use super::super::path_bands::{CELL_FILL_DECIDED, CELL_INSIDE};
-use super::super::renderer::STYLE_FILL_ENABLED;
 use super::build::{Drawing, GpuVectorDrawable, STYLE_SHADOW, is_opaque, scales, shape_kind};
+use super::path::STYLE_FILL_ENABLED;
+use super::path_bands::{CELL_FILL_DECIDED, CELL_INSIDE};
 
 /// Side in texels of a tile, which one workgroup draws; keep in sync with `drawing.wgsl`.
 pub(super) const TILE_SIZE: u32 = 16;

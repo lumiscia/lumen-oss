@@ -1,6 +1,6 @@
-// Declarations shared by the shape and path rasterizers.
+// Coverage shared by the shape and path outlines.
 
-// Bits of `flags` in the shape and path uniforms.
+// Bits of `flags` in `VectorDrawable`.
 const STYLE_FILL_ENABLED: u32 = 1u;
 const STYLE_STROKE_ENABLED: u32 = 2u;
 const STYLE_EDGE_ANTIALIAS: u32 = 4u;

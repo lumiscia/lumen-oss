@@ -5,8 +5,8 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "drawing" | "geometry" | "material" | "raster" | "scene";
-export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_2d_copies" | "instance_copies" | "int" | "matte_names" | "paint" | "palette" | "region" | "repeat" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "corner_pin" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_2d" | "instance_3d" | "lathe_3d" | "lens_blur" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path" | "path_2d" | "pixel_sort" | "posterize" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeParamKind = "bool" | "clip_props" | "color" | "color_curves" | "dash_pattern" | "enum" | "float" | "font_features" | "instance_2d_copies" | "instance_copies" | "int" | "matte_names" | "paint" | "palette" | "region" | "shader_uniforms" | "shadows" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "channels" | "chroma_key" | "clip" | "color_correct" | "color_grade" | "corner_pin" | "crop" | "directional_blur" | "displacement_map" | "erode_dilate" | "exposure" | "extrude_3d" | "fill_2d" | "film_grain" | "fractal_noise" | "glow" | "halftone" | "hue_saturation" | "image_plane_3d" | "instance_2d" | "instance_3d" | "lathe_3d" | "lens_blur" | "lens_distortion" | "levels" | "light_3d" | "material_3d" | "media_in" | "media_output" | "merge" | "merge_2d" | "merge_3d" | "model_3d" | "motion_blur" | "offset_2d" | "opacity" | "ordered_dither" | "particles_3d" | "path_2d" | "pixel_sort" | "posterize" | "radial_blur" | "raster_multimerge" | "render_2d" | "render_3d" | "resize" | "shadow" | "shadow_2d" | "shape_2d" | "shape_3d" | "sharpen" | "stroke_2d" | "switch" | "text" | "text_2d" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
@@ -1583,25 +1583,6 @@ export type Render3dToneMapping = ToneMapping;
 export type RenderSettings = {
   readonly height: number;
   readonly width: number;
-};
-export type Repeat = {
-  /** Copies per row, after which the next row starts. 0 puts every copy in one row. */
-  readonly columns?: ExpressionValue<number>;
-  /** Copies to draw, from 0 to 1024. 0 draws nothing, and 1 draws the node alone. */
-  readonly count: ExpressionValue<number>;
-  /** Opacity added for each copy. Each copy's opacity is clamped to 0–1. */
-  readonly opacity_offset?: ExpressionValue<number>;
-  /** Position in pixels added for each column. */
-  readonly position_offset?: ExpressionValue<Vec2>;
-  /** Clockwise rotation in degrees added for each copy. */
-  readonly rotation_offset?: ExpressionValue<number>;
-  /** Position in pixels added for each row. */
-  readonly row_offset?: ExpressionValue<Vec2>;
-  /**
-   * Scale added for each copy, per axis. A negative offset shrinks later copies through 0,
-   * where they draw nothing, into mirrored copies.
-   */
-  readonly scale_offset?: ExpressionValue<Vec2>;
 };
 export type ResizeMode = "stretch" | "fit" | "fill";
 export type ResizeSampling = RasterSampling;
@@ -3285,74 +3266,6 @@ export interface Particles3dNode extends CompositionNodeBase<"particles_3d"> {
   };
 }
 
-/** Produces a rasterized vector path source. */
-export interface PathNode extends CompositionNodeBase<"path"> {
-  readonly params?: {
-    /** Pivot for scale and rotation, in pixels relative to `position`. */
-    readonly anchor?: ExpressionValue<Vec2>;
-    /** SVG-style path data. */
-    readonly data?: ExpressionValue<string>;
-    /** Enables analytic distance-based edge antialiasing. */
-    readonly edge_antialias?: ExpressionValue<boolean>;
-    /**
-     * Width in untransformed pixels over which the fill's edge fades out, centred on the
-     * edge. 0 keeps a sharp edge.
-     */
-    readonly feather?: ExpressionValue<number>;
-    /** Enables fill rendering. */
-    readonly fill_enabled?: ExpressionValue<boolean>;
-    /** Fill paint. Accepts a solid color or gradient. */
-    readonly fill_paint?: ExpressionValue<Paint>;
-    /**
-     * Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the
-     * usual film look and 360 smears over the whole frame.
-     */
-    readonly motion_blur?: ExpressionValue<number>;
-    /**
-     * Distance in untransformed pixels that the fill grows outward by, or shrinks inward by
-     * when negative, rounding the corners it grows around. A shape shrunk past its middle
-     * vanishes. The stroke stays on the outline in `data`.
-     */
-    readonly offset?: ExpressionValue<number>;
-    /** Opacity multiplier. */
-    readonly opacity?: ExpressionValue<number>;
-    /** Path origin in pixels. */
-    readonly position?: ExpressionValue<Vec2>;
-    /** Copies of the path drawn in one pass. Absent draws the path once. */
-    readonly repeat?: Repeat;
-    /** Clockwise rotation in degrees, about the anchor. */
-    readonly rotation?: ExpressionValue<number>;
-    /** Scale multiplier per axis, about the anchor. */
-    readonly scale?: ExpressionValue<Vec2>;
-    /**
-     * Lengths in untransformed pixels that the stroke alternately draws and skips along each
-     * contour, starting with a dash. An odd number of lengths is repeated to make the
-     * pattern, as in SVG. Each dash has round caps, so a dash of length 0 draws a dot. No
-     * lengths, or only zeros, draw a solid stroke. Dashes are measured along the whole
-     * contour, and `trim_start` and `trim_end` then clip them.
-     */
-    readonly stroke_dash?: DashPattern;
-    /**
-     * Distance in untransformed pixels into the dash pattern at which each contour starts.
-     * Increasing it moves the dashes toward the start of the contour.
-     */
-    readonly stroke_dash_offset?: ExpressionValue<number>;
-    /** Enables stroke rendering. */
-    readonly stroke_enabled?: ExpressionValue<boolean>;
-    /** Stroke paint. Accepts a solid color or gradient. */
-    readonly stroke_paint?: ExpressionValue<Paint>;
-    /**
-     * Stroke width in untransformed pixels. Under non-uniform scale the stroke stretches
-     * with the path, so it is wider across the more scaled axis.
-     */
-    readonly stroke_width?: ExpressionValue<number>;
-    /** Normalized end of the visible stroke range for each contour. */
-    readonly trim_end?: ExpressionValue<number>;
-    /** Normalized start of the visible stroke range for each contour. */
-    readonly trim_start?: ExpressionValue<number>;
-  };
-}
-
 /**
  * The outline of SVG path data, without paint. The fill covers it under the even-odd rule, and
  * a stroke follows its contours, leaving the closing segment of an open contour unstroked.
@@ -3622,58 +3535,6 @@ export interface Shadow2dNode extends CompositionNodeBase<"shadow_2d"> {
   readonly params?: {
     /** Shadows cast beneath the whole drawing, the first lowest. */
     readonly shadows?: Shadows;
-  };
-}
-
-/** Produces a vector shape layer for GPU rasterization. */
-export interface ShapeNode extends CompositionNodeBase<"shape"> {
-  readonly params?: {
-    /** Pivot for scale and rotation, in pixels relative to `position`. */
-    readonly anchor?: ExpressionValue<Vec2>;
-    /** Corner radius for rectangle geometry. */
-    readonly border_radius?: ExpressionValue<number>;
-    /** Enables analytic distance-based edge antialiasing. */
-    readonly edge_antialias?: ExpressionValue<boolean>;
-    /** Enables fill rendering. */
-    readonly fill_enabled?: ExpressionValue<boolean>;
-    /** Fill paint. Accepts a solid color or gradient. */
-    readonly fill_paint?: ExpressionValue<Paint>;
-    /** Geometry primitive to rasterize. */
-    readonly geometry_kind?: ShapeGeometryKind;
-    /**
-     * Shape height in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel
-     * tall.
-     */
-    readonly height?: ExpressionValue<number>;
-    /**
-     * Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the
-     * usual film look and 360 smears over the whole frame.
-     */
-    readonly motion_blur?: ExpressionValue<number>;
-    /** Opacity multiplier. */
-    readonly opacity?: ExpressionValue<number>;
-    /** Shape origin in pixels. */
-    readonly position?: ExpressionValue<Vec2>;
-    /** Copies of the shape drawn in one pass. Absent draws the shape once. */
-    readonly repeat?: Repeat;
-    /** Clockwise rotation in degrees, about the anchor. */
-    readonly rotation?: ExpressionValue<number>;
-    /** Scale multiplier per axis, about the anchor. */
-    readonly scale?: ExpressionValue<Vec2>;
-    /** Enables stroke rendering. */
-    readonly stroke_enabled?: ExpressionValue<boolean>;
-    /** Stroke paint. Accepts a solid color or gradient. */
-    readonly stroke_paint?: ExpressionValue<Paint>;
-    /**
-     * Stroke width in untransformed pixels. Under non-uniform scale the stroke stretches
-     * with the shape, so it is wider across the more scaled axis.
-     */
-    readonly stroke_width?: ExpressionValue<number>;
-    /**
-     * Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel
-     * wide.
-     */
-    readonly width?: ExpressionValue<number>;
   };
 }
 
@@ -4271,7 +4132,6 @@ export interface CompositionNodeByKind {
   readonly "opacity": OpacityNode;
   readonly "ordered_dither": OrderedDitherNode;
   readonly "particles_3d": Particles3dNode;
-  readonly "path": PathNode;
   readonly "path_2d": Path2dNode;
   readonly "pixel_sort": PixelSortNode;
   readonly "posterize": PosterizeNode;
@@ -4282,7 +4142,6 @@ export interface CompositionNodeByKind {
   readonly "resize": ResizeNode;
   readonly "shadow": ShadowNode;
   readonly "shadow_2d": Shadow2dNode;
-  readonly "shape": ShapeNode;
   readonly "shape_2d": Shape2dNode;
   readonly "shape_3d": Shape3dNode;
   readonly "sharpen": SharpenNode;
@@ -4424,9 +4283,6 @@ export interface CompositionNodeInputByKind {
   readonly "particles_3d": Omit<Particles3dNode, "id"> & {
     readonly id?: number;
   };
-  readonly "path": Omit<PathNode, "id"> & {
-    readonly id?: number;
-  };
   readonly "path_2d": Omit<Path2dNode, "id"> & {
     readonly id?: number;
   };
@@ -4455,9 +4311,6 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "shadow_2d": Omit<Shadow2dNode, "id"> & {
-    readonly id?: number;
-  };
-  readonly "shape": Omit<ShapeNode, "id"> & {
     readonly id?: number;
   };
   readonly "shape_2d": Omit<Shape2dNode, "id"> & {
@@ -4541,7 +4394,6 @@ export interface NodeInputPortNameByKind {
   readonly "opacity": "source";
   readonly "ordered_dither": "source";
   readonly "particles_3d": "object" | "surface";
-  readonly "path": never;
   readonly "path_2d": never;
   readonly "pixel_sort": "source";
   readonly "posterize": "source";
@@ -4552,7 +4404,6 @@ export interface NodeInputPortNameByKind {
   readonly "resize": "source";
   readonly "shadow": "source";
   readonly "shadow_2d": "drawing";
-  readonly "shape": never;
   readonly "shape_2d": never;
   readonly "shape_3d": "back_material" | "bottom_material" | "front_material" | "left_material" | "material" | "right_material" | "top_material";
   readonly "sharpen": "source";
@@ -4610,7 +4461,6 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "opacity": never;
   readonly "ordered_dither": never;
   readonly "particles_3d": never;
-  readonly "path": never;
   readonly "path_2d": never;
   readonly "pixel_sort": never;
   readonly "posterize": never;
@@ -4621,7 +4471,6 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "resize": never;
   readonly "shadow": never;
   readonly "shadow_2d": never;
-  readonly "shape": never;
   readonly "shape_2d": never;
   readonly "shape_3d": never;
   readonly "sharpen": never;
@@ -4679,7 +4528,6 @@ export interface NodeOutputKindByKind {
   readonly "opacity": "raster";
   readonly "ordered_dither": "raster";
   readonly "particles_3d": "scene";
-  readonly "path": "raster";
   readonly "path_2d": "geometry";
   readonly "pixel_sort": "raster";
   readonly "posterize": "raster";
@@ -4690,7 +4538,6 @@ export interface NodeOutputKindByKind {
   readonly "resize": "raster";
   readonly "shadow": "raster";
   readonly "shadow_2d": "drawing";
-  readonly "shape": "raster";
   readonly "shape_2d": "geometry";
   readonly "shape_3d": "scene";
   readonly "sharpen": "raster";
@@ -4748,7 +4595,6 @@ export interface NodeInputPortKindByKind {
   readonly "opacity": { readonly "source": "raster" };
   readonly "ordered_dither": { readonly "source": "raster" };
   readonly "particles_3d": { readonly "surface": "scene"; readonly "object": "scene" };
-  readonly "path": {};
   readonly "path_2d": {};
   readonly "pixel_sort": { readonly "source": "raster" };
   readonly "posterize": { readonly "source": "raster" };
@@ -4759,7 +4605,6 @@ export interface NodeInputPortKindByKind {
   readonly "resize": { readonly "source": "raster" };
   readonly "shadow": { readonly "source": "raster" };
   readonly "shadow_2d": { readonly "drawing": "drawing" };
-  readonly "shape": {};
   readonly "shape_2d": {};
   readonly "shape_3d": { readonly "material": "material"; readonly "top_material": "material"; readonly "bottom_material": "material"; readonly "left_material": "material"; readonly "right_material": "material"; readonly "front_material": "material"; readonly "back_material": "material" };
   readonly "sharpen": { readonly "source": "raster" };
@@ -4817,7 +4662,6 @@ export interface NodeOutputPortKindByKind {
   readonly "opacity": { readonly "output": "raster" };
   readonly "ordered_dither": { readonly "output": "raster" };
   readonly "particles_3d": { readonly "output": "scene" };
-  readonly "path": { readonly "output": "raster" };
   readonly "path_2d": { readonly "output": "geometry" };
   readonly "pixel_sort": { readonly "output": "raster" };
   readonly "posterize": { readonly "output": "raster" };
@@ -4828,7 +4672,6 @@ export interface NodeOutputPortKindByKind {
   readonly "resize": { readonly "output": "raster" };
   readonly "shadow": { readonly "output": "raster" };
   readonly "shadow_2d": { readonly "output": "drawing" };
-  readonly "shape": { readonly "output": "raster" };
   readonly "shape_2d": { readonly "output": "geometry" };
   readonly "shape_3d": { readonly "output": "scene" };
   readonly "sharpen": { readonly "output": "raster" };
@@ -5382,8 +5225,6 @@ export const nodeInputPorts = {
    * fail the render.
    */
   "particles_3d": { "surface": { kind: "scene", variadic: false }, "object": { kind: "scene", variadic: false } },
-  /** Produces a rasterized vector path source. */
-  "path": {},
   /**
    * The outline of SVG path data, without paint. The fill covers it under the even-odd rule, and
    * a stroke follows its contours, leaving the closing segment of an open contour unstroked.
@@ -5458,8 +5299,6 @@ export const nodeInputPorts = {
    * A shadow is as opaque as the paint it falls from, so a transparent fill casts none.
    */
   "shadow_2d": { "drawing": { kind: "drawing", variadic: false } },
-  /** Produces a vector shape layer for GPU rasterization. */
-  "shape": {},
   /**
    * The outline of a rectangle or ellipse, without paint, measured analytically. A stroke of a
    * shape is always whole: `stroke_2d`'s trim and dash apply to paths only.
@@ -5639,7 +5478,6 @@ export const nodeMediaSources = {
   "opacity": {},
   "ordered_dither": {},
   "particles_3d": {},
-  "path": {},
   "path_2d": {},
   "pixel_sort": {},
   "posterize": {},
@@ -5650,7 +5488,6 @@ export const nodeMediaSources = {
   "resize": {},
   "shadow": {},
   "shadow_2d": {},
-  "shape": {},
   "shape_2d": {},
   "shape_3d": {},
   "sharpen": {},
