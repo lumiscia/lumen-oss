@@ -521,7 +521,7 @@ The `render` feature adds `lumen_engine::render`: a composition to an MP4, MOV o
 lumen-engine = { version = "0.6", features = ["render", "vulkan"] }
 ```
 
-The library reads no environment variables. A `RenderConfig` holds what renders take from the host, and `lumen` and `lumen-server` build it from their flags and environment: `font_dir` from `--font-dir` or `LUMEN_FONT_DIR`, `hardware_decode` from `LUMEN_HARDWARE_DECODE`, `gpu` (a `GpuSettings`) from `GpuSettings::from_env()`, which reads `WGPU_BACKEND`, `WGPU_POWER_PREF`, `LUMEN_GPU_FORCE_FALLBACK_ADAPTER` and the other wgpu variables, and `temp_dir`, where a render keeps its output while encoding, from `std::env::temp_dir()`. Its default has no font directory, decodes video on the CPU, picks the high-performance adapter on any backend and leaves the temporary directory to the system, which reads `TMPDIR`. `RenderOptions::media_root` defaults to the current directory.
+The library reads no environment variables. A `RenderConfig` holds what renders take from the host, and `lumen` and `lumen-server` build it from their flags and environment: `font_dir` from `--font-dir` or `LUMEN_FONT_DIR`, `hardware_decode` from `LUMEN_HARDWARE_DECODE`, `gpu` (a `GpuSettings`) from `GpuSettings::from_env()`, which reads `WGPU_BACKEND`, `WGPU_POWER_PREF`, `LUMEN_GPU_FORCE_FALLBACK_ADAPTER` and the other wgpu variables, and `temp_dir`, where `render_project` keeps its output while encoding, from `std::env::temp_dir()`. Its default has no font directory, decodes video on the CPU, picks the high-performance adapter on any backend and leaves the temporary directory to the system, which reads `TMPDIR`. `RenderOptions::media_root` defaults to the current directory.
 
 Without `RenderOptions::encoder`, a render resolves the built-in quality presets. `lumen` and `lumen-server` also let `LUMEN_VIDEO_ENCODER` pin an encoder, through `QualityRequest::with_env_encoder()` in `lumen-ffmpeg`; embedders pin one by passing `RenderOptions::encoder` themselves.
 
@@ -560,7 +560,13 @@ let watcher = std::thread::spawn(move || {
 
 ### Output
 
-`RenderOptions::output` is a `RenderOutput`: a `format` and the `frames` it covers. The default is an MP4 of the whole timeline, so options without one render as before. `render_project` returns a `RenderedOutput`: the file's `bytes` and its `format`, whose `content_type()` and `extension()` name the file.
+`RenderOptions::output` is a `RenderOutput`: a `format` and the `frames` it covers. The default is an MP4 of the whole timeline, so options without one render as before. `render_project` returns a `RenderedOutput`: the file's `bytes` and its `format`, whose `content_type()` and `extension()` name the file. `render_project_to_path` takes a destination path as well and writes the file there instead of returning its bytes, so a long video or a large sequence is never held in memory. It returns the `format`. The file is written beside the destination and renamed onto it once complete, so a render that fails or is cancelled leaves no file and keeps any earlier one.
+
+```rust
+use lumen_engine::render::render_project_to_path;
+
+let format = render_project_to_path(&composition, &options, Path::new("out/film.mp4"), &mut |_| {})?;
+```
 
 | `OutputFormat` | Artifact                                                                                                                                                  |
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
