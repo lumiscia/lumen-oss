@@ -12,12 +12,12 @@ path = "src/lib.rs"
 
 [dependencies]
 bytemuck = { version = "1.25.0", features = ["derive"] }
-cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash"] }
+cosmic-text = { version = "0.19.0", default-features = false, features = ["std"] }
 etagere = "0.3.0"
 fdsm = "0.8.0"
-image = { version = "0.25.10", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 kurbo = "0.13.1"
 foldhash = "0.2.0"
-swash = { version = "0.2.10", default-features = false, features = ["scale"] }
 unicode-bidi = { version = "0.3.18", default-features = false }
 unicode-script = "0.5.8"
+zeno = { version = "0.3.3", default-features = false, features = ["eval", "std"] }

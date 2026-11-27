@@ -1,15 +1,15 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use cosmic_text::{CacheKey, SwashContent, SwashImage};
+use cosmic_text::CacheKey;
 use etagere::{AllocId, size2};
-use swash::scale::Source;
 
 use crate::gpu::{
     GLYPH_MODE_MSDF, GLYPH_MODE_RASTER_COLOR, GLYPH_MODE_RASTER_MASK, GLYPH_RANGE_SHIFT,
     GpuGlyphInstance,
 };
 use crate::msdf::{self, MSDF_AUTO_MIN_SIZE};
+use crate::raster::{self, ImageOutcome, MaskOutcome, RasterContent, RasterImage, RasterSource};
 use crate::shape::{GlyphKey, ShapedText, TextGlyph, TextLayout};
 use crate::{MAX_GLYPH_EXTENTS, TextSystem};
 
@@ -89,15 +89,13 @@ impl TextSystem {
     /// `None` when it draws nothing.
     fn glyph_extent(&mut self, key: CacheKey) -> Option<[f32; 4]> {
         if self.is_plain_outline(key)
-            && let Some(commands) = self
-                .swash_cache
-                .get_outline_commands_uncached(&mut self.font_system, key)
+            && let Some(path) = self.rasterizer.scale_outline(&mut self.font_system, key)
         {
-            return msdf::outline_bounds(&commands);
+            return path.bounds();
         }
         let placement = self
-            .swash_cache
-            .get_image_uncached(&mut self.font_system, key)?
+            .rasterizer
+            .render_image(&mut self.font_system, key)?
             .placement;
         (placement.width > 0 && placement.height > 0).then_some([
             placement.left as f32,
@@ -109,18 +107,22 @@ impl TextSystem {
 
     /// Whether the glyph's font draws it from its outline alone, with no colour or bitmap tables.
     fn is_plain_outline(&mut self, key: CacheKey) -> bool {
-        self.font_system
-            .get_font(key.font_id, key.font_weight)
-            .is_some_and(|font| !msdf::has_colour_tables(&font))
+        raster::with_skrifa_font(
+            &mut self.font_system,
+            key.font_id,
+            key.font_weight,
+            |font| !raster::has_colour_tables(&font),
+        )
+        .unwrap_or(false)
     }
 
     /// Whether `key` is an outline glyph with nothing to draw, such as whitespace.
     fn is_blank_outline(&mut self, key: CacheKey) -> bool {
         self.is_plain_outline(key)
             && self
-                .swash_cache
-                .get_outline_commands_uncached(&mut self.font_system, key)
-                .is_none_or(|commands| commands.is_empty())
+                .rasterizer
+                .scale_outline(&mut self.font_system, key)
+                .is_none_or(|path| path.is_empty())
     }
 
     /// Places `layout` in `atlas` for its current frame, generating glyphs that
@@ -322,43 +324,69 @@ impl TextSystem {
         match key {
             AtlasKey::Raster(key) => {
                 if self.is_plain_outline(key)
-                    && let Some(commands) = self
-                        .swash_cache
-                        .get_outline_commands_uncached(&mut self.font_system, key)
-                    && let Some([min_x, min_y, max_x, max_y]) = msdf::outline_bounds(&commands)
+                    && let Some(path) = self.rasterizer.scale_outline(&mut self.font_system, key)
                 {
                     let dx = key.x_bin.as_float();
                     let dy = key.y_bin.as_float();
-                    let width = (max_x + dx).ceil() - (min_x + dx).floor();
-                    let height = (max_y + dy).ceil() - (min_y + dy).floor();
-                    if width > max_size as f32 || height > max_size as f32 {
-                        return RenderedGlyph::Oversized;
+                    let offset = if key.flags.contains(cosmic_text::CacheKeyFlags::PIXEL_FONT) {
+                        zeno::Vector::new(dx.round(), dy.round())
+                    } else {
+                        zeno::Vector::new(dx, dy)
+                    };
+                    return match self.rasterizer.rasterize_mask_within(
+                        &path,
+                        zeno::Style::default(),
+                        offset,
+                        max_size,
+                    ) {
+                        MaskOutcome::Oversized => RenderedGlyph::Oversized,
+                        MaskOutcome::Empty => RenderedGlyph::Empty,
+                        MaskOutcome::Rendered(data, placement) => {
+                            if !data.iter().any(|&byte| byte != 0) {
+                                return RenderedGlyph::Empty;
+                            }
+                            let image = RasterImage {
+                                placement,
+                                content: RasterContent::Mask,
+                                source: RasterSource::Outline,
+                                data,
+                            };
+                            RenderedGlyph::Pixels(raster_pixels(&image, key))
+                        }
+                    };
+                }
+                match self.rasterizer.render_image_within(
+                    &mut self.font_system,
+                    key,
+                    Some(max_size),
+                ) {
+                    ImageOutcome::Oversized => RenderedGlyph::Oversized,
+                    ImageOutcome::Empty => RenderedGlyph::Empty,
+                    ImageOutcome::Rendered(image) => {
+                        if image.placement.width == 0
+                            || image.placement.height == 0
+                            || !image.data.iter().any(|&byte| byte != 0)
+                        {
+                            RenderedGlyph::Empty
+                        } else {
+                            RenderedGlyph::Pixels(raster_pixels(&image, key))
+                        }
                     }
                 }
-                self.swash_cache
-                    .get_image_uncached(&mut self.font_system, key)
-                    .filter(|image| {
-                        image.placement.width > 0
-                            && image.placement.height > 0
-                            && image.data.iter().any(|&byte| byte != 0)
-                    })
-                    .map_or(RenderedGlyph::Empty, |image| {
-                        RenderedGlyph::Pixels(raster_pixels(&image, key))
-                    })
             }
             AtlasKey::RasterStroke(key, half_width) => {
                 self.render_stroke(key, f32::from_bits(half_width), max_size)
             }
             AtlasKey::Msdf(key) => msdf::render_msdf_glyph(
                 &mut self.font_system,
-                &mut self.swash_cache,
+                &self.rasterizer,
                 key,
                 None,
                 max_size,
             ),
             AtlasKey::Sdf(key, tier) => msdf::render_msdf_glyph(
                 &mut self.font_system,
-                &mut self.swash_cache,
+                &self.rasterizer,
                 key,
                 Some(tier),
                 max_size,
@@ -367,67 +395,33 @@ impl TextSystem {
     }
 
     /// A plain outline stroked `half_width` pixels to each side with round joins, placed as
-    /// Swash places its fill.
+    /// its fill is placed.
     fn render_stroke(&mut self, key: CacheKey, half_width: f32, max_size: u32) -> RenderedGlyph {
-        use cosmic_text::CacheKeyFlags;
-        use swash::zeno::{Angle, Join, Mask, Origin, Stroke, Transform, Vector};
+        use zeno::{Join, Stroke, Vector};
 
         if half_width == 0.0 || !self.is_plain_outline(key) {
             return RenderedGlyph::Empty;
         }
-        let Some(font) = self.font_system.get_font(key.font_id, key.font_weight) else {
+        let Some(path) = self.rasterizer.scale_outline(&mut self.font_system, key) else {
             return RenderedGlyph::Empty;
         };
-        let swash_font = font.as_swash();
-        let mut scaler = self
-            .scale_context
-            .0
-            .builder(swash_font)
-            .size(f32::from_bits(key.font_size_bits))
-            .hint(!key.flags.contains(CacheKeyFlags::DISABLE_HINTING));
-        if let Some(variation) = swash_font
-            .variations()
-            .find_by_tag(swash::Tag::from_be_bytes(*b"wght"))
-        {
-            scaler = scaler.normalized_coords(swash_font.variations().normalized_coords([(
-                swash::Tag::from_be_bytes(*b"wght"),
-                f32::from(key.font_weight.0).clamp(variation.min_value(), variation.max_value()),
-            )]));
-        }
-        let mut scaler = scaler.build();
-        let Some(mut outline) = scaler.scale_outline(key.glyph_id) else {
-            return RenderedGlyph::Empty;
-        };
-        if key.flags.contains(CacheKeyFlags::FAKE_ITALIC) {
-            outline.transform(&Transform::skew(
-                Angle::from_degrees(14.0),
-                Angle::from_degrees(0.0),
-            ));
-        }
         let offset = Vector::new(key.x_bin.as_float(), key.y_bin.as_float());
         let mut stroke = Stroke::new(2.0 * half_width);
         stroke.join(Join::Round);
-        let mut mask = Mask::new((outline.points(), outline.verbs()));
-        let mut size = [0; 2];
-        mask.style(stroke)
-            .origin(Origin::BottomLeft)
-            .offset(offset)
-            .render_offset(offset)
-            .inspect(|_, width, height| size = [width, height]);
-        if size.iter().any(|side| *side > max_size) {
-            return RenderedGlyph::Oversized;
+        match self
+            .rasterizer
+            .rasterize_mask_within(&path, stroke.into(), offset, max_size)
+        {
+            MaskOutcome::Oversized => RenderedGlyph::Oversized,
+            MaskOutcome::Empty => RenderedGlyph::Empty,
+            MaskOutcome::Rendered(alpha, placement) => RenderedGlyph::Pixels(GlyphPixels {
+                size: [placement.width, placement.height],
+                left: placement.left as f32,
+                top: placement.top as f32,
+                mode: GLYPH_MODE_RASTER_MASK,
+                pixels: alpha.into_iter().flat_map(|alpha| [alpha; 4]).collect(),
+            }),
         }
-        if size.contains(&0) {
-            return RenderedGlyph::Empty;
-        }
-        let (alpha, placement) = mask.render();
-        RenderedGlyph::Pixels(GlyphPixels {
-            size: [placement.width, placement.height],
-            left: placement.left as f32,
-            top: placement.top as f32,
-            mode: GLYPH_MODE_RASTER_MASK,
-            pixels: alpha.into_iter().flat_map(|alpha| [alpha; 4]).collect(),
-        })
     }
 }
 
@@ -814,19 +808,19 @@ pub(crate) struct GlyphPixels {
     pub(crate) pixels: Vec<u8>,
 }
 
-fn raster_pixels(image: &SwashImage, key: CacheKey) -> GlyphPixels {
-    // Swash composites colour outlines premultiplied but decodes colour
-    // bitmaps with straight alpha.
-    let straight_color = matches!(image.source, Source::ColorBitmap(_));
+fn raster_pixels(image: &RasterImage, key: CacheKey) -> GlyphPixels {
+    // Colour outlines and BGRA strikes are already premultiplied; PNG bitmaps carry straight alpha.
+    let straight_color = matches!(
+        image.source,
+        RasterSource::ColorBitmap {
+            straight_alpha: true
+        }
+    );
     let texels = image.placement.width as usize * image.placement.height as usize;
     let pixels = (0..texels)
         .flat_map(|index| match image.content {
-            SwashContent::Mask => [image.data[index]; 4],
-            SwashContent::SubpixelMask => {
-                let rgb = &image.data[index * 4..index * 4 + 3];
-                [rgb[0].max(rgb[1]).max(rgb[2]); 4]
-            }
-            SwashContent::Color => {
+            RasterContent::Mask => [image.data[index]; 4],
+            RasterContent::Color => {
                 let [r, g, b, a] = image.data[index * 4..index * 4 + 4] else {
                     unreachable!()
                 };
@@ -838,9 +832,9 @@ fn raster_pixels(image: &SwashImage, key: CacheKey) -> GlyphPixels {
             }
         })
         .collect();
-    // Swash draws bitmaps without the key's subpixel bins, so they are
-    // shifted to the nearest whole pixel instead.
-    let [snap_x, snap_y] = if matches!(image.source, Source::Bitmap(_) | Source::ColorBitmap(_)) {
+    // Bitmaps are drawn without the key's subpixel bins, so they are shifted to the nearest
+    // whole pixel instead.
+    let [snap_x, snap_y] = if matches!(image.source, RasterSource::ColorBitmap { .. }) {
         [key.x_bin, key.y_bin].map(|bin| bin.as_float().round())
     } else {
         [0.0; 2]
@@ -849,7 +843,7 @@ fn raster_pixels(image: &SwashImage, key: CacheKey) -> GlyphPixels {
         size: [image.placement.width, image.placement.height],
         left: image.placement.left as f32 + snap_x,
         top: image.placement.top as f32 + snap_y,
-        mode: if image.content == SwashContent::Color {
+        mode: if image.content == RasterContent::Color {
             GLYPH_MODE_RASTER_COLOR
         } else {
             GLYPH_MODE_RASTER_MASK

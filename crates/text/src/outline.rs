@@ -1,6 +1,8 @@
 use cosmic_text::SubpixelBin;
-use swash::zeno::Command;
+use cosmic_text::skrifa::raw::types::Tag;
+use zeno::Command;
 
+use crate::raster;
 use crate::{GlyphKey, TextSystem};
 
 /// One step of a glyph outline, in pixels with Y pointing up from the glyph's pen position.
@@ -40,24 +42,23 @@ impl TextSystem {
     /// The outline of the glyph `key` from the layout these fonts shaped.
     pub fn glyph_outline(&mut self, key: GlyphKey) -> GlyphOutline {
         let key = key.outline_key().0;
-        let plain = self
-            .font_system
-            .get_font(key.font_id, key.font_weight)
-            .is_some_and(|font| !is_colour_glyph(&font, key.glyph_id));
+        let plain = raster::with_skrifa_font(
+            &mut self.font_system,
+            key.font_id,
+            key.font_weight,
+            |font| !is_colour_glyph(&font, key.glyph_id),
+        )
+        .unwrap_or(false);
         if !plain {
             return GlyphOutline::Unavailable;
         }
-        let Some(commands) = self
-            .swash_cache
-            .get_outline_commands_uncached(&mut self.font_system, key)
-        else {
+        let Some(path) = self.rasterizer.scale_outline(&mut self.font_system, key) else {
             return GlyphOutline::Unavailable;
         };
-        let point = |p: swash::zeno::Vector| [p.x, p.y];
+        let point = |p: zeno::Vector| [p.x, p.y];
         GlyphOutline::Commands(
-            commands
-                .iter()
-                .map(|command| match *command {
+            path.commands()
+                .map(|command| match command {
                     Command::MoveTo(p) => OutlineCommand::MoveTo(point(p)),
                     Command::LineTo(p) => OutlineCommand::LineTo(point(p)),
                     Command::QuadTo(c, p) => OutlineCommand::QuadTo(point(c), point(p)),
@@ -73,12 +74,10 @@ impl TextSystem {
 
 /// Whether `font` draws `glyph` from its `COLR` layers or a colour bitmap strike, rather than an
 /// outline.
-fn is_colour_glyph(font: &cosmic_text::Font, glyph: u16) -> bool {
-    let swash = font.as_swash();
-    swash
-        .table(u32::from_be_bytes(*b"COLR"))
-        .is_some_and(|colr| colr_has_glyph(colr, glyph))
-        || swash.color_strikes().any(|strike| strike.contains(glyph))
+fn is_colour_glyph(font: &cosmic_text::skrifa::FontRef<'_>, glyph: u16) -> bool {
+    font.table_data(Tag::new(b"COLR"))
+        .is_some_and(|colr| colr_has_glyph(colr.as_bytes(), glyph))
+        || raster::has_colour_bitmap_glyph(font, glyph)
 }
 
 /// Whether the `COLR` table `colr` has layers for `glyph`, as a version 0 base glyph or a version
