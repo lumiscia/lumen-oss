@@ -5,13 +5,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cosmic_text::{CacheKey, FontSystem, SwashCache, fontdb};
+use cosmic_text::{CacheKey, FontSystem, fontdb};
 
 mod atlas;
 mod decorate;
 mod gpu;
 mod msdf;
 mod outline;
+mod raster;
 mod shape;
 mod transform;
 
@@ -130,19 +131,10 @@ pub struct NoFontFaces;
 
 pub(crate) const MAX_GLYPH_EXTENTS: usize = 1 << 14;
 
-pub(crate) struct ScaleContext(swash::scale::ScaleContext);
-
-impl std::fmt::Debug for ScaleContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.pad("ScaleContext { .. }")
-    }
-}
-
 #[derive(Debug)]
 pub struct TextSystem {
     font_system: FontSystem,
-    swash_cache: SwashCache,
-    scale_context: ScaleContext,
+    rasterizer: raster::GlyphRasterizer,
     font_generation: u64,
     /// Latest first.
     registrations: Vec<Registration>,
@@ -158,8 +150,7 @@ impl TextSystem {
     pub fn new() -> Self {
         Self {
             font_system: new_font_system(font_database(&[])),
-            swash_cache: SwashCache::new(),
-            scale_context: ScaleContext(swash::scale::ScaleContext::new()),
+            rasterizer: raster::GlyphRasterizer::new(),
             font_generation: next_font_generation(),
             registrations: Vec::new(),
             shapes: Vec::new(),

@@ -1718,9 +1718,9 @@ dependencies = [
  "foldhash",
  "image",
  "kurbo",
- "swash",
  "unicode-bidi",
  "unicode-script",
+ "zeno",
 ]
 
 [[package]]

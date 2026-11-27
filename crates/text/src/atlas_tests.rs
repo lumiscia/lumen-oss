@@ -144,11 +144,19 @@ fn atlas_contains_glyph_pixels() {
 
 #[test]
 fn colour_glyphs_are_stored_premultiplied() {
-    let mut image = SwashImage::new();
-    image.content = SwashContent::Color;
-    image.placement.width = 2;
-    image.placement.height = 1;
-    image.data = vec![255, 0, 0, 128, 0, 100, 200, 255];
+    let mut image = RasterImage {
+        placement: zeno::Placement {
+            left: 0,
+            top: 0,
+            width: 2,
+            height: 1,
+        },
+        content: RasterContent::Color,
+        source: RasterSource::ColorBitmap {
+            straight_alpha: true,
+        },
+        data: vec![255, 0, 0, 128, 0, 100, 200, 255],
+    };
     let key = TextSystem::new()
         .shape(&TextLayoutRequest::new("A"))
         .place([0.0; 2])
@@ -156,9 +164,8 @@ fn colour_glyphs_are_stored_premultiplied() {
         .key
         .0;
 
-    image.source = Source::ColorBitmap(swash::scale::StrikeWith::BestFit);
     let bitmap = raster_pixels(&image, key);
-    image.source = Source::ColorOutline(0);
+    image.source = RasterSource::ColorOutline;
     let outline = raster_pixels(&image, key);
 
     assert_eq!(bitmap.pixels, [128, 0, 0, 128, 0, 100, 200, 255]);
@@ -170,16 +177,19 @@ fn colour_glyphs_are_stored_premultiplied() {
 fn bitmap_glyphs_snap_to_the_nearest_pixel() {
     let mut system = TextSystem::new();
     let shaped = system.shape(&TextLayoutRequest::new("A"));
-    let mut image = SwashImage::new();
-    image.source = Source::ColorBitmap(swash::scale::StrikeWith::BestFit);
-    image.content = SwashContent::Color;
-    image.placement = swash::zeno::Placement {
-        left: 1,
-        top: 8,
-        width: 2,
-        height: 2,
+    let image = RasterImage {
+        source: RasterSource::ColorBitmap {
+            straight_alpha: true,
+        },
+        content: RasterContent::Color,
+        placement: zeno::Placement {
+            left: 1,
+            top: 8,
+            width: 2,
+            height: 2,
+        },
+        data: vec![0; 2 * 2 * 4],
     };
-    image.data = vec![0; 2 * 2 * 4];
     let mut atlas = GlyphAtlas::new(64);
     let (slot, origin) = atlas.allocate([2, 2]).unwrap();
     for start in [20.0, -21.0] {
@@ -469,7 +479,6 @@ fn font_size_sweep_keeps_raster_memory_bounded() {
     }
 
     assert!(atlas.glyphs.len() < seen.len() / 2);
-    assert!(system.swash_cache.image_cache.is_empty());
 }
 
 #[test]
@@ -983,12 +992,14 @@ mod msdf_tests {
 
         // Two copies of one outline overlap everywhere.
         let key = msdf::msdf_key(overlapping.glyphs[0].key.0);
-        let commands = system
-            .swash_cache
-            .get_outline_commands_uncached(&mut system.font_system, key)
-            .unwrap();
-        let overlaps = |commands: &[swash::zeno::Command]| {
-            msdf::contours_overlap(&msdf::contours(commands, |p| {
+        let commands: Vec<_> = system
+            .rasterizer
+            .scale_outline(&mut system.font_system, key)
+            .unwrap()
+            .commands()
+            .collect();
+        let overlaps = |commands: &[zeno::Command]| {
+            msdf::contours_overlap(&msdf::contours(commands.iter().copied(), |p| {
                 fdsm::bezier::Point::new(f64::from(p.x), f64::from(p.y))
             }))
         };

@@ -1,4 +1,4 @@
-use cosmic_text::{CacheKey, CacheKeyFlags, FontSystem, SubpixelBin, SwashCache};
+use cosmic_text::{CacheKey, CacheKeyFlags, FontSystem, SubpixelBin};
 use fdsm::{
     bezier::{Point, Segment, scanline::FillRule},
     correct_error::{ErrorCorrectionConfig, correct_error_msdf},
@@ -7,10 +7,11 @@ use fdsm::{
     shape::{Contour, Shape},
 };
 use image::{ImageBuffer, Luma, Rgb};
-use swash::zeno::{Command, Vector};
+use zeno::{Command, Vector};
 
 use crate::GLYPH_MODE_MSDF;
 use crate::atlas::{GlyphPixels, RenderedGlyph};
+use crate::raster::{self, GlyphRasterizer};
 
 /// Em size, in atlas texels, of the coarsest distance fields.
 pub(crate) const MSDF_EM_SIZE: f32 = 48.0;
@@ -86,21 +87,21 @@ pub(crate) fn stroke_key(key: CacheKey, half_width: f32) -> (CacheKey, u32) {
 /// and a field wider or taller than `max_size` is reported before it is generated.
 pub(crate) fn render_msdf_glyph(
     font_system: &mut FontSystem,
-    swash_cache: &mut SwashCache,
+    rasterizer: &GlyphRasterizer,
     key: CacheKey,
     stroke_tier: Option<u32>,
     max_size: u32,
 ) -> RenderedGlyph {
-    let Some(font) = font_system.get_font(key.font_id, key.font_weight) else {
-        return RenderedGlyph::RasterOnly;
-    };
-    if has_colour_tables(&font) {
+    let is_plain = raster::with_skrifa_font(font_system, key.font_id, key.font_weight, |font| {
+        !raster::has_colour_tables(&font)
+    });
+    if !is_plain.unwrap_or(false) {
         return RenderedGlyph::RasterOnly;
     }
-    let Some(commands) = swash_cache.get_outline_commands_uncached(font_system, key) else {
+    let Some(path) = rasterizer.scale_outline(font_system, key) else {
         return RenderedGlyph::RasterOnly;
     };
-    let Some([min_x, min_y, max_x, max_y]) = outline_bounds(&commands) else {
+    let Some([min_x, min_y, max_x, max_y]) = path.bounds() else {
         return RenderedGlyph::Empty;
     };
 
@@ -112,7 +113,7 @@ pub(crate) fn render_msdf_glyph(
     let top = (max_y + padding).ceil();
     let width = ((max_x + padding).ceil() - left) as u32;
     let height = (top - (min_y - padding).floor()) as u32;
-    let contours = contours(&commands, |p| {
+    let contours = contours(path.commands(), |p| {
         Point::new(f64::from(p.x - left), f64::from(top - p.y))
     });
     if contours_overlap(&contours) {
@@ -174,48 +175,11 @@ pub(crate) fn render_msdf_glyph(
     })
 }
 
-/// Whether `font` holds colour or bitmap glyphs, which are drawn from those tables rather than
-/// their outlines.
-pub(crate) fn has_colour_tables(font: &cosmic_text::Font) -> bool {
-    [b"COLR", b"CBDT", b"sbix", b"EBDT"]
-        .iter()
-        .any(|tag| font.as_swash().table(u32::from_be_bytes(**tag)).is_some())
-}
-
-/// `[min_x, min_y, max_x, max_y]` of an outline's control points, or `None` when it is empty.
-pub(crate) fn outline_bounds(commands: &[Command]) -> Option<[f32; 4]> {
-    let mut bounds: Option<[f32; 4]> = None;
-    let mut include = |point: Vector| {
-        bounds = Some(match bounds {
-            Some([min_x, min_y, max_x, max_y]) => [
-                min_x.min(point.x),
-                min_y.min(point.y),
-                max_x.max(point.x),
-                max_y.max(point.y),
-            ],
-            None => [point.x, point.y, point.x, point.y],
-        });
-    };
-    for command in commands {
-        match *command {
-            Command::MoveTo(p) | Command::LineTo(p) => include(p),
-            Command::QuadTo(c, p) => {
-                include(c);
-                include(p);
-            }
-            Command::CurveTo(c0, c1, p) => {
-                include(c0);
-                include(c1);
-                include(p);
-            }
-            Command::Close => {}
-        }
-    }
-    bounds
-}
-
-/// Splits Swash outline commands into closed contours, mapping each point.
-pub(crate) fn contours(commands: &[Command], map: impl Fn(Vector) -> Point) -> Vec<Contour> {
+/// Splits outline commands into closed contours, mapping each point.
+pub(crate) fn contours(
+    commands: impl IntoIterator<Item = Command>,
+    map: impl Fn(Vector) -> Point,
+) -> Vec<Contour> {
     let mut contours = Vec::new();
     let mut segments = Vec::new();
     let mut start = Point::origin();
@@ -231,7 +195,7 @@ pub(crate) fn contours(commands: &[Command], map: impl Fn(Vector) -> Point) -> V
         }
     };
     for command in commands {
-        match *command {
+        match command {
             Command::MoveTo(p) => {
                 close(&mut segments, current, start);
                 start = map(p);
