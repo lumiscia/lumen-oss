@@ -1,4 +1,9 @@
-import type { Diagnostic, MediaFailure } from "@lumiscia/lumen-types";
+import type {
+  Diagnostic,
+  DiagnosticCode,
+  EvaluateRequest,
+  MediaFailure,
+} from "@lumiscia/lumen-types";
 import { epochNow, type PreviewClock } from "./clock.js";
 import {
   previewDependencies,
@@ -27,10 +32,24 @@ import {
   errorRenderDiagnostics,
 } from "./session/errors.js";
 import { PlaybackFpsMeter } from "./session/stats.js";
+import { readWasmError } from "./wasm-error.js";
 
 export interface LumenPreviewWorkerHostOptions {
   initPreview: (options: { module_or_path: string }) => Promise<object>;
   previewBindings: LumenPreviewBindings;
+}
+
+/** A call to one of the engine's functions that reads a composition without loading it. */
+export type LumenPreviewEngineCall =
+  | { compositionJson: string; fonts: string[] | null; kind: "check" }
+  | { compositionJson: string; kind: "evaluate"; request: EvaluateRequest }
+  | { compositionJson: string; kind: "media-dependencies" };
+
+/** What an engine call threw: its message, and the code and diagnostics the engine set on it. */
+export interface LumenPreviewEngineCallError {
+  code?: DiagnosticCode;
+  diagnostics: Diagnostic[];
+  message: string;
 }
 
 export type LumenPreviewWorkerCommand =
@@ -68,6 +87,12 @@ export type LumenPreviewWorkerCommand =
   | {
       loadId: number;
       type: "unload";
+    }
+  | {
+      call: LumenPreviewEngineCall;
+      /** Names the call in its `engine-call-settled`. */
+      requestId: number;
+      type: "engine-call";
     }
   | {
       clock: PreviewClock;
@@ -157,6 +182,13 @@ export type LumenPreviewWorkerEvent =
   | {
       source: string;
       type: "audio-source-released";
+    }
+  | {
+      /** Null when the call returned `result`. */
+      error: LumenPreviewEngineCallError | null;
+      requestId: number;
+      result: unknown;
+      type: "engine-call-settled";
     }
   | {
       loadId: number;
@@ -306,6 +338,13 @@ export function createLumenPreviewWorkerHost({
         runner.unload();
         requireLifecycle().clear();
         requireController().clear();
+        break;
+      case "engine-call":
+        scope.postMessage({
+          ...callEngine(message.call),
+          requestId: message.requestId,
+          type: "engine-call-settled",
+        });
         break;
       case "audio-source-settled":
         audioRequests.get(message.requestId)?.(message.failure);
@@ -473,6 +512,31 @@ export function createLumenPreviewWorkerHost({
       return;
     }
     scope.postMessage({ type: "ready" });
+  }
+
+  function callEngine(
+    call: LumenPreviewEngineCall,
+  ): Pick<Extract<LumenPreviewWorkerEvent, { type: "engine-call-settled" }>, "error" | "result"> {
+    try {
+      return { error: null, result: engineResult(call) };
+    } catch (error) {
+      const { code, diagnostics } = readWasmError(error);
+      return {
+        error: { ...(code && { code }), diagnostics, message: describeError(error) },
+        result: null,
+      };
+    }
+  }
+
+  function engineResult(call: LumenPreviewEngineCall): unknown {
+    switch (call.kind) {
+      case "check":
+        return previewBindings.check(call.compositionJson, call.fonts);
+      case "evaluate":
+        return previewBindings.evaluate(call.compositionJson, call.request);
+      case "media-dependencies":
+        return previewBindings.mediaDependencies(call.compositionJson);
+    }
   }
 
   async function load(

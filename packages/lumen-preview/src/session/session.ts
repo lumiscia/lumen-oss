@@ -1,4 +1,9 @@
-import type { Diagnostic, MediaFailure } from "@lumiscia/lumen-types";
+import type {
+  Diagnostic,
+  EvaluateRequest,
+  MediaFailure,
+  MediaInventory,
+} from "@lumiscia/lumen-types";
 
 import { LumenAudioEngine } from "../audio-engine.js";
 import {
@@ -18,11 +23,17 @@ import type {
   LumenPreviewErrorCode,
   LumenPreviewMediaState,
 } from "../preview.js";
-import type { LumenPreviewWorkerCommand, LumenPreviewWorkerEvent } from "../worker-host.js";
+import type {
+  LumenPreviewEngineCall,
+  LumenPreviewEngineCallError,
+  LumenPreviewWorkerCommand,
+  LumenPreviewWorkerEvent,
+} from "../worker-host.js";
 import { Attachment, type PreviewWorkerOptions } from "./attachment.js";
 import { describeError, errorMediaFailure, reportConsoleError } from "./errors.js";
 import {
   absoluteUrl,
+  compositionJson,
   resolvePreviewInputs,
   sameMediaEntry,
   type ResolvedPreviewInputs,
@@ -30,6 +41,7 @@ import {
 import { Load } from "./load.js";
 import { EMPTY_PREVIEW_STATS } from "./stats.js";
 import type {
+  LumenPreviewComposition,
   LumenPreviewSessionInputs,
   LumenPreviewSessionOptions,
   LumenRuntime,
@@ -44,6 +56,12 @@ type WorkerEvent<TType extends LumenPreviewWorkerEvent["type"]> = Extract<
   LumenPreviewWorkerEvent,
   { type: TType }
 >;
+
+interface PendingEngineCall {
+  call: LumenPreviewEngineCall;
+  reject(error: unknown): void;
+  resolve(result: unknown): void;
+}
 
 class PreviewStartupError extends Error {
   constructor(
@@ -68,6 +86,13 @@ export class LumenPreviewSession {
   readonly #previewInternals: LumenPreviewInternals;
   readonly #audioOptions: LumenPreviewSessionOptions["audio"];
   readonly #runtime: RuntimeUrls;
+  // Engine calls the worker hasn't answered, by request id. Each is posted to every worker that
+  // becomes ready until one answers it.
+  readonly #engineCalls = new Map<number, PendingEngineCall>();
+  #engineCallCount = 0;
+  // Why no worker will answer an engine call until the next attach: the startup failure, the
+  // crash or the stop. Null while a worker is starting or running, and before the first attach.
+  #engineStopped: { readonly error: unknown } | null = null;
   #inputs: LumenPreviewSessionInputs;
   // What this session is attached with. Every attach replaces it and dispose drops it, so a slow
   // startup can tell it has been replaced.
@@ -125,9 +150,42 @@ export class LumenPreviewSession {
     return new Promise((resolve) => this.#readyWaiters.push(resolve));
   }
 
+  /**
+   * What is wrong with `composition`, as the bindings' `check` returns it, worked out in the
+   * preview's worker. A composition with errors resolves with them.
+   */
+  check(composition: LumenPreviewComposition, fonts?: string[] | null): Promise<Diagnostic[]> {
+    return this.#callEngine(() => ({
+      compositionJson: compositionJson(composition),
+      fonts: fonts ?? null,
+      kind: "check",
+    }));
+  }
+
+  /** One param of a root node at a frame, as the bindings' `evaluate` returns it, in the worker. */
+  evaluate(composition: LumenPreviewComposition, request: EvaluateRequest): Promise<unknown> {
+    return this.#callEngine(() => ({
+      compositionJson: compositionJson(composition),
+      kind: "evaluate",
+      request,
+    }));
+  }
+
+  /**
+   * What `composition` needs before it renders, as the bindings' `mediaDependencies` returns it,
+   * in the worker.
+   */
+  mediaDependencies(composition: LumenPreviewComposition): Promise<MediaInventory> {
+    return this.#callEngine(() => ({
+      compositionJson: compositionJson(composition),
+      kind: "media-dependencies",
+    }));
+  }
+
   /** Replaces whatever this session was showing. Resolves when started or failed; never rejects. */
   async attach(host: HTMLElement): Promise<void> {
     this.#teardown();
+    this.#engineStopped = null;
     const attachment = new Attachment(this.#desiredOptions(), (state) =>
       this.#previewInternals.update(state),
     );
@@ -166,6 +224,7 @@ export class LumenPreviewSession {
       if (attachment === this.#live) {
         const code = error instanceof PreviewStartupError ? error.code : "worker_failed";
         this.#settleReady(this.#reportError(code, "start", error));
+        this.#rejectEngineCalls(error);
       }
       return;
     }
@@ -192,6 +251,9 @@ export class LumenPreviewSession {
     worker.onerror = (event) => this.#workerCrashed(event.message);
     worker.onmessageerror = () => this.#workerCrashed("a message could not be read");
     attachment.post({ canvas: offscreen, type: "attach-canvas" }, [offscreen]);
+    for (const [requestId, { call }] of this.#engineCalls) {
+      attachment.post({ call, requestId, type: "engine-call" });
+    }
     this.#syncOptions(attachment);
     this.#applyPlayback(attachment, this.#readPlayback(this.#inputs));
     this.#syncInputs(attachment);
@@ -227,7 +289,47 @@ export class LumenPreviewSession {
   dispose(): void {
     this.#teardown();
     this.#settleReady(stoppedError());
+    this.#rejectEngineCalls(stoppedException());
     this.#previewInternals.detach();
+  }
+
+  /**
+   * Runs `call` in the worker, which it waits for when the worker isn't ready yet. Rejects at once
+   * when the worker failed to start, crashed or was stopped, with that error.
+   */
+  #callEngine<T>(call: () => LumenPreviewEngineCall): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      if (this.#engineStopped) {
+        reject(this.#engineStopped.error);
+        return;
+      }
+      const requestId = ++this.#engineCallCount;
+      const pending = { call: call(), reject, resolve: resolve as (result: unknown) => void };
+      this.#engineCalls.set(requestId, pending);
+      if (this.#live?.worker) {
+        this.#live.post({ call: pending.call, requestId, type: "engine-call" });
+      }
+    });
+  }
+
+  #settleEngineCall({ error, requestId, result }: WorkerEvent<"engine-call-settled">): void {
+    const pending = this.#engineCalls.get(requestId);
+    this.#engineCalls.delete(requestId);
+    if (error) {
+      pending?.reject(engineCallError(error));
+    } else {
+      pending?.resolve(result);
+    }
+  }
+
+  /** Rejects every pending engine call, and each later one until the next attach. */
+  #rejectEngineCalls(error: unknown): void {
+    this.#engineStopped = { error };
+    const pending = [...this.#engineCalls.values()];
+    this.#engineCalls.clear();
+    for (const { reject } of pending) {
+      reject(error);
+    }
   }
 
   #teardown(): void {
@@ -455,6 +557,9 @@ export class LumenPreviewSession {
       case "audio-source-released":
         transport.audio?.removeSource(event.source);
         break;
+      case "engine-call-settled":
+        this.#settleEngineCall(event);
+        break;
       case "ready":
       case "startup-failed":
         break;
@@ -597,9 +702,9 @@ export class LumenPreviewSession {
   #workerCrashed(message: string): void {
     this.#teardown();
     this.#previewInternals.update({ isLoaded: false, isPlaying: false, media: NO_MEDIA });
-    this.#settleReady(
-      this.#reportError("worker_failed", "worker", `the preview worker stopped: ${message}`),
-    );
+    const stopped = `the preview worker stopped: ${message}`;
+    this.#settleReady(this.#reportError("worker_failed", "worker", stopped));
+    this.#rejectEngineCalls(new Error(stopped));
   }
 
   #reportError(
@@ -681,6 +786,16 @@ function stoppedError(): LumenPreviewError {
   };
 }
 
+/** What pending work rejects with when the session stops it. */
+function stoppedException(): DOMException {
+  return new DOMException("the preview stopped", "AbortError");
+}
+
+/** The error an engine call threw in the worker, with the fields the bindings set on it. */
+function engineCallError({ code, diagnostics, message }: LumenPreviewEngineCallError): Error {
+  return Object.assign(new Error(message), { ...(code && { code }), diagnostics });
+}
+
 function assertBrowserSupport(): void {
   if (
     !("gpu" in navigator) ||
@@ -716,7 +831,7 @@ function startWorker(
     signal.addEventListener("abort", () => {
       clearTimeout(timeout);
       worker.terminate();
-      reject(new DOMException("the preview stopped while starting", "AbortError"));
+      reject(stoppedException());
     });
     worker.onmessage = (event: MessageEvent<LumenPreviewWorkerEvent>) => {
       if (event.data.type === "ready") {

@@ -166,6 +166,13 @@ class FakeController {
   }
 }
 
+const missingNode = {
+  code: "render.missing_node",
+  message: "there is no node 9",
+  path: "/nodes",
+  severity: "error",
+};
+
 /** What the engine lists each test composition needing, by its JSON. */
 const inventories = new Map<string, MediaInventory>();
 
@@ -256,7 +263,16 @@ beforeEach(() => {
   createLumenPreviewWorkerHost({
     initPreview: async () => ({}),
     previewBindings: {
-      check: () => [],
+      check: (json: string) => {
+        calls.push(`check ${json}`);
+        return [];
+      },
+      evaluate: () => {
+        throw Object.assign(new Error("there is no node 9"), {
+          code: "render.missing_node",
+          diagnostics: [missingNode],
+        });
+      },
       LumenPreviewController: FakeController,
       mediaDependencies: (json: string) => {
         calls.push(`inventory ${json}`);
@@ -292,6 +308,38 @@ describe("createLumenPreviewWorkerHost", () => {
     await settle();
     expect(calls.slice(3)).toEqual(["model fox", "load B"]);
     expect(drawn.at(-1)).toBe("B");
+  });
+
+  it("answers engine calls without loading or drawing anything", async () => {
+    gpuReady.resolve();
+    await startWorker();
+    receive({
+      call: { compositionJson: "A", fonts: null, kind: "check" },
+      requestId: 1,
+      type: "engine-call",
+    });
+    receive({
+      call: { compositionJson: "A", kind: "evaluate", request: { frame: 0, node: 9, param: "x" } },
+      requestId: 2,
+      type: "engine-call",
+    });
+    await settle();
+
+    expect(sent.filter((event) => event.type === "engine-call-settled")).toEqual([
+      { error: null, requestId: 1, result: [], type: "engine-call-settled" },
+      {
+        error: {
+          code: "render.missing_node",
+          diagnostics: [missingNode],
+          message: "there is no node 9",
+        },
+        requestId: 2,
+        result: null,
+        type: "engine-call-settled",
+      },
+    ]);
+    expect(calls).toEqual(["check A"]);
+    expect(drawn).toEqual([]);
   });
 
   for (const kind of ["image", "video", "model", "environment", "lut"] as const) {
