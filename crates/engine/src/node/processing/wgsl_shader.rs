@@ -235,14 +235,14 @@ pub(crate) fn resolve_shaders(
             .map(|(name, template)| (Some(name.as_str()), &mut template.scene.graph)),
     );
     for (template, graph) in graphs {
-        let mut ids: Vec<NodeId> = graph
+        let mut ids: Vec<(Option<usize>, NodeId)> = graph
             .nodes
             .iter()
             .filter(|(_, node)| matches!(node, NodeKind::WgslShader(_)))
-            .map(|(&id, _)| id)
+            .map(|(&id, _)| (graph.position(id), id))
             .collect();
-        ids.sort_by_key(|&id| (graph.position(id), id));
-        for id in ids {
+        ids.sort_unstable();
+        for (_, id) in ids {
             let Some(NodeKind::WgslShader(node)) = graph.nodes.get_mut(&id) else {
                 continue;
             };

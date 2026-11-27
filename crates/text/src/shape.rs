@@ -341,8 +341,13 @@ impl TextSystem {
                 if spaces > 0 && gap > 0.0 {
                     ink_width = max_width;
                     let extra = gap / spaces as f32;
-                    let mut order: Vec<usize> = (0..line_glyphs.len()).collect();
-                    order.sort_by(|&a, &b| line_glyphs[a].x.total_cmp(&line_glyphs[b].x));
+                    let order = order_by_x(
+                        line_glyphs
+                            .iter()
+                            .enumerate()
+                            .map(|(index, glyph)| (glyph.x, index))
+                            .collect(),
+                    );
                     let mut moved = 0.0;
                     for index in order {
                         let glyph = &mut line_glyphs[index];
@@ -419,8 +424,13 @@ impl TextSystem {
             }
             // Segments follow the line from left to right, splitting where the span or direction
             // changes, and around an ellipsis, which covers no bytes.
-            let mut order: Vec<usize> = (first..glyphs.len()).collect();
-            order.sort_by(|&a, &b| glyphs[a].glyph.x.total_cmp(&glyphs[b].glyph.x));
+            let order = order_by_x(
+                glyphs[first..]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, shaped)| (shaped.glyph.x, first + index))
+                    .collect(),
+            );
             for run_glyphs in order.chunk_by(|&a, &b| {
                 let ellipses = [a, b].map(|index| ellipsis.contains(&(index - first)));
                 let (a, b) = (&glyphs[a], &glyphs[b]);
@@ -585,8 +595,13 @@ impl TextSystem {
             .iter()
             .map(|glyph| glyph.x)
             .fold(f32::INFINITY, f32::min);
-        let mut order: Vec<usize> = (0..line.len()).collect();
-        order.sort_by_key(|&index| (line[index].start, index));
+        let mut keyed: Vec<(usize, usize)> = line
+            .iter()
+            .enumerate()
+            .map(|(index, glyph)| (glyph.start, index))
+            .collect();
+        keyed.sort_unstable();
+        let order: Vec<usize> = keyed.into_iter().map(|(_, index)| index).collect();
         let fallback_span = order
             .first()
             .map_or(fallback_span, |&first| line[first].metadata);
@@ -700,6 +715,12 @@ impl TextSystem {
                     .map_or_else(FontMetrics::default, |font| FontMetrics::new(&font))
             })
     }
+}
+
+/// Sorts `(x, index)` pairs stably by `x` and returns their indices.
+fn order_by_x(mut pairs: Vec<(f32, usize)>) -> Vec<usize> {
+    pairs.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    pairs.into_iter().map(|(_, index)| index).collect()
 }
 
 /// A run of text with one font and spacing.

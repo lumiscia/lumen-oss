@@ -1054,28 +1054,30 @@ fn build_template(
         .render_settings
         .as_ref()
         .map_or_else(|| root_settings.clone(), |settings| settings.settings());
-    let props = template
-        .props
-        .iter()
-        .map(|(name, def)| {
-            let default = match &def.default {
-                Some(value) => def.kind.literal(value).unwrap_or_else(|error| {
-                    errors.push(
-                        GraphValidationError::InvalidSettings {
-                            at: At::default(),
-                            field: format!("/props/{}/default", crate::diagnostic::escape(name)),
-                            details: format!("prop `{name}` default: {error}"),
-                        }
-                        .into(),
-                    );
-                    def.kind.zero()
-                }),
-                None => def.kind.zero(),
-            };
-            let kind = def.kind;
-            (name.clone(), PropDef { kind, default })
-        })
-        .collect();
+    let mut props = BTreeMap::new();
+    for (name, def) in &template.props {
+        let default = match &def.default {
+            Some(value) => def.kind.literal(value).unwrap_or_else(|error| {
+                errors.push(
+                    GraphValidationError::InvalidSettings {
+                        at: At::default(),
+                        field: format!("/props/{}/default", crate::diagnostic::escape(name)),
+                        details: format!("prop `{name}` default: {error}"),
+                    }
+                    .into(),
+                );
+                def.kind.zero()
+            }),
+            None => def.kind.zero(),
+        };
+        props.insert(
+            name.clone(),
+            PropDef {
+                kind: def.kind,
+                default,
+            },
+        );
+    }
     CompositionTemplate {
         scene: Scene {
             graph: build_nodes(&template.nodes, errors),

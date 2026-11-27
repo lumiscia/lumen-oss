@@ -241,8 +241,14 @@ impl TimelineIndex {
             .map(|clip| ids.get(clip.track_id.as_str()).copied())
             .collect();
         let start = |clip: &AudioClip| ms_to_sample(clip.start_ms);
-        let mut by_start: Vec<usize> = (0..timeline.clips.len()).collect();
-        by_start.sort_by_key(|&index| (start(&timeline.clips[index]), index));
+        let mut keyed: Vec<(u64, usize)> = timeline
+            .clips
+            .iter()
+            .enumerate()
+            .map(|(index, clip)| (start(clip), index))
+            .collect();
+        keyed.sort_unstable();
+        let by_start: Vec<usize> = keyed.into_iter().map(|(_, index)| index).collect();
         let spans: Vec<(f64, f64)> = by_start
             .iter()
             .map(|&index| {

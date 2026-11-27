@@ -293,25 +293,22 @@ impl Clip {
         ctx: &ExpressionContext<'_>,
     ) -> crate::Result<PropValues> {
         let values = &self.props().0;
-        template
-            .props
-            .iter()
-            .map(|(name, def)| {
-                let value = match values.get(name) {
-                    None => Ok(def.default.clone()),
-                    Some(ClipPropValue::Literal(value)) => def.kind.literal(value),
-                    Some(ClipPropValue::Expr(expr)) => {
-                        let value = expr
-                            .evaluate(ctx)
-                            .map_err(|error| error.located(self.id, &format!("props.{name}")))?;
-                        def.kind.check(value)
-                    }
-                };
-                value
-                    .map(|value| (name.clone(), value))
-                    .map_err(|details| self.error(&format!("props.{name}"), details))
-            })
-            .collect()
+        let mut props = PropValues::new();
+        for (name, def) in &template.props {
+            let value = match values.get(name) {
+                None => Ok(def.default.clone()),
+                Some(ClipPropValue::Literal(value)) => def.kind.literal(value),
+                Some(ClipPropValue::Expr(expr)) => {
+                    let value = expr
+                        .evaluate(ctx)
+                        .map_err(|error| error.located(self.id, &format!("props.{name}")))?;
+                    def.kind.check(value)
+                }
+            }
+            .map_err(|details| self.error(&format!("props.{name}"), details))?;
+            props.insert(name.clone(), value);
+        }
+        Ok(props)
     }
 
     fn error(&self, field: &str, details: String) -> LumenError {

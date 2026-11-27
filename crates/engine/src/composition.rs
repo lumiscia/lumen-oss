@@ -387,7 +387,7 @@ impl CompositionBuilder {
         );
         for (template, graph) in graphs {
             let mut clips = graph.nodes.values().filter_map(as_clip).collect::<Vec<_>>();
-            clips.sort_by_key(|clip| clip.id);
+            clips.sort_unstable_by_key(|clip| clip.id);
             for clip in clips {
                 if let Err(details) = self.check_clip(clip) {
                     errors.push(
@@ -401,7 +401,7 @@ impl CompositionBuilder {
             }
             let props = template.map(|name| &self.compositions[name].props);
             let mut nodes = graph.nodes.values().collect::<Vec<_>>();
-            nodes.sort_by_key(|node| node.id());
+            NodeKind::sort_by_id(&mut nodes);
             for node in nodes {
                 if let Some(details) = prop_read_problem(node, props) {
                     errors.push(

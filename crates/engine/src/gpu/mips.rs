@@ -222,12 +222,16 @@ impl MipCache {
     /// rest while the cache holds more than `budget` bytes.
     pub(crate) fn trim(&mut self, rec: &mut lumen_gpu::Recorder, tick: u64, budget: u64) {
         let idle_before = tick.saturating_sub(IDLE_FRAMES);
-        let mut order: Vec<usize> = (0..self.entries.len())
-            .filter(|&index| self.entries[index].last_used != tick)
+        let mut order: Vec<(u64, usize)> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.last_used != tick)
+            .map(|(index, entry)| (entry.last_used, index))
             .collect();
-        order.sort_unstable_by_key(|&index| self.entries[index].last_used);
+        order.sort_unstable();
         let mut freed = Vec::new();
-        for index in order {
+        for (_, index) in order {
             let entry = &self.entries[index];
             if entry.last_used > idle_before && self.bytes <= budget {
                 break;

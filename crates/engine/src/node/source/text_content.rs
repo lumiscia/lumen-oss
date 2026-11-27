@@ -231,12 +231,11 @@ impl Delegated for FontFeatures {
     type Delegate = FontFeaturesDelegate;
 
     fn into_delegate(self) -> Self::Delegate {
-        FontFeaturesDelegate(
-            self.0
-                .into_iter()
-                .map(|(tag, value)| (tag, Deferred::Value(value)))
-                .collect(),
-        )
+        let mut features = BTreeMap::new();
+        for (tag, value) in self.0 {
+            features.insert(tag, Deferred::Value(value));
+        }
+        FontFeaturesDelegate(features)
     }
 }
 
@@ -246,14 +245,12 @@ impl DelegateEvaluable for FontFeaturesDelegate {
     const ACCEPTS_EXPRESSIONS: bool = false;
 
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
-        self.0
-            .iter()
-            .map(|(tag, value)| {
-                let field = String::from_utf8_lossy(tag);
-                ctx.eval_field(&field, value).map(|value| (*tag, value))
-            })
-            .collect::<crate::Result<_>>()
-            .map(FontFeatures)
+        let mut features = BTreeMap::new();
+        for (tag, value) in &self.0 {
+            let field = String::from_utf8_lossy(tag);
+            features.insert(*tag, ctx.eval_field(&field, value)?);
+        }
+        Ok(FontFeatures(features))
     }
 
     fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
@@ -268,37 +265,30 @@ impl DelegateEvaluable for FontFeaturesDelegate {
         let object = value
             .as_object()
             .ok_or_else(|| format!("`{path}` expected an object of feature values, got {value}"))?;
-        object
-            .iter()
-            .map(|(tag, value)| {
-                let parsed = <[u8; 4]>::try_from(tag.as_bytes())
-                    .ok()
-                    .filter(|tag| tag.iter().all(|byte| (b' '..=b'~').contains(byte)))
-                    .ok_or_else(|| {
-                        format!(
-                            "`{path}`: `{tag}` is not a feature tag, which is 4 printable ASCII characters"
-                        )
-                    })?;
-                Deferred::from_json_value(value, &format!("{path}.{tag}"))
-                    .map(|value| (parsed, value))
-            })
-            .collect::<Result<_, String>>()
-            .map(Self)
+        let mut features = BTreeMap::new();
+        for (tag, value) in object {
+            let parsed = <[u8; 4]>::try_from(tag.as_bytes())
+                .ok()
+                .filter(|tag| tag.iter().all(|byte| (b' '..=b'~').contains(byte)))
+                .ok_or_else(|| {
+                    format!(
+                        "`{path}`: `{tag}` is not a feature tag, which is 4 printable ASCII characters"
+                    )
+                })?;
+            let value = Deferred::from_json_value(value, &format!("{path}.{tag}"))?;
+            features.insert(parsed, value);
+        }
+        Ok(Self(features))
     }
 
     fn to_json_value(&self) -> Option<Value> {
-        Some(
-            self.0
-                .iter()
-                .filter_map(|(tag, value)| {
-                    Some((
-                        String::from_utf8_lossy(tag).into_owned(),
-                        value.to_json_value()?,
-                    ))
-                })
-                .collect::<serde_json::Map<_, _>>()
-                .into(),
-        )
+        let mut map = serde_json::Map::new();
+        for (tag, value) in &self.0 {
+            if let Some(json) = value.to_json_value() {
+                map.insert(String::from_utf8_lossy(tag).into_owned(), json);
+            }
+        }
+        Some(Value::Object(map))
     }
 
     fn read(&self) -> Option<PropertyRead<'_>> {
