@@ -506,15 +506,14 @@ impl LumenPreviewController {
         Ok(result)
     }
 
-    /// Applies a media change with protected frames derived from the playback state both before
-    /// (so uploads evict against the current playhead) and after (so registration, removal and
-    /// timing changes take effect).
+    /// Applies a media change, then re-derives the protected frames so registration, removal and
+    /// timing changes take effect. Every playback and media change ends this way, so a change
+    /// starts from protected frames that match the current playhead.
     fn change_media(
         &self,
         change: impl FnOnce(&WasmMediaStore) -> Result<(), &'static str>,
     ) -> Result<(), JsValue> {
         let state = self.state()?;
-        state.refresh_pins(&self.media)?;
         change(&self.media).map_err(JsValue::from_str)?;
         state.refresh_pins(&self.media)
     }
