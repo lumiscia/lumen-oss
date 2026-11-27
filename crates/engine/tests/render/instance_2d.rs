@@ -116,6 +116,68 @@ fn a_grid_of_instances_draws_as_the_same_drawing_placed_by_hand() {
     ]);
 }
 
+/// Copies that only move share their drawables, which the tiles they overlap in still list in
+/// draw order: each copy's red fill covers the blue stroke of the copy before it, and its own
+/// stroke lies over that copy's fill.
+#[test]
+fn overlapping_copies_of_a_fill_and_its_stroke_draw_in_copy_order() {
+    let red = [255, 0, 0, 255];
+    let blue = [0, 0, 255, 255];
+    check(vec![Case::new(
+        "three overlapping squares",
+        rendered(vec![
+            json!({ "id": 1, "type": "path_2d", "params": { "data": "M 0 0 L 40 0 L 40 40 L 0 40 Z" } }),
+            fill(2, red, 1.0),
+            json!({ "id": 3, "type": "stroke_2d", "params": { "paint": blue, "width": 4 }, "in": { "geometry": 1 } }),
+            json!({ "id": 4, "type": "merge_2d", "in": { "drawings": [2, 3] } }),
+            instance(
+                5,
+                4,
+                json!({ "count": 3, "position": "=vec2(8 + 24 * instance, 8)" }),
+            ),
+        ]),
+        Expect::Probes(vec![
+            (8, 28, blue),
+            (32, 28, blue),
+            (48, 28, red),
+            (56, 28, blue),
+            (72, 28, red),
+            (96, 28, blue),
+        ]),
+    )]);
+}
+
+/// One fill reached through two differently turned `merge_2d`s, under a merge that scales
+/// unevenly, draws as two separate fills placed the same way.
+#[test]
+fn one_fill_turned_two_ways_under_an_uneven_scale_draws_as_two_fills() {
+    let triangle = |id: u32| json!({ "id": id, "type": "path_2d", "params": { "data": "M 0 0 L 35 0 L 0 12 Z" } });
+    let fill_of = |id: u32, geometry: u32| json!({ "id": id, "type": "fill_2d", "params": { "paint": [255, 0, 0, 255] }, "in": { "geometry": geometry } });
+    let turned = |id: u32, drawing: u32, rotation: f64, x: f64| json!({ "id": id, "type": "merge_2d", "params": { "rotation": rotation, "position": [x, 25] }, "in": { "drawings": [drawing] } });
+    let scaled = |a: u32, b: u32| json!({ "id": 20, "type": "merge_2d", "params": { "scale": [2, 1] }, "in": { "drawings": [a, b] } });
+    let size = (300, 100);
+    let separate = scene(
+        size,
+        json!([
+            triangle(1), fill_of(2, 1), triangle(3), fill_of(4, 3),
+            turned(10, 2, 45.0, 25.0), turned(11, 4, 60.0, 100.0), scaled(10, 11),
+            { "id": 100, "type": "render_2d", "in": { "drawing": 20 } }
+        ]),
+    );
+    check(vec![Case::new(
+        "a shared fill turned 45 and 60 degrees",
+        scene(
+            size,
+            json!([
+                triangle(1), fill_of(2, 1),
+                turned(10, 2, 45.0, 25.0), turned(11, 2, 60.0, 100.0), scaled(10, 11),
+                { "id": 100, "type": "render_2d", "in": { "drawing": 20 } }
+            ]),
+        ),
+        Expect::Matches(separate.into()),
+    )]);
+}
+
 /// `drawing` drawn through a `render_2d`, as the scene's last nodes.
 fn rendered(mut nodes: Vec<Value>) -> Scene {
     let last = nodes.last().expect("a drawing node")["id"].clone();

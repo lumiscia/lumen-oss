@@ -232,11 +232,16 @@ pub(super) struct Use {
     pub(super) geometry: usize,
     pub(super) parent: GpuDrawableTransform,
     pub(super) style: Style,
-    pub(super) paint: GpuPaint,
+    /// Index in `Record::paints`.
+    pub(super) paint: u32,
     pub(super) opacity: f32,
     /// Linear colour multiplying the paint, from the tints of the `instance_2d` nodes around it.
     pub(super) tint: [f32; 3],
     pub(super) shadow: Option<Cast>,
+    /// Which fill or stroke node this draws, and which shadow cast of it, if any. Drawables of
+    /// one origin differ only in their placement, their tint and their shadow's lengths and
+    /// offset.
+    pub(super) origin: u32,
 }
 
 /// A drawing's outlines and its drawables, lowest first.
@@ -244,6 +249,8 @@ pub(super) struct Use {
 pub(super) struct Record {
     pub(super) geometries: Vec<Geometry>,
     pub(super) uses: Vec<Use>,
+    /// The paint of each fill and stroke node.
+    pub(super) paints: Vec<GpuPaint>,
 }
 
 enum Step {
@@ -270,7 +277,10 @@ struct Collector<'a, 'e> {
     render_id: NodeId,
     record: Record,
     geometries: HashMap<NodeId, usize>,
-    styles: HashMap<NodeId, (usize, Style, GpuPaint, f32)>,
+    /// The drawable each fill or stroke node draws, before the merges around it place it.
+    styles: HashMap<NodeId, Use>,
+    /// The next unused `Use::origin`.
+    origins: u32,
     reached: usize,
 }
 
@@ -289,6 +299,7 @@ pub(super) fn collect(
         record: Record::default(),
         geometries: HashMap::default(),
         styles: HashMap::default(),
+        origins: 0,
         reached: 0,
     };
     let placed = match cx.pixel_scale() {
@@ -420,16 +431,8 @@ impl<'e> Collector<'_, 'e> {
                 pending.push(Step::Draw(input.node, parent, nesting + 1));
             }
             NodeKind::Fill2d(_) | NodeKind::Stroke2d(_) => {
-                let (geometry, style, paint, opacity) = self.style(node_id)?;
-                self.push(Use {
-                    geometry,
-                    parent,
-                    style,
-                    paint,
-                    opacity,
-                    tint: [1.0; 3],
-                    shadow: None,
-                })?;
+                let drawable = self.style(node_id)?;
+                self.push(Use { parent, ..drawable })?;
             }
             // Validation keeps other kinds out of drawing inputs.
             _ => {
@@ -453,10 +456,10 @@ impl<'e> Collector<'_, 'e> {
         Ok(())
     }
 
-    /// The outline, style, paint and opacity of fill or stroke node `node_id`.
-    fn style(&mut self, node_id: NodeId) -> crate::Result<(usize, Style, GpuPaint, f32)> {
-        if let Some(style) = self.styles.get(&node_id) {
-            return Ok(*style);
+    /// The drawable fill or stroke node `node_id` draws, before the merges around it place it.
+    fn style(&mut self, node_id: NodeId) -> crate::Result<Use> {
+        if let Some(drawable) = self.styles.get(&node_id) {
+            return Ok(*drawable);
         }
         let ctx = DelegateEvalContext::new(node_id, &self.expr);
         let (input, style, paint, opacity) = match self.cx.node(node_id) {
@@ -484,14 +487,20 @@ impl<'e> Collector<'_, 'e> {
         };
         let input = crate::node::required_input(node_id, "geometry", input)?;
         let geometry = self.geometry(input.node)?;
-        let styled = (
+        let drawable = Use {
             geometry,
+            parent: identity(),
             style,
-            paint.to_gpu(),
-            opacity.clamp(0.0, 1.0) as f32,
-        );
-        self.styles.insert(node_id, styled);
-        Ok(styled)
+            paint: self.record.paints.len() as u32,
+            opacity: opacity.clamp(0.0, 1.0) as f32,
+            tint: [1.0; 3],
+            shadow: None,
+            origin: self.origins,
+        };
+        self.origins += 1;
+        self.record.paints.push(paint.to_gpu());
+        self.styles.insert(node_id, drawable);
+        Ok(drawable)
     }
 
     /// The index of the outline `node_id` outputs, following offsets to their source.
@@ -543,15 +552,21 @@ impl<'e> Collector<'_, 'e> {
                 "the drawing holds more than {MAX_DRAWABLES} drawables"
             )));
         }
-        let cast_uses: Vec<Use> = casts
-            .iter()
-            .flat_map(|&cast| {
-                self.record.uses[start..].iter().map(move |drawable| Use {
+        let mut origins: HashMap<(usize, u32), u32> = HashMap::default();
+        let mut cast_uses = Vec::with_capacity(casts.len() * drawn);
+        for (index, &cast) in casts.iter().enumerate() {
+            for drawable in &self.record.uses[start..] {
+                let origin = *origins.entry((index, drawable.origin)).or_insert_with(|| {
+                    self.origins += 1;
+                    self.origins - 1
+                });
+                cast_uses.push(Use {
                     shadow: Some(drawable.shadow.map_or(cast, |inner| inner.under(cast))),
+                    origin,
                     ..*drawable
-                })
-            })
-            .collect();
+                });
+            }
+        }
         self.record.uses.splice(start..start, cast_uses);
         Ok(())
     }
@@ -596,13 +611,16 @@ impl Collector<'_, '_> {
             opacity: 1.0,
             ..parent
         };
+        let mut tints: HashMap<[u8; 3], [f32; 3]> = HashMap::default();
         for (placed, [r, g, b, _]) in copies {
             let local = placed.to_gpu_from((0.0, 0.0));
             if local.opacity <= 0.0 {
                 continue;
             }
             let world = then(then(inverse, local), parent);
-            let tint = [r, g, b].map(|channel| srgb_to_linear(f32::from(channel) / 255.0));
+            let tint = *tints.entry([r, g, b]).or_insert_with(|| {
+                [r, g, b].map(|channel| srgb_to_linear(f32::from(channel) / 255.0))
+            });
             self.record.uses.extend(inner.iter().map(|drawable| Use {
                 parent: then(drawable.parent, world),
                 tint: [0, 1, 2].map(|channel| drawable.tint[channel] * tint[channel]),

@@ -3,6 +3,7 @@
 //! strokes and another for the shadows.
 
 use std::hash::BuildHasher;
+use std::ops::Range;
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
@@ -47,11 +48,6 @@ const DRAWABLE_SHEARED: u32 = 32;
 #[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
 #[shader_layout(wgsl = "VectorDrawable", source = DRAWING_SHADER)]
 pub(super) struct GpuVectorDrawable {
-    pub(super) transform: GpuDrawableTransform,
-    /// Canvas-space `[min_x, min_y, max_x, max_y]` outside which nothing is drawn.
-    pub(super) screen_bounds: [f32; 4],
-    /// Linear colour multiplying the paint of a fill or stroke; its alpha is 1.
-    pub(super) tint: [f32; 4],
     /// Columns of the map from the untransformed points the shader measures to those the paint
     /// is laid out in.
     pub(super) paint_frame: [[f32; 2]; 2],
@@ -95,15 +91,32 @@ pub(super) struct GpuVectorDrawable {
     pub(super) dash: [[f32; 4]; super::super::dash::GPU_DASH_LENGTHS / 4],
 }
 
-/// The drawables of a drawing, lowest first, and the buffers they index.
+/// One place a drawable is drawn at.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, lumen_macros::ShaderLayout)]
+#[shader_layout(wgsl = "VectorCopy", source = DRAWING_SHADER)]
+pub(super) struct GpuVectorCopy {
+    pub(super) transform: GpuDrawableTransform,
+    /// Canvas-space `[min_x, min_y, max_x, max_y]` outside which nothing is drawn.
+    pub(super) screen_bounds: [f32; 4],
+    /// Linear colour multiplying the paint of a fill or stroke.
+    pub(super) tint: [f32; 3],
+    /// Index in the drawables buffer.
+    pub(super) drawable: u32,
+}
+
+/// The copies of a drawing, lowest first, and the drawables and buffers they index.
 #[derive(Default)]
 pub(super) struct Drawing {
+    /// What the copies of each drawable share: its outline, style and paint.
     pub(super) drawables: Vec<GpuVectorDrawable>,
+    pub(super) copies: Vec<GpuVectorCopy>,
     /// Every path's points, each contour's start index counted from the first path's.
     pub(super) points: Vec<PathPoint>,
     /// Every path's bands and grids, each index into them or into `points` counted from the
     /// start of the buffer.
     pub(super) bands: Vec<u32>,
+    /// The record's paints, at the indices its drawables hold, then the colours of shadows.
     pub(super) paints: Vec<GpuPaint>,
     paint_slots: HashMap<u64, u32>,
     hasher: foldhash::fast::RandomState,
@@ -192,6 +205,28 @@ struct Measured {
     turn: Option<[[f64; 2]; 2]>,
 }
 
+impl Measured {
+    /// `transform`, whose linear part is this placement's, measured as this one is.
+    fn moved(&self, transform: GpuDrawableTransform) -> Measured {
+        let Some(turn) = self.turn else {
+            return Measured {
+                transform,
+                turn: None,
+            };
+        };
+        let inverse_offset = apply64(turn, transform.inverse_offset.map(f64::from));
+        Measured {
+            transform: GpuDrawableTransform {
+                linear: self.transform.linear,
+                inverse_linear: self.transform.inverse_linear,
+                inverse_offset: inverse_offset.map(|value| value as f32),
+                ..transform
+            },
+            turn: Some(turn),
+        }
+    }
+}
+
 /// `transform` as a rotation after a scale, after a turn of the untransformed points when it
 /// shears. The shaders measure strokes and soft edges by scaling untransformed points along
 /// their axes, which keeps canvas distances only when the columns of the linear map are
@@ -218,17 +253,16 @@ fn measured(transform: GpuDrawableTransform) -> Measured {
     // The new map's inverse is the old inverse followed by the turn: canvas to turned points.
     let inverse = transform.inverse_linear.map(|column| column.map(f64::from));
     let inverse_linear = [apply64(turn, inverse[0]), apply64(turn, inverse[1])];
-    let inverse_offset = apply64(turn, transform.inverse_offset.map(f64::from));
     let to_f32 = |m: [[f64; 2]; 2]| m.map(|column| column.map(|value| value as f32));
-    Measured {
+    let decomposed = Measured {
         transform: GpuDrawableTransform {
             linear: to_f32(linear),
             inverse_linear: to_f32(inverse_linear),
-            inverse_offset: inverse_offset.map(|value| value as f32),
             ..transform
         },
         turn: Some(turn),
-    }
+    };
+    decomposed.moved(transform)
 }
 
 /// What a path drawable is binned for and drawn with, in untransformed pixels.
@@ -474,9 +508,9 @@ impl Drawing {
 
     /// Canvas-space `[min_x, min_y, max_x, max_y]` around everything drawn.
     pub(super) fn bounds(&self) -> [f32; 4] {
-        self.drawables
+        self.copies
             .iter()
-            .map(|drawable| drawable.screen_bounds)
+            .map(|copy| copy.screen_bounds)
             .reduce(union_bounds)
             .unwrap_or_default()
     }
@@ -519,36 +553,25 @@ impl Drawing {
         }
     }
 
-    /// Adds `drawable`, measured under `measured` with the outline `path` placed.
+    /// Adds what the copies of `drawable` share, measured from an outline grown by `offset` with
+    /// the outline `path` placed. `None` when it draws nothing.
     fn push_path(
         &mut self,
         drawable: &Use,
-        (offset, measured): (f32, GpuDrawableTransform),
+        offset: f32,
         instance: &Instance,
         path: &PlacedPath,
-    ) {
-        let Some(need) = path_need(drawable, offset, instance.scales) else {
-            return;
-        };
+    ) -> Option<Shared> {
+        let need = path_need(drawable, offset, instance.scales)?;
         let shadow = need.flags & STYLE_SHADOW != 0;
-        let Some((grid, grid_start)) = path.grids[usize::from(shadow)] else {
-            return;
-        };
-        let mut transform = measured;
-        transform.opacity = drawable.opacity * measured.opacity;
-        let mut shadow_paint = None;
-        if let Some(cast) = drawable.shadow {
-            transform = transform.translated(cast.offset);
-            transform.opacity *= cast.opacity;
-            shadow_paint = Some(GpuPaint::solid(cast.color));
-        }
+        let (grid, grid_start) = path.grids[usize::from(shadow)]?;
         let extent = need.extent + (1.0 / instance.scales[0].max(MIN_SCALE)) as f32;
         let [x, y] = path.position;
         let (min, max) = path.bounds;
         let low = [min[0] - extent + x, min[1] - extent + y];
         let high = [max[0] + extent + x, max[1] + extent + y];
         if low[0] > high[0] || low[1] > high[1] {
-            return;
+            return None;
         }
         let (trim_start, trim_end, dash) = match drawable.style {
             Style::Stroke(stroke) => (stroke.trim.0, stroke.trim.1, stroke.dash),
@@ -559,12 +582,8 @@ impl Drawing {
             [[turn[0][0], turn[1][0]], [turn[0][1], turn[1][1]]]
                 .map(|column| column.map(|value| value as f32))
         });
-        let paint = self.paint(&drawable.paint);
-        let shadow_paint = shadow_paint.map_or(0, |shadow| self.paint(&shadow));
+        let shadow_paint = self.shadow_paint(drawable);
         self.drawables.push(GpuVectorDrawable {
-            transform,
-            screen_bounds: transform.canvas_bounds(low, high),
-            tint: tint(drawable),
             paint_frame,
             paint_min: path.paint_box.0,
             paint_size: path.paint_box.1,
@@ -585,7 +604,7 @@ impl Drawing {
             reach: grid.reach,
             grid_start,
             band_start: path.band_start,
-            paint,
+            paint: drawable.paint,
             shadow_softness: need.shadow_softness,
             dash_count: dash.count,
             dash_period: dash.period(),
@@ -594,20 +613,27 @@ impl Drawing {
             shadow_paint,
             ..Zeroable::zeroed()
         });
+        Some(Shared {
+            drawable: self.drawables.len() as u32 - 1,
+            low,
+            high,
+            margin: 0.0,
+        })
     }
 
-    /// Adds `drawable` of shape `geometry`, drawn under `transform`.
+    /// Adds what the copies of `drawable` of shape `geometry` share, each drawn under a transform
+    /// of the linear part of `transform`. `None` when it draws nothing.
     fn push_shape(
         &mut self,
         drawable: &Use,
         geometry: &Geometry,
-        mut transform: GpuDrawableTransform,
+        transform: &GpuDrawableTransform,
         (kind, size, border_radius): (ShapeGeometryKind, [f32; 2], f32),
-    ) {
+    ) -> Option<Shared> {
         if size.contains(&0.0) {
-            return;
+            return None;
         }
-        let smallest = scales(&transform)[0].max(1e-12);
+        let smallest = scales(transform)[0].max(1e-12);
         let offset = geometry.offset;
         let (flags, stroke_width, grow, feather) = match drawable.style {
             Style::Fill(fill) => (
@@ -618,11 +644,11 @@ impl Drawing {
             ),
             Style::Stroke(stroke) => {
                 if stroke.width <= 0.0 {
-                    return;
+                    return None;
                 }
                 let half = stroke.width * 0.5;
                 if offset + half <= 0.0 && -offset - half >= size[0].min(size[1]) * 0.5 {
-                    return;
+                    return None;
                 }
                 (
                     style_flags(false, true, true),
@@ -632,20 +658,16 @@ impl Drawing {
                 )
             }
         };
-        let mut shadow_paint = None;
         let (mut shadow_softness, mut shadow_spread, mut shadow_flag, mut reach) =
             (0.0, 0.0, 0, 0.0);
         if let Some(cast) = drawable.shadow {
-            transform = transform.translated(cast.offset);
-            transform.opacity *= cast.opacity;
-            shadow_paint = Some(GpuPaint::solid(cast.color));
             // A feathered fill's shadow fades over the feather too.
             shadow_softness = cast.softness() + f64::from(feather) * smallest;
             shadow_spread = cast.spread;
             shadow_flag = STYLE_SHADOW;
             reach = ((cast.spread.max(0.0) + shadow_softness * 0.5) / smallest) as f32;
         }
-        let sheared = if measured(transform).turn.is_some() {
+        let sheared = if measured(*transform).turn.is_some() {
             DRAWABLE_SHEARED
         } else {
             0
@@ -654,17 +676,8 @@ impl Drawing {
         // The box the shader draws in, at least a pixel across, and what is drawn beyond it.
         let drawn = size.map(|side| side.max(1.0));
         let grow = grow + reach;
-        let [min_x, min_y, max_x, max_y] = transform.canvas_bounds(
-            [position[0] - grow, position[1] - grow],
-            [position[0] + drawn[0] + grow, position[1] + drawn[1] + grow],
-        );
-        let paint = self.paint(&drawable.paint);
-        let shadow_paint = shadow_paint.map_or(0, |shadow| self.paint(&shadow));
+        let shadow_paint = self.shadow_paint(drawable);
         self.drawables.push(GpuVectorDrawable {
-            transform,
-            // Antialiasing reaches a canvas pixel beyond the box.
-            screen_bounds: [min_x - 1.0, min_y - 1.0, max_x + 1.0, max_y + 1.0],
-            tint: tint(drawable),
             paint_frame: [[1.0, 0.0], [0.0, 1.0]],
             paint_min: position,
             paint_size: size,
@@ -676,20 +689,73 @@ impl Drawing {
             fill_offset: offset,
             geometry_kind: kind as u32,
             border_radius,
-            paint,
+            paint: drawable.paint,
             shadow_softness: shadow_softness as f32,
             shadow_spread: shadow_spread as f32,
             fill_feather: feather,
             shadow_paint,
             ..Zeroable::zeroed()
         });
+        Some(Shared {
+            drawable: self.drawables.len() as u32 - 1,
+            low: [position[0] - grow, position[1] - grow],
+            high: [position[0] + drawn[0] + grow, position[1] + drawn[1] + grow],
+            // Antialiasing reaches a canvas pixel beyond the box.
+            margin: 1.0,
+        })
+    }
+
+    /// Index in the paints buffer of the colour of `drawable`'s shadow, or 0 when it is none.
+    fn shadow_paint(&mut self, drawable: &Use) -> u32 {
+        drawable
+            .shadow
+            .map_or(0, |cast| self.paint(&GpuPaint::solid(cast.color)))
     }
 }
 
-fn tint(drawable: &Use) -> [f32; 4] {
-    let [r, g, b] = drawable.tint;
-    [r, g, b, 1.0]
+/// A drawable that copies share, and the untransformed box each copy is drawn within, past
+/// which a copy draws `margin` canvas pixels.
+#[derive(Clone, Copy)]
+struct Shared {
+    drawable: u32,
+    low: [f32; 2],
+    high: [f32; 2],
+    margin: f32,
 }
+
+impl Shared {
+    /// The copy of this drawable placed by `transform` and tinted by `tint`.
+    fn copy(&self, transform: GpuDrawableTransform, tint: [f32; 3]) -> GpuVectorCopy {
+        let [min_x, min_y, max_x, max_y] = transform.canvas_bounds(self.low, self.high);
+        let margin = self.margin;
+        GpuVectorCopy {
+            transform,
+            screen_bounds: [
+                min_x - margin,
+                min_y - margin,
+                max_x + margin,
+                max_y + margin,
+            ],
+            tint,
+            drawable: self.drawable,
+        }
+    }
+}
+
+/// `transform`, where `drawable`'s outline is placed, moved by its shadow's offset and at its
+/// opacity.
+fn copy_transform(drawable: &Use, mut transform: GpuDrawableTransform) -> GpuDrawableTransform {
+    transform.opacity *= drawable.opacity;
+    if let Some(cast) = drawable.shadow {
+        transform = transform.translated(cast.offset);
+        transform.opacity *= cast.opacity;
+    }
+    transform
+}
+
+/// What decides the drawable a copy draws: the drawable's origin, the linear part of the copy's
+/// placement and the lengths of its shadow.
+type SharedKey = (u32, Option<usize>, [u32; 8], [u64; 2]);
 
 /// Builds the buffers for `record`, drawn on a canvas of `canvas` pixels, with the glyphs each
 /// text node in it was shaped as in `texts`. Paths from nodes `keeps` says don't read the frame
@@ -703,7 +769,11 @@ pub(super) fn build<'t>(
     canvas: [f32; 2],
     keeping: &mut Keeping<'_>,
 ) -> crate::Result<Drawing> {
-    let mut drawing = Drawing::default();
+    let mut drawing = Drawing {
+        copies: Vec::with_capacity(record.uses.len()),
+        paints: record.paints.clone(),
+        ..Drawing::default()
+    };
     // Each drawable's placement and opacity, or `None` when it draws nothing.
     let placed: Vec<Option<GpuDrawableTransform>> = record
         .uses
@@ -817,36 +887,58 @@ pub(super) fn build<'t>(
         }
     }
 
+    // The drawables made so far, and those each key draws.
+    let mut shared: Vec<Shared> = Vec::new();
+    let mut sharing: HashMap<SharedKey, Range<usize>> = HashMap::default();
     for (index, drawable) in record.uses.iter().enumerate() {
         let Some(transform) = placed[index] else {
             continue;
         };
         let geometry = &record.geometries[drawable.geometry];
-        match geometry.source {
+        let (instance, measured) = grouped.of[index];
+        // A path or text drawable shares its group's built outline, which is turned for that
+        // group's placement, so copies share a drawable only within one group.
+        let (outline, transform) = match geometry.source {
             Source::Path { .. } | Source::Text { .. } => {
-                let (instance, measured) = grouped.of[index];
-                for path in &placed_paths[instance] {
-                    drawing.push_path(
+                (Some(instance), copy_transform(drawable, measured))
+            }
+            Source::Shape { .. } => (None, copy_transform(drawable, transform)),
+        };
+        let cast = drawable
+            .shadow
+            .map_or([0; 2], |cast| [cast.sigma.to_bits(), cast.spread.to_bits()]);
+        let key = (drawable.origin, outline, linear_key(&transform), cast);
+        let range = match sharing.get(&key) {
+            Some(range) => range.clone(),
+            None => {
+                let start = shared.len();
+                match geometry.source {
+                    Source::Path { .. } | Source::Text { .. } => {
+                        shared.extend(placed_paths[instance].iter().filter_map(|path| {
+                            drawing.push_path(drawable, geometry.offset, &instances[instance], path)
+                        }));
+                    }
+                    Source::Shape {
+                        kind,
+                        size,
+                        border_radius,
+                    } => shared.extend(drawing.push_shape(
                         drawable,
-                        (geometry.offset, measured),
-                        &instances[instance],
-                        path,
-                    );
+                        geometry,
+                        &transform,
+                        (kind, size, border_radius),
+                    )),
                 }
+                sharing.insert(key, start..shared.len());
+                start..shared.len()
             }
-            Source::Shape {
-                kind,
-                size,
-                border_radius,
-            } => {
-                let transform = GpuDrawableTransform {
-                    opacity: transform.opacity * drawable.opacity,
-                    ..transform
-                };
-                drawing.push_shape(drawable, geometry, transform, (kind, size, border_radius));
-            }
-        }
-        if drawing.drawables.len() > MAX_DRAWABLES {
+        };
+        drawing.copies.extend(
+            shared[range]
+                .iter()
+                .map(|shared| shared.copy(transform, drawable.tint)),
+        );
+        if drawing.copies.len() > MAX_DRAWABLES {
             return Err(RenderError::evaluating::<Render2d>(
                 keeping.render,
                 format!("the drawing holds more than {MAX_DRAWABLES} drawables"),
@@ -872,7 +964,8 @@ fn instances(record: &Record, placed: &[Option<GpuDrawableTransform>]) -> Groupe
     let mut instances: Vec<Instance> = Vec::new();
     let mut of = vec![(usize::MAX, identity()); record.uses.len()];
     let mut found: HashMap<InstanceKey, usize> = HashMap::default();
-    let mut placements: HashSet<(usize, [u32; 4])> = HashSet::default();
+    let mut placements: HashSet<(usize, [u32; 4])> =
+        HashSet::with_capacity_and_hasher(record.uses.len(), Default::default());
     for (index, drawable) in record.uses.iter().enumerate() {
         let Some(transform) = placed[index] else {
             continue;
@@ -903,7 +996,11 @@ fn instances(record: &Record, placed: &[Option<GpuDrawableTransform>]) -> Groupe
                 .get(&(drawable.geometry, linear, Some(dash.phase_key())))
                 .copied(),
         };
-        let measured = measured(transform);
+        // Every group of one linear part measures it the same way.
+        let measured = first.map_or_else(
+            || measured(transform),
+            |first| instances[first].measured.moved(transform),
+        );
         let slot = slot.unwrap_or_else(|| {
             let slot = instances.len();
             instances.push(Instance {
@@ -1114,18 +1211,18 @@ fn build_path(
     }
 }
 
-/// Whether drawable `index` hides what is below it wherever it fully covers a pixel.
-pub(super) fn is_opaque(drawing: &Drawing, index: usize) -> bool {
-    let drawable = &drawing.drawables[index];
+/// Whether `copy` hides what is below it wherever it fully covers a pixel.
+pub(super) fn is_opaque(drawing: &Drawing, copy: &GpuVectorCopy) -> bool {
+    let drawable = &drawing.drawables[copy.drawable as usize];
     let paint = &drawing.paints[drawable.paint as usize];
-    drawable.transform.opacity >= 1.0
+    copy.transform.opacity >= 1.0
         && drawable.flags & STYLE_FILL_ENABLED != 0
         && paint.colors[..paint.stop_count as usize]
             .iter()
             .all(|color| color[3] >= 1.0)
 }
 
-/// Whether drawable `index` is a shape, an ellipse when the second is true.
+/// Whether `drawable` is a shape, an ellipse when the second is true.
 pub(super) fn shape_kind(drawable: &GpuVectorDrawable) -> Option<bool> {
     (drawable.kind == DRAWABLE_SHAPE)
         .then_some(drawable.geometry_kind == ShapeGeometryKind::Ellipse as u32)
