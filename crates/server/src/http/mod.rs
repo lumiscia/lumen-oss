@@ -59,7 +59,9 @@ pub struct Args {
     #[arg(long, env = "LUMEN_SERVER_MAX_QUEUED_RENDERS", default_value = "32")]
     pub max_queued_renders: usize,
 
-    /// Finished renders kept in memory. Beyond this, the oldest record and artifact are dropped.
+    /// Finished renders kept, each as a file in a directory of the server's own under the system
+    /// temporary directory, which is removed at shutdown. Beyond this, the oldest record and its
+    /// file are deleted.
     #[arg(long, env = "LUMEN_SERVER_RETAINED_RENDERS", default_value = "16")]
     pub retained_renders: NonZeroUsize,
 
@@ -101,8 +103,8 @@ pub struct Args {
     pub max_sequence_frames: u32,
 
     /// Most bytes the encoded frames of an image sequence may add up to. A sequence that passes
-    /// it ends as `failed` with the code `output_too_large`. The archive is kept in memory like
-    /// every artifact, so this bounds what each retained sequence takes.
+    /// it ends as `failed` with the code `output_too_large`. The archive is kept on disk like
+    /// every artifact, so this bounds the disk each retained sequence takes.
     #[arg(
         long,
         env = "LUMEN_SERVER_MAX_SEQUENCE_BYTES",
@@ -216,13 +218,33 @@ pub async fn run(mut args: Args) -> anyhow::Result<()> {
     let render_config = args.render_config();
     let state = AppState::new(args, render_config)?;
     spawn_media_sweep(&state);
-    let app = router(state);
+    let app = router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(address = %listener.local_addr()?, "lumen render server listening");
-    axum::serve(listener, app).await?;
+    let served = tokio::select! {
+        served = axum::serve(listener, app) => served,
+        signal = shutdown_signal() => signal.map(|()| tracing::info!("shutting down")),
+    };
+    state.shut_down().await;
+    Ok(served?)
+}
 
-    Ok(())
+/// Completes on Ctrl-C or `SIGTERM`.
+#[cfg(unix)]
+async fn shutdown_signal() -> std::io::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! {
+        interrupted = tokio::signal::ctrl_c() => interrupted,
+        _ = terminate.recv() => Ok(()),
+    }
+}
+
+/// Completes on Ctrl-C.
+#[cfg(not(unix))]
+async fn shutdown_signal() -> std::io::Result<()> {
+    tokio::signal::ctrl_c().await
 }
 
 fn spawn_media_sweep(state: &AppState) {

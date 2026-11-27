@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    path::PathBuf,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicUsize, Ordering},
@@ -7,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
-use lumen_engine::render::{RenderConfig, SequenceLimits};
+use lumen_engine::render::{OutputFormat, RenderConfig, SequenceLimits};
 use lumen_ffmpeg::QualityConfig;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -32,11 +33,27 @@ pub(super) struct AppState {
     max_queued_renders: usize,
     renders: Arc<Mutex<RenderRegistry>>,
     retained_renders: usize,
+    /// Where finished renders are kept, one file each.
+    render_dir: Arc<tempfile::TempDir>,
 }
 
 impl AppState {
-    /// Fails when the quality config doesn't load or the media directory can't be opened.
+    /// Fails when the quality config doesn't load, the media directory can't be opened or the
+    /// directory for finished renders can't be created in the render's temporary directory.
     pub fn new(args: Args, render_config: RenderConfig) -> anyhow::Result<Self> {
+        let temp_dir = render_config
+            .temp_dir
+            .clone()
+            .unwrap_or_else(std::env::temp_dir);
+        let render_dir = tempfile::Builder::new()
+            .prefix("lumen-server-renders-")
+            .tempdir_in(&temp_dir)
+            .with_context(|| {
+                format!(
+                    "failed to create a directory for finished renders in `{}`",
+                    temp_dir.display()
+                )
+            })?;
         let assets = AssetStore::open(
             &args.media_dir,
             args.media_ttl,
@@ -72,7 +89,57 @@ impl AppState {
             max_queued_renders: args.max_queued_renders,
             renders: Arc::new(Mutex::new(RenderRegistry::default())),
             retained_renders: args.retained_renders.get(),
+            render_dir: Arc::new(render_dir),
         })
+    }
+
+    /// Where render `id` writes its finished output.
+    pub fn render_destination(&self, id: &str, format: OutputFormat) -> PathBuf {
+        self.render_dir
+            .path()
+            .join(format!("{id}.{}", format.extension()))
+    }
+
+    /// Registers `record` and spawns its render task atomically, returning `None` once
+    /// [`shut_down`](Self::shut_down) has begun so no task can miss cancellation or the drain.
+    pub fn start_render(
+        &self,
+        record: RenderRecord,
+        spawn: impl FnOnce(Arc<RenderRecord>) -> tokio::task::JoinHandle<()>,
+    ) -> Option<Arc<RenderRecord>> {
+        let mut registry = self.registry();
+        if registry.shutting_down {
+            return None;
+        }
+        let record = Arc::new(record);
+        registry
+            .records
+            .insert(record.id.clone(), Arc::clone(&record));
+        registry.tasks.retain(|task| !task.is_finished());
+        registry.tasks.push(spawn(Arc::clone(&record)));
+        Some(record)
+    }
+
+    /// Stops accepting new renders, cancels every render that hasn't ended, waits for active
+    /// render tasks to exit, and deletes every finished render's file with the directory that
+    /// holds them.
+    pub async fn shut_down(&self) {
+        let handles = {
+            let mut registry = self.registry();
+            registry.shutting_down = true;
+            for record in registry.records.values() {
+                record.cancellation.cancel();
+            }
+            std::mem::take(&mut registry.tasks)
+        };
+        for handle in handles {
+            let _ = handle.await;
+        }
+        if let Err(error) = std::fs::remove_dir_all(self.render_dir.path())
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, "failed to remove finished renders directory");
+        }
     }
 
     /// Takes a render slot if one is free, and otherwise a place in the queue for one. `None` when
@@ -95,6 +162,7 @@ impl AppState {
         self.max_queued_renders
     }
 
+    #[cfg(test)]
     pub fn insert(&self, record: RenderRecord) -> Arc<RenderRecord> {
         let record = Arc::new(record);
         self.registry()
@@ -108,7 +176,7 @@ impl AppState {
     }
 
     /// Ends a render in `status`, which every current and later subscriber sees, and drops the
-    /// oldest finished renders beyond the retained count.
+    /// oldest finished renders beyond the retained count, deleting their files.
     pub fn finish(&self, record: &RenderRecord, status: RenderStatus) {
         let mut registry = self.registry();
         record.status.send_replace(status);
@@ -167,14 +235,19 @@ pub(super) enum RenderTicket {
 struct RenderRegistry {
     records: HashMap<String, Arc<RenderRecord>>,
     finished: VecDeque<String>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    shutting_down: bool,
 }
 
 impl RenderRegistry {
     fn retain_finished(&mut self, id: &str, retained: usize) {
         self.finished.push_back(id.to_string());
         while self.finished.len() > retained {
-            if let Some(oldest) = self.finished.pop_front() {
-                self.records.remove(&oldest);
+            if let Some(oldest) = self.finished.pop_front()
+                && let Some(record) = self.records.remove(&oldest)
+                && let Some(artifact) = record.status.borrow().artifact()
+            {
+                artifact.file.remove();
             }
         }
     }
@@ -281,5 +354,34 @@ mod tests {
 
         record.set_frame(20, 100, 0.1, &mut woken_at);
         assert!(socket.has_changed().unwrap(), "a large step wakes sockets");
+    }
+
+    #[tokio::test]
+    async fn shut_down_waits_for_tracked_render_tasks_and_refuses_new_ones() {
+        let state = state(&[]);
+        let dir = state.render_destination("r", OutputFormat::Mp4);
+        let saw_dir_alive = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&saw_dir_alive);
+        let dir_for_task = dir.parent().unwrap().to_path_buf();
+        assert!(
+            state
+                .start_render(record("r"), move |task_record| {
+                    tokio::spawn(async move {
+                        task_record.cancellation.cancelled().await;
+                        flag.store(dir_for_task.exists(), Ordering::SeqCst);
+                    })
+                })
+                .is_some()
+        );
+
+        state.shut_down().await;
+
+        assert!(saw_dir_alive.load(Ordering::SeqCst));
+        assert!(!dir.parent().unwrap().exists());
+        assert!(
+            state
+                .start_render(record("late"), |_| panic!("must not spawn after shut_down"))
+                .is_none()
+        );
     }
 }

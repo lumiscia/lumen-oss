@@ -5,19 +5,24 @@ mod types;
 mod util;
 mod wire;
 
-use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 use clap::Parser;
 
 pub use types::{
-    Artifact, Cancellation, QueueSpot, RenderJobError, RenderRecord, RenderStatus,
+    Artifact, ArtifactFile, Cancellation, QueueSpot, RenderJobError, RenderRecord, RenderStatus,
     sanitized_diagnostics,
 };
 
 use lumen_engine::composition::Composition;
 use lumen_engine::render::{
     self, ErrorCode, OutputFormat, RenderConfig, RenderOptions, RenderOutput, RenderProgress,
-    SequenceLimits, render_project,
+    SequenceLimits, render_project_to_path,
 };
 use lumen_ffmpeg::VideoEncoderChoice;
 use lumen_server_api::ErrorCode as ApiErrorCode;
@@ -49,10 +54,12 @@ pub struct RenderJob {
     pub max_text_glyphs: usize,
     /// The `asset:` references this render resolves, held until it ends.
     pub assets: Arc<JobAssets>,
+    /// Where the finished render is written.
+    pub destination: PathBuf,
 }
 
 pub struct CompletedRender {
-    pub bytes: Vec<u8>,
+    pub file: ArtifactFile,
     pub format: OutputFormat,
     pub render_ms: u64,
 }
@@ -77,6 +84,7 @@ where
         sequence_limits,
         max_text_glyphs,
         assets,
+        destination,
     } = job;
     tracing::info!(job_id, media_count = media.len(), "starting render request");
     let lut_only = lut_only_sources(&composition);
@@ -134,7 +142,9 @@ where
             on_progress(event);
         };
 
-        render_project(&composition, &options, &mut progress_callback)
+        let format =
+            render_project_to_path(&composition, &options, &destination, &mut progress_callback)?;
+        Ok((format, ArtifactFile::new(destination)))
     })
     .await
     .map_err(|err| {
@@ -158,11 +168,19 @@ where
             media: client_media_failure(&error, &staged_path),
         }
     })?;
+    let (format, file) = rendered;
+    let file = file.map_err(|error| {
+        RenderJobError::new(
+            ApiErrorCode::OutputIo,
+            &format!("failed to read the finished render: {error}"),
+            true,
+        )
+    })?;
     let render_ms = render_started.elapsed().as_millis() as u64;
     tracing::info!(
         job_id,
         render_ms,
-        output_bytes = rendered.bytes.len(),
+        output_bytes = file.size(),
         "finished render"
     );
 
@@ -173,8 +191,8 @@ where
     );
 
     Ok(CompletedRender {
-        bytes: rendered.bytes,
-        format: rendered.format,
+        file,
+        format,
         render_ms,
     })
 }

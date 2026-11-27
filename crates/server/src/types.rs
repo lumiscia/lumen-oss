@@ -1,9 +1,12 @@
-use std::sync::{
-    Arc, Mutex, PoisonError,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    fs, io,
+    path::PathBuf,
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
-use axum::body::Bytes;
 use lumen_engine::render::{self, CancelToken};
 use lumen_server_api::{self as api, ErrorCode as ApiErrorCode};
 use serde_json::Value;
@@ -185,11 +188,57 @@ pub enum RenderStatus {
 pub struct Artifact {
     /// Where the client downloads it from, relative to the server.
     pub url: String,
-    pub bytes: Bytes,
+    pub file: Arc<ArtifactFile>,
     pub content_type: &'static str,
     /// The file extension, without the dot, that the download is named with.
     pub extension: &'static str,
     pub render_ms: u64,
+}
+
+/// A finished render's output on disk. The file is deleted by [`remove`](Self::remove) or when
+/// this is dropped, whichever comes first.
+#[derive(Debug)]
+pub struct ArtifactFile {
+    path: PathBuf,
+    len: u64,
+}
+
+impl ArtifactFile {
+    /// Takes over the file at `path`, deleting it if its size can't be read.
+    pub fn new(path: PathBuf) -> io::Result<Self> {
+        match fs::metadata(&path) {
+            Ok(metadata) => Ok(Self {
+                path,
+                len: metadata.len(),
+            }),
+            Err(error) => {
+                let _ = fs::remove_file(&path);
+                Err(error)
+            }
+        }
+    }
+
+    /// The file's size in bytes.
+    pub fn size(&self) -> u64 {
+        self.len
+    }
+
+    /// Opens the file for reading. Fails once it has been removed; a file opened before stays
+    /// readable.
+    pub async fn open(&self) -> io::Result<tokio::fs::File> {
+        tokio::fs::File::open(&self.path).await
+    }
+
+    /// Deletes the file.
+    pub fn remove(&self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+impl Drop for ArtifactFile {
+    fn drop(&mut self) {
+        self.remove();
+    }
 }
 
 impl RenderStatus {
@@ -231,7 +280,7 @@ impl RenderStatus {
         }
     }
 
-    fn artifact(&self) -> Option<&Artifact> {
+    pub fn artifact(&self) -> Option<&Artifact> {
         match self {
             Self::Succeeded { artifact } => Some(artifact),
             _ => None,
@@ -301,7 +350,7 @@ impl RenderRecord {
             input_hash: self.input_hash.clone(),
             organization_id: "self-hosted".to_string(),
             cost_micros: 0,
-            output_bytes: artifact.map(|artifact| artifact.bytes.len() as u64),
+            output_bytes: artifact.map(|artifact| artifact.file.size()),
             duration_ms: artifact.map(|artifact| artifact.render_ms),
         }
     }

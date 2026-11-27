@@ -2057,6 +2057,80 @@ fn long_composition(frames: u32) -> Value {
     composition
 }
 
+#[test]
+fn finished_renders_are_files_that_eviction_and_shutdown_delete_with_gpu() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let mut server = Server::start_with(&["--retained-renders", "1"], |command| {
+        command.env("TMPDIR", temp.path());
+    });
+    let render_dirs = || {
+        fs::read_dir(temp.path())
+            .expect("read temp directory")
+            .map(|entry| entry.expect("entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("lumen-server-renders-"))
+            })
+            .collect::<Vec<_>>()
+    };
+    let [render_dir] = &render_dirs()[..] else {
+        panic!("one directory for finished renders: {:?}", render_dirs());
+    };
+    let render_files = || {
+        let mut names = fs::read_dir(render_dir)
+            .expect("read render directory")
+            .map(|entry| entry.expect("entry").file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let body = json!({ "composition": long_composition(6) });
+
+    let Some((first, progress)) = render_outcome(&server, &body) else {
+        return;
+    };
+    assert_eq!(progress["status"], "succeeded", "{progress}");
+    assert_eq!(render_files(), [format!("{first}.mp4")]);
+    let artifact = server.get(&format!("/renders/{first}/artifact"));
+    assert_eq!(artifact.status(), StatusCode::OK);
+    let header = |name: &str| {
+        artifact.headers()[name]
+            .to_str()
+            .expect("header")
+            .to_string()
+    };
+    assert_eq!(header("content-type"), "video/mp4");
+    assert_eq!(
+        header("content-disposition"),
+        format!("attachment; filename=\"{first}.mp4\"")
+    );
+    assert_eq!(
+        header("content-length"),
+        progress["outputBytes"].to_string()
+    );
+    let stored = fs::read(render_dir.join(format!("{first}.mp4"))).expect("stored render");
+    assert_eq!(artifact.bytes().expect("artifact bytes").to_vec(), stored);
+
+    let (second, _) = render_outcome(&server, &body).expect("second render");
+    server.wait_for_state(&second, &["succeeded"]);
+    assert_eq!(
+        server.get(&format!("/renders/{first}/artifact")).status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(render_files(), [format!("{second}.mp4")]);
+
+    #[cfg(unix)]
+    {
+        let terminated = Command::new("kill")
+            .args(["-TERM", &server.child.id().to_string()])
+            .status()
+            .expect("run kill");
+        assert!(terminated.success());
+        server.child.wait().expect("server exits");
+        assert!(render_dirs().is_empty(), "{:?}", render_dirs());
+    }
+}
+
 fn rejection(response: Response) -> (StatusCode, String) {
     let status = response.status();
     let body: Value = response.json().expect("error body");
