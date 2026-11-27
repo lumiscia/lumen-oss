@@ -3,21 +3,29 @@
 
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, Frame, Scene, TestMedia, gpu, render, scene};
+use crate::support::{Case, Expect, Frame, Scene, TestMedia, filled_shape, gpu, render, scene};
 
 const INTER: &[u8] = include_bytes!("../../../text/assets/inter/InterVariable-Latin.ttf");
 
 fn white(x: f64, y: f64, width: u32, height: u32) -> Value {
-    json!({ "type": "shape", "params": {
-        "position": [x, y], "width": width, "height": height, "fill_paint": [255, 255, 255, 255]
-    } })
+    painted(x, y, width, height, [255; 4])
+}
+
+fn painted(x: f64, y: f64, width: u32, height: u32, paint: [u8; 4]) -> Value {
+    json!(filled_shape(
+        1,
+        json!({ "position": [x, y], "width": width, "height": height }),
+        json!({ "paint": paint }),
+    ))
 }
 
 /// A 14 × 11 translucent orange shape, whose `position` may be an expression.
 fn small(position: Value) -> Value {
-    json!({ "type": "shape", "params": {
-        "position": position, "width": 14, "height": 11, "fill_paint": [255, 100, 0, 200]
-    } })
+    json!(filled_shape(
+        1,
+        json!({ "position": position, "width": 14, "height": 11 }),
+        json!({ "paint": [255, 100, 0, 200] }),
+    ))
 }
 
 fn blur(radius: impl Into<Value>) -> Value {
@@ -41,11 +49,11 @@ fn tinted_shadow(offset: [Value; 2], radius: impl Into<Value>) -> Value {
     shadow_in([20, 40, 200, 255], 0.8, offset, radius)
 }
 
-/// `nodes` as a line, each fed by the one before.
+/// `nodes` as a line, each fed by the one before. The first is a drawing whose `render_2d` has id 1.
 fn chain(canvas: (u32, u32), nodes: Vec<Value>) -> Scene {
     let nodes = nodes.into_iter().enumerate().map(|(index, mut node)| {
-        node["id"] = json!(index + 1);
         if index > 0 {
+            node["id"] = json!(index + 1);
             node["in"] = json!({ "source": index });
         }
         node
@@ -192,8 +200,7 @@ fn gaussian_response() {
     };
     // The fringe of a half-covered edge stays white over transparent, whatever the source's alpha.
     let fringe = |kind: &str, fill: [u8; 4]| {
-        let mut source = white(24.5, 24.5, 16, 16);
-        source["params"]["fill_paint"] = json!(fill);
+        let source = painted(24.5, 24.5, 16, 16, fill);
         Case::new(
             format!("{kind} edge keeps rgb equal to alpha"),
             chain((64, 64), vec![source, blur(5)]),
@@ -486,7 +493,7 @@ fn text_bounds_match_reference() {
             Some((x, y)) => shadow_in([73, 137, 239, 213], 0.83, [x.into(), y.into()], radius),
             None => blur(radius),
         };
-        let text = json!({ "type": "text", "params": {
+        let text = json!({ "id": 1, "type": "text", "params": {
             "content": "Blur edge", "font_family": "Inter", "font_size": size, "position": [at.0, at.1]
         } });
         Case::new(

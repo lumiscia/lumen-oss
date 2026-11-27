@@ -22,33 +22,26 @@
       }
     },
     {
-      "id": 2,
-      "type": "shape",
-      "params": {
-        "geometry_kind": "ellipse",
-        "width": 420,
-        "height": 420,
-        "position": [210, 150],
-        "fill_enabled": true,
-        "fill_paint": [39, 52, 105, 255],
-        "stroke_enabled": true,
-        "stroke_paint": [94, 234, 212, 255],
-        "stroke_width": 4
-      }
+      "id": 15,
+      "type": "shape_2d",
+      "params": { "geometry_kind": "ellipse", "width": 420, "height": 420, "position": [210, 150] }
     },
+    { "id": 16, "type": "fill_2d", "params": { "paint": [39, 52, 105, 255] } },
+    { "id": 17, "type": "stroke_2d", "params": { "paint": [94, 234, 212, 255], "width": 4 } },
+    { "id": 18, "type": "merge_2d" },
+    { "id": 2, "type": "render_2d" },
     {
-      "id": 3,
-      "type": "path",
+      "id": 19,
+      "type": "path_2d",
       "params": {
         "data": "M 0 -115 L 35 -38 L 122 -35 L 52 18 L 75 105 L 0 58 L -75 105 L -52 18 L -122 -35 L -35 -38 Z",
-        "position": [420, 360],
-        "fill_enabled": true,
-        "fill_paint": [244, 114, 182, 220],
-        "stroke_enabled": true,
-        "stroke_paint": [254, 240, 138, 255],
-        "stroke_width": 5
+        "position": [420, 360]
       }
     },
+    { "id": 20, "type": "fill_2d", "params": { "paint": [244, 114, 182, 220] } },
+    { "id": 21, "type": "stroke_2d", "params": { "paint": [254, 240, 138, 255], "width": 5 } },
+    { "id": 22, "type": "merge_2d" },
+    { "id": 3, "type": "render_2d" },
     {
       "id": 4,
       "type": "text",
@@ -154,6 +147,16 @@
     { "from_node": 9, "from_port": "output", "to_node": 12, "to_port": "overlay" },
     { "from_node": 12, "from_port": "output", "to_node": 13, "to_port": "base" },
     { "from_node": 10, "from_port": "output", "to_node": 13, "to_port": "overlay" },
-    { "from_node": 13, "from_port": "output", "to_node": 14, "to_port": "source" }
+    { "from_node": 13, "from_port": "output", "to_node": 14, "to_port": "source" },
+    { "from_node": 15, "to_node": 16, "to_port": "geometry" },
+    { "from_node": 15, "to_node": 17, "to_port": "geometry" },
+    { "from_node": 16, "to_node": 18, "to_port": "drawings" },
+    { "from_node": 17, "to_node": 18, "to_port": "drawings" },
+    { "from_node": 18, "to_node": 2, "to_port": "drawing" },
+    { "from_node": 19, "to_node": 20, "to_port": "geometry" },
+    { "from_node": 19, "to_node": 21, "to_port": "geometry" },
+    { "from_node": 20, "to_node": 22, "to_port": "drawings" },
+    { "from_node": 21, "to_node": 22, "to_port": "drawings" },
+    { "from_node": 22, "to_node": 3, "to_port": "drawing" }
   ]
 }

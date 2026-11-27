@@ -6,7 +6,8 @@ use serde_json::{Value, json};
 
 use crate::color::{encode, linear, over, premultiplied, rgba8, scaled, srgb8};
 use crate::support::{
-    BLACK, CLEAR, Case, Expect, Frame, Scene, TestMedia, WHITE, check, gpu, render, scene,
+    BLACK, CLEAR, Case, Expect, Frame, Scene, TestMedia, WHITE, check, filled_shape, gpu, render,
+    scene,
 };
 
 /// A translucent, saturated colour whose straight and premultiplied forms differ.
@@ -60,8 +61,11 @@ fn matte(width: u32, mask: Value, params: Value) -> Scene {
 /// A shape spanning the canvas height, half covering its first and last columns when `x` ends
 /// in .5.
 fn bar(id: u32, x: f64, width: u32, color: [u8; 4]) -> Value {
-    json!({ "id": id, "type": "shape", "params": {
-        "position": [x, 0], "width": width, "height": HEIGHT, "fill_paint": color } })
+    json!(filled_shape(
+        id,
+        json!({ "position": [x, 0], "width": width, "height": HEIGHT }),
+        json!({ "paint": color })
+    ))
 }
 
 /// A mask covering no pixels of columns before 8, half of 8, all of 9 to 15 and half of 16.
@@ -101,10 +105,8 @@ fn matte_row(frame: &Frame) -> Vec<u8> {
 fn boolean(params: Value, b: u32) -> Scene {
     scene(
         (WIDTH, HEIGHT),
-        json!([{ "id": 1, "type": "shape", "params": {
-                "position": [1.5, 0], "width": 3, "height": HEIGHT, "fill_paint": WHITE } },
-            { "id": 2, "type": "shape", "params": {
-                "position": [3.5, 0], "width": 5, "height": HEIGHT, "fill_paint": WHITE } },
+        json!([filled_shape(1, json!({ "position": [1.5, 0], "width": 3, "height": HEIGHT }), json!({ "paint": WHITE })),
+            filled_shape(2, json!({ "position": [3.5, 0], "width": 5, "height": HEIGHT }), json!({ "paint": WHITE })),
             { "id": 3, "type": "boolean", "params": params, "in": { "a": 1, "b": b } }]),
     )
 }
@@ -230,9 +232,11 @@ fn operators_produce_hand_computed_colors() {
     );
     // The shape covers (4..8, 4..8) at alpha .784, so its blue shadow at opacity .5 has alpha
     // .392 and covers (7..11, 6..10).
-    let shape = json!({ "id": 1, "type": "shape", "params": {
-        "position": [4, 4], "width": 4, "height": 4,
-        "fill_paint": [255, 100, 0, 200], "edge_antialias": false } });
+    let shape = json!(filled_shape(
+        1,
+        json!({ "position": [4, 4], "width": 4, "height": 4 }),
+        json!({ "paint": [255, 100, 0, 200], "edge_antialias": false })
+    ));
     let offset = json!({ "offset_x": 3, "offset_y": 2, "radius": 0,
         "color": [0, 0, 255, 255], "opacity": 0.5 });
     cases.push(Case::new(
@@ -681,10 +685,7 @@ fn color_grade_and_crop_read_a_small_offset_layer() {
         scene(
             (384, 288),
             json!([
-                { "id": 1, "type": "shape", "params": {
-                    "position": [100, 50], "width": 14, "height": 11,
-                    "fill_paint": [200, 100, 0, 255], "edge_antialias": false
-                } },
+                filled_shape(1, json!({ "position": [100, 50], "width": 14, "height": 11 }), json!({ "paint": [200, 100, 0, 255], "edge_antialias": false })),
                 { "id": 2, "in": { "source": 1 }, "type": effect["type"], "params": effect["params"] },
             ]),
         )
@@ -756,8 +757,11 @@ fn multimerge_of_many_layers_matches_a_chain_of_merges() {
             90 + 11 * (index % 5),
             150,
         ];
-        json!({ "id": index + 1, "type": "shape", "params": { "position": position,
-            "width": size[0], "height": size[1], "fill_paint": color } })
+        json!(filled_shape(
+            index + 1,
+            json!({ "position": position, "width": size[0], "height": size[1] }),
+            json!({ "paint": color })
+        ))
     };
     let mixed: Vec<Value> = (0..14)
         .map(|index: u32| {

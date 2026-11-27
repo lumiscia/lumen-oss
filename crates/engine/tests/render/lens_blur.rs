@@ -5,7 +5,7 @@ use lumen_engine::gpu::GpuCompositionRenderer;
 use serde_json::{Value, json};
 
 use crate::color::linear;
-use crate::support::{Frame, TestMedia, gpu, render, scene};
+use crate::support::{Frame, TestMedia, filled_shape, gpu, render, scene};
 
 const CANVAS: u32 = 64;
 
@@ -35,8 +35,11 @@ fn point_at(
 fn point_nodes(at: [u32; 2]) -> Vec<Value> {
     vec![
         json!({ "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255] } }),
-        json!({ "id": 2, "type": "shape", "params": {
-            "position": at, "width": 1, "height": 1, "fill_paint": [255, 255, 255, 255] } }),
+        json!(filled_shape(
+            2,
+            json!({ "position": at, "width": 1, "height": 1 }),
+            json!({ "paint": [255, 255, 255, 255] })
+        )),
         json!({ "id": 3, "type": "raster_multimerge", "in": { "layers": [1, 2] } }),
         json!({ "id": 4, "type": "exposure", "params": { "exposure": 8 }, "in": { "source": 3 } }),
     ]
@@ -437,8 +440,7 @@ fn a_source_sized_to_its_bounds_blurs_as_a_full_frame_one_does() {
     let composition = scene(
         (CANVAS, CANVAS),
         json!([
-            { "id": 1, "type": "shape", "params": {
-                "position": [26, 28], "width": 6, "height": 4, "fill_paint": [255, 255, 255, 255] } },
+            filled_shape(1, json!({ "position": [26, 28], "width": 6, "height": 4 }), json!({ "paint": [255, 255, 255, 255] })),
             { "id": 2, "type": "exposure", "params": { "exposure": 6 }, "in": { "source": 1 } },
             { "id": 3, "type": "lens_blur", "params": { "radius": 20, "blades": 5 }, "in": { "source": 2 } },
         ]),
@@ -486,14 +488,11 @@ fn a_masked_point_stays_a_point_while_an_unmasked_one_becomes_a_disc() {
     // Two points; a square mask around the left one.
     let nodes = json!([
         { "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255] } },
-        { "id": 2, "type": "shape", "params": {
-            "position": [16, 32], "width": 1, "height": 1, "fill_paint": [255, 255, 255, 255] } },
-        { "id": 3, "type": "shape", "params": {
-            "position": [48, 32], "width": 1, "height": 1, "fill_paint": [255, 255, 255, 255] } },
+        filled_shape(2, json!({ "position": [16, 32], "width": 1, "height": 1 }), json!({ "paint": [255, 255, 255, 255] })),
+        filled_shape(3, json!({ "position": [48, 32], "width": 1, "height": 1 }), json!({ "paint": [255, 255, 255, 255] })),
         { "id": 4, "type": "raster_multimerge", "in": { "layers": [1, 2, 3] } },
         { "id": 5, "type": "exposure", "params": { "exposure": 8 }, "in": { "source": 4 } },
-        { "id": 6, "type": "shape", "params": {
-            "position": [8, 24], "width": 16, "height": 16, "fill_paint": [255, 255, 255, 255] } },
+        filled_shape(6, json!({ "position": [8, 24], "width": 16, "height": 16 }), json!({ "paint": [255, 255, 255, 255] })),
         { "id": 7, "type": "lens_blur", "params": { "radius": 8 }, "in": { "source": 5, "mask": 6 } },
     ]);
     let composition = scene((CANVAS, CANVAS), nodes).into();

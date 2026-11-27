@@ -1,5 +1,5 @@
 use lumen_engine::node::source::text_content::TextContentDelegate;
-use lumen_engine::node::vector::drawable::{DrawablePlacementDelegate, DrawableStyleDelegate};
+use lumen_engine::node::vector::drawable::DrawablePlacementDelegate;
 use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     expr::Expression,
@@ -15,13 +15,17 @@ use lumen_engine::{
             text::{Text, TextDrawParamsDelegate, TextLayoutParamsDelegate, TextParamsDelegate},
         },
         vector::{
+            drawing::{
+                Fill2dParamsDelegate, Shape2d, Shape2dParamsDelegate, Stroke2dParamsDelegate,
+                Transform2dDelegate,
+            },
             paint::Paint,
-            shape::{Shape, ShapeGeometryKind, ShapeParamsDelegate},
+            shape::ShapeGeometryKind,
         },
     },
 };
 
-use super::{render_1080p, timeline};
+use super::{insert_drawn, render_1080p, timeline};
 use crate::bench::CompositionFixture;
 
 const COLUMNS: usize = 25;
@@ -87,30 +91,33 @@ impl CompositionFixture for ManyElements {
             } else {
                 Deferred::value((x, y))
             };
-            graph.nodes.insert(
+            insert_drawn(
+                &mut graph,
                 card,
-                NodeKind::Shape(Shape {
-                    id: card,
-                    params: ShapeParamsDelegate {
-                        geometry_kind: ShapeGeometryKind::Rectangle.into(),
-                        width: Deferred::value(60.0),
-                        height: Deferred::value(36.0),
-                        border_radius: Deferred::value(6.0),
-                        placement: DrawablePlacementDelegate {
-                            position,
-                            ..Default::default()
+                &mut id,
+                |id| {
+                    NodeKind::Shape2d(Shape2d {
+                        id,
+                        params: Shape2dParamsDelegate {
+                            geometry_kind: ShapeGeometryKind::Rectangle.into(),
+                            width: Deferred::value(60.0),
+                            height: Deferred::value(36.0),
+                            border_radius: Deferred::value(6.0),
+                            transform: Transform2dDelegate {
+                                position,
+                                ..Default::default()
+                            },
                         },
-                        style: DrawableStyleDelegate {
-                            fill_enabled: Deferred::value(true),
-                            fill_paint: Paint::solid([40 + (index % 7) as u8 * 20, 60, 110, 255])
-                                .into(),
-                            stroke_enabled: Deferred::value(true),
-                            stroke_paint: Paint::solid([200, 210, 240, 255]).into(),
-                            stroke_width: Deferred::value(1.5),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
+                    })
+                },
+                Fill2dParamsDelegate {
+                    paint: Paint::solid([40 + (index % 7) as u8 * 20, 60, 110, 255]).into(),
+                    ..Default::default()
+                },
+                Some(Stroke2dParamsDelegate {
+                    paint: Paint::solid([200, 210, 240, 255]).into(),
+                    width: Deferred::value(1.5),
+                    ..Default::default()
                 }),
             );
             let label = id();
@@ -178,26 +185,30 @@ impl CompositionFixture for ManyElements {
                 30.0 + (index * 191 % 1860) as f64,
                 1050.0 - (index * 37 % 30) as f64,
             );
-            graph.nodes.insert(
+            insert_drawn(
+                &mut graph,
                 dot,
-                NodeKind::Shape(Shape {
-                    id: dot,
-                    params: ShapeParamsDelegate {
-                        geometry_kind: ShapeGeometryKind::Ellipse.into(),
-                        width: Deferred::value(12.0),
-                        height: Deferred::value(12.0),
-                        placement: DrawablePlacementDelegate {
-                            position: Deferred::value((x, y)),
+                &mut id,
+                |id| {
+                    NodeKind::Shape2d(Shape2d {
+                        id,
+                        params: Shape2dParamsDelegate {
+                            geometry_kind: ShapeGeometryKind::Ellipse.into(),
+                            width: Deferred::value(12.0),
+                            height: Deferred::value(12.0),
+                            transform: Transform2dDelegate {
+                                position: Deferred::value((x, y)),
+                                ..Default::default()
+                            },
                             ..Default::default()
                         },
-                        style: DrawableStyleDelegate {
-                            fill_enabled: Deferred::value(true),
-                            fill_paint: Paint::solid([94, 234, 212, 200]).into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                }),
+                    })
+                },
+                Fill2dParamsDelegate {
+                    paint: Paint::solid([94, 234, 212, 200]).into(),
+                    ..Default::default()
+                },
+                None,
             );
             layers.push(dot);
         }

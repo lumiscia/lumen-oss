@@ -9,7 +9,8 @@ use serde_json::{Value, json};
 use crate::color::srgb8;
 use crate::shaders::{fill_shader, shader_scene};
 use crate::support::{
-    CLEAR, Scene, TestMedia, gpu, read_rgba8, render, render_held, scene, within_rounding,
+    CLEAR, Scene, TestMedia, filled_shape, gpu, read_rgba8, render, render_held, scene,
+    within_rounding,
 };
 
 fn assert_uniform(rgba: &[u8], color: [u8; 4], what: &str) {
@@ -72,9 +73,11 @@ fn blurred_square(radius: u32) -> Scene {
     scene(
         (32, 16),
         json!([
-            { "id": 1, "type": "shape", "params": {
-                "position": [2, 2], "width": 4, "height": 4, "fill_paint": [255, 0, 0, 255]
-            } },
+            filled_shape(
+                1,
+                json!({ "position": [2, 2], "width": 4, "height": 4 }),
+                json!({ "paint": [255, 0, 0, 255] }),
+            ),
             { "id": 2, "type": "blur", "in": { "source": 1 }, "params": { "radius": radius } },
         ]),
     )
@@ -84,9 +87,11 @@ fn blurred_square(radius: u32) -> Scene {
 fn shape_at(position: Value, width: Value) -> Scene {
     scene(
         (96, 16),
-        json!([{ "id": 1, "type": "shape", "params": {
-            "position": position, "width": width, "height": 8, "fill_paint": [255, 100, 0, 255]
-        } }]),
+        json!(filled_shape(
+            1,
+            json!({ "position": position, "width": width, "height": 8 }),
+            json!({ "paint": [255, 100, 0, 255] }),
+        )),
     )
 }
 
@@ -113,17 +118,29 @@ fn small_template(canvas: (u32, u32), nodes: Value, clip: Value) -> Scene {
 
 /// A 2 × 2 white square at x = `prop('x')` + the template's frame, on a 32 × 4 canvas.
 fn moving_square(clip: Value) -> Scene {
-    small_template(
+    let mut scene = small_template(
         (32, 4),
         json!([
-            { "id": 1, "type": "shape", "params": {
-                "width": 2, "height": 2, "position": "=vec2(prop('x') + frame, 1)",
-                "fill_paint": "#ffffff", "edge_antialias": false
+            { "id": 1, "type": "render_2d" },
+            { "id": 2, "type": "media_output" },
+            { "id": 3, "type": "shape_2d", "params": {
+                "width": 2, "height": 2, "position": "=vec2(prop('x') + frame, 1)"
             } },
-            { "id": 2, "type": "media_output" }
+            { "id": 4, "type": "fill_2d", "params": { "edge_antialias": false } }
         ]),
         clip,
-    )
+    );
+    let connections = &mut scene.0["compositions"]["small"]["connections"];
+    for connection in [
+        json!({ "from_node": 3, "to_node": 4, "to_port": "geometry" }),
+        json!({ "from_node": 4, "to_node": 1, "to_port": "drawing" }),
+    ] {
+        connections
+            .as_array_mut()
+            .expect("connections")
+            .push(connection);
+    }
+    scene
 }
 
 struct Edit {
@@ -155,7 +172,7 @@ fn edits_render_like_a_fresh_renderer() {
     node_read.0["nodes"]
         .as_array_mut()
         .unwrap()
-        .push(json!({ "id": 99, "type": "shape", "params": { "width": 2 } }));
+        .push(json!({ "id": 99, "type": "shape_2d", "params": { "width": 2 } }));
     let edits = [
         Edit {
             name: "timeline duration",
@@ -181,7 +198,7 @@ fn edits_render_like_a_fresh_renderer() {
                 let mut scene = shape_at(json!([10, 4]), json!("=node(99, 'width')"));
                 scene.0["nodes"].as_array_mut().unwrap().insert(
                     0,
-                    json!({ "id": 99, "type": "shape", "params": { "width": 8 } }),
+                    json!({ "id": 99, "type": "shape_2d", "params": { "width": 8 } }),
                 );
                 scene
             },
@@ -199,7 +216,7 @@ fn edits_render_like_a_fresh_renderer() {
         Edit {
             name: "a literal blur radius",
             scene: blurred_square(1),
-            apply: |scene| scene["nodes"][1]["params"]["radius"] = json!(4),
+            apply: |scene| scene["nodes"][3]["params"]["radius"] = json!(4),
             frame: 0.0,
             probe: (9, 3),
         },
@@ -401,10 +418,14 @@ fn an_animated_source_stays_bounded_at_fractional_binds() {
     let composition = Composition::from(
         scene(
             (64, 16),
-            json!([{ "id": 1, "type": "shape", "params": {
-                "position": "=vec2(20 + 30 * sin(frame * 3.141592653589793), 4)",
-                "width": 8, "height": 8, "fill_paint": [255, 100, 0, 255]
-            } }]),
+            json!(filled_shape(
+                1,
+                json!({
+                    "position": "=vec2(20 + 30 * sin(frame * 3.141592653589793), 4)",
+                    "width": 8, "height": 8
+                }),
+                json!({ "paint": [255, 100, 0, 255] }),
+            )),
         )
         .frames(2)
         .fps(24.0),
@@ -429,13 +450,17 @@ fn static_under_animated() -> Scene {
         (16, 8),
         json!([
             { "id": 1, "type": "background", "params": { "paint": [200, 30, 30, 255], "width": 16, "height": 8 } },
-            { "id": 2, "type": "shape", "params": {
-                "position": [4, 2], "width": 4, "height": 4, "fill_paint": [20, 40, 220, 255]
-            } },
+            filled_shape(
+                2,
+                json!({ "position": [4, 2], "width": 4, "height": 4 }),
+                json!({ "paint": [20, 40, 220, 255] }),
+            ),
             { "id": 3, "type": "raster_multimerge", "in": { "layers": [1, 2] } },
-            { "id": 4, "type": "shape", "params": {
-                "position": "=vec2(frame * 2, 3)", "width": 3, "height": 3, "fill_paint": [30, 220, 60, 255]
-            } },
+            filled_shape(
+                4,
+                json!({ "position": "=vec2(frame * 2, 3)", "width": 3, "height": 3 }),
+                json!({ "paint": [30, 220, 60, 255] }),
+            ),
             { "id": 5, "type": "raster_multimerge", "in": { "layers": [3, 4] } },
         ]),
     )

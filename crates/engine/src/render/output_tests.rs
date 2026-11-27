@@ -742,13 +742,18 @@ fn translucent_disc() -> Composition {
         "timeline": { "fps": FPS, "duration_frames": 3 },
         "render_settings": { "width": 64, "height": 64 },
         "nodes": [
-            { "id": 1, "type": "shape", "params": {
-                "position": [32, 32], "width": 41, "height": 41, "border_radius": 20.5,
-                "fill_paint": [255, 160, 32, 179]
+            { "id": 3, "type": "shape_2d", "params": {
+                "position": [32, 32], "width": 41, "height": 41, "border_radius": 20.5
             } },
+            { "id": 4, "type": "fill_2d", "params": { "paint": [255, 160, 32, 179] } },
+            { "id": 1, "type": "render_2d" },
             { "id": 2, "type": "media_output" }
         ],
-        "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+        "connections": [
+            { "from_node": 3, "to_node": 4, "to_port": "geometry" },
+            { "from_node": 4, "to_node": 1, "to_port": "drawing" },
+            { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }
+        ]
     });
     composition["audio"] = voice();
     parse_composition(&composition).unwrap()

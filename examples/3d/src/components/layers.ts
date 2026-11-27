@@ -22,11 +22,11 @@ export function hill(color: Color, centerY: number): NodeValue<"raster"> {
   const width = 2600;
   const height = 900;
   // A shape's `position` is its top-left corner.
-  return n.shape({
+  const outline = n.shape_2d({
     geometry_kind: "ellipse",
     width,
     height,
     position: [W / 2 - width / 2, centerY - height / 2],
-    fill_paint: color,
   });
+  return n.render_2d({ drawing: n.fill_2d({ geometry: outline, paint: color }) });
 }

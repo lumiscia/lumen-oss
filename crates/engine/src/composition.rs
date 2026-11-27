@@ -937,7 +937,7 @@ mod fingerprint_tests {
             "compositions": {
                 "card": {
                     "nodes": [
-                        { "id": 1, "type": "shape", "params": { "opacity": "=prop('alpha')" } },
+                        { "id": 1, "type": "text", "params": { "opacity": "=prop('alpha')" } },
                         { "id": 2, "type": "media_output" }
                     ],
                     "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }],

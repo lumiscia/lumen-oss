@@ -20,7 +20,8 @@ use lumen_gpu::wgpu;
 use serde_json::{Value, json};
 
 use crate::support::{
-    Gpu, Scene, TestMedia, check_each, gpu, render, roboto_scaled, scene, within_rounding,
+    Gpu, Scene, TestMedia, check_each, filled_shape, gpu, render, roboto_scaled, scene,
+    within_rounding,
 };
 
 fn drawn(pixels: &[u8]) -> bool {
@@ -467,10 +468,11 @@ fn kept_text_is_drawn_again_once_its_font_arrives() {
             (128, 64),
             json!([
                 text,
-                { "id": 2, "type": "shape", "params": {
-                    "position": "=vec2(frame * 4, 0)", "width": 4, "height": 4,
-                    "fill_paint": [255, 255, 255, 255]
-                } },
+                filled_shape(
+                    2,
+                    json!({ "position": "=vec2(frame * 4, 0)", "width": 4, "height": 4 }),
+                    json!({ "paint": [255, 255, 255, 255] }),
+                ),
                 { "id": 3, "type": "raster_multimerge", "in": { "layers": [1, 2] } },
             ]),
         )

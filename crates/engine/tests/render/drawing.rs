@@ -1,96 +1,67 @@
-//! Drawings rendered in one pass by `render_2d`, against the same outlines drawn by `path` and
-//! `shape` nodes merged in order.
+//! Drawings rendered in one pass by `render_2d`, against the same outlines each drawn by its own
+//! `render_2d` and merged in order.
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
-use crate::support::{CLEAR, Case, Expect, Scene, check, scene};
+use crate::support::{CLEAR, Case, Expect, Scene, check, filled_and_stroked, scene};
 
 const SIZE: (u32, u32) = (160, 96);
 const WHITE: [u8; 4] = [255, 255, 255, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
 
-/// An outline styled by fills and strokes: `kind` is `path` or `shape`, `geometry` its outline
-/// and placement params, and each style the params of a `fill_2d` or `stroke_2d`.
+/// An outline styled by fills and strokes: `kind` is `path_2d` or `shape_2d`, `geometry` its
+/// outline and placement params, and each style the params of a `fill_2d` or `stroke_2d`.
 struct Outline {
     kind: &'static str,
     geometry: Value,
     styles: Vec<(&'static str, Value)>,
 }
 
-fn object(value: Value) -> Map<String, Value> {
-    value.as_object().expect("an object").clone()
-}
-
-/// The params of a `path` or `shape` node drawing `style` of `outline`.
-fn raster_params(outline: &Outline, (style, params): &(&str, Value)) -> Value {
-    let mut raster = object(outline.geometry.clone());
-    let params = object(params.clone());
-    let get = |name: &str| params.get(name).cloned();
-    let fill = *style == "fill_2d";
-    raster.insert("fill_enabled".into(), json!(fill));
-    raster.insert("stroke_enabled".into(), json!(!fill));
-    if let Some(paint) = get("paint") {
-        raster.insert(
-            if fill { "fill_paint" } else { "stroke_paint" }.into(),
-            paint,
-        );
-    }
-    for (from, to) in [
-        ("opacity", "opacity"),
-        ("feather", "feather"),
-        ("width", "stroke_width"),
-        ("trim_start", "trim_start"),
-        ("trim_end", "trim_end"),
-        ("dash", "stroke_dash"),
-        ("dash_offset", "stroke_dash_offset"),
-    ] {
-        if let Some(value) = get(from) {
-            raster.insert(to.into(), value);
-        }
-    }
-    Value::Object(raster)
-}
-
 /// The outlines as geometry nodes styled into one `render_2d`, each geometry shared by its
-/// styles, and as one `path` or `shape` node per style in a `raster_multimerge`.
+/// styles, and as one `render_2d` per style, each with its own geometry, in a
+/// `raster_multimerge`.
 fn both(outlines: &[Outline]) -> (Scene, Scene) {
-    let mut vector = Vec::new();
-    let mut raster = Vec::new();
+    let mut together = Vec::new();
+    let mut apart = Vec::new();
     let mut drawn = Vec::new();
     let mut next = 1;
     for outline in outlines {
         let geometry = next;
         next += 1;
-        vector.push(json!({ "id": geometry, "type": format!("{}_2d", outline.kind), "params": outline.geometry }));
+        together.push(json!({ "id": geometry, "type": outline.kind, "params": outline.geometry }));
         for style in &outline.styles {
-            vector.push(json!({ "id": next, "type": style.0, "params": style.1, "in": { "geometry": geometry } }));
-            raster.push(json!({ "id": next, "type": outline.kind, "params": raster_params(outline, style) }));
+            together.push(json!({ "id": next, "type": style.0, "params": style.1, "in": { "geometry": geometry } }));
+            apart.push(
+                json!({ "id": next + 200, "type": outline.kind, "params": outline.geometry }),
+            );
+            apart.push(json!({ "id": next + 400, "type": style.0, "params": style.1, "in": { "geometry": next + 200 } }));
+            apart.push(json!({ "id": next, "type": "render_2d", "in": { "drawing": next + 400 } }));
             drawn.push(next);
             next += 1;
         }
     }
-    vector.push(json!({ "id": 100, "type": "merge_2d", "in": { "drawings": drawn } }));
-    vector.push(json!({ "id": 101, "type": "render_2d", "in": { "drawing": 100 } }));
-    raster.push(json!({ "id": 100, "type": "raster_multimerge", "in": { "layers": drawn } }));
-    (scene(SIZE, json!(vector)), scene(SIZE, json!(raster)))
+    together.push(json!({ "id": 100, "type": "merge_2d", "in": { "drawings": drawn } }));
+    together.push(json!({ "id": 101, "type": "render_2d", "in": { "drawing": 100 } }));
+    apart.push(json!({ "id": 100, "type": "raster_multimerge", "in": { "layers": drawn } }));
+    (scene(SIZE, json!(together)), scene(SIZE, json!(apart)))
 }
 
-fn matches_raster_nodes(name: &str, outlines: &[Outline]) -> Case {
-    let (vector, raster) = both(outlines);
-    Case::new(name, vector, Expect::Matches(raster.into()))
+fn matches_separate_renders(name: &str, outlines: &[Outline]) -> Case {
+    let (together, apart) = both(outlines);
+    Case::new(name, together, Expect::Matches(apart.into()))
 }
 
 const CIRCLE: &str = "M 0 -20 C 11 -20 20 -11 20 0 C 20 11 11 20 0 20 C -11 20 -20 11 -20 0 C -20 -11 -11 -20 0 -20 Z";
 
-fn fills_and_strokes_match_raster_nodes() -> Vec<Case> {
+fn fills_and_strokes_match_separate_renders() -> Vec<Case> {
     vec![
         // The paths share the points and bands buffers, so each must read its own; the triangle's
         // fill and stroke share one outline.
-        matches_raster_nodes(
-            "fills and strokes of paths draw as path nodes",
+        matches_separate_renders(
+            "fills and strokes of paths draw as each drawn alone",
             &[
                 Outline {
-                    kind: "path",
+                    kind: "path_2d",
                     geometry: json!({ "data": CIRCLE, "position": [30, 48] }),
                     styles: vec![(
                         "stroke_2d",
@@ -98,7 +69,7 @@ fn fills_and_strokes_match_raster_nodes() -> Vec<Case> {
                     )],
                 },
                 Outline {
-                    kind: "path",
+                    kind: "path_2d",
                     geometry: json!({ "data": CIRCLE, "position": [80, 48], "rotation": 30 }),
                     styles: vec![(
                         "stroke_2d",
@@ -106,7 +77,7 @@ fn fills_and_strokes_match_raster_nodes() -> Vec<Case> {
                     )],
                 },
                 Outline {
-                    kind: "path",
+                    kind: "path_2d",
                     geometry: json!({
                         "data": "M 0 0 L 30 6 L 8 28 Z", "position": [112, 30], "anchor": [12, 12],
                         "rotation": -15, "scale": [1.3, 0.8]
@@ -123,11 +94,11 @@ fn fills_and_strokes_match_raster_nodes() -> Vec<Case> {
         ),
         // The square covers whole tiles, which list nothing below it, and part of the tiles along
         // its edges, where the stroke below still shows.
-        matches_raster_nodes(
+        matches_separate_renders(
             "an opaque path fill hides only what lies under it",
             &[
                 Outline {
-                    kind: "path",
+                    kind: "path_2d",
                     geometry: json!({ "data": "M 0 48 L 160 40", "position": [0, 0] }),
                     styles: vec![(
                         "stroke_2d",
@@ -135,7 +106,7 @@ fn fills_and_strokes_match_raster_nodes() -> Vec<Case> {
                     )],
                 },
                 Outline {
-                    kind: "path",
+                    kind: "path_2d",
                     geometry: json!({
                         "data": "M 0 0 H 90 V 90 H 0 Z", "position": [80, 48], "anchor": [45, 45],
                         "rotation": 10
@@ -144,11 +115,11 @@ fn fills_and_strokes_match_raster_nodes() -> Vec<Case> {
                 },
             ],
         ),
-        matches_raster_nodes(
-            "fills and strokes of shapes draw as shape nodes, the last on top",
+        matches_separate_renders(
+            "fills and strokes of shapes draw as each drawn alone, the last on top",
             &[
                 Outline {
-                    kind: "shape",
+                    kind: "shape_2d",
                     geometry: json!({ "width": 70, "height": 40, "position": [16, 20], "border_radius": 10 }),
                     styles: vec![
                         ("fill_2d", json!({ "paint": [255, 0, 0, 160] })),
@@ -159,7 +130,7 @@ fn fills_and_strokes_match_raster_nodes() -> Vec<Case> {
                     ],
                 },
                 Outline {
-                    kind: "shape",
+                    kind: "shape_2d",
                     geometry: json!({
                         "geometry_kind": "ellipse", "width": 60, "height": 50, "position": [60, 30],
                         "anchor": [30, 25], "rotation": 25
@@ -202,14 +173,17 @@ fn offsets_move_fill_and_stroke_edges() -> Vec<Case> {
     };
     vec![
         Case::new(
-            "a grown fill draws as a path node's offset fill",
+            "a fill grown twice by 4 draws as one grown by 8",
             offset_square(8.0, fill()),
             Expect::Matches(
                 scene(
                     SIZE,
-                    json!([{ "id": 1, "type": "path", "params": {
-                        "data": "M 0 0 H 40 V 40 H 0 Z", "position": [40, 28], "offset": 8
-                    } }]),
+                    json!([
+                        { "id": 1, "type": "path_2d", "params": { "data": "M 0 0 H 40 V 40 H 0 Z", "position": [40, 28] } },
+                        { "id": 2, "type": "offset_2d", "params": { "offset": 8 }, "in": { "geometry": 1 } },
+                        { "id": 3, "type": "fill_2d", "in": { "geometry": 2 } },
+                        { "id": 4, "type": "render_2d", "in": { "drawing": 3 } }
+                    ]),
                 )
                 .into(),
             ),
@@ -221,11 +195,13 @@ fn offsets_move_fill_and_stroke_edges() -> Vec<Case> {
             Expect::Matches(
                 scene(
                     SIZE,
-                    json!([{ "id": 1, "type": "shape", "params": {
-                        "width": 56, "height": 56, "position": [32, 20], "border_radius": 8,
-                        "fill_enabled": false, "stroke_enabled": true, "stroke_width": 4,
-                        "stroke_paint": [255, 255, 255, 255]
-                    } }]),
+                    json!([
+                        { "id": 1, "type": "shape_2d", "params": {
+                            "width": 56, "height": 56, "position": [32, 20], "border_radius": 8
+                        } },
+                        { "id": 2, "type": "stroke_2d", "params": { "paint": [255, 255, 255, 255], "width": 4 }, "in": { "geometry": 1 } },
+                        { "id": 3, "type": "render_2d", "in": { "drawing": 2 } }
+                    ]),
                 )
                 .into(),
             ),
@@ -346,7 +322,7 @@ fn apply(m: [[f64; 2]; 2], v: [f64; 2]) -> [f64; 2] {
 }
 
 /// A merge with non-uniform scale around a rotated path shears it. The same canvas outline is a
-/// `path` node whose points are turned first, then scaled and rotated: the map's singular value
+/// `path_2d` whose points are turned first, then scaled and rotated: the map's singular value
 /// decomposition. Its stroke is a band of the same untransformed width around the same points.
 fn sheared_merges_draw_as_turned_paths() -> Case {
     let points = [[-20.0, -12.0], [22.0, -8.0], [14.0, 16.0], [-16.0, 10.0]];
@@ -365,13 +341,10 @@ fn sheared_merges_draw_as_turned_paths() -> Case {
     let (a1, a2) = (g.atan2(f), h.atan2(e));
     let turn = rotation((a2 - a1) / 2.0);
     let turned: Vec<[f64; 2]> = points.iter().map(|&point| apply(turn, point)).collect();
-    let style =
-        json!({ "fill_paint": [255, 200, 0, 255], "stroke_enabled": true, "stroke_width": 3 });
-    let mut reference = object(style);
-    reference.extend(object(json!({
+    let reference = json!({
         "data": data(&turned), "position": [80, 48], "scale": [q + s, q - s],
         "rotation": ((a2 + a1) / 2.0).to_degrees()
-    })));
+    });
     Case::new(
         "a sheared merge draws its path as the turned path",
         scene(
@@ -387,7 +360,13 @@ fn sheared_merges_draw_as_turned_paths() -> Case {
         Expect::Matches(
             scene(
                 SIZE,
-                json!([{ "id": 1, "type": "path", "params": reference }]),
+                json!(filled_and_stroked(
+                    1,
+                    "path_2d",
+                    reference,
+                    json!({ "paint": [255, 200, 0, 255] }),
+                    json!({ "width": 3 }),
+                )),
             )
             .into(),
         ),
@@ -396,7 +375,7 @@ fn sheared_merges_draw_as_turned_paths() -> Case {
 
 #[test]
 fn render_2d() {
-    let mut cases = fills_and_strokes_match_raster_nodes();
+    let mut cases = fills_and_strokes_match_separate_renders();
     cases.extend(offsets_move_fill_and_stroke_edges());
     cases.push(shadows_draw_beneath_the_whole_drawing());
     cases.push(sheared_merges_draw_as_turned_paths());

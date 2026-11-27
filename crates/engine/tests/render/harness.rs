@@ -5,8 +5,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use serde_json::json;
 
 use crate::support::{
-    CLEAR, Case, Expect, GREEN, RED, Scene, TestMedia, check, check_matching, gpu, panic_message,
-    scene, within_rounding,
+    CLEAR, Case, Expect, GREEN, RED, Scene, TestMedia, check, check_matching, filled_shape, gpu,
+    panic_message, scene, within_rounding,
 };
 
 fn solid((width, height): (u32, u32), color: [u8; 4]) -> Scene {
@@ -20,9 +20,11 @@ fn solid((width, height): (u32, u32), color: [u8; 4]) -> Scene {
 
 /// A 14 × 11 translucent orange shape at `position`, through `effect`, on a 384 × 288 canvas.
 fn shape_through(position: serde_json::Value, effect: serde_json::Value) -> Scene {
-    let mut nodes = vec![json!({ "id": 1, "type": "shape", "params": {
-        "position": position, "width": 14, "height": 11, "fill_paint": [255, 100, 0, 200]
-    } })];
+    let mut nodes = filled_shape(
+        1,
+        json!({ "position": position, "width": 14, "height": 11 }),
+        json!({ "paint": [255, 100, 0, 200] }),
+    );
     let mut effect = effect;
     effect["id"] = json!(2);
     effect["in"] = json!({ "source": 1 });
@@ -70,10 +72,11 @@ fn colors_are_checked_at_every_pixel_or_at_probes() {
             "shape covers only its own pixels",
             scene(
                 (4, 4),
-                json!([{ "id": 1, "type": "shape", "params": {
-                    "position": [1, 1], "width": 2, "height": 2,
-                    "fill_paint": RED, "edge_antialias": false
-                } }]),
+                json!(filled_shape(
+                    1,
+                    json!({ "position": [1, 1], "width": 2, "height": 2 }),
+                    json!({ "paint": RED, "edge_antialias": false }),
+                )),
             ),
             Expect::Probes(vec![(1, 1, RED), (2, 2, RED), (0, 0, CLEAR), (3, 3, CLEAR)]),
         ),
@@ -105,9 +108,11 @@ fn frames_share_a_renderer_and_may_each_have_an_expectation() {
 #[test]
 fn scenes_can_be_compared_or_inspected() {
     let shape = |x: u32, y: u32| {
-        json!({ "id": 1, "type": "shape", "params": {
-            "position": [x, y], "width": 3, "height": 2, "fill_paint": GREEN
-        } })
+        json!(filled_shape(
+            1,
+            json!({ "position": [x, y], "width": 3, "height": 2 }),
+            json!({ "paint": GREEN }),
+        ))
     };
     check(vec![
         Case::new(

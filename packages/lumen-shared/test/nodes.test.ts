@@ -52,16 +52,18 @@ describe("Composition with node values", () => {
 
     const calls = new Composition();
     const background = calls.addNode({ type: "background", params: { paint: "#123d2b" } });
-    const path = calls.addNode({ type: "path", params: { data: "M0 0" } });
-    const blur = calls.addNode({ type: "blur", params: { radius: 2 }, inputs: { source: path } });
+    const path = calls.addNode({ type: "path_2d", params: { data: "M0 0" } });
+    const fill = calls.addNode({ type: "fill_2d", inputs: { geometry: path } });
+    const drawn = calls.addNode({ type: "render_2d", inputs: { drawing: fill } });
+    const blur = calls.addNode({ type: "blur", params: { radius: 2 }, inputs: { source: drawn } });
     const shadow = calls.addNode({
       type: "shadow",
       params: { radius: 8 },
       inputs: { source: blur },
     });
     const text = calls.addNode({ type: "text", params: { content: "on" } });
-    const shape = calls.addNode({ type: "shape" });
-    const merged = calls.addNode({ type: "raster_multimerge", inputs: { layers: [text, shape] } });
+    const plate = calls.addNode({ type: "background" });
+    const merged = calls.addNode({ type: "raster_multimerge", inputs: { layers: [text, plate] } });
     const glow = calls.addNode({
       type: "glow",
       params: { glow_only: true, radius: 46 },
@@ -185,7 +187,7 @@ describe("Composition with node values", () => {
     const before = JSON.stringify(composition);
 
     expect(() =>
-      composition.addOutput(n.merge({ base: n.text(), overlay: { ...n.shape(), id: 3 } })),
+      composition.addOutput(n.merge({ base: n.text(), overlay: { ...n.background(), id: 3 } })),
     ).toThrow("Node `3` already exists.");
     expect(JSON.stringify(composition)).toBe(before);
     expect(composition.addNode(n.text()).id).toBe(0);
@@ -257,12 +259,16 @@ describe("defineComposition with node values", () => {
   });
 });
 
+function drawnPath(): NodeInput<"render_2d"> {
+  return n.render_2d({ drawing: n.fill_2d({ geometry: n.path_2d({ data: "M0 0" }) }) });
+}
+
 function treeOf(): NodeInput<"raster_multimerge"> {
-  const lit = n.raster_multimerge({ layers: [n.text({ content: "on" }), n.shape()] });
+  const lit = n.raster_multimerge({ layers: [n.text({ content: "on" }), n.background()] });
   return n.raster_multimerge({
     layers: [
       n.background({ paint: "#123d2b" }),
-      n.shadow({ radius: 8, source: n.blur({ radius: 2, source: n.path({ data: "M0 0" }) }) }),
+      n.shadow({ radius: 8, source: n.blur({ radius: 2, source: drawnPath() }) }),
       n.glow({ glow_only: true, radius: 46, source: lit }),
       lit,
     ],

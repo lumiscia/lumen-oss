@@ -8,11 +8,21 @@ use serde_json::{Value, json};
 
 use crate::color::{linear_average, srgb8};
 use crate::support::{
-    Case, Expect, Frame, ORANGE, Scene, TestMedia, check, gpu, render, render_working_space, scene,
+    Case, Expect, Frame, ORANGE, Scene, TestMedia, check, filled_shape, gpu, render,
+    render_working_space, scene,
 };
 
-/// A shape whose width and position both animate, with an analytic shutter of `motion_blur`.
-fn growing(motion_blur: f64) -> Value {
+/// A shape whose width and position both animate.
+fn growing() -> Value {
+    json!(filled_shape(
+        1,
+        json!({ "width": "=8 + frame * 6", "height": 20, "position": "=vec2(10 + frame * 4, 32)" }),
+        json!({ "paint": ORANGE }),
+    ))
+}
+
+/// [`growing`] as a raster `shape`, with an analytic shutter of `motion_blur`.
+fn growing_raster(motion_blur: f64) -> Value {
     json!({ "id": 1, "type": "shape", "params": {
         "width": "=8 + frame * 6",
         "height": 20,
@@ -93,11 +103,11 @@ fn an_animated_width_blurs_to_the_average_of_its_sub_frames() {
     let at = 3.0;
     let blurred = render(
         &mut renderer,
-        &blurred(8, 180.0, growing(0.0)).into(),
+        &blurred(8, 180.0, growing()).into(),
         at,
         &media,
     );
-    let source: Composition = canvas(json!([growing(0.0)])).into();
+    let source: Composition = canvas(json!([growing()])).into();
     assert!(
         is_average(
             &blurred.rgba,
@@ -141,7 +151,7 @@ fn repeated_copies_blur_once_across_the_sub_frames() {
 
 #[test]
 fn renders_once_unless_it_samples() {
-    let unwrapped = || canvas(json!([growing(180.0)])).into();
+    let unwrapped = || canvas(json!([growing()])).into();
     let same = |name: &str, scene: Scene, like: Composition| {
         Case::new(name, scene, Expect::Matches(like))
             .frames([3.0])
@@ -150,27 +160,27 @@ fn renders_once_unless_it_samples() {
     check(vec![
         same(
             "one sample is the source at the frame",
-            blurred(1, 180.0, growing(180.0)),
+            blurred(1, 180.0, growing()),
             unwrapped(),
         ),
         same(
             "a closed shutter is the source at the frame",
-            blurred(8, 0.0, growing(180.0)),
+            blurred(8, 0.0, growing()),
             unwrapped(),
         ),
         same(
             "analytic motion blur is off while it samples",
-            blurred(8, 180.0, growing(180.0)),
-            blurred(8, 180.0, growing(0.0)).into(),
+            blurred(8, 180.0, growing_raster(180.0)),
+            blurred(8, 180.0, growing_raster(0.0)).into(),
         ),
         same(
             "a motion_blur inside one that samples renders once per sample",
             canvas(json!([
-                growing(0.0),
+                growing(),
                 motion_blur(2, 1, 4, 360.0),
                 motion_blur(3, 2, 8, 180.0),
             ])),
-            blurred(8, 180.0, growing(0.0)).into(),
+            blurred(8, 180.0, growing()).into(),
         ),
     ]);
 }
@@ -231,9 +241,11 @@ fn video_blurs_across_the_source_frames_its_sub_frames_show() {
 fn blank_samples_leave_the_domain_where_the_source_draws() {
     // The shape shows from frame 1, so the first half of the samples at frame 1 are blank, and all
     // of them at frame 0.
-    let shape = json!({ "id": 1, "type": "shape", "params": {
-        "width": 8, "height": 8, "position": [224, 224], "fill_paint": ORANGE,
-    } });
+    let shape = json!(filled_shape(
+        1,
+        json!({ "width": 8, "height": 8, "position": [224, 224] }),
+        json!({ "paint": ORANGE }),
+    ));
     let appearing = json!({ "id": 2, "type": "switch",
         "params": { "selected_layer": "=if(frame < 1, -1, 0)" }, "in": { "layers": [1] } });
     let blurred: Composition = scene(

@@ -365,8 +365,7 @@ fn paint_shader_uniform_and_clip_props_schemas_match_engine_parsing() {
         );
     }
     for (paint, valid) in paints {
-        let composition =
-            composition_with_node(&node_schema("shape"), json!({ "fill_paint": paint }));
+        let composition = composition_with_node(&node_schema("fill_2d"), json!({ "paint": paint }));
         check(&paint.to_string(), composition, valid);
     }
 
@@ -437,8 +436,7 @@ fn dash_pattern_schema_matches_engine_parsing() {
         (json!("=frame"), false),
         (json!(4), false),
     ] {
-        let composition =
-            composition_with_node(&node_schema("path"), json!({ "stroke_dash": dash }));
+        let composition = composition_with_node(&node_schema("stroke_2d"), json!({ "dash": dash }));
         assert_eq!(validator.is_valid(&composition), valid, "{dash} schema");
         assert_eq!(
             lumen_engine::json::parse_value(&composition).is_ok(),
@@ -854,7 +852,7 @@ fn expression_placement_matches_engine_parsing() {
     let validator = schema_validator();
     let node = |kind: &str, params: Value| composition_with_node(&node_schema(kind), params);
     let with_function = |signature: &str| {
-        let mut value = node("shape", json!({ "position": "=vec2(0, 0)" }));
+        let mut value = node("shape_2d", json!({ "position": "=vec2(0, 0)" }));
         value["functions"] = json!({ signature: "vec2(0, 0)" });
         value
     };
@@ -877,13 +875,13 @@ fn expression_placement_matches_engine_parsing() {
         ),
         (
             "expression for a literal-only enum",
-            node("shape", json!({ "geometry_kind": "='ellipse'" })),
+            node("shape_2d", json!({ "geometry_kind": "='ellipse'" })),
             false,
             false,
         ),
         (
             "expression as a paint",
-            node("shape", json!({ "fill_paint": "=#ff0000" })),
+            node("fill_2d", json!({ "paint": "=#ff0000" })),
             true,
             true,
         ),

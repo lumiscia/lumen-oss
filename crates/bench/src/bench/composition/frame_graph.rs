@@ -507,8 +507,13 @@ fn stacked(layers: Vec<Value>, wires: Vec<(u32, u32, &'static str)>) -> Value {
     let mut nodes = vec![json!({
         "id": 1, "type": "background", "params": { "paint": [18, 20, 28, 255] }
     })];
+    // The geometry and style nodes a `render_2d` draws are not layers.
     let top = layers
         .iter()
+        .filter(|layer| {
+            let kind = layer["type"].as_str().expect("a type");
+            !kind.ends_with("_2d") || kind == "render_2d"
+        })
         .map(|layer| layer["id"].as_u64().expect("an id") as u32)
         .collect::<Vec<_>>();
     nodes.extend(layers);
@@ -523,7 +528,8 @@ fn stacked(layers: Vec<Value>, wires: Vec<(u32, u32, &'static str)>) -> Value {
     graph(600, nodes, connections)
 }
 
-/// Layer ids ending in 1 feed the transform or blur at the next id rather than the stack.
+/// Layer ids ending in 1 feed the transform or blur at the next id, or at the id before, rather
+/// than the stack.
 fn connections_feed_other(id: u32) -> bool {
     id % 10 == 1
 }
@@ -536,6 +542,24 @@ const WORDS: [&str; 6] = [
     "shaping text",
     "WAVE AV To",
 ];
+
+/// A `kind` geometry of `geometry` params filled with `paint` and drawn by the `render_2d` `id`: the
+/// geometry at `id + 7` and the fill at `id + 8`, with the wires between them.
+fn filled(
+    id: u32,
+    kind: &str,
+    geometry: Value,
+    paint: Value,
+) -> ([Value; 3], [(u32, u32, &'static str); 2]) {
+    (
+        [
+            json!({ "id": id + 7, "type": kind, "params": geometry }),
+            json!({ "id": id + 8, "type": "fill_2d", "params": { "paint": paint } }),
+            json!({ "id": id, "type": "render_2d" }),
+        ],
+        [(id + 7, id + 8, "geometry"), (id + 8, id, "drawing")],
+    )
+}
 
 /// A selection among `options` that changes every `period` frames.
 fn selected(options: &[String], period: u32) -> String {
@@ -590,23 +614,27 @@ fn dynamic_path() -> Value {
         }
         data + " Z"
     };
-    let layers = (0..40u32)
-        .map(|index| {
-            let options: Vec<String> = (0..4).map(|phase| outline(index, phase)).collect();
+    let mut layers = Vec::new();
+    let mut wires = Vec::new();
+    for index in 0..40u32 {
+        let options: Vec<String> = (0..4).map(|phase| outline(index, phase)).collect();
+        let (nodes, links) = filled(
+            10 * (index + 1),
+            "path_2d",
             json!({
-                "id": 10 * (index + 1), "type": "path", "params": {
-                    "data": selected(&options, 1),
-                    "fill_paint": [80 + index * 4, 200 - index * 3, 220, 255],
-                    "position": format!(
-                        "=vec2({} + 20 * sin(frame / 30), {})",
-                        120 + 220 * (index % 8),
-                        120 + 200 * (index / 8)
-                    ),
-                }
-            })
-        })
-        .collect();
-    stacked(layers, Vec::new())
+                "data": selected(&options, 1),
+                "position": format!(
+                    "=vec2({} + 20 * sin(frame / 30), {})",
+                    120 + 220 * (index % 8),
+                    120 + 200 * (index / 8)
+                ),
+            }),
+            json!([80 + index * 4, 200 - index * 3, 220, 255]),
+        );
+        layers.extend(nodes);
+        wires.extend(links);
+    }
+    stacked(layers, wires)
 }
 
 /// Shapes, a transform and text sweeping across the canvas with motion blur.
@@ -618,12 +646,20 @@ fn motion_blur() -> Value {
         let position = format!("=vec2(960 + 700 * sin(frame / 25 + {index}), {row})");
         let base = 100 * (index + 1);
         match index % 3 {
-            0 => layers.push(json!({
-                "id": base, "type": "shape", "params": {
-                    "position": position, "width": 160, "height": 60,
-                    "fill_paint": [240, 120, 60, 255], "motion_blur": 180,
-                }
-            })),
+            0 => {
+                let (nodes, links) = filled(
+                    base + 1,
+                    "shape_2d",
+                    json!({ "position": position, "width": 160, "height": 60 }),
+                    json!([240, 120, 60, 255]),
+                );
+                layers.extend(nodes);
+                wires.extend(links);
+                layers.push(
+                    json!({ "id": base, "type": "motion_blur", "params": { "shutter": 180 } }),
+                );
+                wires.push((base + 1, base, "source"));
+            }
             1 => layers.push(json!({
                 "id": base, "type": "text", "params": {
                     "content": "Motion", "font_family": "Geist", "font_size": 64,
@@ -631,12 +667,14 @@ fn motion_blur() -> Value {
                 }
             })),
             _ => {
-                layers.push(json!({
-                    "id": base + 1, "type": "shape", "params": {
-                        "position": [120, row], "width": 160, "height": 60,
-                        "fill_paint": [60, 180, 240, 255],
-                    }
-                }));
+                let (nodes, links) = filled(
+                    base + 1,
+                    "shape_2d",
+                    json!({ "position": [120, row], "width": 160, "height": 60 }),
+                    json!([60, 180, 240, 255]),
+                );
+                layers.extend(nodes);
+                wires.extend(links);
                 layers.push(json!({
                     "id": base + 2, "type": "transform", "params": {
                         "translate_x": format!("=800 + 700 * sin(frame / 25 + {index})"),
@@ -717,10 +755,11 @@ fn shader_switch() -> Value {
     ];
     let nodes = vec![
         json!({ "id": 1, "type": "background", "params": { "paint": [40, 90, 160, 255] } }),
-        json!({ "id": 2, "type": "shape", "params": {
-            "position": "=vec2(960 + 400 * sin(frame / 30), 540)",
-            "width": 500, "height": 400, "fill_paint": [240, 200, 60, 255],
+        json!({ "id": 7, "type": "shape_2d", "params": {
+            "position": "=vec2(960 + 400 * sin(frame / 30), 540)", "width": 500, "height": 400,
         } }),
+        json!({ "id": 8, "type": "fill_2d", "params": { "paint": [240, 200, 60, 255] } }),
+        json!({ "id": 2, "type": "render_2d" }),
         json!({ "id": 3, "type": "merge" }),
         json!({ "id": 4, "type": "wgsl_shader", "params": { "shader": selected(&options, 20) } }),
         json!({ "id": 5, "type": "exposure", "params": { "exposure": 0.3 } }),
@@ -732,6 +771,8 @@ fn shader_switch() -> Value {
         600,
         nodes,
         vec![
+            (7, 8, "geometry"),
+            (8, 2, "drawing"),
             (1, 3, "base"),
             (2, 3, "overlay"),
             (3, 4, "source"),

@@ -61,20 +61,22 @@ fn two_colour_composition() -> Value {
         "render_settings": { "width": WIDTH, "height": HEIGHT },
         "nodes": [
             background(ORANGE),
+            { "id": 5, "type": "shape_2d", "params": { "width": WIDTH, "height": HEIGHT } },
             {
-                "id": 2,
-                "type": "shape",
+                "id": 6,
+                "type": "fill_2d",
                 "params": {
-                    "width": WIDTH,
-                    "height": HEIGHT,
-                    "fill_paint": [BLUE[0], BLUE[1], BLUE[2], 255],
+                    "paint": [BLUE[0], BLUE[1], BLUE[2], 255],
                     "opacity": format!("=tween(0, 1, {}, {})", FRAMES / 2 - 1, 1),
                 },
             },
+            { "id": 2, "type": "render_2d" },
             { "id": 3, "type": "merge" },
             { "id": 4, "type": "media_output" },
         ],
         "connections": [
+            { "from_node": 5, "to_node": 6, "to_port": "geometry" },
+            { "from_node": 6, "to_node": 2, "to_port": "drawing" },
             { "from_node": 1, "from_port": "output", "to_node": 3, "to_port": "base" },
             { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "overlay" },
             { "from_node": 3, "from_port": "output", "to_node": 4, "to_port": "source" },

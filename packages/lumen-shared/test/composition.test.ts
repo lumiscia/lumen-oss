@@ -93,7 +93,7 @@ describe("Composition inputs", () => {
     const composition = new Composition();
     const background = composition.addNode({ type: "background" });
     const title = composition.addNode({ type: "text" });
-    const matte = composition.addNode({ type: "shape" });
+    const matte = composition.addNode({ type: "background" });
     const merge = composition.addNode({
       type: "merge",
       inputs: { base: background, overlay: title, mask: matte },
@@ -438,7 +438,10 @@ describe("Composition vector literals", () => {
         target: keyframes(frame, key(0, vec3(0, 0, 0)), key(30, vec3(1, 2, 3))),
       },
     });
-    composition.addNode({ type: "shape", params: { position: vec2(4, 8), scale: vec2(frame, 1) } });
+    composition.addNode({
+      type: "shape_2d",
+      params: { position: vec2(4, 8), scale: vec2(frame, 1) },
+    });
 
     expect(composition.toJSON().nodes.map((node) => node.params)).toEqual([
       {
