@@ -38,8 +38,6 @@ struct PropertyAttr {
     enum_type: Option<Path>,
     constraints: PropertyConstraintsAttr,
     constant: bool,
-    /// The field is a `Paint` that must be a solid color, so parsing rejects a gradient.
-    solid: bool,
     /// The field must be set when parsing a `properties` struct's JSON.
     required: bool,
     docs: Vec<String>,
@@ -99,7 +97,6 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
     let mut kind = None;
     let mut enum_type = None;
     let mut constant = false;
-    let mut solid = false;
     let mut required = false;
     let mut constraints = PropertyConstraintsAttr::default();
     let mut flatten = false;
@@ -134,8 +131,6 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
             enum_type = Some(meta.value()?.parse()?);
         } else if meta.path.is_ident("constant") {
             constant = optional_bool(&meta)?;
-        } else if meta.path.is_ident("solid") {
-            solid = optional_bool(&meta)?;
         } else if meta.path.is_ident("required") {
             required = optional_bool(&meta)?;
         } else if meta.path.is_ident("pixels") {
@@ -170,11 +165,10 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
         id: id.unwrap_or_else(|| LitStr::new(&field.to_string(), field.span())),
         name: name
             .unwrap_or_else(|| LitStr::new(&title_from_ident(&field.to_string()), field.span())),
-        kind: kind.or_else(|| solid.then(|| format_ident!("color"))),
+        kind,
         enum_type,
         constraints,
         constant,
-        solid,
         required,
         docs: doc_lines(attrs),
         flatten,
