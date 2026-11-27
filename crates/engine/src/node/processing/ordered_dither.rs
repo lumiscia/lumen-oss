@@ -1,10 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
-use super::halftone::solid_linear;
 use crate::gpu::frame_graph::ComputeProgram;
-use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef, vector::paint::Paint,
-};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -58,14 +55,12 @@ pub struct OrderedDitherParams {
     /// What the node draws.
     #[meta()]
     pub mode: DitherMode,
-    /// Color of the darkest level. Must be a solid color; a gradient is an error. Only
-    /// `ink_paper` uses it.
+    /// Color of the darkest level. Only `ink_paper` uses it.
     #[meta(role = "color")]
-    pub ink: Paint,
-    /// Color of the lightest level. Must be a solid color; a gradient is an error. Only
-    /// `ink_paper` uses it.
+    pub ink: [u8; 4],
+    /// Color of the lightest level. Only `ink_paper` uses it.
     #[meta(role = "color")]
-    pub paper: Paint,
+    pub paper: [u8; 4],
 }
 
 impl Default for OrderedDitherParams {
@@ -75,8 +70,8 @@ impl Default for OrderedDitherParams {
             levels: 2,
             pitch: 1.0,
             mode: DitherMode::InkPaper,
-            ink: Paint::solid([0, 0, 0, 255]),
-            paper: Paint::solid([255, 255, 255, 255]),
+            ink: [0, 0, 0, 255],
+            paper: [255, 255, 255, 255],
         }
     }
 }
@@ -135,8 +130,8 @@ impl crate::gpu::frame_graph::RecordNode for OrderedDither {
         let cell = params.pitch.round().clamp(1.0, f64::from(i32::MAX)) as i32;
         let [x, y] = source.origin();
         let uniforms = DitherUniforms {
-            ink: solid_linear(self.id, "ink", &params.ink)?,
-            paper: solid_linear(self.id, "paper", &params.paper)?,
+            ink: crate::gpu::color::linear_premultiplied(params.ink),
+            paper: crate::gpu::color::linear_premultiplied(params.paper),
             origin_matrix_cell: [x, y, matrix_size, cell],
             levels_mode: [
                 params.levels.clamp(2, i64::from(u16::MAX)) as u32,

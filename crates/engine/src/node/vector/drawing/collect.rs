@@ -6,12 +6,12 @@ use foldhash::HashMap;
 
 use super::super::dash::GpuDash;
 use super::super::drawable::{DrawableTransform, GpuDrawableTransform};
-use super::super::paint::{GpuPaint, Paint};
+use super::super::paint::GpuPaint;
 use super::super::path::{MAX_PATH_COORDINATE, normalized_trim_range};
 use super::super::shape::ShapeGeometryKind;
 use super::build::{identity, then};
 use super::{CastShadow, Fill2d, Offset2d, Render2d, Shadow2d, Stroke2d, Text2dParams};
-use crate::error::{At, PropertyError, RenderError};
+use crate::error::{At, RenderError};
 use crate::expr::ExpressionContext;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeKind};
 
@@ -468,9 +468,8 @@ impl<'e> Collector<'_, 'e> {
             .params
             .eval(&DelegateEvalContext::new(node_id, &self.expr))?;
         let mut casts = Vec::with_capacity(params.shadows.0.len());
-        for (index, shadow) in params.shadows.0.iter().enumerate() {
-            if let Some(cast) = canvas_cast(node_id, index, shadow, &parent, self.cx.pixel_scale())?
-            {
+        for shadow in &params.shadows.0 {
+            if let Some(cast) = canvas_cast(node_id, shadow, &parent, self.cx.pixel_scale())? {
                 casts.push(cast);
             }
         }
@@ -499,19 +498,11 @@ impl<'e> Collector<'_, 'e> {
 /// in canvas pixels, scaled to device pixels.
 fn canvas_cast(
     node_id: NodeId,
-    index: usize,
     shadow: &CastShadow,
     parent: &GpuDrawableTransform,
     pixel_scale: f64,
 ) -> crate::Result<Option<Cast>> {
-    let Paint::SolidColor(r, g, b, a) = shadow.color else {
-        return Err(PropertyError::InvalidType {
-            at: At::param(node_id, format!("shadows[{index}].color")),
-            expected: "a solid color",
-            actual: "a gradient",
-        }
-        .into());
-    };
+    let [r, g, b, a] = shadow.color;
     let opacity = shadow.opacity.clamp(0.0, 1.0) as f32 * f32::from(a) / 255.0;
     if opacity <= 0.0 {
         return Ok(None);

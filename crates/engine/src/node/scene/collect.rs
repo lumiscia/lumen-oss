@@ -37,7 +37,6 @@ use crate::gpu::frame_graph::{FrameCx, Raster};
 use crate::gpu::render_scale::device_rect;
 use crate::media::{AssetKind, FileResolver, MediaIdentity, ModelFile, resolve_as};
 use crate::node::processing::RasterSampling;
-use crate::node::vector::paint::Paint;
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, Node, NodeId, NodeKind, OutputRef, required_input,
 };
@@ -521,27 +520,17 @@ fn placement(placement: &Placement3d) -> Transform {
     }
 }
 
-/// `paint` as linear colour with straight alpha.
-pub(super) fn solid_linear<N: crate::node::JsonNode>(
-    node_id: NodeId,
-    paint: &Paint,
-) -> crate::Result<[f32; 4]> {
-    let Paint::SolidColor(r, g, b, a) = *paint else {
-        return Err(RenderError::evaluating::<N>(
-            node_id,
-            "3D colours must be solid; a gradient can't light a surface",
-        )
-        .into());
-    };
+/// `color` as linear colour with straight alpha.
+pub(super) fn linear_color([r, g, b, a]: [u8; 4]) -> [f32; 4] {
     let [r, g, b] = [r, g, b].map(lumen_3d::srgb_to_linear);
-    Ok([r, g, b, f32::from(a) / 255.0])
+    [r, g, b, f32::from(a) / 255.0]
 }
 
 fn surface<N: crate::node::JsonNode>(
     node_id: NodeId,
     material: &Material3dParams,
 ) -> crate::Result<Surface<TexRef>> {
-    let mut base_color = solid_linear::<N>(node_id, &material.color)?;
+    let mut base_color = linear_color(material.color);
     base_color[3] *= material.opacity.clamp(0.0, 1.0) as f32;
     let masked = material.alpha_mode == MaterialAlphaMode::Mask;
     if masked && material.shadow_catcher {
@@ -1501,7 +1490,7 @@ impl Collected {
             }
             NodeKind::Light3d(light) => {
                 let params = light.params.eval(&ctx)?;
-                let [r, g, b, _] = solid_linear::<super::Light3d>(node_id, &params.color)?;
+                let [r, g, b, _] = linear_color(params.color);
                 let light = Light::new(
                     match params.light {
                         Light3dKind::Directional => LightKind::Directional,

@@ -43,7 +43,6 @@ pub(crate) use region::REGION;
 pub use region::{Region, RegionDelegate};
 
 use crate::node::processing::RasterSampling;
-use crate::node::vector::paint::Paint;
 use crate::node::{Deferred, NodeId, NodeParams, OutputRef};
 
 /// Where something sits and which way it faces.
@@ -105,9 +104,8 @@ pub enum MaterialAlphaMode {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Material3dParams {
     /// Base colour, which multiplies the `texture` on a shape and the raster on an image plane.
-    /// Must be a solid color; a gradient fails `check`.
-    #[meta(role = "color", solid)]
-    pub color: Paint,
+    #[meta(role = "color")]
+    pub color: [u8; 4],
     /// 0 is a dielectric such as plastic, 1 a bare metal.
     #[meta(min = 0, max = 1, step = 0.05)]
     pub metallic: f64,
@@ -172,7 +170,7 @@ pub struct Material3dParams {
 impl Default for Material3dParams {
     fn default() -> Self {
         Self {
-            color: Paint::solid([255, 255, 255, 255]),
+            color: [255, 255, 255, 255],
             metallic: 0.0,
             roughness: 0.5,
             emissive: 0.0,
@@ -696,9 +694,9 @@ pub struct Light3dParams {
     /// Kind of light.
     #[meta()]
     pub light: Light3dKind,
-    /// Light colour. Must be a solid color; a gradient fails `check`.
-    #[meta(role = "color", solid)]
-    pub color: Paint,
+    /// Light colour.
+    #[meta(role = "color")]
+    pub color: [u8; 4],
     /// Unitless brightness multiplier; point and spot lights fall off with the square of distance.
     #[meta(min = 0, step = 0.1)]
     pub intensity: f64,
@@ -734,7 +732,7 @@ impl Default for Light3dParams {
     fn default() -> Self {
         Self {
             light: Light3dKind::Directional,
-            color: Paint::solid([255, 255, 255, 255]),
+            color: [255, 255, 255, 255],
             intensity: 3.0,
             range: 0.0,
             spot_angle: 45.0,
@@ -956,9 +954,9 @@ pub struct Render3dParams {
     /// How blurred the background is, as a surface of this roughness reflects it: 0 is sharp.
     #[meta(min = 0, max = 1, step = 0.05)]
     pub environment_background_blur: f64,
-    /// Colour surfaces fade to with distance. Must be a solid color; a gradient fails `check`.
-    #[meta(role = "color", solid)]
-    pub fog_color: Paint,
+    /// Colour surfaces fade to with distance.
+    #[meta(role = "color")]
+    pub fog_color: [u8; 4],
     /// How quickly surfaces fade into the fog: the fraction of their colour left after `d` world
     /// units is e^(-density * d). 0 turns fog off.
     #[meta(min = 0, step = 0.01)]
@@ -983,7 +981,7 @@ impl Default for Render3dParams {
             environment_rotation: 0.0,
             environment_background: false,
             environment_background_blur: 0.0,
-            fog_color: Paint::solid([255, 255, 255, 255]),
+            fog_color: [255, 255, 255, 255],
             fog_density: 0.0,
         }
     }

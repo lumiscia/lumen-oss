@@ -1385,8 +1385,8 @@ export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" 
 export type BooleanOperation = "union" | "intersect" | "subtract" | "xor";
 export type Camera3dProjection = Projection3d;
 export type CastShadow = {
-  /** Shadow color. Must be a solid color. */
-  readonly color?: ExpressionValue<Paint>;
+  /** Shadow color. */
+  readonly color?: ExpressionValue<Color>;
   /** Offset of the shadow in the drawing's pixels. With no offset the shadow is a glow. */
   readonly offset?: ExpressionValue<Vec2>;
   /** Shadow opacity. */
@@ -1861,8 +1861,8 @@ export interface ChannelsNode extends CompositionNodeBase<"channels"> {
  */
 export interface ChromaKeyNode extends CompositionNodeBase<"chroma_key"> {
   readonly params?: {
-    /** The screen color. Must be a solid color; a gradient is an error. */
-    readonly key_color?: ExpressionValue<Paint>;
+    /** The screen color. */
+    readonly key_color?: ExpressionValue<Color>;
     /** Outputs the matte as white over transparent instead of the keyed image. */
     readonly matte_only?: ExpressionValue<boolean>;
     /**
@@ -2296,11 +2296,8 @@ export interface GlowNode extends CompositionNodeBase<"glow"> {
      * continuously as the threshold reaches 1.
      */
     readonly threshold?: ExpressionValue<number>;
-    /**
-     * Glow colour when `tint_enabled` is set, at the brightness of the light that casts it. Must
-     * be a solid color; a gradient is an error.
-     */
-    readonly tint?: ExpressionValue<Paint>;
+    /** Glow colour when `tint_enabled` is set, at the brightness of the light that casts it. */
+    readonly tint?: ExpressionValue<Color>;
     /** Colours the glow with `tint` instead of the colours that cast it. */
     readonly tint_enabled?: ExpressionValue<boolean>;
   };
@@ -2320,10 +2317,10 @@ export interface HalftoneNode extends CompositionNodeBase<"halftone"> {
   readonly params?: {
     /** Rotation of the grid in degrees. */
     readonly angle?: ExpressionValue<number>;
-    /** Color where the source is dark. Must be a solid color; a gradient is an error. */
-    readonly ink?: ExpressionValue<Paint>;
-    /** Color where the source is light. Must be a solid color; a gradient is an error. */
-    readonly paper?: ExpressionValue<Paint>;
+    /** Color where the source is dark. */
+    readonly ink?: ExpressionValue<Color>;
+    /** Color where the source is light. */
+    readonly paper?: ExpressionValue<Color>;
     /** Width and height of a cell in pixels. */
     readonly pitch?: ExpressionValue<number>;
     /** What each cell draws. */
@@ -2479,8 +2476,7 @@ export interface Instance3dNode extends CompositionNodeBase<"instance_3d"> {
      * colour map included, and the light they give off, so a glowing copy glows in its tint.
      * White leaves a copy as it is. Evaluated for every copy, and can read `instance` and
      * `instance_count`. Its alpha is ignored: a copy is opaque or blended exactly as its
-     * material makes it. Tints of nested `instance_3d` nodes multiply. Must be a solid color; a
-     * gradient fails `check`.
+     * material makes it. Tints of nested `instance_3d` nodes multiply.
      */
     readonly tint?: ExpressionValue<Color>;
   };
@@ -2711,7 +2707,7 @@ export interface Light3dNode extends CompositionNodeBase<"light_3d"> {
      * about the rest. A spot light's shadows reach 170° across at most.
      */
     readonly cast_shadows?: ExpressionValue<boolean>;
-    /** Light colour. Must be a solid color; a gradient fails `check`. */
+    /** Light colour. */
     readonly color?: ExpressionValue<Color>;
     /** Unitless brightness multiplier; point and spot lights fall off with the square of distance. */
     readonly intensity?: ExpressionValue<number>;
@@ -2791,10 +2787,7 @@ export interface Material3dNode extends CompositionNodeBase<"material_3d"> {
      * such as a bulb around a point light, needs this off.
      */
     readonly cast_shadows?: ExpressionValue<boolean>;
-    /**
-     * Base colour, which multiplies the `texture` on a shape and the raster on an image plane.
-     * Must be a solid color; a gradient fails `check`.
-     */
+    /** Base colour, which multiplies the `texture` on a shape and the raster on an image plane. */
     readonly color?: ExpressionValue<Color>;
     /** Draws the back of each face too. */
     readonly double_sided?: ExpressionValue<boolean>;
@@ -3079,22 +3072,16 @@ export interface OpacityNode extends CompositionNodeBase<"opacity"> {
  */
 export interface OrderedDitherNode extends CompositionNodeBase<"ordered_dither"> {
   readonly params?: {
-    /**
-     * Color of the darkest level. Must be a solid color; a gradient is an error. Only
-     * `ink_paper` uses it.
-     */
-    readonly ink?: ExpressionValue<Paint>;
+    /** Color of the darkest level. Only `ink_paper` uses it. */
+    readonly ink?: ExpressionValue<Color>;
     /** Levels each value quantizes to, at least 2. 2 gives only the extremes. */
     readonly levels?: ExpressionValue<number>;
     /** The threshold matrix. */
     readonly matrix?: ExpressionValue<DitherMatrix>;
     /** What the node draws. */
     readonly mode?: ExpressionValue<DitherMode>;
-    /**
-     * Color of the lightest level. Must be a solid color; a gradient is an error. Only
-     * `ink_paper` uses it.
-     */
-    readonly paper?: ExpressionValue<Paint>;
+    /** Color of the lightest level. Only `ink_paper` uses it. */
+    readonly paper?: ExpressionValue<Color>;
     /**
      * Width and height of a matrix cell in pixels. A cell is a whole number of output pixels, at
      * least one, so the pitch rounds at render scales where it isn't.
@@ -3463,7 +3450,7 @@ export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
     readonly environment_rotation?: ExpressionValue<number>;
     /** Exposure adjustment in stops before tone mapping. */
     readonly exposure?: ExpressionValue<number>;
-    /** Colour surfaces fade to with distance. Must be a solid color; a gradient fails `check`. */
+    /** Colour surfaces fade to with distance. */
     readonly fog_color?: ExpressionValue<Color>;
     /**
      * How quickly surfaces fade into the fog: the fraction of their colour left after `d` world
@@ -3517,8 +3504,8 @@ export interface ResizeNode extends CompositionNodeBase<"resize"> {
 /** Composites a blurred alpha shadow behind a raster. */
 export interface ShadowNode extends CompositionNodeBase<"shadow"> {
   readonly params?: {
-    /** Shadow color. Must be a solid color; a gradient is an error. */
-    readonly color?: ExpressionValue<Paint>;
+    /** Shadow color. */
+    readonly color?: ExpressionValue<Color>;
     /** Horizontal shadow offset in pixels. */
     readonly offset_x?: ExpressionValue<number>;
     /** Vertical shadow offset in pixels. */

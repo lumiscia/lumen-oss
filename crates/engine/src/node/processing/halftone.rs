@@ -1,10 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::error::PropertyError;
 use crate::gpu::frame_graph::ComputeProgram;
-use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef, vector::paint::Paint,
-};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -38,12 +35,12 @@ pub struct HalftoneParams {
     /// What each cell draws.
     #[meta()]
     pub shape: HalftoneShape,
-    /// Color where the source is dark. Must be a solid color; a gradient is an error.
+    /// Color where the source is dark.
     #[meta(role = "color")]
-    pub ink: Paint,
-    /// Color where the source is light. Must be a solid color; a gradient is an error.
+    pub ink: [u8; 4],
+    /// Color where the source is light.
     #[meta(role = "color")]
-    pub paper: Paint,
+    pub paper: [u8; 4],
 }
 
 impl Default for HalftoneParams {
@@ -52,8 +49,8 @@ impl Default for HalftoneParams {
             pitch: 8.0,
             angle: 45.0,
             shape: HalftoneShape::Round,
-            ink: Paint::solid([0, 0, 0, 255]),
-            paper: Paint::solid([255, 255, 255, 255]),
+            ink: [0, 0, 0, 255],
+            paper: [255, 255, 255, 255],
         }
     }
 }
@@ -89,22 +86,6 @@ struct HalftoneUniforms {
     origin_shape: [i32; 4],
 }
 
-/// `paint` as premultiplied linear light, or an error naming param `name` of node `id` if it is
-/// a gradient.
-pub(super) fn solid_linear(id: NodeId, name: &str, paint: &Paint) -> crate::Result<[f32; 4]> {
-    match paint {
-        Paint::SolidColor(r, g, b, a) => {
-            Ok(crate::gpu::color::linear_premultiplied([*r, *g, *b, *a]))
-        }
-        Paint::Gradient(_) => Err(PropertyError::InvalidType {
-            at: crate::error::At::param(id, name),
-            expected: "a solid color",
-            actual: "a gradient",
-        }
-        .into()),
-    }
-}
-
 impl crate::gpu::frame_graph::RecordNode for Halftone {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.compute(&HALFTONE)
@@ -123,8 +104,8 @@ impl crate::gpu::frame_graph::RecordNode for Halftone {
         let (sin, cos) = params.angle.to_radians().sin_cos();
         let [x, y] = source.origin();
         let uniforms = HalftoneUniforms {
-            ink: solid_linear(self.id, "ink", &params.ink)?,
-            paper: solid_linear(self.id, "paper", &params.paper)?,
+            ink: crate::gpu::color::linear_premultiplied(params.ink),
+            paper: crate::gpu::color::linear_premultiplied(params.paper),
             grid: [
                 params.pitch.max(f64::from(f32::EPSILON)) as f32,
                 cos as f32,

@@ -99,6 +99,8 @@ const gradient = {
 } as const;
 // @ts-expect-error a 3D colour is solid, never a gradient
 n.material_3d({ color: gradient });
+// @ts-expect-error a shadow's colour is solid, never a gradient
+n.shadow({ color: gradient });
 // @ts-expect-error shape_3d outputs a scene, not a raster
 const rasterScene: NodeValue<"raster"> = n.shape_3d();
 

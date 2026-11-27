@@ -1,10 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::error::PropertyError;
 use crate::gpu::frame_graph::{ComputeProgram, dispatch_for};
-use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef, vector::paint::Paint,
-};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, OutputRef};
 
 use super::displacement_map::EdgeMode;
 use super::gaussian;
@@ -33,10 +30,9 @@ pub struct GlowParams {
     /// Colours the glow with `tint` instead of the colours that cast it.
     #[meta()]
     pub tint_enabled: bool,
-    /// Glow colour when `tint_enabled` is set, at the brightness of the light that casts it. Must
-    /// be a solid color; a gradient is an error.
+    /// Glow colour when `tint_enabled` is set, at the brightness of the light that casts it.
     #[meta(role = "color")]
-    pub tint: Paint,
+    pub tint: [u8; 4],
     /// Outputs only the glow instead of adding it to the source.
     #[meta()]
     pub glow_only: bool,
@@ -52,7 +48,7 @@ impl Default for GlowParams {
             radius: 12.0,
             intensity: 1.0,
             tint_enabled: false,
-            tint: Paint::solid([255, 255, 255, 255]),
+            tint: [255, 255, 255, 255],
             glow_only: false,
             edge: EdgeMode::Clamp,
         }
@@ -134,15 +130,7 @@ impl crate::gpu::frame_graph::RecordNode for Glow {
             pixel_scale: cx.pixel_scale(),
         })?;
         let tint = if evaluated.tint_enabled {
-            let Paint::SolidColor(r, g, b, a) = evaluated.tint else {
-                return Err(PropertyError::InvalidType {
-                    at: crate::error::At::param(self.id, "tint"),
-                    expected: "a solid color",
-                    actual: "a gradient",
-                }
-                .into());
-            };
-            let [r, g, b, _] = crate::gpu::color::linear_premultiplied([r, g, b, a]);
+            let [r, g, b, _] = crate::gpu::color::linear_premultiplied(evaluated.tint);
             [r, g, b]
         } else {
             [0.0; 3]

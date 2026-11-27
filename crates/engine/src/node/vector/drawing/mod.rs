@@ -82,9 +82,9 @@ impl Transform2d {
 /// strength than a Gaussian would.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct CastShadow {
-    /// Shadow color. Must be a solid color.
+    /// Shadow color.
     #[meta(role = "color")]
-    pub color: Paint,
+    pub color: [u8; 4],
     /// Offset of the shadow in the drawing's pixels. With no offset the shadow is a glow.
     #[meta(step = 1)]
     pub offset: (f64, f64),
@@ -104,7 +104,7 @@ pub struct CastShadow {
 impl Default for CastShadow {
     fn default() -> Self {
         Self {
-            color: Paint::solid([0, 0, 0, 255]),
+            color: [0, 0, 0, 255],
             offset: (8.0, 8.0),
             radius: 8.0,
             opacity: 0.5,

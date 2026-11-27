@@ -67,9 +67,6 @@ fn vec3(value: &Value, path: &str) -> Result<[f64; 3], String> {
 }
 
 fn tint(value: &Value, path: &str) -> Result<[u8; 3], String> {
-    if value.is_object() {
-        return Err(format!("`{path}` must be a solid colour, not a gradient"));
-    }
     let hint = match value.as_str().and_then(classify_string) {
         Some(StringParam::Expression(_)) => {
             "; the copies are literal, so an expression can't go here"
