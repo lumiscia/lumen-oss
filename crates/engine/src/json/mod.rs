@@ -22,6 +22,8 @@ use serde::{
 use serde_json::json;
 use serde_json::{Number, Value};
 
+#[cfg(feature = "3d")]
+use crate::node::scene::{Instance3d, Material3d};
 use crate::{
     audio::{AudioClip, AudioGain, AudioTimeline, AudioTrack},
     composition::{
@@ -34,10 +36,7 @@ use crate::{
     gpu::frame_graph::RecordNode,
     graph::{Connection, Graph},
     media::{AssetKind, AssetResolver, Found, MediaLocation, asset_id, resolve_asset_of},
-    node::{
-        Node, NodeId, NodeKind, OutputPort,
-        scene::{Instance3d, Material3d},
-    },
+    node::{Node, NodeId, NodeKind, OutputPort},
 };
 
 pub use evaluate::{EvaluateRequest, evaluate_param};
@@ -939,6 +938,17 @@ fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Grap
                 continue;
             }
         };
+        #[cfg(not(feature = "3d"))]
+        if let Some(kind) = NodeKind::unsupported_3d_kind(&node.kind) {
+            errors.push(
+                GraphValidationError::No3dSupport {
+                    at: At::node(id),
+                    kind,
+                }
+                .into(),
+            );
+            continue;
+        }
         let node_kind = match NodeKind::from_json(&node.kind, id, params) {
             Ok(node_kind) => node_kind,
             Err(node_errors) => {
@@ -946,6 +956,7 @@ fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Grap
                 continue;
             }
         };
+        #[cfg(feature = "3d")]
         if let (NodeKind::Instance3d(_), Some(params)) = (&node_kind, params)
             && let Some(details) = Instance3d::copies_conflict(params)
         {
@@ -958,6 +969,7 @@ fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Grap
             );
             continue;
         }
+        #[cfg(feature = "3d")]
         if let (NodeKind::Material3d(_), Some(params)) = (&node_kind, params)
             && let Some(details) = Material3d::mask_conflict(params)
         {

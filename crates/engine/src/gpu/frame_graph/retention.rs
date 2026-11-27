@@ -508,16 +508,17 @@ impl FrameCx<'_> {
                 continue;
             }
             let node = self.scope.node(id)?;
-            let hidden = match node {
-                NodeKind::Merge3d(merge) => !merge.visible(&self.expr_at(frame)).ok()?,
-                _ => false,
-            };
-            if hidden {
+            #[cfg(feature = "3d")]
+            if let NodeKind::Merge3d(merge) = node
+                && !merge.visible(&self.expr_at(frame)).ok()?
+            {
                 // A merge that isn't visible reads nothing wired into it, and its own other params
                 // aren't evaluated.
                 values.push(ExpressionValue::Boolean(false));
                 continue;
             }
+            #[cfg(not(feature = "3d"))]
+            let _ = node;
             self.own_values(id, frame, &mut values)?;
             let held = |input: &NodeId| {
                 self.st.statics.get(&(graph, *input)) == Some(&Staticness::WhileEqual)

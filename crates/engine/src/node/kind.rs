@@ -1,8 +1,10 @@
+#[cfg(feature = "3d")]
+use super::scene;
 #[cfg(feature = "metadata")]
 use super::schema::NodeSchema;
 use super::{
     Deferred, JsonNode, Node, PropertyEval, PropertyRead, compositing, ids::NodeId, media_output,
-    processing, scene, source, vector,
+    processing, source, vector,
 };
 use crate::{
     error::{DocumentError, GraphValidationError},
@@ -14,23 +16,25 @@ use crate::{
 /// `lumen_macros::Node` and implements `RecordNode`. The generated definitions list the kinds in
 /// this order.
 macro_rules! node_kinds {
-    ($($variant:ident($node:ty),)+) => {
+    ($($(#[$meta:meta])* $variant:ident($node:ty),)+) => {
         #[derive(Debug, lumen_macros::StructuralHash)]
         #[allow(clippy::large_enum_variant)]
         pub enum NodeKind {
-            $($variant($node),)+
+            $($(#[$meta])* $variant($node),)+
         }
 
         impl NodeKind {
             #[cfg(feature = "metadata")]
             pub fn schemas() -> Vec<super::NodeSchemaDef> {
-                vec![$(<$node>::schema(),)+]
+                let mut schemas = Vec::new();
+                $($(#[$meta])* schemas.push(<$node>::schema());)+
+                schemas
             }
 
             /// The node's `type` in JSON, which errors name the node's kind by.
             pub(crate) fn kind_name(&self) -> &'static str {
                 match self {
-                    $(Self::$variant(_) => <$node as JsonNode>::KIND,)+
+                    $($(#[$meta])* Self::$variant(_) => <$node as JsonNode>::KIND,)+
                 }
             }
 
@@ -41,7 +45,7 @@ macro_rules! node_kinds {
                 params: Option<&serde_json::Map<String, serde_json::Value>>,
             ) -> Result<Self, Vec<DocumentError>> {
                 match kind {
-                    $(<$node as JsonNode>::KIND => Ok(Self::$variant(<$node>::from_json(id, params)?)),)+
+                    $($(#[$meta])* <$node as JsonNode>::KIND => Ok(Self::$variant(<$node>::from_json(id, params)?)),)+
                     other => Err(vec![DocumentError::UnknownNodeType {
                         at: crate::error::At::node(id),
                         kind: other.to_string(),
@@ -56,7 +60,7 @@ macro_rules! node_kinds {
                 source: super::OutputRef,
             ) -> Result<(), GraphValidationError> {
                 match self {
-                    $(Self::$variant(node) => node.set_input_json(port, source),)+
+                    $($(#[$meta])* Self::$variant(node) => node.set_input_json(port, source),)+
                 }
             }
 
@@ -68,48 +72,70 @@ macro_rules! node_kinds {
                 }
                 nodes.sort_unstable_by_key(key);
             }
+
+            /// Returns the canonical name when `kind` is one of the 3D node kinds omitted from
+            /// builds without the `3d` feature.
+            #[cfg(not(feature = "3d"))]
+            pub(crate) fn unsupported_3d_kind(kind: &str) -> Option<&'static str> {
+                const KINDS: &[&str] = &[
+                    "material_3d",
+                    "shape_3d",
+                    "image_plane_3d",
+                    "text_3d",
+                    "extrude_3d",
+                    "lathe_3d",
+                    "model_3d",
+                    "camera_3d",
+                    "light_3d",
+                    "merge_3d",
+                    "instance_3d",
+                    "particles_3d",
+                    "render_3d",
+                ];
+                KINDS.iter().copied().find(|&name| name == kind)
+            }
         }
 
         impl Node for NodeKind {
             fn id(&self) -> NodeId {
                 match self {
-                    $(Self::$variant(node) => node.id,)+
+                    $($(#[$meta])* Self::$variant(node) => node.id,)+
                 }
             }
 
             fn input_port_defs(&self) -> &'static [super::InputPortDef] {
                 match self {
-                    $(Self::$variant(node) => node.input_port_defs(),)+
+                    $($(#[$meta])* Self::$variant(node) => node.input_port_defs(),)+
                 }
             }
 
             fn output_kind(&self) -> super::PortKind {
                 match self {
-                    $(Self::$variant(node) => node.output_kind(),)+
+                    $($(#[$meta])* Self::$variant(node) => node.output_kind(),)+
                 }
             }
 
             fn output_port_defs(&self) -> &'static [super::OutputPortDef] {
                 match self {
-                    $(Self::$variant(node) => node.output_port_defs(),)+
+                    $($(#[$meta])* Self::$variant(node) => node.output_port_defs(),)+
                 }
             }
 
             fn input_ports(&self) -> Vec<Option<super::OutputRef>> {
                 match self {
-                    $(Self::$variant(node) => node.input_ports(),)+
+                    $($(#[$meta])* Self::$variant(node) => node.input_ports(),)+
                 }
             }
 
             fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
                 match self {
-                    $(Self::$variant(node) => node.for_each_expression(f),)+
+                    $($(#[$meta])* Self::$variant(node) => node.for_each_expression(f),)+
                 }
             }
 
             fn for_each_media_source<'a>(&'a self, f: &mut dyn FnMut(super::MediaSource<'a>)) {
                 match self {
-                    $(Self::$variant(node) => node.for_each_media_source(f),)+
+                    $($(#[$meta])* Self::$variant(node) => node.for_each_media_source(f),)+
                 }
             }
         }
@@ -117,7 +143,7 @@ macro_rules! node_kinds {
         impl PropertyEval for NodeKind {
             fn get_property(&self, id: &str) -> Option<PropertyRead<'_>> {
                 match self {
-                    $(Self::$variant(node) => node.get_property(id),)+
+                    $($(#[$meta])* Self::$variant(node) => node.get_property(id),)+
                 }
             }
 
@@ -127,7 +153,7 @@ macro_rules! node_kinds {
                 ctx: &crate::expr::ExpressionContext<'_>,
             ) -> Option<crate::Result<serde_json::Value>> {
                 match self {
-                    $(Self::$variant(node) => node.evaluate_property(id, ctx),)+
+                    $($(#[$meta])* Self::$variant(node) => node.evaluate_property(id, ctx),)+
                 }
             }
         }
@@ -135,13 +161,13 @@ macro_rules! node_kinds {
         impl RecordNode for NodeKind {
             fn record(&self, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
                 match self {
-                    $(Self::$variant(node) => node.record(cx),)+
+                    $($(#[$meta])* Self::$variant(node) => node.record(cx),)+
                 }
             }
 
             fn canonical_port(&self, port: super::OutputPort) -> super::OutputPort {
                 match self {
-                    $(Self::$variant(node) => node.canonical_port(port),)+
+                    $($(#[$meta])* Self::$variant(node) => node.canonical_port(port),)+
                 }
             }
 
@@ -151,55 +177,55 @@ macro_rules! node_kinds {
                 port: super::OutputPort,
             ) -> crate::Result<Raster> {
                 match self {
-                    $(Self::$variant(node) => node.record_output(cx, port),)+
+                    $($(#[$meta])* Self::$variant(node) => node.record_output(cx, port),)+
                 }
             }
 
             fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
                 match self {
-                    $(Self::$variant(node) => node.programs(programs),)+
+                    $($(#[$meta])* Self::$variant(node) => node.programs(programs),)+
                 }
             }
 
             fn staticness(&self, reads_frame: bool) -> Staticness {
                 match self {
-                    $(Self::$variant(node) => node.staticness(reads_frame),)+
+                    $($(#[$meta])* Self::$variant(node) => node.staticness(reads_frame),)+
                 }
             }
 
             fn analytic_shutter(&self) -> Option<&Deferred<f64>> {
                 match self {
-                    $(Self::$variant(node) => node.analytic_shutter(),)+
+                    $($(#[$meta])* Self::$variant(node) => node.analytic_shutter(),)+
                 }
             }
 
             fn magnification(&self) -> f64 {
                 match self {
-                    $(Self::$variant(node) => node.magnification(),)+
+                    $($(#[$meta])* Self::$variant(node) => node.magnification(),)+
                 }
             }
 
             fn reads_reduced(&self) -> Option<crate::gpu::image_size::ReducedRead> {
                 match self {
-                    $(Self::$variant(node) => node.reads_reduced(),)+
+                    $($(#[$meta])* Self::$variant(node) => node.reads_reduced(),)+
                 }
             }
 
             fn literal_param_errors(&self) -> Vec<(&'static str, String)> {
                 match self {
-                    $(Self::$variant(node) => node.literal_param_errors(),)+
+                    $($(#[$meta])* Self::$variant(node) => node.literal_param_errors(),)+
                 }
             }
 
             fn unwired_input_param_errors(&self) -> Vec<(&'static str, String)> {
                 match self {
-                    $(Self::$variant(node) => node.unwired_input_param_errors(),)+
+                    $($(#[$meta])* Self::$variant(node) => node.unwired_input_param_errors(),)+
                 }
             }
 
             fn literal_font_families(&self) -> Vec<(String, &str)> {
                 match self {
-                    $(Self::$variant(node) => node.literal_font_families(),)+
+                    $($(#[$meta])* Self::$variant(node) => node.literal_font_families(),)+
                 }
             }
         }
@@ -259,17 +285,30 @@ node_kinds! {
     ErodeDilate(processing::erode_dilate::ErodeDilate),
     WgslShader(processing::wgsl_shader::WgslShader),
     MediaOutput(media_output::MediaOutput),
+    #[cfg(feature = "3d")]
     Material3d(scene::Material3d),
+    #[cfg(feature = "3d")]
     Shape3d(scene::Shape3d),
+    #[cfg(feature = "3d")]
     ImagePlane3d(scene::ImagePlane3d),
+    #[cfg(feature = "3d")]
     Text3d(scene::Text3d),
+    #[cfg(feature = "3d")]
     Extrude3d(scene::Extrude3d),
+    #[cfg(feature = "3d")]
     Lathe3d(scene::Lathe3d),
+    #[cfg(feature = "3d")]
     Model3d(scene::Model3d),
+    #[cfg(feature = "3d")]
     Camera3d(scene::Camera3d),
+    #[cfg(feature = "3d")]
     Light3d(scene::Light3d),
+    #[cfg(feature = "3d")]
     Merge3d(scene::Merge3d),
+    #[cfg(feature = "3d")]
     Instance3d(scene::Instance3d),
+    #[cfg(feature = "3d")]
     Particles3d(scene::Particles3d),
+    #[cfg(feature = "3d")]
     Render3d(scene::Render3d),
 }

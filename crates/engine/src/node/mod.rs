@@ -18,6 +18,7 @@ mod shader_uniforms;
 pub mod compositing;
 pub mod media_output;
 pub mod processing;
+#[cfg(feature = "3d")]
 pub mod scene;
 pub mod source;
 pub mod vector;

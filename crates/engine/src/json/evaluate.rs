@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{ParseError, load, read_json};
+#[cfg(feature = "3d")]
+use crate::expr::InstanceScope;
 use crate::{
     composition::{Composition, SceneId},
     diagnostic::Diagnostic,
     error::{At, DocumentError, RenderError},
-    expr::InstanceScope,
     node::{Node, NodeId, NodeKind, PropertyEval},
     scope::{FrameTime, MAX_GRAPH_DEPTH, Routed, Scope, route},
 };
@@ -67,8 +68,12 @@ fn evaluate(composition: &Composition, request: &EvaluateRequest) -> crate::Resu
     };
     let scope = Scope::root(composition);
     let frame = local_frame(&scope, request)?;
+    #[cfg(feature = "3d")]
     let mut ctx = scope.expr_context(frame, None);
+    #[cfg(not(feature = "3d"))]
+    let ctx = scope.expr_context(frame, None);
     // `count` is the one param of an `instance_3d` that isn't evaluated for a copy.
+    #[cfg(feature = "3d")]
     if let (NodeKind::Instance3d(instances), Some(index)) = (node, request.instance)
         && request.param != "count"
     {
