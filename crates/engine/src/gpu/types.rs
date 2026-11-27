@@ -189,6 +189,7 @@ pub struct BoundFrame {
     /// Which recording this was, so that only the renderer's latest is uploaded.
     pub(crate) sequence: u64,
     atlas_regions: Vec<AtlasRegion>,
+    #[cfg(feature = "test-hooks")]
     glyph_instances: Vec<lumen_text::GpuGlyphInstance>,
     pub(crate) text_atlas: Option<Arc<Mutex<lumen_text::GlyphAtlas>>>,
     pub(crate) text_atlas_frame: u64,
@@ -233,6 +234,7 @@ impl BoundFrame {
         });
     }
 
+    #[cfg(feature = "test-hooks")]
     pub(crate) fn add_glyph_instances(&mut self, instances: &[lumen_text::GpuGlyphInstance]) {
         self.glyph_instances.extend_from_slice(instances);
     }
