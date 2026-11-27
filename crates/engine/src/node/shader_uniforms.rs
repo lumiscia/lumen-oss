@@ -44,24 +44,21 @@ impl ShaderUniforms {
         let object = value
             .as_object()
             .ok_or_else(|| format!("`{path}` expected an object of uniform values, got {value}"))?;
-        object
-            .iter()
-            .map(|(name, value)| {
-                ShaderUniformValue::from_json_value(value)
-                    .map(|value| (name.clone(), value))
-                    .map_err(|error| format!("`{path}.{name}`: {error}"))
-            })
-            .collect::<Result<_, _>>()
-            .map(Self)
+        let mut uniforms = BTreeMap::new();
+        for (name, value) in object {
+            let parsed = ShaderUniformValue::from_json_value(value)
+                .map_err(|error| format!("`{path}.{name}`: {error}"))?;
+            uniforms.insert(name.clone(), parsed);
+        }
+        Ok(Self(uniforms))
     }
 
     pub fn to_json_value(&self) -> Value {
-        Value::Object(
-            self.0
-                .iter()
-                .map(|(name, value)| (name.clone(), value.to_json_value()))
-                .collect(),
-        )
+        let mut map = serde_json::Map::new();
+        for (name, value) in &self.0 {
+            map.insert(name.clone(), value.to_json_value());
+        }
+        Value::Object(map)
     }
 
     /// The JSON of these uniforms with each expression replaced by its value at `ctx`: a number,
@@ -73,50 +70,48 @@ impl ShaderUniforms {
         field: &str,
         ctx: &ExpressionContext<'_>,
     ) -> crate::Result<Value> {
-        self.0
-            .iter()
-            .map(|(name, value)| {
-                let path = format!("{field}.{name}");
-                let evaluated = match value {
-                    ShaderUniformValue::Expr(expr) => {
-                        let value = expr
-                            .evaluate(ctx)
-                            .map_err(|error| error.located(node_id, &path))?;
-                        match value {
-                            ExpressionValue::Number(number) => Value::from(number),
-                            ExpressionValue::Vec2((x, y)) => Value::from(vec![x, y]),
-                            ExpressionValue::Vec3(vector) => Value::from(vector.to_vec()),
-                            ExpressionValue::Color(rgba) => {
-                                let [r, g, b, a] = rgba
-                                    .map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8);
-                                ShaderUniformValue::Color {
-                                    rgb: [r, g, b],
-                                    alpha: (a != u8::MAX).then_some(a),
-                                }
-                                .to_json_value()
+        let mut map = serde_json::Map::new();
+        for (name, value) in &self.0 {
+            let path = format!("{field}.{name}");
+            let evaluated = match value {
+                ShaderUniformValue::Expr(expr) => {
+                    let value = expr
+                        .evaluate(ctx)
+                        .map_err(|error| error.located(node_id, &path))?;
+                    match value {
+                        ExpressionValue::Number(number) => Value::from(number),
+                        ExpressionValue::Vec2((x, y)) => Value::from(vec![x, y]),
+                        ExpressionValue::Vec3(vector) => Value::from(vector.to_vec()),
+                        ExpressionValue::Color(rgba) => {
+                            let [r, g, b, a] =
+                                rgba.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8);
+                            ShaderUniformValue::Color {
+                                rgb: [r, g, b],
+                                alpha: (a != u8::MAX).then_some(a),
                             }
-                            other => {
-                                return Err(LumenError::evaluate(format!(
-                                    "expression returned a {}, expected a number",
-                                    other.type_name()
-                                ))
-                                .located(node_id, &path));
-                            }
+                            .to_json_value()
+                        }
+                        other => {
+                            return Err(LumenError::evaluate(format!(
+                                "expression returned a {}, expected a number",
+                                other.type_name()
+                            ))
+                            .located(node_id, &path));
                         }
                     }
-                    ShaderUniformValue::Vector(components) => components
-                        .iter()
-                        .map(|component| component.eval(node_id, &path, ctx))
-                        .collect::<crate::Result<Vec<f64>>>()?
-                        .into(),
-                    ShaderUniformValue::Number(_) | ShaderUniformValue::Color { .. } => {
-                        value.to_json_value()
-                    }
-                };
-                Ok((name.clone(), evaluated))
-            })
-            .collect::<crate::Result<_>>()
-            .map(Value::Object)
+                }
+                ShaderUniformValue::Vector(components) => components
+                    .iter()
+                    .map(|component| component.eval(node_id, &path, ctx))
+                    .collect::<crate::Result<Vec<f64>>>()?
+                    .into(),
+                ShaderUniformValue::Number(_) | ShaderUniformValue::Color { .. } => {
+                    value.to_json_value()
+                }
+            };
+            map.insert(name.clone(), evaluated);
+        }
+        Ok(Value::Object(map))
     }
 }
 

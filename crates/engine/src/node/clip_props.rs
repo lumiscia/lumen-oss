@@ -37,31 +37,28 @@ impl ClipProps {
         let object = value
             .as_object()
             .ok_or_else(|| format!("`{path}` expected an object of prop values, got {value}"))?;
-        object
-            .iter()
-            .map(|(name, value)| {
-                let parsed = match value.as_str().and_then(classify_string) {
-                    Some(StringParam::Expression(source)) => Expression::parse(source)
-                        .map(ClipPropValue::Expr)
-                        .map_err(|error| format!("`{path}.{name}`: {error}"))?,
-                    Some(StringParam::EscapedLiteral(text)) => {
-                        ClipPropValue::Literal(Value::from(text))
-                    }
-                    None => ClipPropValue::Literal(value.clone()),
-                };
-                Ok((name.clone(), parsed))
-            })
-            .collect::<Result<_, _>>()
-            .map(Self)
+        let mut props = BTreeMap::new();
+        for (name, value) in object {
+            let parsed = match value.as_str().and_then(classify_string) {
+                Some(StringParam::Expression(source)) => Expression::parse(source)
+                    .map(ClipPropValue::Expr)
+                    .map_err(|error| format!("`{path}.{name}`: {error}"))?,
+                Some(StringParam::EscapedLiteral(text)) => {
+                    ClipPropValue::Literal(Value::from(text))
+                }
+                None => ClipPropValue::Literal(value.clone()),
+            };
+            props.insert(name.clone(), parsed);
+        }
+        Ok(Self(props))
     }
 
     pub fn to_json_value(&self) -> Value {
-        Value::Object(
-            self.0
-                .iter()
-                .map(|(name, value)| (name.clone(), value.to_json_value()))
-                .collect(),
-        )
+        let mut map = serde_json::Map::new();
+        for (name, value) in &self.0 {
+            map.insert(name.clone(), value.to_json_value());
+        }
+        Value::Object(map)
     }
 }
 
@@ -87,37 +84,36 @@ impl ClipProps {
         field: &str,
         ctx: &ExpressionContext<'_>,
     ) -> crate::Result<Value> {
-        self.0
-            .iter()
-            .map(|(name, value)| {
-                let ClipPropValue::Expr(expr) = value else {
-                    return Ok((name.clone(), value.to_json_value()));
-                };
-                let path = format!("{field}.{name}");
-                let value = expr
-                    .evaluate(ctx)
-                    .map_err(|error| error.located(node_id, &path))?;
-                let json = match value {
-                    ExpressionValue::Number(number) => Value::from(number),
-                    ExpressionValue::String(text) => Value::from(&*text),
-                    ExpressionValue::Vec2((x, y)) => Value::from(vec![x, y]),
-                    ExpressionValue::Vec3(vector) => Value::from(vector.to_vec()),
-                    ExpressionValue::Color(rgba) => Value::from(
-                        rgba.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
-                            .to_vec(),
-                    ),
-                    other => {
-                        return Err(LumenError::evaluate(format!(
-                            "a prop can't be a {}",
-                            other.type_name()
-                        ))
-                        .located(node_id, &path));
-                    }
-                };
-                Ok((name.clone(), json))
-            })
-            .collect::<crate::Result<_>>()
-            .map(Value::Object)
+        let mut map = serde_json::Map::new();
+        for (name, value) in &self.0 {
+            let ClipPropValue::Expr(expr) = value else {
+                map.insert(name.clone(), value.to_json_value());
+                continue;
+            };
+            let path = format!("{field}.{name}");
+            let value = expr
+                .evaluate(ctx)
+                .map_err(|error| error.located(node_id, &path))?;
+            let json = match value {
+                ExpressionValue::Number(number) => Value::from(number),
+                ExpressionValue::String(text) => Value::from(&*text),
+                ExpressionValue::Vec2((x, y)) => Value::from(vec![x, y]),
+                ExpressionValue::Vec3(vector) => Value::from(vector.to_vec()),
+                ExpressionValue::Color(rgba) => Value::from(
+                    rgba.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
+                        .to_vec(),
+                ),
+                other => {
+                    return Err(LumenError::evaluate(format!(
+                        "a prop can't be a {}",
+                        other.type_name()
+                    ))
+                    .located(node_id, &path));
+                }
+            };
+            map.insert(name.clone(), json);
+        }
+        Ok(Value::Object(map))
     }
 }
 

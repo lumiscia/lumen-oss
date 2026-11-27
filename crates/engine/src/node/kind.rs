@@ -59,6 +59,15 @@ macro_rules! node_kinds {
                     $(Self::$variant(node) => node.set_input_json(port, source),)+
                 }
             }
+
+            /// Sorts unique nodes by their [`NodeId`].
+            pub(crate) fn sort_by_id(nodes: &mut [&Self]) {
+                #[inline(never)]
+                fn key(node: &&NodeKind) -> NodeId {
+                    node.id()
+                }
+                nodes.sort_unstable_by_key(key);
+            }
         }
 
         impl Node for NodeKind {

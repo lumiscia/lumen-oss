@@ -407,12 +407,11 @@ pub(crate) fn expand_struct_delegate(
 
             fn to_json_value(&self) -> ::core::option::Option<::serde_json::Value> {
                 let properties = <Self as ::lumen_engine::node::NodeParams>::json_properties(self);
-                Some(::serde_json::Value::Object(
-                    properties
-                        .into_iter()
-                        .map(|(name, value)| (name.to_string(), value))
-                        .collect(),
-                ))
+                let mut map = ::serde_json::Map::new();
+                for (name, value) in properties {
+                    map.insert(name.to_string(), value);
+                }
+                Some(::serde_json::Value::Object(map))
             }
 
             fn read(&self) -> ::core::option::Option<::lumen_engine::node::PropertyRead<'_>> {

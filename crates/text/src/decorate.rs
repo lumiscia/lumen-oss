@@ -98,13 +98,19 @@ impl ShapedText {
             };
             // Distances run in logical order, and the rects are then emitted left to right.
             let segments: Vec<&TextSegment> = in_run().collect();
-            let mut logical: Vec<usize> = (0..segments.len()).collect();
-            logical.sort_by_key(|&index| {
-                let segment = segments[index];
-                (segment.bytes.is_empty(), segment.span, segment.bytes.start)
-            });
+            let mut logical: Vec<((bool, u32, usize), usize)> = segments
+                .iter()
+                .enumerate()
+                .map(|(index, segment)| {
+                    (
+                        (segment.bytes.is_empty(), segment.span, segment.bytes.start),
+                        index,
+                    )
+                })
+                .collect();
+            logical.sort_unstable();
             let mut from = vec![0.0; segments.len()];
-            for index in logical {
+            for (_, index) in logical {
                 from[index] = line_start;
                 line_start += width(segments[index]);
             }

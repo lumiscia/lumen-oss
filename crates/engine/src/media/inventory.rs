@@ -233,7 +233,7 @@ pub(crate) fn walk<'a>(composition: &'a Composition, f: &mut dyn FnMut(Found<'a>
 
 fn walk_nodes<'a>(template: Option<&str>, scene: &'a Scene, f: &mut dyn FnMut(Found<'a>)) {
     let mut nodes: Vec<&NodeKind> = scene.graph.nodes.values().collect();
-    nodes.sort_by_key(|node| node.id());
+    NodeKind::sort_by_id(&mut nodes);
     let at = |node: NodeId, param: &str| NodeParamAt {
         template: template.map(str::to_string),
         node,
